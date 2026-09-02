@@ -1,0 +1,42 @@
+# Base CV library — fill this in or let /onboard generate it for you.
+# SUPERSET of what fits on one page. The tailoring engine picks bullets per job.
+# priority: 1 = always keep, 3 = first to drop when enforcing one page.
+
+contact:
+  name: Your Name
+  title: { en: Your Title, fr: Votre Titre }
+  phone: "+XX X XX XX XX XX"
+  email: your.email@example.com
+  location: { en: "City, Country", fr: "Ville, Pays" }
+
+summary:
+  en: >-
+    Write 2-3 sentences summarising your experience, specialities, and languages.
+  fr: >-
+    Rédigez 2-3 phrases résumant votre expérience, vos spécialités et vos langues.
+
+experience:
+  - id: company1-title1
+    company: Company Name
+    title: { en: Your Title, fr: Votre Titre }
+    start: "YYYY-MM"
+    end: present          # or "YYYY-MM"
+    bullets:
+      - id: bullet-id
+        priority: 1       # 1 = always keep, 2 = keep if space, 3 = first to drop
+        tags: [tag1, tag2]
+        en: What you did, with a concrete result if possible.
+        fr: Ce que vous avez fait, avec un résultat concret si possible.
+
+skills:
+  - group: { en: Skill Group, fr: Groupe de Compétences }
+    items: [Skill 1, Skill 2, Skill 3]
+
+education:
+  - degree: { en: Your Degree, fr: Votre Diplôme }
+    school: School Name
+    location: { en: "City, Country", fr: "Ville, Pays" }
+    years: YYYY-YYYY
+
+languages:
+  - { name: { en: English, fr: Anglais }, level: { en: Fluent, fr: Courant } }

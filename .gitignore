@@ -1,0 +1,62 @@
+# --- Secrets: never commit. Anything here is enough to impersonate you. ------
+# Comments must sit on their own line: git treats a mid-line '#' as literal
+# text, so a trailing comment silently breaks the pattern it documents.
+.env
+.env.*
+!.env.example
+
+# ANTHROPIC_API_KEY in plaintext, Claude side then Codex side.
+.claude/settings.local.json
+.codex/config.toml
+
+# Job-board logins, live session cookies, client names under NDA.
+data/site_credentials.json
+data/browser_state/
+data/mandate_redactions.json
+**/storage_state*.json
+
+# --- Personal data: your identity, your applications, your history ----------
+# answers.yaml carries name, address, date of birth and phone.
+data/answers.yaml
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/backups/
+data/digest_latest.md
+data/logs/
+data/screenshots/
+data/cover_letters/
+data/tailored/
+data/upload_staging/
+
+# Whisper weights: large binary, not a secret.
+data/models/
+
+# The CV library and every rendered PDF carry full contact details.
+cv/base_cv.yaml
+cv/base_cv_dev.yaml
+cv_versions/
+*.pdf
+
+# The Excel tracker (folder name uses U+2019).
+Rechercher d’emploi/
+
+# --- Local configuration ----------------------------------------------------
+# auto_apply, score thresholds, schedule: machine-specific.
+data/settings.json
+
+# --- Build output and caches ------------------------------------------------
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+webapp/node_modules/
+webapp/dist/
+webapp/playwright-report/
+webapp/test-results/
+.firecrawl/
+.playwright-mcp/
+
+# --- OS noise ---------------------------------------------------------------
+.DS_Store

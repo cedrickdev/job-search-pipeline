@@ -1,0 +1,10 @@
+# Terms NEVER translated in French CVs/letters. Edit freely; one term per line.
+protected_terms:
+  - PHP
+  - REST
+  - API
+  - SQL
+  - HTML
+  - CSS
+  - DNS
+  - CFC

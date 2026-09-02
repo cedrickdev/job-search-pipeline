@@ -1,0 +1,16 @@
+# Substrings that make generated text read machine-written. Case-insensitive.
+# Edit freely; the tailoring gate rejects any CV containing one.
+banned_substrings:
+  - "—"            # em-dash asides
+  - " – "          # spaced en-dash used as a connector
+  - "spearheaded"
+  - "delve"
+  - "seamless"
+  - "cutting-edge"
+  - "best-in-class"
+  - "game-changing"
+  - "synergy"
+  - "proven track record"
+  - "passionate about"
+  - "results-driven"
+  - "dynamic environment"

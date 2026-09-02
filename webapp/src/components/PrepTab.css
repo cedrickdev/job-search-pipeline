@@ -1,0 +1,11 @@
+.prep-section { margin-bottom: var(--space-6); }
+.prep-section h4 { color: var(--text-dim); text-transform: uppercase; font-size: 12px; letter-spacing: .04em; margin-bottom: var(--space-2); }
+.prep-notes { width: 100%; min-height: 140px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-3); font: inherit; resize: vertical; }
+.prep-list { list-style: none; display: flex; flex-direction: column; gap: var(--space-2); }
+.prep-list li { background: var(--surface-2); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); }
+.iv-row { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); }
+.iv-add { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
+.iv-add input { flex: 1; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2); }
+.prep-generate { display: flex; align-items: center; gap: var(--space-3); }
+.prep-generated-at { color: var(--text-dim); font-size: 12px; }
+.prep-warning { background: rgba(220, 160, 40, .15); border: 1px solid rgba(220, 160, 40, .5); color: var(--text); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); margin-bottom: var(--space-4); font-size: 13px; }

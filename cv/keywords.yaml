@@ -1,0 +1,125 @@
+# JD keyword taxonomy — the vocabulary pipeline.gap_analysis looks for in a job
+# description and then tries to find in the base CV library.
+#
+# This is NOT cv/glossary.yaml. The glossary lists terms that must never be
+# translated in the French CV; this file lists terms worth *detecting* in an
+# offer. Keeping them apart is deliberate: before the split, gap analysis reused
+# the glossary as its whole term universe, so it only ever knew 8 words and
+# reported GREEN (full coverage) on every posting.
+#
+# Categories are for humans only — the loader flattens and dedupes them.
+# Matching is case-insensitive, word-boundary, tolerant of a trailing "s".
+# A term listed here and absent from the base CV shows up as a missing keyword,
+# which is advisory: it tells you what to work into a bullet, not that the job
+# is out of reach.
+#
+# Regenerate this per profile: keep the categories your offers actually use.
+
+# Categories whose terms are claimable qualifications. Working one of these into
+# a tailored CV when the base library never mentions it is an invented fact, so
+# pipeline.tailor_io rejects it. Generic vocabulary (service, retail, soft...) is
+# deliberately excluded: rephrasing a bullet in the offer's own words is the
+# whole point of tailoring, and gating it would reject honest rewrites.
+hard_skill_categories:
+  - tech
+  - certifications
+  - languages
+
+jd_keywords:
+  service:
+    - service en salle
+    - restauration
+    - restauration rapide
+    - accueil
+    - clientèle
+    - commande
+    - encaissement
+    - caisse
+    - monnaie
+    - mise en place
+    - plonge
+    - cuisine
+    - office
+    - barista
+    - buffet
+    - banquet
+
+  certifications:
+    - HACCP
+    - hygiène
+    - sécurité alimentaire
+    - permis de conduire
+    - cariste
+    - premiers secours
+
+  retail:
+    - vente
+    - conseil client
+    - mise en rayon
+    - réassort
+    - étiquetage
+    - inventaire
+    - stock
+    - magasin
+    - rayon
+    - scanner
+    - fidélisation
+
+  logistics:
+    - livraison
+    - préparation de commandes
+    - manutention
+    - cariste
+    - véhicule
+    - scooter
+
+  availability:
+    - temps partiel
+    - week-end
+    - soirée
+    - jours fériés
+    - horaires irréguliers
+    - saisonnier
+    - extra
+
+  languages:
+    - français
+    - anglais
+    - allemand
+    - italien
+    - suisse allemand
+
+  soft:
+    - autonomie
+    - polyvalence
+    - rigueur
+    - ponctualité
+    - gestion du stress
+    - travail d'équipe
+    - sens de l'écoute
+    - adaptation
+    - contact client
+
+  tech:
+    - PHP
+    - SQL
+    - MySQL
+    - HTML
+    - CSS
+    - JavaScript
+    - REST
+    - API
+    - Git
+    - Linux
+    - Windows
+    - DNS
+    - pare-feu
+    - firewall
+    - réseau
+    - VLAN
+    - TCP/IP
+    - support informatique
+    - helpdesk
+    - Excel
+    - WordPress
+    - base de données

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head><meta charset="utf-8"><title>{{ cv.contact.name }}</title></head>
+<body>
+  <header>
+    <h1>{{ cv.contact.name }}</h1>
+    <p class="headline">{{ loc(cv.contact.title) }}</p>
+    <p class="contact-line">
+      {{ cv.contact.phone }} · {{ cv.contact.email }} · {{ loc(cv.contact.location) }}
+    </p>
+  </header>
+
+  <section>
+    <h2>{{ "Summary" if lang == "en" else "Profil" }}</h2>
+    <p>{{ loc(cv.summary) }}</p>
+  </section>
+
+  <section>
+    <h2>{{ "Professional Experience" if lang == "en" else "Expérience Professionnelle" }}</h2>
+    {% for exp in cv.experience %}
+    <div class="job">
+      <p class="job-head"><strong>{{ loc(exp.title) }}</strong> — {{ exp.company }}
+        <span class="dates">{{ exp.start }} – {{ "present" if exp.end == "present" and lang == "en"
+            else ("aujourd’hui" if exp.end == "present" else exp.end) }}</span></p>
+      <ul>
+        {% for b in exp.bullets %}<li>{{ loc(b) }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section>
+    <h2>{{ "Skills" if lang == "en" else "Compétences" }}</h2>
+    {% for sk in cv.skills %}
+    <p class="skill-line"><strong>{{ loc(sk.group) }}:</strong> {{ sk["items"] | join(", ") }}</p>
+    {% endfor %}
+  </section>
+
+  <section>
+    <h2>{{ "Education" if lang == "en" else "Formation" }}</h2>
+    {% for ed in cv.education %}
+    <p class="edu-line"><strong>{{ loc(ed.degree) }}</strong> — {{ ed.school }},
+      {{ loc(ed.location) }} <span class="dates">{{ ed.years }}</span></p>
+    {% endfor %}
+  </section>
+
+  <section>
+    <h2>{{ "Languages" if lang == "en" else "Langues" }}</h2>
+    <p>{% for l in cv.languages %}{{ loc(l.name) }} ({{ loc(l.level) }}){{ ", " if not loop.last }}{% endfor %}</p>
+  </section>
+</body>
+</html>

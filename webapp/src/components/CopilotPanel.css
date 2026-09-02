@@ -1,0 +1,150 @@
+.copilot {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.copilot-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.copilot-msg {
+  max-width: 90%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
+.copilot-msg.user {
+  align-self: flex-end;
+  background: var(--accent, #2d6cdf);
+  color: #fff;
+}
+
+.copilot-msg.assistant {
+  align-self: flex-start;
+  background: var(--surface-2, #1c1f26);
+  color: var(--text, #e6e6e6);
+}
+
+.copilot-msg.preview {
+  opacity: 0.6;
+}
+
+/* Markdown-rendered assistant prose. Override the bubble's pre-wrap so the
+   rendered blocks control layout, and collapse default block margins so a
+   one-paragraph reply doesn't carry browser padding inside the bubble. */
+.copilot-msg .md {
+  white-space: normal;
+}
+.copilot-msg .md > :first-child {
+  margin-top: 0;
+}
+.copilot-msg .md > :last-child {
+  margin-bottom: 0;
+}
+.copilot-msg .md p {
+  margin: 0.4em 0;
+}
+.copilot-msg .md ul,
+.copilot-msg .md ol {
+  margin: 0.4em 0;
+  padding-left: 1.4em;
+}
+.copilot-msg .md li {
+  margin: 0.15em 0;
+}
+.copilot-msg .md h1,
+.copilot-msg .md h2,
+.copilot-msg .md h3 {
+  margin: 0.5em 0 0.3em;
+  font-size: 1em;
+  font-weight: 600;
+}
+.copilot-msg .md code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.85em;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+}
+.copilot-msg .md pre {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 8px 10px;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.copilot-msg .md pre code {
+  background: none;
+  padding: 0;
+}
+.copilot-msg .md a {
+  color: var(--accent, #2d6cdf);
+}
+
+.copilot-warning {
+  align-self: stretch;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  background: rgba(220, 160, 40, 0.15);
+  border: 1px solid rgba(220, 160, 40, 0.5);
+  color: var(--text, #e6e6e6);
+}
+
+.copilot-action {
+  align-self: stretch;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #333);
+  background: var(--surface-2, #1c1f26);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.copilot-action-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.copilot-action-note {
+  font-size: 0.8rem;
+  color: var(--text-dim, #9aa0aa);
+}
+
+.copilot-action-edit {
+  width: 100%;
+  min-height: 64px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  resize: vertical;
+}
+
+.copilot-action-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.copilot-compose {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--border, #333);
+}
+
+.copilot-input {
+  flex: 1;
+  min-height: 40px;
+  max-height: 120px;
+  resize: vertical;
+  font: inherit;
+}

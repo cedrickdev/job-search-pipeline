@@ -1,0 +1,14 @@
+{
+  "jobs": [
+    {
+      "title": "Shift Supervisor",
+      "location": "Lausanne",
+      "isRemote": false,
+      "employmentType": "FullTime",
+      "jobUrl": "https://jobs.ashbyhq.com/acme/uuid-1",
+      "publishedAt": "2026-06-02T08:00:00.000Z",
+      "descriptionHtml": "<p>Stack the shelves.</p>",
+      "compensation": {"compensationTierSummary": "22-26 CHF/h"}
+    }
+  ]
+}

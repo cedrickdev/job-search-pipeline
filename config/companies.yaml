@@ -1,0 +1,8 @@
+# ATS boards swept daily (greenhouse/lever/ashby). Empty by default: student/
+# retail jobs in Vaud are not typically posted on these tech-hiring ATS
+# platforms. Add entries here only if a specific employer you're targeting
+# uses one of these boards — see pipeline/sources/{greenhouse,lever,ashby}.py
+# for the token format.
+greenhouse: []
+lever: []
+ashby: []

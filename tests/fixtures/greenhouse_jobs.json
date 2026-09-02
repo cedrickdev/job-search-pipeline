@@ -1,0 +1,20 @@
+{
+  "jobs": [
+    {
+      "id": 101,
+      "title": "Senior Sales Assistant",
+      "absolute_url": "https://boards.greenhouse.io/acme/jobs/101",
+      "location": {"name": "Lausanne, Suisse"},
+      "updated_at": "2026-06-01T10:00:00-04:00",
+      "content": "&lt;p&gt;Sell fresh produce for &lt;b&gt;marketing&lt;/b&gt;.&lt;/p&gt;"
+    },
+    {
+      "id": 102,
+      "title": "Office Manager",
+      "absolute_url": "https://boards.greenhouse.io/acme/jobs/102",
+      "location": {"name": "Lausanne"},
+      "updated_at": "2026-06-02T10:00:00-04:00",
+      "content": "&lt;p&gt;Run the office.&lt;/p&gt;"
+    }
+  ]
+}

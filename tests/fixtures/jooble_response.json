@@ -1,0 +1,23 @@
+{
+  "totalCount": 2,
+  "jobs": [
+    {
+      "title": "Job étudiant vente",
+      "company": "Acme Retail SA",
+      "location": "Yverdon-les-Bains, Vaud",
+      "link": "https://jooble.org/jdp/123",
+      "salary": "22 CHF/h",
+      "snippet": "Vente en magasin, poste étudiant.",
+      "updated": "2026-06-24T10:32:54.000"
+    },
+    {
+      "title": "Serveur/euse",
+      "company": "Cafe Acme",
+      "location": "Lausanne, Vaud",
+      "link": "https://jooble.org/jdp/456",
+      "salary": "",
+      "snippet": "Service en salle, week-ends.",
+      "updated": "2026-06-20T08:00:00.000"
+    }
+  ]
+}

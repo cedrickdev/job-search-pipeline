@@ -1,0 +1,8 @@
+.score-chip {
+  font-family: var(--font-mono); font-weight: 600; font-size: 13px;
+  padding: 1px 8px; border-radius: var(--radius-sm);
+}
+.score-chip.high { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.score-chip.mid { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.score-chip.low { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.score-chip.none { color: var(--text-dim); }

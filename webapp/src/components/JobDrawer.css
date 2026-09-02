@@ -1,0 +1,56 @@
+.drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 40; }
+.drawer {
+  position: fixed; top: 0; right: 0; height: 100vh; width: min(560px, 92vw);
+  background: var(--surface); border-left: 1px solid var(--border);
+  box-shadow: var(--shadow); z-index: 41; display: flex; flex-direction: column;
+}
+.drawer-head { padding: var(--space-6); border-bottom: 1px solid var(--border); }
+.drawer-head h2 { font-size: 18px; }
+.drawer-sub { color: var(--text-dim); }
+.drawer-body { padding: var(--space-6); overflow: auto; flex: 1; }
+.drawer-tabs { display: flex; gap: var(--space-4); border-bottom: 1px solid var(--border); margin-bottom: var(--space-4); }
+.drawer-tab { background: none; border: none; color: var(--text-dim); padding: var(--space-2) 0; border-bottom: 2px solid transparent; }
+.drawer-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.drawer-actions { padding: var(--space-4) var(--space-6); border-top: 1px solid var(--border); display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.btn-primary { background: var(--accent); color: white; border: none; border-radius: var(--radius-sm); padding: var(--space-2) var(--space-4); font-weight: 600; }
+.btn-ghost { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-4); }
+.status-select { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); font-size: 13px; margin-left: auto; }
+.confirm-bar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); background: var(--accent-tint); padding: var(--space-3) var(--space-6); }
+.fit-tier { font-weight: 600; padding: 1px 8px; border-radius: 6px; }
+.tier-green { color: var(--ok); } .tier-yellow { color: var(--warn); } .tier-red { color: var(--danger); }
+.drawer-activity { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.drawer-activity li { font-size: 13px; line-height: 1.5; border-bottom: 1px solid var(--border); padding-bottom: var(--space-2); }
+.activity-when { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.activity-type { font-weight: 600; }
+.activity-source { color: var(--text-dim); }
+.regen-chip {
+  font-size: 12px; font-weight: 600; color: var(--accent);
+  background: var(--accent-tint); border-radius: 6px; padding: 2px 8px;
+  white-space: nowrap;
+}
+.regen-banner {
+  background: var(--accent-tint); border: 1px solid var(--accent);
+  border-radius: var(--radius-sm); padding: var(--space-3); margin-bottom: var(--space-4);
+  font-size: 13px; line-height: 1.5;
+}
+.regen-banner-notes { color: var(--text-dim); margin-top: var(--space-2); font-style: italic; }
+.regen-banner-actions { margin-top: var(--space-3); }
+.regen-run-now { font-size: 12px; padding: 4px 10px; }
+/* Failed states read as a warning, not the accent (which signals in-progress). */
+.regen-chip-failed { color: var(--danger, #b42318); background: var(--danger-tint, #fde8e6); }
+.regen-banner-failed { border-color: var(--danger, #b42318); background: var(--danger-tint, #fde8e6); }
+/* A completed regen is settled, not active: mute it so it doesn't compete. */
+.regen-banner-done { border-color: var(--border); background: var(--surface-2, var(--accent-tint)); }
+.apply-banner {
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2, var(--accent-tint));
+}
+.apply-banner-notes { color: var(--text-dim); margin-top: var(--space-2); font-style: italic; }
+.apply-banner-actions { margin-top: var(--space-3); }
+.apply-banner-shot { color: var(--text-dim); margin-top: var(--space-2); font-size: 12px; word-break: break-all; }
+.apply-banner-done { border-color: var(--border); background: var(--surface-2, var(--accent-tint)); }
+.apply-banner-warn { border-color: var(--warning, #b54708); background: var(--warning-tint, #fef0c7); }
+.apply-banner-failed { border-color: var(--danger, #b42318); background: var(--danger-tint, #fde8e6); }

@@ -1,0 +1,15 @@
+.toolbar { display: flex; gap: var(--space-3); margin-bottom: var(--space-4); }
+.toolbar-input, .toolbar select {
+  background: var(--surface); border: 1px solid var(--border); color: var(--text);
+  border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); font-size: 13px;
+}
+.toolbar-input { flex: 1; }
+.jobs-table { width: 100%; border-collapse: collapse; }
+.jobs-table th {
+  text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--text-dim); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border);
+}
+.jobs-table td { padding: var(--space-3); border-bottom: 1px solid var(--border); }
+.jobs-table tbody tr:hover { background: var(--surface-2); cursor: pointer; }
+.cell-company { font-weight: 600; }
+.cell-title { color: var(--text-dim); }

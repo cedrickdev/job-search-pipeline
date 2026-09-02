@@ -1,0 +1,31 @@
+{
+  "total": 2,
+  "jobs": [
+    {
+      "id": "111",
+      "title": "Collaboratrice / Collaborateur Restaurant - Poste pour étudiant·e (f/h/d)",
+      "attributes": {
+        "30": ["Vaud"],
+        "40": ["Activité accessoire"]
+      },
+      "szas": {
+        "sza_apply_link": "https://career2.successfactors.eu/career?company=Coop&career_job_req_id=167010",
+        "sza_pensum.max": "30",
+        "sza_tasks": "<p>Service en salle et <b>encaissement</b>.</p>"
+      }
+    },
+    {
+      "id": "222",
+      "title": "Gérant·e / Régions Vaud - Fribourg",
+      "attributes": {
+        "30": ["Fribourg"],
+        "40": ["Durée indéterminée"]
+      },
+      "szas": {
+        "sza_apply_link": "https://career2.successfactors.eu/career?company=Coop&career_job_req_id=999",
+        "sza_pensum.max": "100",
+        "sza_tasks": "Gestion complète du magasin."
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+[
+  {
+    "name": "Senior Sales Assistant",
+    "slug": "senior-data-scientist_paris",
+    "organization": {"name": "Acme", "slug": "acme"},
+    "offices": [{"city": "Lausanne", "country": "Suisse"}],
+    "contract_type": "full_time",
+    "remote": "partial",
+    "language": "en",
+    "published_at": "2026-06-08T09:00:00.000+02:00"
+  },
+  {
+    "name": "Vendeur Confirmé (H/F)",
+    "slug": "data-scientist-confirme",
+    "organization": {"name": "Globex", "slug": "globex"},
+    "offices": [],
+    "contract_type": "cdi",
+    "remote": "no",
+    "language": "fr",
+    "published_at": "2026-06-09T09:00:00.000+02:00"
+  }
+]

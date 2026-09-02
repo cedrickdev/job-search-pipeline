@@ -1,0 +1,16 @@
+@page { size: A4; margin: 16mm 18mm; }
+body { font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt;
+       color: #1a1a1a; line-height: 1.45; }
+h1 { font-size: 22pt; margin: 0; color: #2e7d5b; letter-spacing: 0.5px; }
+.headline { font-size: 13pt; margin: 1mm 0 1mm; color: #444; }
+.contact-line { font-size: 9.5pt; color: #555; margin: 0 0 3mm; }
+h2 { font-size: 12pt; color: #2e7d5b; border-bottom: 1pt solid #2e7d5b;
+     margin: 5mm 0 2mm; padding-bottom: 0.8mm; text-transform: uppercase;
+     letter-spacing: 0.8px; }
+section p, .skill-line, .edu-line { margin: 1.2mm 0; }
+.job { margin-bottom: 3mm; }
+.job-head, .edu-line { overflow: hidden; } /* contain the floated .dates so it can't bleed into the next entry */
+.job-head { margin: 1.5mm 0 0.8mm; }
+.dates { float: right; color: #666; font-size: 9pt; }
+ul { margin: 0.8mm 0 0; padding-left: 5mm; }
+li { margin-bottom: 1mm; }

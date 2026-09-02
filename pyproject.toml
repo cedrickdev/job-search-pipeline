@@ -1,0 +1,31 @@
+[project]
+name = "jobsearch-pipeline"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+    "weasyprint>=62",
+    "openpyxl>=3.1",
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "playwright>=1.44",
+    "python-dotenv>=1.0",
+    "sse-starlette>=2.1",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["pipeline", "pipeline.sources", "pipeline.apply", "dashboard", "server", "server.routes"]

@@ -121,7 +121,7 @@ Eight tables, all keyed by `UUID` (never a serial), created by `rev_0002`:
 | `match_evaluations` | one score per (profile, posting) | `user_id` + `candidate_profile_id`, CASCADE |
 | `match_dimension_scores` | per-dimension detail | `match_evaluation_id`, CASCADE |
 
-`users` carries no credentials, no email and no authentication: Phase 3 owns identity.
+`users` carries no credentials, no email and no authentication: Phase 4 owns identity.
 It exists now so user-scoped rows can carry a real foreign key instead of a loose
 column that would have to be backfilled later.
 
@@ -273,10 +273,10 @@ dropping it would pull it out from under anything else that uses it.
 ## Docker
 
 One long-running service and two one-shot commands — the persistence foundation and
-nothing more. Redis, the background worker, the Playwright browser worker and the Nuxt
-frontend are Phase 8+ services and are absent rather than declared and disabled; an
-inert service still has to be maintained, and docs/ARCHITECTURE.md §13 already records
-the target composition.
+nothing more. The Nuxt frontend and the FastAPI API join in Phase 3, and Redis, the
+background worker and the Playwright browser worker no earlier than Phase 12; all of
+them are absent rather than declared and disabled, since an inert service still has to
+be maintained and docs/ARCHITECTURE.md §13 already records the target composition.
 
 ```
 docker compose up -d postgres            start the database
@@ -326,8 +326,8 @@ Details that are decisions rather than defaults:
 **3.12**, tracking `requires-python` and the version CI pins rather than the newer local
 interpreter, an editable install so a traceback points at `/app/backend/...`, runtime
 dependencies only (the suite runs on the host against the published port), and
-`USER 10001:10001` — nothing in the image needs root. From Phase 8 the same image runs
-the API and the workers.
+`USER 10001:10001` — nothing in the image needs root. From Phase 3 the same image runs
+the API, and from Phase 12 the workers.
 
 The security boundary is the build context, not the `COPY`: `.dockerignore` keeps
 `.env`, `.env.*`, `data/`, `cv/`, rendered PDFs and the agent configuration directories

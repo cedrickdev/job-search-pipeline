@@ -5,7 +5,7 @@ fact to be traceable, and CLAUDE.md states the rule bluntly: never fabricate
 candidate facts. V1 already enforces that for CVs — `pipeline/tailor_io.py`
 rejects tailored content that selects an unknown bullet id, invents a number, or
 names a technology absent from the base library. Those gates are the strength
-Phase 9 must reuse, so the contracts here are shaped to receive them:
+Phase 10 must reuse, so the contracts here are shaped to receive them:
 
 - `CandidateEvidence` is the V2 form of a base-library record, keyed by the same
   stable `reference_key` V1 uses ("acme-checkout");
@@ -46,7 +46,7 @@ class EvidenceKind(StrEnum):
     `SELF_DECLARATION` is the weakest member and is not a loophole: a candidate
     stating a fact about themselves is a legitimate, *attributed* source. What the
     platform may never do is manufacture evidence — no member of this enum means
-    "an LLM inferred it", and Phase 9's extraction pipeline must attach the
+    "an LLM inferred it", and Phase 10's extraction pipeline must attach the
     document it read, not its own conclusion.
     """
 
@@ -66,7 +66,7 @@ class CandidateEvidence(DomainModel):
     """One record attesting something about the candidate.
 
     `reference_key` is the bridge to V1: the base CV library gives every bullet a
-    stable human-authored id, and reusing it means Phase 9 can import the library
+    stable human-authored id, and reusing it means Phase 10 can import the library
     without inventing identities or losing the link back to the YAML.
 
     `source_document` is a label (a path or a URL), never file content: the

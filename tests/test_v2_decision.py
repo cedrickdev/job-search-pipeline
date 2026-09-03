@@ -91,7 +91,7 @@ def test_nothing_submits_past_a_closed_gate(kind):
 
 
 def test_the_submitting_kinds_are_named_once_and_only_these():
-    """Phase 8 gates real submissions on this set, so it is pinned here."""
+    """Phase 12 gates real submissions on this set, so it is pinned here."""
     assert SUBMITTING_DECISION_KINDS == frozenset({
         ApplicationDecisionKind.AUTO_APPLY,
         ApplicationDecisionKind.APPLY_AND_OUTREACH,

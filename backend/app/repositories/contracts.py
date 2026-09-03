@@ -19,7 +19,7 @@ are the same operation from the caller's point of view, and retrying a failed
 import is safe by construction.
 
 Small on purpose: Phase 2 owes the persistence foundation, and a method nobody
-calls yet is a guess about Phase 6 and 8 that would have to be unguessed.
+calls yet is a guess about Phase 6 and 12 that would have to be unguessed.
 """
 from typing import NamedTuple, Protocol, runtime_checkable
 

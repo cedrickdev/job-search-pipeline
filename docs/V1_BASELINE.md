@@ -133,7 +133,7 @@ Observations that matter for the V2 migration:
 - **`chat_sessions.claude_session_id` is provider-specific.**
   [LLM_PROVIDER_ARCHITECTURE.md](./LLM_PROVIDER_ARCHITECTURE.md) §4 requires
   generic tables to carry no provider-specific field; this column names its
-  provider in the schema. Phase 10 follow-up, not a Phase 0 fix.
+  provider in the schema. Phase 11 follow-up, not a Phase 0 fix.
 - **Dates are ISO strings, not typed timestamps**, and are written with naive
   local-time `datetime.now()`. The PostgreSQL move must pick an explicit tz
   policy rather than inherit this one.
@@ -170,7 +170,7 @@ through to `generic`. Browser work runs through `pipeline/applier.py`, which own
 the single Playwright launch configuration (`fr-CH` / `Europe/Zurich`, matching
 `scripts/wtj_login.py` so the saved session and the replay agree).
 
-This dispatcher is already the `ApplicationStrategy` registry Phase 11 asks for,
+This dispatcher is already the `ApplicationStrategy` registry Phase 12 asks for,
 in an untyped form — an adapt-not-rewrite candidate.
 
 ## 6. HTTP surface — 29 operations
@@ -245,7 +245,7 @@ emitting anything is retried once with a fresh session.
 Only two callers reach the model: `server/routes/chat.py` (streaming) and
 `server/routes/prep.py` via `chat.collect_turn()` (non-streaming). Follow-up
 drafting (`server/followups.py::draft_followup`) is template-based, not generated.
-That narrow call surface is why Phase 10 can introduce a provider registry without
+That narrow call surface is why Phase 11 can introduce a provider registry without
 touching business logic.
 
 ## 8. Lint and type baselines
@@ -378,7 +378,7 @@ Recorded here rather than fixed, because Phase 0 changes no behaviour:
    next touches that file.
 3. **`chat_sessions.claude_session_id`** names a provider in a generic table,
    against [LLM_PROVIDER_ARCHITECTURE.md](./LLM_PROVIDER_ARCHITECTURE.md) §4.
-   Phase 10.
+   Phase 11.
 4. **No `user_id` on any of the 14 tables** — Phase 2 must add ownership
    everywhere, and every one of the 29 endpoints needs authorization scoping.
 5. **Naive local-time timestamps stored as ISO strings.** Decide the timezone

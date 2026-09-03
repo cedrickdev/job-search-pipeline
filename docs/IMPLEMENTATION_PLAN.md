@@ -212,7 +212,7 @@ Make the product truly multi-user.
 - languages;
 - work authorization metadata;
 - onboarding API;
-- onboarding React flow.
+- onboarding Nuxt flow.
 
 ### Acceptance
 

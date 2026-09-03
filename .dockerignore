@@ -39,7 +39,7 @@ Rechercher d’emploi/
 .venv/
 
 # The V1 React application and its node_modules; the Nuxt frontend will get an
-# image of its own when Phase 8 arrives.
+# image of its own when Phase 3 arrives.
 webapp/
 
 # Runs on the host and on CI against the exposed port, and the image installs no

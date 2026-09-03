@@ -129,7 +129,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_companies_name", "companies", ["name"], unique=False)
 
-    # No credentials, no email, no authentication: Phase 3 owns identity. The table
+    # No credentials, no email, no authentication: Phase 4 owns identity. The table
     # exists now so that user-scoped rows can carry a real foreign key instead of a
     # loose column that would have to be backfilled later.
     op.create_table(

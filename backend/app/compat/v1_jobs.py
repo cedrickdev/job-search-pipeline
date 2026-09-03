@@ -266,8 +266,9 @@ def opportunity_from_v1_job(row: Mapping[str, Any], *,
             external_id=None,
             source_url=source_url,
             # V1 records one instant per row, so discovery time is the best
-            # available fetch time. Phase 2 can separate them; inventing a
-            # different value here would be worse than reusing an honest one.
+            # available fetch time. V2 stores the two separately, but no V1 row
+            # can tell them apart; inventing a different value here would be
+            # worse than reusing an honest one.
             fetched_at=discovered_at,
             raw=_raw_snapshot(row),
         ),

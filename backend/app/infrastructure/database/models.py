@@ -155,8 +155,8 @@ class CandidateProfileRow(TimestampedMixin, Base):
     Separate from `users` because one person legitimately searches under more
     than one profile (a student job and a graduate role weigh education
     differently), and an evaluation is against a profile, not against an account.
-    The profile's contents — evidence, claims, CV truth — are Phase 3's; this is
-    the identity those rows will hang from.
+    The profile's contents arrive with onboarding in Phase 4 and the evidence
+    store in Phase 10; this is the identity those rows will hang from.
     """
 
     __tablename__ = "candidate_profiles"
@@ -206,7 +206,8 @@ class CompanyRow(TimestampedMixin, Base):
 
 
 class CompanyLocationRow(LocationColumnsMixin, TimestampedMixin, Base):
-    """One physical site of a company — a marker on the Phase 7 map.
+    """One physical site of a company — a marker on the Phase 8 map, once the
+    Phase 7 geocoding pass gives it coordinates.
 
     Unlike an opportunity's location, this one is required to say something:
     `Location` is non-optional on the domain entity, so `location_not_empty`
@@ -335,7 +336,7 @@ class OpportunityRow(LocationColumnsMixin, TimestampedMixin, Base):
     # A list of `LanguageRequirement` objects. JSONB rather than a child table:
     # the requirements are always read with the opportunity, never queried on
     # their own in Phase 2, and a `?` containment index can be added later without
-    # a schema change if Phase 8 needs "postings that require German".
+    # a schema change if Phase 9 needs "postings that require German".
     language_requirements: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
 

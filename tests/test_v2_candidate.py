@@ -89,7 +89,7 @@ def test_contact_details_are_deliberately_not_modelled():
 
 
 def test_evidence_keeps_the_v1_bullet_id_as_its_reference_key():
-    """The bridge Phase 9 needs: the base library already has stable ids."""
+    """The bridge Phase 10 needs: the base library already has stable ids."""
     evidence = an_evidence(new_user_id(), reference_key="acme-checkout")
     assert evidence.reference_key == "acme-checkout"
     assert evidence.kind is EvidenceKind.CV_BULLET

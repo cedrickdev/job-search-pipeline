@@ -3,7 +3,7 @@
 Two engines over one DSN, because Phase 2 has two kinds of caller:
 
 - the repositories are `async`, so they get an `AsyncEngine` — FastAPI is the
-  consumer in Phase 8 and a blocking driver call inside an event loop stalls
+  consumer from Phase 4 on and a blocking driver call inside an event loop stalls
   every other request;
 - Alembic and the V1 importer are synchronous. Alembic's migration API is sync by
   design, and the importer reads SQLite, which has no async driver worth the

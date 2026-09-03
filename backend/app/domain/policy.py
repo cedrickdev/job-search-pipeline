@@ -3,7 +3,7 @@
 Policy is knowledge, not behaviour: nothing in this module submits anything, and
 nothing here knows that Playwright, an HTTP form or an email exists. It answers
 questions ("may this be submitted without me?", "how many are left today?") that
-a Phase 8 application service asks before it calls an adapter
+a Phase 12 application service asks before it calls an adapter
 (docs/ARCHITECTURE.md §9, CLAUDE.md: "Playwright is an application/browser
 adapter, not the decision engine").
 

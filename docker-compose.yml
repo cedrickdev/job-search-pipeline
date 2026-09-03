@@ -2,11 +2,11 @@
 #
 # Phase 2 needs exactly one long-running service — the database — plus two
 # one-shot commands that must run in the same environment as the application
-# (docs/IMPLEMENTATION_PLAN.md Phase 2). Redis, the background worker, the
-# Playwright browser worker and the Nuxt frontend are Phase 8+ services and are
-# deliberately absent rather than declared and disabled: an inert service still
-# has to be maintained, and docs/ARCHITECTURE.md §13 already records the target
-# composition.
+# (docs/IMPLEMENTATION_PLAN.md Phase 2). The Nuxt frontend and the FastAPI API
+# join in Phase 3, and Redis, the background worker and the Playwright browser
+# worker no earlier than Phase 12. All of them are deliberately absent rather
+# than declared and disabled: an inert service still has to be maintained, and
+# docs/ARCHITECTURE.md §13 already records the target composition.
 #
 #   docker compose up -d postgres                     start the database
 #   docker compose run --rm migrate                   alembic upgrade head

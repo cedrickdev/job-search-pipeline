@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # The backend image: one environment that can run Alembic, the V1 importer and —
-# from Phase 8 on — the FastAPI application and the workers. Phase 2 uses only the
-# first two (docker-compose.yml `migrate` and `import-v1`).
+# from Phase 3 on — the FastAPI application, with the workers joining no earlier
+# than Phase 12. Phase 2 uses only the first two (docker-compose.yml `migrate`
+# and `import-v1`).
 #
 # Python 3.12, matching `requires-python = ">=3.12"` and the version CI pins. The
 # local interpreter is newer; the image is what production would run, so it tracks

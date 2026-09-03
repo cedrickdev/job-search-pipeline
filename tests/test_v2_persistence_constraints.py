@@ -181,7 +181,7 @@ async def test_a_site_that_locates_nothing_is_refused(db_session):
     """`Location._must_locate_something`, as a CHECK over six NULL columns.
 
     A `company_locations` row with nothing in it is a marker nobody can place on
-    the Phase 7 map, and `CompanyLocation.location` is non-optional in the domain
+    the Phase 8 map, and `CompanyLocation.location` is non-optional in the domain
     precisely to make it impossible.
     """
     db_session.add(CompanyRow(id=COMPANY, name="Fixture SA"))

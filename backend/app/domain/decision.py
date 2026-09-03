@@ -9,7 +9,7 @@ instead of one number that has already lost the argument.
 
 A decision is a *record of intent*, not an action. Nothing here submits, and the
 model carries no adapter, credential or session detail
-(docs/ARCHITECTURE.md §9). Phase 8 reads a decision, checks the policy again at
+(docs/ARCHITECTURE.md §9). Phase 12 reads a decision, checks the policy again at
 execution time, and only then calls an adapter.
 """
 from enum import StrEnum
@@ -56,7 +56,7 @@ class ApplicationDecisionKind(StrEnum):
     SPONTANEOUS_APPLICATION = "SPONTANEOUS_APPLICATION"
 
 
-# The kinds that put something in front of an employer. Phase 8 gates real
+# The kinds that put something in front of an employer. Phase 12 gates real
 # submissions on this set, so it is public and named once rather than re-listed
 # at every call site.
 SUBMITTING_DECISION_KINDS: frozenset[ApplicationDecisionKind] = frozenset({

@@ -43,6 +43,12 @@ npm --prefix webapp run build                 # tsc --noEmit && vite build
 One warning is expected and harmless: Starlette announces that `TestClient` on
 `httpx` is deprecated in favour of `httpx2`.
 
+Those numbers are the **V1** baseline and stay fixed as V2 grows: they are what a
+regression is measured against. From Phase 1 on, `pytest` reports more — 877
+passed = these 460 plus 417 in `tests/test_v2_*.py` — and `mypy` still reports 22
+errors in 15 files because a bare run checks `pipeline`, `server` and `dashboard`
+only. `mypy backend` is a separate, and clean, check (see pyproject.toml).
+
 No check contacts a job board or an LLM provider: every source adapter test reads
 a file from `tests/fixtures/`, and the copilot tests inject a fake subprocess or
 an `httpx.MockTransport`.

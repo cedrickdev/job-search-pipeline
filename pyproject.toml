@@ -15,6 +15,11 @@ dependencies = [
     "python-dotenv>=1.0",
     "sse-starlette>=2.1",
     "python-multipart>=0.0.9",
+    # Declared in its own right from Phase 1 on: the V2 domain is built out of
+    # pydantic v2 models and must not depend on FastAPI dragging pydantic in.
+    # v2 specifically — `ConfigDict`, `model_validator` and `Annotated`
+    # constraints are what the typed contracts are made of.
+    "pydantic>=2.7",
 ]
 
 [project.optional-dependencies]
@@ -37,7 +42,13 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["pipeline", "pipeline.sources", "pipeline.apply", "dashboard", "server", "server.routes"]
+# `backend*` joins the V1 packages rather than replacing them: V1 keeps shipping
+# exactly as it did (docs/IMPLEMENTATION_PLAN.md Phase 1 preserves V1), and the
+# V2 packages are listed explicitly because this project does not use automatic
+# discovery — an unlisted package would import fine from a source checkout and
+# then be missing from an installed wheel.
+packages = ["pipeline", "pipeline.sources", "pipeline.apply", "dashboard", "server", "server.routes",
+            "backend", "backend.app", "backend.app.domain", "backend.app.compat"]
 
 # --------------------------------------------------------------------------
 # Ruff (Phase 0). The full rule set below applies to EVERY Python file. V1
@@ -107,16 +118,21 @@ extend-immutable-calls = [
 # mypy (Phase 0). Two tiers, as the plan requires: V1 modules are checked
 # leniently so no rewrite is forced, while V2 packages get the strict flag set
 # spelled out (mypy's `strict` shorthand is global-only, so it cannot be applied
-# through an override). `files` lists only directories that exist today;
-# Phase 1 adds "backend" when it creates backend/app.
+# through an override).
+#
+# `files` stays V1-only, deliberately, now that backend/ exists (Phase 1).
+# .github/workflows/ci.yml runs two steps: a bare `mypy`, whose error count is
+# compared against BASELINE=22, and a separate `mypy backend country_packs` that
+# must be clean. Adding "backend" here would fold V2 errors into the V1 count and
+# a future V2 regression would be reported as a V1 baseline drift. Run
+# `mypy backend` (or the CI step) to check V2.
 # --------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.12"
 files = ["pipeline", "server", "dashboard"]
 ignore_missing_imports = true
-# Off because the backend.*/country_packs.* override below is a deliberate
-# forward declaration: those packages arrive in Phase 1, and until then
-# warn_unused_configs would print an "unused section" warning on every run.
+# Off because a bare `mypy` run checks V1 only (see above) and would otherwise
+# report the backend.*/country_packs.* override as an unused section on every run.
 warn_unused_configs = false
 # Left OFF globally on purpose: turning either on would flag most V1 functions
 # and amount to demanding the rewrite Phase 0 forbids.

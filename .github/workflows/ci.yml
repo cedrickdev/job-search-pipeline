@@ -1,0 +1,107 @@
+# CI added in Phase 0. Three properties must stay true here:
+#   1. no step contacts a live job board or a live LLM provider
+#      (docs/ENGINEERING_STANDARDS.md) — every adapter test reads a fixture;
+#   2. the V1 type baseline is measured and regression-gated, not enforced, so
+#      legacy modules are never forced into a rewrite;
+#   3. the whole suite runs from a clean checkout with nothing deselected and no
+#      private data materialized. The CV library the tests need is the tracked
+#      synthetic tests/fixtures/base_cv.yaml — see docs/V1_BASELINE.md §9.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Nothing here deploys or writes, so no ambient write credentials.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # WeasyPrint renders the CV PDFs whose page count and fill ratio the tests
+      # assert on; it loads the Pango stack at import time and needs a font.
+      - name: Install WeasyPrint system libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b \
+            libfontconfig1 fonts-dejavu-core
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Lint (Ruff)
+        run: ruff check .
+
+      - name: Type-check V2 packages (strict)
+        run: |
+          targets=""
+          for d in backend country_packs; do
+            if [ -d "$d" ]; then targets="${targets} ${d}"; fi
+          done
+          if [ -z "${targets}" ]; then
+            echo "No V2 package yet — Phase 1 creates backend/app. Nothing to check."
+            exit 0
+          fi
+          mypy ${targets}
+
+      # Measured, not enforced: the count is allowed to fall, never to rise.
+      # That separates legacy debt from a new failure without demanding that V1
+      # be re-annotated first (Phase 0 acceptance).
+      - name: Type-check V1 modules (regression-gated baseline)
+        env:
+          BASELINE: "22"
+        run: |
+          mypy > mypy-v1.log 2>&1 || true
+          cat mypy-v1.log
+          count=$(grep -c ': error:' mypy-v1.log || true)
+          echo "V1 mypy errors: ${count} (documented baseline: ${BASELINE})"
+          if [ "${count}" -gt "${BASELINE}" ]; then
+            echo "::error::V1 type errors rose above the baseline in docs/V1_BASELINE.md"
+            exit 1
+          fi
+
+      # No CV profile is materialized: tests/conftest.py resolves the base CV
+      # library to the tracked synthetic tests/fixtures/base_cv.yaml, so the
+      # operator's gitignored cv/base_cv.yaml is neither needed nor consulted.
+      - name: Tests (pytest)
+        run: python -m pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - run: npm ci
+
+      - run: npm test
+
+      # `build` is `tsc --noEmit && vite build`, so this is the TS check too.
+      - run: npm run build

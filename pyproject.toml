@@ -18,7 +18,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "httpx>=0.27"]
+# Quality tools are pinned exactly, not ranged: a lint/type baseline is only
+# reproducible (Phase 0 acceptance) if CI and the dev machine run the same
+# analyzer build. Bump them deliberately, in their own change.
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "ruff==0.14.6",
+    "mypy==1.19.0",
+    "types-PyYAML==6.0.12.20250915",  # yaml is read by 7 pipeline modules
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -29,3 +38,102 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["pipeline", "pipeline.sources", "pipeline.apply", "dashboard", "server", "server.routes"]
+
+# --------------------------------------------------------------------------
+# Ruff (Phase 0). The full rule set below applies to EVERY Python file. V1
+# directories predate the linter, so their existing violations are listed
+# per-directory in [tool.ruff.lint.per-file-ignores] with counts recorded in
+# docs/V1_BASELINE.md. That keeps `ruff check` green today while holding new V2
+# code (backend/app, country_packs) to the undiluted set: a legacy directory can
+# only regress in ways it already regresses, and nothing new can.
+# The formatter is deliberately NOT enabled yet — running it would rewrite the
+# whole V1 tree, which Phase 0 forbids.
+# --------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100          # the width V1 was already written to
+target-version = "py312"   # matches requires-python, not the local interpreter
+extend-exclude = ["webapp", "data", "out", "cv/output"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import sorting
+    "UP",       # pyupgrade (keeps 3.12+ syntax)
+    "B",        # bugbear
+    "C4",       # comprehensions
+    "ASYNC",    # async correctness (this codebase streams subprocesses + httpx)
+    "RUF100",   # no stale noqa
+    # Security subset kept narrow on purpose: hardcoded credentials and SQL
+    # built by string concatenation are the two ENGINEERING_STANDARDS rules a
+    # linter can actually enforce. The rest of flake8-bandit is noise here.
+    "S105", "S106", "S107", "S608",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency markers are calls in default arguments by design; B008
+# would fire on every route signature.
+extend-immutable-calls = [
+    "fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Body",
+    "fastapi.Header", "fastapi.Form", "fastapi.File",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# V1 baseline — see docs/V1_BASELINE.md §Lint baseline for per-rule counts.
+"pipeline/**" = [
+    "E501", "E702",              # long lines / semicolons
+    "I001", "F401", "F841",      # import order, unused imports and locals
+    "UP017", "UP024", "UP037",   # datetime.UTC, OSError aliases, quoted annotations
+    "B904", "B905",              # raise-from, zip(strict=)
+    "C420", "RUF100",
+    "ASYNC109",                  # own `timeout=` params instead of asyncio.timeout
+    "S105", "S608",              # reviewed: an env-var NAME, and whitelisted column lists
+]
+"server/**" = [
+    "E501",
+    "I001", "F401",
+    "UP017", "UP035", "UP041", "UP045",
+    "B904",
+    "ASYNC109",
+    "S608",                      # reviewed: column names from fixed whitelists
+]
+"scripts/**" = ["E501", "I001", "F401", "F541", "F841", "B905"]
+"tests/**" = [
+    "E501", "I001", "F401", "F841",
+    "B007", "B011", "B017",      # `assert False` / broad pytest.raises in tests
+]
+
+# --------------------------------------------------------------------------
+# mypy (Phase 0). Two tiers, as the plan requires: V1 modules are checked
+# leniently so no rewrite is forced, while V2 packages get the strict flag set
+# spelled out (mypy's `strict` shorthand is global-only, so it cannot be applied
+# through an override). `files` lists only directories that exist today;
+# Phase 1 adds "backend" when it creates backend/app.
+# --------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["pipeline", "server", "dashboard"]
+ignore_missing_imports = true
+# Off because the backend.*/country_packs.* override below is a deliberate
+# forward declaration: those packages arrive in Phase 1, and until then
+# warn_unused_configs would print an "unused section" warning on every run.
+warn_unused_configs = false
+# Left OFF globally on purpose: turning either on would flag most V1 functions
+# and amount to demanding the rewrite Phase 0 forbids.
+disallow_untyped_defs = false
+check_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["backend.*", "country_packs.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_subclassing_any = true
+disallow_any_generics = true
+check_untyped_defs = true
+no_implicit_reexport = true
+warn_return_any = true
+warn_unused_ignores = true
+strict_equality = true
+extra_checks = true

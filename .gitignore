@@ -51,6 +51,8 @@ __pycache__/
 *.pyc
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 webapp/node_modules/
 webapp/dist/
 webapp/playwright-report/

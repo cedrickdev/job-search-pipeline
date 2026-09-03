@@ -6,6 +6,11 @@ DATA_DIR = ROOT / "data"
 BACKUP_DIR = DATA_DIR / "backups"
 DB_PATH = DATA_DIR / "tracker.db"
 CV_DIR = ROOT / "cv"
+# The operator's own CV library. Gitignored (real personal data), so it does not
+# exist in a clean clone: the test suite points this constant at the synthetic
+# tests/fixtures/base_cv.yaml instead. Read through pipeline.paths at call time,
+# never captured at import, so that redirection works.
+BASE_CV_PATH = CV_DIR / "base_cv.yaml"
 CV_VERSIONS_DIR = ROOT / "cv_versions"
 EXPORT_DIR = ROOT / "Rechercher d’emploi"  # apostrophe is U+2019
 EXPORT_PATH = EXPORT_DIR / "Job_Search_Tracker.xlsx"

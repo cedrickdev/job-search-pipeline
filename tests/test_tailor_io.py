@@ -1,10 +1,11 @@
 """Tests for pipeline.tailor_io — the five deterministic tailoring gates.
 
-The truth-gate tests run against a synthetic base library (the `base` fixture)
-rather than the live cv/base_cv.yaml: they are about `truth_violations` logic,
-not about whichever profile is currently onboarded. Only the `generate` tests
-touch the real CV, because they render actual PDFs, and they assert on values
-derived from that CV instead of hardcoding its content.
+The truth-gate tests run against a small inline library (the `base` fixture)
+rather than the loaded profile: they are about `truth_violations` logic, not
+about whichever profile is currently onboarded. The `generate` tests do load the
+profile, because they render actual PDFs and assert on the fill ratio — and
+conftest.py points that load at the synthetic tests/fixtures/base_cv.yaml, so
+they assert the same thing in a clean clone as on the operator's machine.
 """
 import copy
 from collections import Counter
@@ -211,7 +212,7 @@ def test_numeric_tokens_is_a_multiset():
     assert numeric_tokens("3 tests of 3 variants") == Counter({"3": 2})
 
 
-# --- generate(): renders the live profile's CV, so expectations are derived ---
+# --- generate(): renders the loaded profile's CV, so expectations are derived -
 
 def _seed(conn):
     job_id, _ = insert_job(conn, {"source": "wtj", "company": "Acme Corp",
@@ -222,7 +223,7 @@ def _seed(conn):
 
 
 def _live_tailored():
-    """The live base library, unchanged: a verbatim selection always passes."""
+    """The loaded base library, unchanged: a verbatim selection always passes."""
     return copy.deepcopy(load_base_cv())
 
 

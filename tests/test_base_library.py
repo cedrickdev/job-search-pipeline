@@ -1,9 +1,13 @@
 # tests/test_base_library.py
-"""Sanity gates on the live cv/base_cv.yaml.
+"""Sanity gates on the base CV library.
 
 Assertions here must hold for ANY onboarded profile: this file used to pin the
 bullet count of the profile the repo shipped with, so it failed the moment a new
 user's CV replaced it.
+
+They run against the synthetic tests/fixtures/base_cv.yaml, which conftest.py
+substitutes for the operator's gitignored cv/base_cv.yaml, so a clean clone
+reports the same verdict as a machine with a real profile onboarded.
 """
 from pipeline.cv_render import load_base_cv
 from pipeline.glossary import cv_text, glossary_violations, load_glossary

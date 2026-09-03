@@ -1,7 +1,30 @@
 import sqlite3
+from pathlib import Path
+
 import pytest
 
+from pipeline import paths
 from pipeline.db import connect, init_db
+
+# A tracked, fully synthetic CV library. The real one (cv/base_cv.yaml) carries
+# the operator's identity, is gitignored, and is therefore absent from a clean
+# clone — 31 tests used to fail there with FileNotFoundError, and the six that
+# assert on the profile's DENSITY could not be satisfied by the sparse
+# cv/base_cv.template.yaml either. See docs/V1_BASELINE.md §9.
+BASE_CV_FIXTURE = Path(__file__).parent / "fixtures" / "base_cv.yaml"
+
+
+@pytest.fixture(autouse=True)
+def synthetic_base_cv(monkeypatch):
+    """Point every test at the synthetic CV library, never the operator's.
+
+    Autouse and unconditional on purpose: if it fell back to the real profile
+    when present, the suite would assert different things on a developer's
+    machine than in CI, which is the reproducibility bug this closes. To check
+    a freshly onboarded real profile instead, run `python -m pipeline.cv_render`
+    (prints pages and fill for cv/base_cv.yaml in both languages).
+    """
+    monkeypatch.setattr(paths, "BASE_CV_PATH", BASE_CV_FIXTURE)
 
 
 @pytest.fixture

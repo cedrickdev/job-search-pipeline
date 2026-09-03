@@ -1,8 +1,8 @@
 """Tests for pipeline.gap_analysis — JD keyword coverage scoring.
 
 Hermetic: every test passes its own base CV and term universe. These used to
-run against the live cv/base_cv.yaml and cv/glossary.yaml, so re-onboarding a
-new profile silently rewrote what they asserted.
+run against the operator's own cv/base_cv.yaml and cv/glossary.yaml, so
+re-onboarding a new profile silently rewrote what they asserted.
 """
 import pytest
 
@@ -117,9 +117,11 @@ def test_matched_plus_missing_equals_required(base):
 
 
 def test_analyse_defaults_to_the_live_profile():
-    """Smoke test on the real cv/base_cv.yaml + cv/keywords.yaml: the term
-    universe must not be empty, which is what made every report GREEN before
-    gap analysis stopped borrowing the translation glossary."""
+    """Smoke test on the default wiring (loaded base CV + cv/keywords.yaml):
+    the term universe must not be empty, which is what made every report GREEN
+    before gap analysis stopped borrowing the translation glossary. conftest.py
+    resolves the base CV to tests/fixtures/base_cv.yaml, so this holds in a
+    clean clone too."""
     report = analyse("Encaissement en caisse et service en salle.")
     assert report.required_keywords
     assert report.risk_tier in ("GREEN", "YELLOW", "RED")

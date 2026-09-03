@@ -21,7 +21,14 @@ _PDF_FAKE_DATE = "2026-05-19"
 
 
 def load_base_cv() -> dict:
-    return yaml.safe_load((paths.CV_DIR / "base_cv.yaml").read_text())
+    """The CV library to tailor from.
+
+    Reads `paths.BASE_CV_PATH` on every call rather than a module-level
+    constant: production resolves to the operator's gitignored
+    cv/base_cv.yaml, while the test suite redirects the same attribute to a
+    tracked synthetic fixture (tests/conftest.py).
+    """
+    return yaml.safe_load(paths.BASE_CV_PATH.read_text())
 
 
 def _loc_factory(lang: str):

@@ -1,0 +1,157 @@
+# Synthetic base CV library — TEST FIXTURE ONLY.
+#
+# Every value here is invented. There is no real person, employer, school,
+# phone number or address in this file: `example.test` is an RFC 2606 reserved
+# domain and the phone number is all zeros. Production loads the operator's own
+# gitignored cv/base_cv.yaml instead (pipeline.paths.BASE_CV_PATH); the test
+# suite redirects that constant here so a clean clone can run every test.
+#
+# It is deliberately DENSE: tests/test_cv_render.py asserts that the base
+# library fills more than 92% of one A4 page in both languages, that trimming
+# it to one bullet per job drops below that floor, and that 15 long priority-3
+# filler bullets are dropped before any priority-1 bullet. Read
+# docs/V1_BASELINE.md §9 before editing, then re-check with
+# `python -m pipeline.cv_render`.
+#
+# Two properties keep the numbers identical on macOS (Helvetica) and on CI
+# (DejaVu, the only font Ubuntu's fonts-dejavu-core provides):
+#   1. cv/style.css sets a unitless `line-height: 1.45`, so every block's
+#      height is a multiple of the font SIZE, never of its metrics;
+#   2. therefore only a different line COUNT can move the fill, so no line of
+#      text here may come close to filling its width. Keep bullets under ~70
+#      characters in both languages.
+
+contact:
+  name: Test Candidate
+  title: { en: Retail and IT Support Assistant, fr: Assistant vente et support }
+  phone: "+41 00 000 00 00"
+  email: test.candidate@example.test
+  location: { en: "Example City", fr: "Ville-Exemple" }
+
+summary:
+  en: >-
+    Retail and service assistant with four seasons behind a till, plus
+    first-line IT support for a small office network.
+  fr: >-
+    Assistant vente et service avec quatre saisons en caisse, et du
+    support informatique de premier niveau pour un petit réseau.
+
+experience:
+  - id: acme-retail
+    company: Acme Retail
+    title: { en: Sales Assistant, fr: Vendeur }
+    start: "2023-06"
+    end: present
+    bullets:
+      - id: acme-checkout
+        priority: 1
+        tags: [service, encaissement]
+        en: Handled the checkout and the cash count of a busy store.
+        fr: Tenu la caisse et le comptage des espèces d'un magasin actif.
+      - id: acme-shelves
+        priority: 1
+        tags: [retail]
+        en: Filled the shelves and kept the labels correct before opening.
+        fr: Rempli les rayons et vérifié l'étiquetage avant l'ouverture.
+      - id: acme-advice
+        priority: 2
+        tags: [service]
+        en: Advised customers on stock and pointed them to the right aisle.
+        fr: Conseillé les clients sur le stock et orienté vers le bon rayon.
+      - id: acme-inventory
+        priority: 2
+        tags: [retail]
+        en: Ran the monthly inventory count with the shift team.
+        fr: Réalisé l'inventaire mensuel avec l'équipe du soir.
+      - id: acme-deliveries
+        priority: 2
+        tags: [logistics]
+        en: Unloaded deliveries and sorted the goods into the stockroom.
+        fr: Déchargé les livraisons et trié la marchandise en réserve.
+      - id: acme-training
+        priority: 2
+        tags: [service]
+        en: Showed seasonal staff how the till and the scanner work.
+        fr: Montré aux saisonniers le fonctionnement de la caisse.
+
+  - id: globex-logistics
+    company: Globex Logistics
+    title: { en: Warehouse Helper, fr: Aide-magasinier }
+    start: "2022-07"
+    end: "2023-05"
+    bullets:
+      - id: globex-orders
+        priority: 1
+        tags: [logistics]
+        en: Prepared customer orders for the evening delivery round.
+        fr: Préparé les commandes clients pour la tournée du soir.
+      - id: globex-forklift
+        priority: 2
+        tags: [logistics, cariste]
+        en: Moved pallets with a forklift after the licence course.
+        fr: Déplacé des palettes au chariot après la formation cariste.
+      - id: globex-stock
+        priority: 2
+        tags: [retail]
+        en: Checked stock levels and flagged the gaps to the team lead.
+        fr: Contrôlé les niveaux de stock et signalé les manques.
+      - id: globex-hygiene
+        priority: 2
+        tags: [certifications]
+        en: Kept the cold chain records that food hygiene rules ask for.
+        fr: Tenu les relevés de chaîne du froid exigés par l'hygiène.
+      - id: globex-weekend
+        priority: 2
+        tags: [availability]
+        en: Worked weekend and holiday shifts through the peak season.
+        fr: Travaillé les week-ends et jours fériés en haute saison.
+
+  - id: initech-services
+    company: Initech Services
+    title: { en: IT Support Trainee, fr: Stagiaire support }
+    start: "2021-09"
+    end: "2022-06"
+    bullets:
+      - id: initech-helpdesk
+        priority: 1
+        tags: [tech, helpdesk]
+        en: Answered helpdesk calls and logged each ticket the same day.
+        fr: Répondu aux appels helpdesk et saisi chaque ticket le jour même.
+      - id: initech-network
+        priority: 2
+        tags: [tech]
+        en: Set up workstations and checked the office network links.
+        fr: Installé des postes et vérifié les liens du réseau de bureau.
+      - id: initech-scripts
+        priority: 2
+        tags: [tech]
+        en: Wrote small scripts to export reports from the database.
+        fr: Écrit de petits scripts pour exporter des rapports.
+      - id: initech-wiki
+        priority: 3
+        tags: [tech]
+        en: Kept the internal wiki pages for the most common fixes.
+        fr: Maintenu les pages du wiki interne pour les cas courants.
+
+skills:
+  - group: { en: Service and Retail, fr: Service et vente }
+    items: [encaissement, mise en rayon, inventaire, accueil]
+  - group: { en: IT Support, fr: Informatique }
+    items: [Windows, Linux, DNS, Git, Excel]
+  - group: { en: Web Basics, fr: Bases web }
+    items: [HTML, CSS, SQL, REST, API, JavaScript]
+
+education:
+  - degree: { en: VET Diploma in Commerce, fr: Diplôme de commerce }
+    school: Example School
+    location: { en: "Example City", fr: "Ville-Exemple" }
+    years: "2018-2021"
+  - degree: { en: IT Support Certificate, fr: Certificat de support }
+    school: Example Academy
+    location: { en: "Online", fr: "En ligne" }
+    years: "2022"
+
+languages:
+  - { name: { en: French, fr: Français }, level: { en: Native, fr: Natif } }
+  - { name: { en: English, fr: Anglais }, level: { en: Fluent, fr: Courant } }
+  - { name: { en: German, fr: Allemand }, level: { en: Basic, fr: Notions } }

@@ -24,6 +24,7 @@ asserts that column-by-column.
 import re
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, tzinfo
+from enum import StrEnum
 from typing import Any, Final
 from uuid import UUID, uuid5
 
@@ -39,6 +40,23 @@ from backend.app.domain.opportunity import (
 )
 
 
+class V1MappingErrorCode(StrEnum):
+    """Why a V1 row could not be mapped, in a form a report can count.
+
+    Added for Phase 2's importer: a migration over thousands of rows has to say
+    *what* was wrong with the 12 it skipped, and grouping on a message that
+    embeds an id and a value groups nothing. The message stays for a human; the
+    code is for the report (docs/PERSISTENCE.md §Import).
+    """
+
+    ID_INVALID = "V1_ID_INVALID"
+    REQUIRED_COLUMN_MISSING = "V1_REQUIRED_COLUMN_MISSING"
+    DISCOVERED_DATE_INVALID = "V1_DISCOVERED_DATE_INVALID"
+    SCORE_OUT_OF_RANGE = "V1_SCORE_OUT_OF_RANGE"
+    # For a subclass or a caller that raises without classifying.
+    UNSPECIFIED = "V1_MAPPING_FAILED"
+
+
 class V1MappingError(ValueError):
     """A V1 row cannot be represented as an `Opportunity`.
 
@@ -46,7 +64,15 @@ class V1MappingError(ValueError):
     `title`, `discovered_date`). Unparseable *descriptive* values never raise:
     they stay in `source.raw` and leave the typed field unset, because dropping
     one malformed date must not cost the whole posting.
+
+    `code` is keyword-only and defaulted, so it is additive: `raise
+    V1MappingError("...")` still works and still reads as a `ValueError`.
     """
+
+    def __init__(self, message: str, *,
+                 code: V1MappingErrorCode = V1MappingErrorCode.UNSPECIFIED) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 # The V1 `jobs` columns this mapper knows about (pipeline/db.py `SCHEMA`).
@@ -132,7 +158,8 @@ def v1_score_to_unit_interval(score: int) -> Score:
     range means the row is corrupt and is worth failing on rather than clamping.
     """
     if not 0 <= score <= 100:
-        raise V1MappingError(f"V1 score {score} is outside the 0-100 range")
+        raise V1MappingError(f"V1 score {score} is outside the 0-100 range",
+                             code=V1MappingErrorCode.SCORE_OUT_OF_RANGE)
     return score / 100.0
 
 
@@ -157,7 +184,9 @@ def _text(row: Mapping[str, Any], column: str) -> str | None:
 def _required_text(row: Mapping[str, Any], column: str) -> str:
     text = _text(row, column)
     if text is None:
-        raise V1MappingError(f"V1 jobs row is missing required column {column!r}")
+        raise V1MappingError(
+            f"V1 jobs row is missing required column {column!r}",
+            code=V1MappingErrorCode.REQUIRED_COLUMN_MISSING)
     return text
 
 
@@ -203,14 +232,16 @@ def opportunity_from_v1_job(row: Mapping[str, Any], *,
         # legitimate input, and `sqlite3` itself returns an `int` here.
         job_id = int(str(row["id"]).strip())
     except (KeyError, TypeError, ValueError) as exc:
-        raise V1MappingError(f"V1 jobs row has no usable integer id: {exc}") from exc
+        raise V1MappingError(f"V1 jobs row has no usable integer id: {exc}",
+                             code=V1MappingErrorCode.ID_INVALID) from exc
 
     discovered_text = _required_text(row, "discovered_date")
     discovered_at = _parse_instant(discovered_text, default_timezone)
     if discovered_at is None:
         raise V1MappingError(
             f"V1 jobs row {job_id} has an unparseable discovered_date: "
-            f"{discovered_text!r}")
+            f"{discovered_text!r}",
+            code=V1MappingErrorCode.DISCOVERED_DATE_INVALID)
 
     url = _text(row, "url")
     # Anything that is not http(s) — a `mailto:` or a scraped fragment — is left

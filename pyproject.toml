@@ -20,6 +20,17 @@ dependencies = [
     # v2 specifically — `ConfigDict`, `model_validator` and `Annotated`
     # constraints are what the typed contracts are made of.
     "pydantic>=2.7",
+    # --- Phase 2: V2 persistence -------------------------------------------
+    # `[asyncio]` pulls greenlet, which `create_async_engine` needs. The V2
+    # repositories are async because the API and the workers that will call them
+    # are (docs/ARCHITECTURE.md §1, §6); Alembic runs the same URL synchronously.
+    "sqlalchemy[asyncio]>=2.0.30",
+    "alembic>=1.13",
+    # psycopg 3, not asyncpg: one driver serves both the async engine
+    # (`postgresql+psycopg`) and Alembic's sync engine, so there is a single URL
+    # and a single wire implementation to reason about. `[binary]` ships libpq in
+    # the wheel, so no system PostgreSQL client is required to run the tests.
+    "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +40,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
+    # Phase 2's repository tests are coroutines. Strict mode below keeps every
+    # V1 test running exactly as before: only functions marked `asyncio` change.
+    "pytest-asyncio>=1.2",
     "ruff==0.14.6",
     "mypy==1.19.0",
     "types-PyYAML==6.0.12.20250915",  # yaml is read by 7 pipeline modules
@@ -36,6 +50,12 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Explicit rather than defaulted: `strict` means an async test without the
+# `asyncio` marker is an error instead of a silently skipped coroutine, and
+# pinning the fixture loop scope keeps a pytest-asyncio default change from
+# quietly altering how the database fixtures are torn down.
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -48,7 +68,10 @@ build-backend = "setuptools.build_meta"
 # discovery — an unlisted package would import fine from a source checkout and
 # then be missing from an installed wheel.
 packages = ["pipeline", "pipeline.sources", "pipeline.apply", "dashboard", "server", "server.routes",
-            "backend", "backend.app", "backend.app.domain", "backend.app.compat"]
+            "backend", "backend.app", "backend.app.domain", "backend.app.compat",
+            "backend.app.core", "backend.app.infrastructure",
+            "backend.app.infrastructure.database", "backend.app.repositories",
+            "backend.app.cli"]
 
 # --------------------------------------------------------------------------
 # Ruff (Phase 0). The full rule set below applies to EVERY Python file. V1

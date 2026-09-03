@@ -177,9 +177,50 @@ def test_no_domain_module_prints_reads_or_evaluates_anything(module):
 COMPAT_MODULES = tuple(sorted(path.stem for path in COMPAT_DIR.glob("*.py")
                               if path.stem != "__init__"))
 
+# The compatibility layer holds two kinds of module, and they do not get the same
+# rule. A *mapping* module turns a `Mapping` into a domain object and must stay
+# usable with no database at all. A *reader* module is the run that feeds it, so
+# opening V1's SQLite file is precisely its job.
+#
+# Listed by name rather than derived, and the exhaustiveness test below is what
+# makes a third module a decision someone took instead of a gap nobody noticed.
+V1_MAPPING_MODULES = ("v1_jobs",)
+V1_READER_MODULES = ("v1_import",)
 
-@pytest.mark.parametrize("module", COMPAT_MODULES)
-def test_the_compatibility_layer_reads_v1_data_not_v1_code(module):
+# What a reader may add to the mapping rule: V1's own storage driver, and the two
+# SQLAlchemy exception types it classifies a refused row by.
+READER_EXTRA_ROOTS = frozenset({"sqlite3", "sqlalchemy"})
+
+# And what it still may not touch. `sqlalchemy.orm` is the one worth naming: the
+# importer takes a repository Protocol and a savepoint factory, so a module here
+# that could open a session or build a query would be an infrastructure module
+# filed in the wrong directory.
+READER_FORBIDDEN_MODULES = ("sqlalchemy.orm", "sqlalchemy.ext.asyncio",
+                            "sqlalchemy.future", "sqlalchemy.sql")
+
+
+def _imported_modules(path):
+    """Every import in one file, by full dotted name."""
+    modules = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            modules |= {alias.name for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            modules.add(node.module or "")
+    return modules
+
+
+def test_every_compatibility_module_is_classified():
+    """A new file in `compat/` picks a rule, or this fails.
+
+    Without this, adding `v1_applications.py` would silently inherit whichever of
+    the two tests below happened to be parametrized loosely.
+    """
+    assert COMPAT_MODULES == tuple(sorted(V1_MAPPING_MODULES + V1_READER_MODULES))
+
+
+@pytest.mark.parametrize("module", V1_MAPPING_MODULES)
+def test_the_mapping_layer_reads_v1_data_not_v1_code(module):
     """`opportunity_from_v1_job` takes a `Mapping`, so V1 needs no change to be read.
 
     Importing `pipeline` or `sqlite3` here would couple V2 to V1's storage and
@@ -189,6 +230,28 @@ def test_the_compatibility_layer_reads_v1_data_not_v1_code(module):
     roots = _import_roots(COMPAT_DIR / f"{module}.py")
     assert roots & FORBIDDEN_ROOTS == set()
     assert roots <= ALLOWED_ROOTS, f"{module} imports {sorted(roots - ALLOWED_ROOTS)}"
+
+
+@pytest.mark.parametrize("module", V1_READER_MODULES)
+def test_the_v1_reader_opens_sqlite_and_still_not_v1_code(module):
+    """The importer reads V1's *file*; it must not import V1's *code*.
+
+    `sqlite3` is how a V1 database is opened read-only, and `sqlalchemy.exc` is
+    how a refused row is told apart from an unreachable database. Everything else
+    on the list stays forbidden — above all `pipeline`, since needing V1's own
+    modules to read V1's data is what would make this a fork of V1 rather than a
+    migration away from it.
+    """
+    path = COMPAT_DIR / f"{module}.py"
+    roots = _import_roots(path)
+    reached = roots & (FORBIDDEN_ROOTS - READER_EXTRA_ROOTS)
+    assert reached == set(), f"{module} imports {sorted(reached)}"
+    assert roots <= ALLOWED_ROOTS | READER_EXTRA_ROOTS, \
+        f"{module} imports {sorted(roots - ALLOWED_ROOTS - READER_EXTRA_ROOTS)}"
+    imported = _imported_modules(path)
+    for forbidden in READER_FORBIDDEN_MODULES:
+        assert not any(name == forbidden or name.startswith(f"{forbidden}.")
+                       for name in imported), f"{module} imports {forbidden}"
 
 
 def test_nothing_forbidden_is_pulled_in_transitively():

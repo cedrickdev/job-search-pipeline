@@ -1,0 +1,61 @@
+# What must never reach a build context, and what simply has no business in an
+# image. The first group is the security boundary: `docker build` sends the
+# context to the daemon and every COPY layer is readable by anyone who can pull
+# the image, so a `.env` excluded here is a `.env` that cannot leak
+# (docs/ENGINEERING_STANDARDS.md §Security).
+
+# --- Secrets and personal data ----------------------------------------------
+# V1's real API credentials, and `.env.example` with them since the image needs
+# neither: configuration arrives as environment variables from the composition.
+.env
+.env.*
+
+# Job-board logins, browser sessions, the SQLite tracker, answers.yaml (name,
+# address, date of birth). The importer reads the tracker through a read-only
+# bind mount at /data instead — nothing is baked in.
+data/
+
+# The CV library and every rendered PDF carry full contact details.
+cv/
+cv_versions/
+*.pdf
+
+# The Excel tracker (folder name uses U+2019).
+Rechercher d’emploi/
+
+# Agent and IDE configuration, including local API keys.
+.agents/
+.claude/
+.codex/
+
+# --- Not needed at runtime ---------------------------------------------------
+# History, and a large context to send for nothing.
+.git/
+.github/
+.gitignore
+
+# A host virtualenv holds macOS binaries that cannot run in a Linux image, and
+# copying it would shadow the site-packages `pip install -e .` creates.
+.venv/
+
+# The V1 React application and its node_modules; the Nuxt frontend will get an
+# image of its own when Phase 8 arrives.
+webapp/
+
+# Runs on the host and on CI against the exposed port, and the image installs no
+# dev extras, so a copy here could not be executed anyway.
+tests/
+
+# --- Caches and build output -------------------------------------------------
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.firecrawl/
+.playwright-mcp/
+out/
+
+# --- OS noise ---------------------------------------------------------------
+.DS_Store

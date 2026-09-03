@@ -1,0 +1,99 @@
+# Development composition for the V2 persistence foundation.
+#
+# Phase 2 needs exactly one long-running service — the database — plus two
+# one-shot commands that must run in the same environment as the application
+# (docs/IMPLEMENTATION_PLAN.md Phase 2). Redis, the background worker, the
+# Playwright browser worker and the Nuxt frontend are Phase 8+ services and are
+# deliberately absent rather than declared and disabled: an inert service still
+# has to be maintained, and docs/ARCHITECTURE.md §13 already records the target
+# composition.
+#
+#   docker compose up -d postgres                     start the database
+#   docker compose run --rm migrate                   alembic upgrade head
+#   docker compose run --rm import-v1 --help          V1 SQLite import
+#
+# The `tools` profile keeps the two one-shot services out of `docker compose up`,
+# so starting the database never runs a migration as a side effect.
+#
+# No service reads `.env`. Compose interpolates it into the values below, which is
+# how a developer overrides the port or the password, but nothing here mounts it
+# or passes it through: `.env` holds V1's real API credentials and none of them
+# belong in a database container (docs/ENGINEERING_STANDARDS.md §Security).
+
+name: jobsearch
+
+services:
+  postgres:
+    # PostGIS on top of PostgreSQL 17. Pinned to a minor line rather than
+    # `latest`: the extension version decides what `ST_AsEWKT` prints, and
+    # round-tripping coordinates exactly is something the tests assert.
+    #
+    # `imresamu/postgis` rather than `postgis/postgis`: the official repository
+    # publishes amd64 only, so on an arm64 machine it fails with "no matching
+    # manifest" (or runs under emulation). This is the multi-arch build of the
+    # same `postgis/docker-postgis` sources by the same maintainer — same
+    # entrypoint, same `POSTGRES_*` variables, same `docker-entrypoint-initdb.d`
+    # contract. One tag for developers and for CI keeps the two identical.
+    image: imresamu/postgis:17-3.5
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jobsearch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jobsearch_dev_only}
+      POSTGRES_DB: ${POSTGRES_DB:-jobsearch_dev}
+      # Created by the init script below so the test suite has a database of its
+      # own and can never drop the one holding imported V1 data.
+      POSTGRES_TEST_DB: ${POSTGRES_TEST_DB:-jobsearch_test}
+    ports:
+      # Bound to the loopback interface and to a non-default port: the database is
+      # reachable from this machine only, and a developer's own PostgreSQL on 5432
+      # is left completely alone — including by the tests, which default to 55432.
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Runs once, when the data directory is first initialized.
+      - ./docker/postgres/init-test-database.sh:/docker-entrypoint-initdb.d/10-test-database.sh:ro
+    healthcheck:
+      # `pg_isready` against the real database, not just the port: the image
+      # restarts PostgreSQL part-way through first-time initialization, so a TCP
+      # check reports ready while the server is still about to go down again.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  migrate:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobsearch}:${POSTGRES_PASSWORD:-jobsearch_dev_only}@postgres:5432/${POSTGRES_DB:-jobsearch_dev}
+    command: ["alembic", "upgrade", "head"]
+
+  import-v1:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobsearch}:${POSTGRES_PASSWORD:-jobsearch_dev_only}@postgres:5432/${POSTGRES_DB:-jobsearch_dev}
+    volumes:
+      # Read-only, and the importer opens the file read-only as well. The V1
+      # tracker is the source of truth until V2 replaces it, and a migration tool
+      # that can write to its own input is one bug away from destroying it.
+      - ./data:/data:ro
+    entrypoint: ["python", "-m", "backend.app.cli.import_v1"]
+    command: ["--sqlite", "/data/tracker.db", "--on-error", "skip"]
+
+volumes:
+  postgres_data:
+    # Named, so `docker compose down` keeps the data and only
+    # `docker compose down -v` throws it away.
+    name: jobsearch_postgres_data

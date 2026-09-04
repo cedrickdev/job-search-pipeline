@@ -187,7 +187,7 @@ The V2 roadmap includes:
 | Backend | Python 3.12+, FastAPI |
 | Automation | Playwright |
 | Database | SQLite |
-| Frontend | React, TypeScript, Vite |
+| Frontend | Nuxt 4, Vue 3, TypeScript |
 | Data / configuration | YAML, JSON |
 | Testing | pytest, Vitest, Playwright |
 | AI | Claude workflows, OpenAI-compatible endpoints |
@@ -218,17 +218,17 @@ The V2 roadmap includes:
 ├── config/            # Search and application configuration
 ├── cv/                # CV templates, styles and keyword configuration
 ├── dashboard/         # Dashboard/query logic
+├── frontend/          # Nuxt 4 + Vue 3 frontend, served by FastAPI
 ├── pipeline/          # Discovery, scoring, tailoring and application engine
 ├── scripts/           # Utility and maintenance scripts
 ├── server/            # FastAPI application and routes
 ├── tests/             # Python test suite
-├── webapp/            # Current React + TypeScript frontend
 ├── INSTALL.md         # Detailed installation guide
 ├── START.md           # Startup instructions
 └── pyproject.toml      # Python package configuration
 ```
 
-As V2 progresses, the frontend will migrate to Nuxt 4 and the backend will gradually adopt clearer domain and infrastructure boundaries.
+The frontend migration to Nuxt 4 is done. As V2 progresses, the backend gradually adopts clearer domain and infrastructure boundaries.
 
 ## Getting started
 
@@ -265,8 +265,8 @@ On Windows, activate the environment with:
 ### 3. Install frontend dependencies
 
 ```bash
-cd webapp
-npm install
+cd frontend
+npm ci
 cd ..
 ```
 
@@ -317,14 +317,14 @@ pytest
 Frontend:
 
 ```bash
-cd webapp
+cd frontend
 npm test
 ```
 
 End-to-end tests:
 
 ```bash
-cd webapp
+cd frontend
 npm run e2e
 ```
 

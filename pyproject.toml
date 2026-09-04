@@ -93,7 +93,7 @@ packages = ["pipeline", "pipeline.sources", "pipeline.apply", "dashboard", "serv
 [tool.ruff]
 line-length = 100          # the width V1 was already written to
 target-version = "py312"   # matches requires-python, not the local interpreter
-extend-exclude = ["webapp", "data", "out", "cv/output"]
+extend-exclude = ["data", "out", "cv/output"]
 
 [tool.ruff.lint]
 select = [

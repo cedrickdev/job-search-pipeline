@@ -43,8 +43,8 @@ WORKDIR /app
 # The whole tree in one layer: the install is editable and `[tool.setuptools]`
 # lists the packages explicitly, so metadata generation needs the real
 # directories present. `.dockerignore` is what keeps `.env`, `data/`, `.venv` and
-# `webapp/` out of it — the build context, not this COPY, is the boundary that
-# keeps V1 credentials out of the image.
+# the frontend's node_modules out of it — the build context, not this COPY, is the
+# boundary that keeps V1 credentials out of the image.
 COPY . .
 
 # Editable, so the layout inside the container matches a source checkout and a

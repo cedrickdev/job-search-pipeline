@@ -4,7 +4,9 @@
 
 Job Search Pipeline V2 standardizes on Nuxt 4, Vue 3 and TypeScript.
 
-The current React + Vite frontend is migrated rather than extended with major V2 features.
+The Nuxt application in `frontend/` is the active frontend. Phase 3 migrated the React + Vite application to it for parity and then removed `webapp/`; the React tree survives only in git history, which is what the "ported from `webapp/src/...`" comments in `frontend/app/` refer to.
+
+The app is `ssr: false`. `nuxt generate` prerenders it into `frontend/.output/public`, and FastAPI serves that directory — one origin, one port, no Node process in production. `pipeline.paths.FRONTEND_DIST` is the constant, and `server/app.py::_mount_spa` is the mount.
 
 ## Stack
 
@@ -44,6 +46,8 @@ Prefer composables around FastAPI:
 
 Use `useFetch`, `useAsyncData` and `$fetch`.
 
+As built in Phase 3, the V1 surfaces share four generic composables rather than one per entity — `useApiQuery`, `useMutation`, `useQueries`, `useMutations` — because the V1 API is endpoint-shaped, not resource-shaped. The list above is the target for the V2 domain surfaces, which arrive with the phases that introduce them.
+
 ## State
 
 Pinia is for client/global state that benefits from explicit stores:
@@ -68,21 +72,15 @@ Use SSE first for LLM/chat/run progress because the V1 already follows this patt
 
 Use WebSocket only for workflows that truly require bidirectional low-latency communication.
 
-## Migration strategy
+## Migration (completed in Phase 3)
 
-Migrate for parity first, redesign second.
+Parity first, redesign second. The order followed was: shell/layout/navigation; API client and composables; Overview; jobs; analytics; settings; chat/copilot; job detail/prep/followups; test parity; and only then the removal of the React frontend, after the user validated parity.
 
-Required order:
+What that produced, and what a later phase must not silently regress:
 
-1. Nuxt shell/layout/navigation;
-2. API client/composables;
-3. Overview;
-4. jobs/opportunities compatibility page;
-5. analytics;
-6. settings;
-7. chat/copilot;
-8. job detail/prep/followups;
-9. frontend test parity;
-10. remove V1 React frontend only after validation.
+- 4 pages (`index`, `jobs`, `analytics`, `settings`) and 21 components under `frontend/app/`;
+- 111 Vitest + Vue Test Utils specs in `frontend/tests/nuxt/`, covering every surface the 75 React tests covered;
+- 14 Playwright flows in `frontend/tests/e2e/`, with every `/api/**` request stubbed in the browser and each test asserting nothing went unstubbed;
+- a checked contract: FastAPI → `frontend/openapi.json` → `frontend/app/types/api.d.ts`, regenerated and diffed by the `api-contract` CI job.
 
-Do not mix this migration with onboarding or map feature development.
+Redesign work, onboarding surfaces and the map are separate phases.

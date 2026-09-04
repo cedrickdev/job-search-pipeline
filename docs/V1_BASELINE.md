@@ -15,6 +15,14 @@ private profile, so a clean clone runs all 460 tests with nothing deselected.
 It touched three V1 files, all behaviour-preserving at the default path
 (`pipeline/paths.py`, `pipeline/cv_render.py`, `tests/conftest.py`).
 
+Phase 3 amended the frontend half of this document. `webapp/` was migrated to
+Nuxt 4 and then removed, so every React figure below — the 75 `vitest` tests in
+§2, the 47 TS/TSX files in §4, `webapp/src/api/schema.d.ts` in §6 — is a
+measurement of a tree that no longer exists in the working copy. It is still in
+history: `bf8433e` is the last commit that contains it. The backend baselines
+(pytest 460, `mypy` 22, `ruff` clean) are unaffected and remain the live
+regression gate.
+
 ## 1. Reproducing the checks
 
 ```bash
@@ -22,9 +30,10 @@ It touched three V1 files, all behaviour-preserving at the default path
 .venv/bin/ruff check .                        # lint          — must pass
 .venv/bin/mypy                                # V1 types      — baseline, see §8
 .venv/bin/python -m pytest -q                 # backend tests — 460, no setup
-npm --prefix webapp ci
-npm --prefix webapp test                      # frontend tests
-npm --prefix webapp run build                 # tsc --noEmit && vite build
+npm --prefix frontend ci
+npm --prefix frontend test                    # frontend tests — 111, Vitest + VTU
+npm --prefix frontend run typecheck           # Nuxt typecheck (vue-tsc)
+npm --prefix frontend run build               # production build
 ```
 
 `requires-python` is `>=3.12` and Ruff/mypy target `py312`; the local venv runs
@@ -383,18 +392,15 @@ Recorded here rather than fixed, because Phase 0 changes no behaviour:
    everywhere, and every one of the 29 endpoints needs authorization scoping.
 5. **Naive local-time timestamps stored as ISO strings.** Decide the timezone
    policy in Phase 2 rather than inheriting it.
-6. **`npm run e2e` is configured but there is no `webapp/e2e/` directory**, so no
-   Playwright E2E runs today and CI has no E2E job. Note that
-   [FRONTEND_ARCHITECTURE.md](./FRONTEND_ARCHITECTURE.md) migrates this frontend to
-   Nuxt 4 / Vue 3, so the 75 React tests are transitional; CI will need a second
-   frontend job while both stacks coexist.
-7. **`webapp/src/api/schema.d.ts` can drift** — it is generated from a running
-   server by hand and no check verifies it against `openapi.json`.
-8. **The CI workflow has never executed.** The remote push is still blocked by a
-   GitHub account mismatch, so `.github/workflows/ci.yml` is verified only by local
-   simulation of its steps (§1, both bash guards dry-run under `bash -e`) and by
-   YAML parsing. The Ubuntu WeasyPrint font stack remains the one unproven part:
-   the page-count and fill assertions now run there instead of being deselected,
-   so §9 states the two properties that make them font-independent and the
-   direction the remaining risk points in. The first green CI run is what
-   confirms it.
+6. **~~`npm run e2e` is configured but there is no `webapp/e2e/` directory~~** —
+   resolved in Phase 3. `frontend/tests/e2e/` holds 14 Playwright flows and CI runs
+   them in their own job; the 75 React tests were replaced by 111 Nuxt specs.
+7. **~~`webapp/src/api/schema.d.ts` can drift~~** — resolved in Phase 3. The
+   `api-contract` job regenerates `openapi.json` from the app in-process and diffs
+   `app/types/api.d.ts` against a fresh generation, so drift fails the build.
+8. **~~The CI workflow has never executed~~** — resolved. The account mismatch was
+   fixed and the workflow has run green on `main`: Phase 2 (`33810359401`), the
+   partial Phase 3 (`33859930760`) and the full six-job run for `bf8433e`
+   (`33920345476`). That closes the WeasyPrint question this section flagged: the
+   `backend` job runs the page-count and fill assertions on Ubuntu with the apt font
+   stack, not deselected, and passes.

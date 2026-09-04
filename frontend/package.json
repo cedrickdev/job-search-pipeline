@@ -2,7 +2,7 @@
   "name": "job-search-command-center-frontend",
   "private": true,
   "type": "module",
-  "description": "V2 frontend (Nuxt 4). Replaces webapp/ once Phase 3 parity is validated.",
+  "description": "The frontend (Nuxt 4, Vue 3). `npm run generate` writes .output/public, which FastAPI serves.",
   "scripts": {
     "dev": "nuxt dev",
     "build": "nuxt build",

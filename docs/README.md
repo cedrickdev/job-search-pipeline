@@ -8,7 +8,7 @@ This directory is the source of truth for the V2 product and implementation plan
 2. [Technical Architecture](./ARCHITECTURE.md)
 3. [LLM Provider Architecture](./LLM_PROVIDER_ARCHITECTURE.md)
 4. [Implementation Plan](./IMPLEMENTATION_PLAN.md)
-5. [Frontend Architecture](./FRONTEND_ARCHITECTURE.md)
+5. [Frontend Architecture](./FRONTEND_ARCHITECTURE.md) — Nuxt 4 + Vue 3, the active frontend since Phase 3
 6. [Engineering Standards](./ENGINEERING_STANDARDS.md)
 7. [V2 Persistence](./PERSISTENCE.md) — PostgreSQL/PostGIS, timezone policy, migrations, Docker and the V1 import, built in Phase 2
 8. [V1 Baseline](./V1_BASELINE.md) — what V1 is and what its checks report, measured in Phase 0

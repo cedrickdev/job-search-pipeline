@@ -159,32 +159,10 @@ jobs:
             exit 1
           fi
 
+  # The frontend. Nuxt 4 is the only one: Phase 3 closure removed `webapp/` and the
+  # React job that gated it, once the 111 Vitest specs and 14 Playwright flows below
+  # had been shown to cover every V1 surface.
   frontend:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: webapp
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: webapp/package-lock.json
-
-      - run: npm ci
-
-      - run: npm test
-
-      # `build` is `tsc --noEmit && vite build`, so this is the TS check too.
-      - run: npm run build
-
-  # --- Phase 3: the Nuxt frontend ---------------------------------------------
-  # Additive on purpose. The React `frontend` job above is untouched: `webapp/`
-  # stays the behavioural reference until Phase 3 parity is validated, so both
-  # frontends are gated for as long as both exist.
-  frontend-v2:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -228,9 +206,9 @@ jobs:
           test -d .output/public/assets
           grep -q '"/assets/' .output/public/index.html
 
-  # A separate job from `frontend-v2` so a browser failure is never confused with a
+  # A separate job from `frontend` so a browser failure is never confused with a
   # unit failure, and so the two run concurrently rather than one after the other.
-  frontend-v2-e2e:
+  frontend-e2e:
     runs-on: ubuntu-latest
     defaults:
       run:

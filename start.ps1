@@ -15,16 +15,19 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
     exit 1
 }
 
-if (-not (Test-Path "webapp\node_modules")) {
-    Write-Host "Missing webapp\node_modules. Run:"
-    Write-Host "  cd webapp; npm install"
+if (-not (Test-Path "frontend\node_modules")) {
+    Write-Host "Missing frontend\node_modules. Run:"
+    Write-Host "  cd frontend; npm ci"
     Read-Host "Press Enter to exit"
     exit 1
 }
 
+# `generate`, not `build`: the Nuxt app is ssr:false, so `nuxt build` leaves a Nitro
+# server and no index.html. `generate` prerenders into frontend\.output\public,
+# which is what FastAPI serves.
 Write-Host "Building frontend..."
-Push-Location webapp
-npm run build
+Push-Location frontend
+npm run generate
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Frontend build failed."
     Read-Host "Press Enter to exit"

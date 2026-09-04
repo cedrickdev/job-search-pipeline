@@ -8,13 +8,17 @@ if [ ! -x ".venv/bin/python" ]; then
   exit 1
 fi
 
-if [ ! -d "webapp/node_modules" ]; then
-  echo "Missing webapp/node_modules. Run: cd webapp && npm install"
+if [ ! -d "frontend/node_modules" ]; then
+  echo "Missing frontend/node_modules. Run: cd frontend && npm ci"
   exit 1
 fi
 
+# `generate`, not `build`: the Nuxt app is `ssr: false`, so `nuxt build` produces a
+# Nitro server and no index.html, while FastAPI serves plain files. `generate`
+# prerenders into frontend/.output/public — the directory pipeline.paths.FRONTEND_DIST
+# points at and server/app.py mounts.
 echo "Building frontend..."
-( cd webapp && npm run build ) || exit 1
+( cd frontend && npm run generate ) || exit 1
 
 URL="http://127.0.0.1:8765"
 echo "Starting full app at $URL"

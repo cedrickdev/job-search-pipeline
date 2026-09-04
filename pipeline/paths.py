@@ -24,5 +24,10 @@ DIGEST_PATH = DATA_DIR / "digest_latest.md"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 LOG_DIR = DATA_DIR / "logs"
 MANDATE_CONFIG = DATA_DIR / "mandate_redactions.json"  # gitignored: {"forbidden": [...], "aliases": {...}}
-WEBAPP_DIST = ROOT / "webapp" / "dist"  # built SPA served by server.app
+# The built SPA served by server.app. Since Phase 3 closure that is the Nuxt
+# bundle: `nuxt generate` writes .output/public, which holds index.html and the
+# hashed /assets the mount needs. Deliberately not `frontend/dist` — generate
+# leaves that behind as a symlink to this directory for Nuxt 2 compatibility, with
+# an absolute target, so it is gitignored and one indirection away from stale.
+FRONTEND_DIST = ROOT / "frontend" / ".output" / "public"
 WHISPER_MODEL_PATH = DATA_DIR / "models" / "ggml-small.bin"  # gitignored; fetched by scripts/fetch_whisper_model.sh

@@ -107,7 +107,7 @@ def create_app(db_path: str | Path | None = None,
     app.include_router(runs_routes.router)
 
     # SPA mount is registered LAST so every /api route keeps precedence.
-    spa_path = Path(spa_dist) if spa_dist is not None else paths.WEBAPP_DIST
+    spa_path = Path(spa_dist) if spa_dist is not None else paths.FRONTEND_DIST
     _mount_spa(app, spa_path)
 
     return app

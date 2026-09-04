@@ -71,7 +71,7 @@ Use fixtures/mocks and adapter contract tests.
 
 The V2 frontend is **Nuxt 4 + Vue 3 + TypeScript**.
 
-The current React + Vite application is V1 compatibility code and must be migrated during the dedicated frontend migration phase. Do not build major new V2 frontend surfaces in React.
+The Nuxt application in `frontend/` is the active frontend. Phase 3 migrated it from React + Vite and removed `webapp/`, so there is no React code left in the repository. New frontend work goes into `frontend/`.
 
 Target frontend ecosystem:
 

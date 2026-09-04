@@ -222,7 +222,7 @@ Queries should use spatial indexes and database-side distance predicates.
 
 The V2 frontend target is **Nuxt 4 + Vue 3 + TypeScript**.
 
-The existing React + Vite frontend is considered V1 compatibility code and will be migrated early, before major new UI surfaces such as onboarding, maps and interview simulation are built.
+Phase 3 migrated the React + Vite frontend to Nuxt for parity and then removed it, so `frontend/` is the only frontend. Onboarding, maps and interview simulation are built on top of it rather than beside it.
 
 ### Target frontend stack
 

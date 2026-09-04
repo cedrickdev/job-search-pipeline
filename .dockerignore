@@ -38,11 +38,6 @@ Rechercher d’emploi/
 # copying it would shadow the site-packages `pip install -e .` creates.
 .venv/
 
-# The V1 React application and its node_modules. It has no image: `webapp/` is
-# the behavioural reference until Phase 3 parity is validated, and it is served —
-# when it is served at all — by the FastAPI process from a host build.
-webapp/
-
 # Runs on the host and on CI against the exposed port, and the image installs no
 # dev extras, so a copy here could not be executed anyway.
 tests/
@@ -53,10 +48,12 @@ tests/
 # in a Linux image, and copying it would shadow the install. Everything else here
 # is generated — `.nuxt/` is rewritten by `nuxt prepare` on every build, and the
 # Playwright output is a report about a run that happened somewhere else.
+# `frontend/dist` is the symlink `nuxt generate` leaves behind: it points at an
+# absolute host path that does not exist in the image.
 frontend/node_modules/
 frontend/.nuxt/
 frontend/.output/
-frontend/dist/
+frontend/dist
 frontend/.data/
 frontend/test-results/
 frontend/playwright-report/

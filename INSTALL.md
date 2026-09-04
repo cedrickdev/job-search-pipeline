@@ -58,12 +58,12 @@ python -m venv .venv
 
 ```bash
 # Mac / Linux
-cd webapp && npm install && cd ..
+cd frontend && npm ci && cd ..
 ```
 
 ```powershell
 # Windows
-cd webapp; npm install; cd ..
+cd frontend; npm ci; cd ..
 ```
 
 ---
@@ -123,7 +123,7 @@ In the Claude Code terminal (same session as step 4, or reopen with `claude`):
 ```
 
 This discovers jobs matching your searches, scores them against your profile,
-generates tailored CVs, and populates the webapp.
+generates tailored CVs, and populates the web UI.
 
 ---
 
@@ -144,4 +144,4 @@ network timeout. If it keeps failing, run `.venv/bin/playwright install
 
 **Port 8765 already in use** — another process is using the port. Either stop
 it or change the port in `start.sh` / `start.bat` / `start.ps1` and in
-`webapp/vite.config.ts` (the proxy target).
+`frontend/nuxt.config.ts` (`nitro.devProxy`, the dev-mode proxy target).

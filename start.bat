@@ -13,17 +13,20 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-if not exist "webapp\node_modules" (
-    echo Missing webapp\node_modules. Run:
-    echo   cd webapp
-    echo   npm install
+if not exist "frontend\node_modules" (
+    echo Missing frontend\node_modules. Run:
+    echo   cd frontend
+    echo   npm ci
     pause
     exit /b 1
 )
 
+rem `generate`, not `build`: the Nuxt app is ssr:false, so `nuxt build` leaves a
+rem Nitro server and no index.html. `generate` prerenders into
+rem frontend\.output\public, which is what FastAPI serves.
 echo Building frontend...
-cd webapp
-call npm run build
+cd frontend
+call npm run generate
 if errorlevel 1 (
     echo Frontend build failed.
     pause

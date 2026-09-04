@@ -122,6 +122,13 @@ services:
     # PostgreSQL yet — Phase 2 imports *into* the database through its CLI. A
     # declared dependency here would be decoration, and would make `up api` wait on
     # a service it never queries.
+    #
+    # This container answers /api only. `paths.FRONTEND_DIST` — frontend/.output/public
+    # since Phase 3 closure — is excluded from the build context by .dockerignore, so
+    # `_mount_spa` finds no bundle and skips itself, which is what the guards in it
+    # are for. The `frontend` service below serves the UI in this composition; a
+    # single-origin deployment builds the bundle on the host and lets FastAPI serve
+    # it, as start.sh does.
 
   # The Nuxt dev server (docker/frontend.Dockerfile). Development convenience, not
   # a production artifact: with `ssr: false` production is a static bundle served

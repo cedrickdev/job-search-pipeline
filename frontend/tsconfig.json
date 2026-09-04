@@ -1,0 +1,10 @@
+{
+  "//": "Nuxt 4 generates one tsconfig per context under .nuxt/; this root file only wires them up as project references. Do not add compilerOptions here — set them via `typescript` in nuxt.config.ts so the generated configs stay authoritative.",
+  "files": [],
+  "references": [
+    { "path": "./.nuxt/tsconfig.app.json" },
+    { "path": "./.nuxt/tsconfig.server.json" },
+    { "path": "./.nuxt/tsconfig.shared.json" },
+    { "path": "./.nuxt/tsconfig.node.json" }
+  ]
+}

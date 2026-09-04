@@ -1,0 +1,61 @@
+/* Design tokens, carried over unchanged from webapp/src/styles/tokens.css.
+   Phase 3 is a migration, not a redesign: the palette, spacing scale and status
+   colours are the same values the React app shipped, so a screenshot of either
+   frontend has to look like the other.
+
+   The theme is keyed on `data-theme` because that is the attribute the V1 CSS
+   was written against. Nuxt's colour mode writes it (nuxt.config.ts sets
+   `dataValue: 'theme'`) alongside the `.dark` / `.light` class that Nuxt UI and
+   Tailwind read, so both systems follow one switch. */
+:root,
+:root[data-theme="dark"] {
+  --bg: #0e0e14;
+  --surface: #16161f;
+  --surface-2: #1d1d29;
+  --border: #2a2a38;
+  --text: #ececf1;
+  --text-dim: #a0a0b0;
+  --accent: #7c5cff;
+  --accent-dim: #5b43c0;
+  --accent-tint: rgba(124, 92, 255, 0.14);
+  --status-ready: #7c5cff;
+  --status-applied: #4f9dde;
+  --status-reply: #34c98b;
+  --status-interview: #f0b429;
+  --status-offer: #2ec5a8;
+  --status-rejected: #e5604d;
+  --status-neutral: #6b7280;
+  --ok: #34c98b;
+  --warn: #f0b429;
+  --danger: #e5604d;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+
+:root[data-theme="light"] {
+  --bg: #f6f6fa;
+  --surface: #ffffff;
+  --surface-2: #f0f0f5;
+  --border: #e1e1ea;
+  --text: #1a1a24;
+  --text-dim: #5c5c6e;
+  --accent: #7c5cff;
+  --accent-dim: #6243d6;
+  --accent-tint: rgba(124, 92, 255, 0.10);
+  --shadow: 0 6px 20px rgba(20, 20, 40, 0.10);
+}
+
+:root {
+  --font-ui: "Sora", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  /* Alias: components use --text-muted for secondary text; resolves per-element
+     to the active theme's --text-dim (defined in both dark and light blocks). */
+  --text-muted: var(--text-dim);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+}

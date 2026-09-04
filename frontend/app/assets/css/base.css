@@ -1,0 +1,47 @@
+/* Element defaults and the shared primitives, ported from
+   webapp/src/styles/global.css.
+
+   One line changed: V1 mounted into `#root`, Nuxt mounts into `#__nuxt`. */
+
+* { box-sizing: border-box; }
+html, body, #__nuxt { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, h4 { font-family: var(--font-ui); font-weight: 600; margin: 0; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+a { color: var(--accent); text-decoration: none; }
+button { font-family: var(--font-ui); cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.seg button { background: var(--surface); color: var(--text-dim); border: none; padding: 6px 14px; cursor: pointer; }
+.seg button.active { background: var(--accent-tint); color: var(--text); }
+
+/* Track tabs — split the pipeline into "Jobs étudiants" and "Travail (dev/remote)" */
+.track-tabs { display: flex; gap: 10px; flex-wrap: wrap; }
+.track-tab {
+  flex: 1 1 220px; min-width: 200px; text-align: left; cursor: pointer;
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--surface); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px;
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+.track-tab:hover { border-color: var(--accent); }
+.track-tab.active {
+  background: var(--accent-tint); color: var(--text);
+  border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.track-tab-label { font-weight: 600; font-size: 15px; }
+.track-tab-hint { font-size: 12px; color: var(--text-dim); }
+.track-tab.active .track-tab-hint { color: var(--text); opacity: .8; }
+
+/* Buttons, from webapp/src/components/JobDrawer.css where V1 happened to declare
+   them. They are used by the drawer, the settings page, the follow-up panel and
+   the copilot, so they belong with the other global primitives. */
+.btn-primary { background: var(--accent); color: white; border: none; border-radius: var(--radius-sm); padding: var(--space-2) var(--space-4); font-weight: 600; }
+.btn-ghost { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-4); }

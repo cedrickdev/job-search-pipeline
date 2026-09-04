@@ -1,0 +1,11 @@
+/* The single entry point Nuxt loads (nuxt.config.ts `css`).
+   Order is load-bearing: Tailwind's preflight has to land before the ported V1
+   rules so those rules win, and the tokens have to exist before anything reads
+   `var(--accent)`. */
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+@import "./tokens.css";
+@import "./base.css";
+@import "./components.css";
+@import "./pages.css";

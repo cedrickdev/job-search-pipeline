@@ -1,0 +1,127 @@
+/* Page styles, ported from webapp/src/routes/*.css.
+
+   `--space-5` is referenced by `.settings-page` and was never declared in V1's
+   token file, so the gap resolved to the browser default. It is left as it was:
+   this phase reproduces behaviour, and inventing the value here would be the
+   kind of small unrequested change that makes a parity diff unreadable. It is
+   listed as a follow-up instead. */
+
+/* ── OverviewPage (also used by AnalyticsPage, as in V1) ──────────────────── */
+.overview { display: flex; flex-direction: column; gap: var(--space-6); padding: var(--space-2) 0; }
+.ov-head h1 { font-size: 22px; font-weight: 600; margin: 0; }
+.ov-state { color: var(--text-dim); padding: var(--space-6); }
+.ov-error { color: var(--danger); }
+
+.kpi-grid {
+  display: grid; gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.kpi-tile {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: var(--space-4);
+  display: flex; flex-direction: column; gap: var(--space-1);
+}
+.kpi-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.kpi-value { font-family: var(--font-mono); font-size: 28px; font-weight: 600; color: var(--text); }
+.kpi-sub { font-size: 12px; color: var(--text-dim); }
+
+.ov-columns { display: grid; gap: var(--space-4); grid-template-columns: 1fr 1fr; }
+@media (max-width: 900px) { .ov-columns { grid-template-columns: 1fr; } }
+.ov-col { display: flex; flex-direction: column; gap: var(--space-4); }
+
+.ov-section {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: var(--space-4);
+}
+.ov-section-title {
+  display: flex; align-items: center; gap: var(--space-2);
+  font-size: 14px; font-weight: 600; margin: 0 0 var(--space-3);
+}
+.ov-count {
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-dim);
+  background: var(--surface-2); border-radius: 999px; padding: 1px 8px;
+}
+.ov-empty { color: var(--text-dim); font-size: 13px; margin: 0; }
+
+.job-list { display: flex; flex-direction: column; gap: var(--space-1); }
+.job-row {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  width: 100%; text-align: left; cursor: pointer;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3); color: var(--text); font: inherit;
+}
+.job-row:hover { background: var(--surface-2); border-color: var(--border); }
+.job-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.job-row-company { font-weight: 600; font-size: 14px; }
+.job-row-title { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-row-meta { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
+.ov-when { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
+
+.ov-followups { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.ov-followup { display: flex; align-items: baseline; gap: var(--space-2); }
+
+.ov-bars { display: flex; flex-direction: column; gap: var(--space-2); }
+.ov-bar-row { display: grid; grid-template-columns: 120px 1fr auto; align-items: center; gap: var(--space-2); }
+.ov-bar-label { font-size: 12px; color: var(--text-dim); }
+.ov-bar-track { background: var(--surface-2); border-radius: 999px; height: 8px; overflow: hidden; }
+.ov-bar-fill { display: block; height: 100%; background: var(--status-applied); border-radius: 999px; }
+.ov-bar-accent { background: var(--accent); }
+.ov-bar-val { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); }
+
+.ov-sources { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+.ov-source {
+  display: flex; flex-direction: column; gap: var(--space-1);
+  background: var(--surface-2); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3);
+}
+.ov-source-name { font-weight: 600; font-size: 13px; }
+.ov-source-stats { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.ov-source-stat { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
+
+/* ── AnalyticsPage ────────────────────────────────────────────────────────── */
+/* Dependency-free column charts for the analytics trends. Bars are plain divs
+   whose height is a percentage of the series max; no charting library.
+   ECharts is in the target stack for the Phase 8 map/analytics work, not for
+   reproducing a chart that already exists and already has a passing test. */
+.an-cols {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 96px;
+  padding-top: var(--space-1);
+}
+.an-cols-tall { height: 140px; }
+.an-col {
+  flex: 1 1 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-width: 3px;
+  height: 100%;
+}
+.an-col-fill {
+  display: block;
+  width: 100%;
+  min-height: 2px;
+  background: var(--status-applied);
+  border-radius: 2px 2px 0 0;
+}
+.an-col-accent { background: var(--accent); }
+.an-col-ok { background: var(--success, #2e9e5b); }
+.an-col-warn { background: var(--warning, #c98a16); }
+
+/* ── SettingsPage ─────────────────────────────────────────────────────────── */
+.settings-page { max-width: 640px; display: flex; flex-direction: column; gap: var(--space-5); }
+.settings-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+.settings-card h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+.settings-row > span { color: var(--text); }
+.settings-row--check { justify-content: flex-start; gap: var(--space-2); }
+.settings-row input[type="number"], .settings-row input[type="text"], .settings-row select {
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: var(--space-2); min-width: 240px; font: inherit;
+}
+.settings-hint { color: var(--text-dim); font-size: 13px; line-height: 1.5; }
+.settings-warn { background: var(--accent-tint); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-3); }
+.settings-actions { display: flex; align-items: center; gap: var(--space-3); }
+.settings-ok { color: var(--text-dim); }
+.settings-err { color: #e5534b; }

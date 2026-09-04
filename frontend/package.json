@@ -1,0 +1,41 @@
+{
+  "name": "job-search-command-center-frontend",
+  "private": true,
+  "type": "module",
+  "description": "V2 frontend (Nuxt 4). Replaces webapp/ once Phase 3 parity is validated.",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "typecheck": "nuxt typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dump:openapi": "sh -c 'PY=../.venv/bin/python; [ -x \"$PY\" ] || PY=python3; exec \"$PY\" ../scripts/dump_openapi.py \"$@\"' --",
+    "gen:api": "npm run dump:openapi -- --output openapi.json && openapi-typescript openapi.json --output app/types/api.d.ts",
+    "check:api": "npm run dump:openapi -- --check --output openapi.json",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@nuxt/ui": "4.11.0",
+    "@pinia/nuxt": "1.0.2",
+    "@vueuse/nuxt": "14.4.0",
+    "markdown-it": "15.0.1",
+    "nuxt": "4.5.2",
+    "pinia": "4.0.3",
+    "tailwindcss": "4.3.3",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@nuxt/test-utils": "4.2.0",
+    "@playwright/test": "1.62.1",
+    "@types/markdown-it": "14.2.0",
+    "@vue/test-utils": "2.5.0",
+    "happy-dom": "20.14.0",
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "vue-tsc": "3.3.11"
+  }
+}

@@ -55,7 +55,12 @@ export default defineNuxtConfig({
   nitro: {
     devProxy: {
       '/api': {
-        target: 'http://127.0.0.1:8765/api',
+        // Overridable because `nuxt dev` also runs inside Docker, where FastAPI is
+        // another service on the compose network rather than a process on the
+        // developer's loopback (docker-compose.yml sets it to http://api:8765/api).
+        // The default is exactly what start.sh serves, so running `npm run dev` on
+        // the host needs no environment at all.
+        target: process.env.NUXT_API_PROXY_TARGET ?? 'http://127.0.0.1:8765/api',
         changeOrigin: true,
       },
     },

@@ -179,3 +179,141 @@ jobs:
 
       # `build` is `tsc --noEmit && vite build`, so this is the TS check too.
       - run: npm run build
+
+  # --- Phase 3: the Nuxt frontend ---------------------------------------------
+  # Additive on purpose. The React `frontend` job above is untouched: `webapp/`
+  # stays the behavioural reference until Phase 3 parity is validated, so both
+  # frontends are gated for as long as both exist.
+  frontend-v2:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Reads frontend/.npmrc, whose `legacy-peer-deps=true` works around an npm
+      # arborist crash on this dependency set; that file records the bug and the
+      # peer-range audit showing it hides no real conflict. `postinstall` is
+      # `nuxt prepare`, which the typecheck below needs.
+      - run: npm ci
+
+      # Covers the app AND tests/nuxt/**: .nuxt/tsconfig.app.json includes that
+      # directory, which is exactly why the specs live under that name.
+      - run: npm run typecheck
+
+      # Vitest + Vue Test Utils, inside @nuxt/test-utils' Nuxt environment.
+      - run: npm test
+
+      # The production build.
+      - run: npm run build
+
+      # And the artifact the deployment actually uses. `ssr: false` means
+      # production is V1's single-origin model — FastAPI serving a static bundle —
+      # and `nuxt build` alone leaves a Nitro server, not files. `generate`
+      # prerenders the four routes, and the assertion is the contract with
+      # server/app.py::_mount_spa: an index.html to fall back to and an `assets`
+      # directory to mount. Nothing else in the repo would notice if
+      # `app.buildAssetsDir` drifted back to Nuxt's default `/_nuxt/`.
+      - run: npm run generate
+      - name: The generated bundle is the one FastAPI can serve
+        run: |
+          test -f .output/public/index.html
+          test -d .output/public/assets
+          grep -q '"/assets/' .output/public/index.html
+
+  # A separate job from `frontend-v2` so a browser failure is never confused with a
+  # unit failure, and so the two run concurrently rather than one after the other.
+  frontend-v2-e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      # Chromium only, matching the single project in playwright.config.ts: these
+      # tests assert application behaviour, and a parity migration has no
+      # cross-browser claim to defend.
+      - run: npx playwright install --with-deps chromium
+
+      # No backend, no database, no network. Every /api/** request is fulfilled in
+      # the browser by tests/e2e/support/api.ts, and each test asserts that nothing
+      # went unstubbed — so a missed mock fails the run instead of reaching a live
+      # job board or a live LLM (CLAUDE.md §Testing). playwright.config.ts starts
+      # its own `nuxt dev` on port 3113 and refuses to reuse a foreign server.
+      - run: npm run e2e
+
+      # Traces (on first retry) and failure screenshots. Nothing is uploaded from a
+      # green run, and nothing in these tests carries operator data.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: frontend/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The OpenAPI contract, checked rather than trusted. V1 generated its TypeScript
+  # by pointing openapi-typescript at whichever server happened to be running, and
+  # nothing ever detected drift. This job regenerates both links of the chain —
+  # FastAPI -> openapi.json -> app/types/api.d.ts — on a clean runner and fails if
+  # either committed file no longer matches, which is what makes the generated
+  # client worth typing against instead of a hand-maintained duplicate.
+  api-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # create_app imports every router, and one of them imports the CV renderer,
+      # which links the Pango stack at import time.
+      - name: Install WeasyPrint system libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b \
+            libfontconfig1 fonts-dejavu-core
+
+      # Runtime dependencies only: the schema comes from the app itself, no test
+      # tooling is involved.
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Install frontend toolchain
+        working-directory: frontend
+        run: npm ci
+
+      # scripts/dump_openapi.py builds the app in-process against a throwaway
+      # SQLite file in a temp directory, so no server is started and the
+      # operator's data/tracker.db is never touched.
+      - name: OpenAPI and generated types match FastAPI
+        working-directory: frontend
+        run: npm run check:api

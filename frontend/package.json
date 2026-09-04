@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "dump:openapi": "sh -c 'PY=../.venv/bin/python; [ -x \"$PY\" ] || PY=python3; exec \"$PY\" ../scripts/dump_openapi.py \"$@\"' --",
     "gen:api": "npm run dump:openapi -- --output openapi.json && openapi-typescript openapi.json --output app/types/api.d.ts",
-    "check:api": "npm run dump:openapi -- --check --output openapi.json",
+    "check:api": "npm run dump:openapi -- --check --output openapi.json && npm run check:api:types",
+    "check:api:types": "openapi-typescript openapi.json | diff -u app/types/api.d.ts -",
     "e2e": "playwright test"
   },
   "dependencies": {

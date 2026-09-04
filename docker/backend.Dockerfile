@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 
-# The backend image: one environment that can run Alembic, the V1 importer and —
-# from Phase 3 on — the FastAPI application, with the workers joining no earlier
-# than Phase 12. Phase 2 uses only the first two (docker-compose.yml `migrate`
-# and `import-v1`).
+# The backend image: one environment that can run Alembic, the V1 importer and the
+# FastAPI application, with the workers joining no earlier than Phase 12. All three
+# are in use — docker-compose.yml `migrate`, `import-v1` and, since Phase 3, `api`,
+# each spelling out its own command.
 #
 # Python 3.12, matching `requires-python = ">=3.12"` and the version CI pins. The
 # local interpreter is newer; the image is what production would run, so it tracks
@@ -53,8 +53,16 @@ COPY . .
 # against the exposed port, so pytest and the linters have no business here.
 RUN pip install -e .
 
+# `data/` is excluded from the build context (it holds the operator's tracker and
+# job-board logins), so the directory has to be created here — and owned by the
+# runtime user, because Docker seeds a fresh named volume from the image path
+# including its ownership. Without this the `api` service would mount a root-owned
+# empty volume and create_app would fail to write tracker.db as uid 10001.
+RUN mkdir -p /app/data && chown 10001:10001 /app/data
+
 USER 10001:10001
 
-# The only thing this image is asked to do in Phase 2. docker-compose.yml repeats
-# it explicitly, so the composition alone tells you what will run.
+# A default, not a policy: every service in docker-compose.yml states its own
+# command, so the composition alone tells you what will run. Migrating is the safe
+# thing to do with no argument at all — it is idempotent.
 CMD ["alembic", "upgrade", "head"]

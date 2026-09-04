@@ -38,13 +38,28 @@ Rechercher d’emploi/
 # copying it would shadow the site-packages `pip install -e .` creates.
 .venv/
 
-# The V1 React application and its node_modules; the Nuxt frontend will get an
-# image of its own when Phase 3 arrives.
+# The V1 React application and its node_modules. It has no image: `webapp/` is
+# the behavioural reference until Phase 3 parity is validated, and it is served —
+# when it is served at all — by the FastAPI process from a host build.
 webapp/
 
 # Runs on the host and on CI against the exposed port, and the image installs no
 # dev extras, so a copy here could not be executed anyway.
 tests/
+
+# --- Frontend dependencies and generated output ------------------------------
+# docker/frontend.Dockerfile runs its own `npm ci`: the host node_modules holds
+# macOS binaries (esbuild, rolldown, the Playwright browsers) that cannot execute
+# in a Linux image, and copying it would shadow the install. Everything else here
+# is generated — `.nuxt/` is rewritten by `nuxt prepare` on every build, and the
+# Playwright output is a report about a run that happened somewhere else.
+frontend/node_modules/
+frontend/.nuxt/
+frontend/.output/
+frontend/dist/
+frontend/.data/
+frontend/test-results/
+frontend/playwright-report/
 
 # --- Caches and build output -------------------------------------------------
 __pycache__/

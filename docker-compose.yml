@@ -1,24 +1,26 @@
-# Development composition for the V2 persistence foundation.
+# Development composition for the V2 foundation.
 #
-# Phase 2 needs exactly one long-running service — the database — plus two
-# one-shot commands that must run in the same environment as the application
-# (docs/IMPLEMENTATION_PLAN.md Phase 2). The Nuxt frontend and the FastAPI API
-# join in Phase 3, and Redis, the background worker and the Playwright browser
-# worker no earlier than Phase 12. All of them are deliberately absent rather
-# than declared and disabled: an inert service still has to be maintained, and
-# docs/ARCHITECTURE.md §13 already records the target composition.
+# Three long-running services — the database (Phase 2), the FastAPI API and the
+# Nuxt frontend (Phase 3) — plus two one-shot commands that must run in the same
+# environment as the application (docs/IMPLEMENTATION_PLAN.md Phases 2 and 3).
+# Redis, the background worker and the Playwright browser worker join no earlier
+# than Phase 12; they are deliberately absent rather than declared and disabled,
+# because an inert service still has to be maintained and docs/ARCHITECTURE.md §13
+# already records the target composition.
 #
-#   docker compose up -d postgres                     start the database
+#   docker compose up -d                              database + API + frontend
+#   docker compose up -d postgres                     the database alone
 #   docker compose run --rm migrate                   alembic upgrade head
 #   docker compose run --rm import-v1 --help          V1 SQLite import
 #
 # The `tools` profile keeps the two one-shot services out of `docker compose up`,
-# so starting the database never runs a migration as a side effect.
+# so starting the stack never runs a migration as a side effect.
 #
 # No service reads `.env`. Compose interpolates it into the values below, which is
-# how a developer overrides the port or the password, but nothing here mounts it
-# or passes it through: `.env` holds V1's real API credentials and none of them
-# belong in a database container (docs/ENGINEERING_STANDARDS.md §Security).
+# how a developer overrides a port or the password, but nothing here mounts it or
+# passes it through: `.env` holds V1's real API credentials and none of them belong
+# in these containers (docs/ENGINEERING_STANDARDS.md §Security). The same rule is
+# why no container sees `data/` or `cv/` — see the `api` service below.
 
 name: jobsearch
 
@@ -62,6 +64,101 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # Added in Phase 3, because a migrated frontend needs an API to talk to inside
+  # the composition (completion criterion 8). This is still V1's FastAPI
+  # application: Phase 3 migrates the frontend and nothing else, so the image is
+  # the same one `migrate` and `import-v1` build.
+  api:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    environment:
+      # server/app.py reads this before paths.DB_PATH. Explicit, so the tracker is
+      # unambiguously the mounted volume below and not a file baked into a layer.
+      JOBSEARCH_DB_PATH: /app/data/tracker.db
+    volumes:
+      # A named volume, NOT a bind mount of ./data. That directory holds the
+      # operator's real tracker, job-board logins and answers.yaml; a container
+      # able to write to it is one bug away from corrupting the only copy, and two
+      # processes on one SQLite file invite `database is locked`. So this container
+      # starts with an EMPTY tracker, which create_app bootstraps via init_db —
+      # every route the frontend calls answers, with no personal data anywhere in
+      # the composition (docs/ENGINEERING_STANDARDS.md §Security). To work against
+      # real data instead, replace this line with `- ./data:/app/data`, knowingly.
+      - api_data:/app/data
+    ports:
+      # Loopback only, on the port start.sh already uses, so the browser cannot
+      # tell a containerized API from a host one.
+      - "127.0.0.1:${API_PORT:-8765}:8765"
+    # `--lifespan off` is load-bearing rather than tuning. create_app's lifespan
+    # starts server/scheduler.py, whose is_due() defaults `schedule_enabled` to
+    # True: a container left up past 08:00 local time would launch the agentic full
+    # run by itself — live job boards, live LLM calls — out of a development
+    # composition nobody was watching. Turning the lifespan off removes that
+    # entirely; run_manager and apply_dispatcher are built in the factory body, so
+    # an explicit POST /api/runs/... still works exactly as on the host.
+    command:
+      - uvicorn
+      - --factory
+      - server.app:create_app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8765"
+      - --lifespan
+      - "off"
+    healthcheck:
+      # FastAPI's own schema document: it proves the app booted and its routers
+      # imported, and it touches neither the database nor any operator file. The
+      # image has no curl, so this is Python's stdlib.
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/openapi.json').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+    # No `depends_on: postgres`. V1's API is SQLite-only and nothing in it reads
+    # PostgreSQL yet — Phase 2 imports *into* the database through its CLI. A
+    # declared dependency here would be decoration, and would make `up api` wait on
+    # a service it never queries.
+
+  # The Nuxt dev server (docker/frontend.Dockerfile). Development convenience, not
+  # a production artifact: with `ssr: false` production is a static bundle served
+  # by the FastAPI process, so there is nothing else for a Node container to do.
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    environment:
+      # Read by nuxt.config.ts for the Nitro dev proxy. On a developer's machine
+      # the default target is 127.0.0.1:8765; here the API is a service name.
+      NUXT_API_PROXY_TARGET: http://api:8765/api
+      # Vite's watcher never receives inotify events through a bind mount on macOS
+      # or Windows, so without polling an edit on the host never reaches HMR.
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      # Sources bind-mounted so an edit on the host reloads in the container.
+      # node_modules and .nuxt stay container-side and must not be shadowed by the
+      # host tree, which holds macOS binaries. The trade-off of the named volumes
+      # is that they are seeded once from the image: after a dependency change,
+      # rebuild and `docker compose down -v` (or `docker volume rm
+      # jobsearch_frontend_node_modules`) or the container keeps the old install.
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_nuxt:/app/.nuxt
+    ports:
+      # 3000 is the app's own default and everybody else's; ${FRONTEND_PORT} is
+      # there because an unrelated dev server on 3000 is a real and frequent event.
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      # `service_started`, not `service_healthy`: the proxy resolves per request,
+      # so the frontend is useful before the API answers and must not be held back
+      # by it. Wanting the whole stack ready is what `up --wait` is for.
+      api:
+        condition: service_started
+    restart: unless-stopped
+
   migrate:
     profiles: ["tools"]
     build:
@@ -97,3 +194,16 @@ volumes:
     # Named, so `docker compose down` keeps the data and only
     # `docker compose down -v` throws it away.
     name: jobsearch_postgres_data
+
+  api_data:
+    # V1's SQLite tracker and settings.json for the containerized API, kept apart
+    # from the host `data/` on purpose (see the `api` service). Nothing in it is
+    # precious — `down -v` and it is bootstrapped empty again on the next start.
+    name: jobsearch_api_data
+
+  # Container-side node_modules and .nuxt, so the bind-mounted sources do not
+  # shadow the Linux install with the host's macOS one.
+  frontend_node_modules:
+    name: jobsearch_frontend_node_modules
+  frontend_nuxt:
+    name: jobsearch_frontend_nuxt

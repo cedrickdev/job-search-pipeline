@@ -23,6 +23,19 @@ import { useIntervalFn } from '@vueuse/core'
 /** Every key currently mounted somewhere in the app, for prefix expansion. */
 const mounted = new Map<string, number>()
 
+/**
+ * When each key was last fetched, for the staleness window below.
+ *
+ * Module scope, not per-call-site: TanStack tracks `dataUpdatedAt` on the shared
+ * cache entry, so age survives a component unmounting. Holding it inside
+ * `useApiQuery` would reset it on every remount, and since a missing timestamp
+ * means "not stale", a remounted query would then serve the cached payload
+ * forever — the opposite of a 15s window.
+ */
+const fetchedAt = new Map<string, number>()
+
+const STALE_MS = 15_000
+
 function retain(key: string) {
   mounted.set(key, (mounted.get(key) ?? 0) + 1)
 }
@@ -75,9 +88,6 @@ export function useApiQuery<T>(
   fetcher: () => Promise<T>,
   options: ApiQueryOptions<T> = {},
 ) {
-  const STALE_MS = 15_000
-  const fetchedAt = new Map<string, number>()
-
   const state = useAsyncData<T>(key, async () => {
     const resolved = toValue(key)
     const data = await fetcher()

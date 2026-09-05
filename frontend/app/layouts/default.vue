@@ -14,8 +14,17 @@
   The job drawer is NOT mounted here: in V1 only JobsPage rendered it, and the
   overview's rows navigate to /jobs rather than opening it. Hoisting it into the
   shell would be a behaviour change.
+
+  Phase 4 added the account affordance in the topbar, and it is deliberately the
+  only account-aware thing in the shell. `session.ensure()` runs on mount — once per
+  page load, resolved from the store afterwards — and a 401 is an ordinary answer
+  here rather than a failure: the V1 pages this shell wraps have no accounts, so an
+  anonymous visitor is a supported state and gets a "Sign in" link instead of a
+  redirect. The nav is unchanged for the same reason (app/middleware/auth.ts).
 -->
 <script setup lang="ts">
+import { onMounted } from 'vue'
+import { useSessionStore } from '~/stores/session'
 import { useUiStore } from '~/stores/ui'
 
 const LINKS = [
@@ -27,6 +36,13 @@ const LINKS = [
 
 const colorMode = useColorMode()
 const ui = useUiStore()
+const session = useSessionStore()
+
+// Fire and forget: the affordance renders "Sign in" until the answer lands, which
+// is what it would show anyway if there is no session.
+onMounted(() => {
+  void session.ensure()
+})
 
 function toggleTheme() {
   colorMode.preference = colorMode.value === 'dark' ? 'light' : 'dark'
@@ -53,6 +69,12 @@ function toggleTheme() {
 
     <div class="main">
       <div class="topbar">
+        <NuxtLink v-if="session.isAuthenticated" to="/profile" class="topbar-account">
+          {{ session.label }}
+        </NuxtLink>
+        <NuxtLink v-else to="/login" class="topbar-account">
+          Sign in
+        </NuxtLink>
         <button class="theme-btn" @click="ui.toggleCopilot()">
           ✦ Copilot
         </button>

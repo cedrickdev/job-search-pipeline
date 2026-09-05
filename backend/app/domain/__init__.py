@@ -12,6 +12,7 @@ The modules, in dependency order:
 
 - `base` — the frozen base model and the validated scalar aliases;
 - `identifiers` — typed UUID ids and their factories;
+- `user` — accounts and server-side sessions;
 - `common` — value objects shared by several entities (`Location`, `Reason`, …);
 - `opportunity` — the central abstraction and its source record;
 - `company` — employers and their physical sites;

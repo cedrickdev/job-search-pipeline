@@ -24,28 +24,62 @@ domain does not model an identity for an `OpportunitySourceRecord` or a
 import insert a second child row for the same parent
 (docs/ENGINEERING_STANDARDS.md §Database rules: idempotency keys).
 """
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID, uuid5
 
+from pydantic import SecretStr
+
+from backend.app.domain.candidate import (
+    Availability,
+    CandidateProfile,
+    WeeklyAvailabilitySlot,
+    WorkAuthorization,
+    WorkAuthorizationStatus,
+)
 from backend.app.domain.common import (
+    LanguageLevel,
+    LanguageProficiency,
     LanguageRequirement,
     Location,
     Reason,
     SalaryRange,
+    Weekday,
     WorkloadRange,
 )
 from backend.app.domain.company import Company, CompanyLocation
 from backend.app.domain.identifiers import (
+    SURROGATE_KEY_NAMESPACE,
     CandidateProfileId,
     CompanyId,
     CompanyLocationId,
     MatchEvaluationId,
     OpportunityId,
+    SearchProfileId,
     UserId,
+    UserSessionId,
 )
 from backend.app.domain.matching import DimensionScore, MatchDimension, MatchEvaluation
-from backend.app.domain.opportunity import Opportunity, OpportunitySourceRecord
+from backend.app.domain.opportunity import (
+    ContractType,
+    Opportunity,
+    OpportunitySourceRecord,
+    OpportunityType,
+    WorkplaceMode,
+)
+from backend.app.domain.search import (
+    CountrySearchArea,
+    RadiusSearchArea,
+    RemoteOnlySearchArea,
+    SearchArea,
+    SearchAreaKind,
+    SearchProfile,
+)
+from backend.app.domain.user import User, UserSession, UserStatus
 from backend.app.infrastructure.database.models import (
+    CandidateAvailabilitySlotRow,
+    CandidateLanguageRow,
+    CandidateProfileRow,
+    CandidateWorkAuthorizationRow,
     CompanyLocationRow,
     CompanyRow,
     LocationColumnsMixin,
@@ -53,14 +87,20 @@ from backend.app.infrastructure.database.models import (
     MatchEvaluationRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
+    SearchAreaRow,
+    SearchProfileRow,
+    UserRow,
+    UserSessionRow,
 )
 
 """Namespace for primary keys the domain does not carry.
 
-Fixed for the lifetime of the schema: changing it would orphan every child row
-written before the change, since nothing would derive their keys again.
+Imported from `backend.app.domain.identifiers` rather than defined here, so the
+derived keys in this module and `default_candidate_profile_id` share one namespace
+that cannot drift. Fixed for the lifetime of the schema: changing it would orphan
+every child row written before the change, since nothing would derive their keys
+again.
 """
-SURROGATE_KEY_NAMESPACE = UUID("20b521f6-f70d-4db4-895c-2fe588adf2ce")
 
 
 def source_record_row_id(opportunity_id: OpportunityId) -> UUID:
@@ -78,6 +118,44 @@ def dimension_score_row_id(evaluation_id: MatchEvaluationId,
     """
     return uuid5(SURROGATE_KEY_NAMESPACE,
                  f"match_dimension_score:{evaluation_id}:{dimension.value}")
+
+
+def candidate_language_row_id(profile_id: CandidateProfileId, language: str) -> UUID:
+    """The stable key of one language of one profile.
+
+    Keyed by the pair `uq_candidate_languages_profile_id_language` covers, for the
+    reason `dimension_score_row_id` exists: saving a profile twice must update the
+    rows already there. `LanguageProficiency` carries no id of its own, so without
+    this a second save would insert a duplicate and violate the constraint.
+    """
+    return uuid5(SURROGATE_KEY_NAMESPACE,
+                 f"candidate_language:{profile_id}:{language}")
+
+
+def work_authorization_row_id(profile_id: CandidateProfileId, country: str) -> UUID:
+    """The stable key of one country's authorization on one profile."""
+    return uuid5(SURROGATE_KEY_NAMESPACE,
+                 f"candidate_work_authorization:{profile_id}:{country}")
+
+
+def availability_slot_row_id(profile_id: CandidateProfileId, weekday: Weekday,
+                             start_hour: int) -> UUID:
+    """The stable key of one weekly slot on one profile."""
+    return uuid5(SURROGATE_KEY_NAMESPACE,
+                 f"candidate_availability_slot:{profile_id}:{weekday.value}:{start_hour}")
+
+
+def search_area_row_id(search_profile_id: SearchProfileId, ordinal: int) -> UUID:
+    """The stable key of one area of one saved search.
+
+    Keyed by position because position is all there is: two radius areas can differ
+    only by their radius, so a search with three areas has three rows identified by
+    being first, second and third. Editing the second area therefore updates the
+    second row.
+    """
+    return uuid5(SURROGATE_KEY_NAMESPACE,
+                 f"search_area:{search_profile_id}:{ordinal}")
+
 
 
 def reasons_to_json(reasons: tuple[Reason, ...]) -> list[dict[str, Any]]:
@@ -198,7 +276,27 @@ def _read_salary(row: OpportunityRow) -> SalaryRange | None:
                        minimum=row.salary_minimum, maximum=row.salary_maximum)
 
 
-def _apply_workload(row: OpportunityRow, workload: WorkloadRange | None) -> None:
+class _WorkloadColumns(Protocol):
+    """The four workload columns, wherever they appear.
+
+    `opportunities` carries what a posting offers and `search_profiles` carries
+    what a candidate wants; both are a `WorkloadRange`, so both get the same four
+    columns and the same pair of functions. A structural type rather than a shared
+    mixin because `OpportunityRow` is a Phase 2 table and changing its bases to
+    gain nothing but a shorter annotation would rewrite a migration's column order.
+
+    The members are annotated with the *attribute* type, not `Mapped[...]`: on an
+    instance a `Mapped[int | None]` descriptor reads and writes `int | None`, and
+    a protocol declaring the wrapper matches no row class at all.
+    """
+
+    workload_min_percent: int | None
+    workload_max_percent: int | None
+    workload_min_weekly_hours: float | None
+    workload_max_weekly_hours: float | None
+
+
+def _apply_workload(row: _WorkloadColumns, workload: WorkloadRange | None) -> None:
     row.workload_min_percent = None if workload is None else workload.min_percent
     row.workload_max_percent = None if workload is None else workload.max_percent
     row.workload_min_weekly_hours = (None if workload is None
@@ -207,7 +305,7 @@ def _apply_workload(row: OpportunityRow, workload: WorkloadRange | None) -> None
                                      else workload.max_weekly_hours)
 
 
-def _read_workload(row: OpportunityRow) -> WorkloadRange | None:
+def _read_workload(row: _WorkloadColumns) -> WorkloadRange | None:
     bounds = (row.workload_min_percent, row.workload_max_percent,
               row.workload_min_weekly_hours, row.workload_max_weekly_hours)
     if not any(bound is not None for bound in bounds):
@@ -375,6 +473,378 @@ def match_evaluation_to_domain(row: MatchEvaluationRow) -> MatchEvaluation:
         reasons=reasons_from_json(row.reasons),
         evaluator_key=row.evaluator_key,
         evaluated_at=row.evaluated_at)
+
+
+# Phase 4: identity, the candidate profile onboarding fills in, and saved searches.
+#
+# Three of the functions below unwrap a `SecretStr`, and they are the only ones in
+# the persistence layer that do: `users.password_hash`, `user_sessions.token_digest`
+# and `user_sessions.csrf_token_digest`. Keeping the unwrap here rather than in a
+# service means the plain value exists only inside a statement's parameter list —
+# never in a domain object a log line might format
+# (docs/ENGINEERING_STANDARDS.md §Security).
+
+
+def user_to_row(user: User, row: UserRow | None = None) -> UserRow:
+    """A `User` onto its row.
+
+    `created_at` and `updated_at` are written explicitly rather than left to the
+    server defaults, because on this table they are domain fields: the caller owns
+    the clock, so a test can write an account that registered last week without
+    persuading PostgreSQL that `now()` is in the past.
+    """
+    target = UserRow(id=user.id) if row is None else row
+    target.email = user.email
+    target.password_hash = user.password_hash.get_secret_value()
+    target.status = user.status
+    target.display_name = user.display_name
+    target.email_verified_at = user.email_verified_at
+    target.last_login_at = user.last_login_at
+    target.failed_login_attempts = user.failed_login_attempts
+    target.locked_until = user.locked_until
+    target.onboarding_completed_at = user.onboarding_completed_at
+    target.created_at = user.created_at
+    target.updated_at = user.updated_at
+    return target
+
+
+def user_to_domain(row: UserRow) -> User:
+    """A row as a `User`, with the hash wrapped again before it can be printed."""
+    return User(
+        id=UserId(row.id),
+        email=row.email,
+        password_hash=SecretStr(row.password_hash),
+        status=UserStatus(row.status),
+        display_name=row.display_name,
+        email_verified_at=row.email_verified_at,
+        last_login_at=row.last_login_at,
+        failed_login_attempts=row.failed_login_attempts,
+        locked_until=row.locked_until,
+        onboarding_completed_at=row.onboarding_completed_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def user_session_to_row(session: UserSession,
+                        row: UserSessionRow | None = None) -> UserSessionRow:
+    """A `UserSession` onto its row, as two digests and a window.
+
+    `created_at` and `updated_at` are *not* set here, unlike on `users`: the domain
+    object has `issued_at` and `last_seen_at`, which say the same thing more
+    precisely, and the mixin's server defaults are then honest bookkeeping rather
+    than a second copy of the same instant.
+    """
+    target = UserSessionRow(id=session.id) if row is None else row
+    target.user_id = session.user_id
+    target.token_digest = session.token_digest.get_secret_value()
+    target.csrf_token_digest = session.csrf_token_digest.get_secret_value()
+    target.issued_at = session.issued_at
+    target.expires_at = session.expires_at
+    target.last_seen_at = session.last_seen_at
+    target.revoked_at = session.revoked_at
+    return target
+
+
+def user_session_to_domain(row: UserSessionRow) -> UserSession:
+    return UserSession(
+        id=UserSessionId(row.id),
+        user_id=UserId(row.user_id),
+        token_digest=SecretStr(row.token_digest),
+        csrf_token_digest=SecretStr(row.csrf_token_digest),
+        issued_at=row.issued_at,
+        expires_at=row.expires_at,
+        last_seen_at=row.last_seen_at,
+        revoked_at=row.revoked_at)
+
+
+def _language_to_row(proficiency: LanguageProficiency,
+                     profile_id: CandidateProfileId, ordinal: int,
+                     row: CandidateLanguageRow | None = None) -> CandidateLanguageRow:
+    target = (CandidateLanguageRow(
+        id=candidate_language_row_id(profile_id, proficiency.language))
+        if row is None else row)
+    target.profile_id = profile_id
+    target.ordinal = ordinal
+    target.language = proficiency.language
+    target.level = proficiency.level
+    return target
+
+
+def _work_authorization_to_row(
+        authorization: WorkAuthorization, profile_id: CandidateProfileId, ordinal: int,
+        row: CandidateWorkAuthorizationRow | None = None
+) -> CandidateWorkAuthorizationRow:
+    target = (CandidateWorkAuthorizationRow(
+        id=work_authorization_row_id(profile_id, authorization.country))
+        if row is None else row)
+    target.profile_id = profile_id
+    target.ordinal = ordinal
+    target.country = authorization.country
+    target.status = authorization.status
+    target.permit_label = authorization.permit_label
+    target.valid_until = authorization.valid_until
+    target.permit_hours_cap = authorization.permit_hours_cap
+    return target
+
+
+def _availability_slot_to_row(
+        slot: WeeklyAvailabilitySlot, profile_id: CandidateProfileId, ordinal: int,
+        row: CandidateAvailabilitySlotRow | None = None) -> CandidateAvailabilitySlotRow:
+    target = (CandidateAvailabilitySlotRow(
+        id=availability_slot_row_id(profile_id, slot.weekday, slot.start_hour))
+        if row is None else row)
+    target.profile_id = profile_id
+    target.ordinal = ordinal
+    target.weekday = slot.weekday
+    target.start_hour = slot.start_hour
+    target.end_hour = slot.end_hour
+    return target
+
+
+def _apply_availability(row: CandidateProfileRow,
+                        availability: Availability | None) -> None:
+    """Write the five scalar availability columns, or clear them.
+
+    The weekly slots are a child collection and are handled by
+    `candidate_profile_to_row`, which is the only function holding the ordinals.
+    """
+    row.availability_earliest_start = (None if availability is None
+                                       else availability.earliest_start)
+    row.availability_latest_end = (None if availability is None
+                                   else availability.latest_end)
+    row.availability_min_weekly_hours = (None if availability is None
+                                         else availability.min_weekly_hours)
+    row.availability_max_weekly_hours = (None if availability is None
+                                         else availability.max_weekly_hours)
+    row.availability_notice_period_days = (None if availability is None
+                                           else availability.notice_period_days)
+
+
+def _read_availability(row: CandidateProfileRow) -> Availability | None:
+    """The availability columns and slot rows as an `Availability`, or `None`.
+
+    All five NULL *and* no slots reads back as "not stated", the same convention
+    `_read_location` follows. It makes `Availability()` — a value object with
+    nothing set — indistinguishable from absence, which is what it means anyway.
+    """
+    bounds = (row.availability_earliest_start, row.availability_latest_end,
+              row.availability_min_weekly_hours, row.availability_max_weekly_hours,
+              row.availability_notice_period_days)
+    if not any(bound is not None for bound in bounds) and not row.availability_slots:
+        return None
+    return Availability(
+        earliest_start=row.availability_earliest_start,
+        latest_end=row.availability_latest_end,
+        weekly_slots=tuple(
+            WeeklyAvailabilitySlot(weekday=Weekday(child.weekday),
+                                   start_hour=child.start_hour,
+                                   end_hour=child.end_hour)
+            for child in row.availability_slots),
+        min_weekly_hours=row.availability_min_weekly_hours,
+        max_weekly_hours=row.availability_max_weekly_hours,
+        notice_period_days=row.availability_notice_period_days)
+
+
+def candidate_profile_to_row(profile: CandidateProfile,
+                             row: CandidateProfileRow | None = None
+                             ) -> CandidateProfileRow:
+    """A `CandidateProfile` and its three child collections onto rows.
+
+    Raises `ValueError` when the profile carries evidence or claims. Phase 10 owns
+    the evidence store, and there is no column for either here; writing the profile
+    and dropping them would break `_claims_rest_on_held_evidence` on the way back
+    out — a claim would return citing evidence the profile no longer holds. The
+    check lives in the mapper rather than in the repository because the mapper is
+    the layer every path goes through.
+
+    `updated_at` is written from the domain object and `created_at` is left to the
+    server default, for the reason `user_session_to_row` gives: the domain models
+    the field it actually has.
+    """
+    if profile.evidence or profile.claims:
+        raise ValueError(
+            "candidate evidence and claims have no V2 persistence yet (Phase 10); "
+            f"profile {profile.id} carries {len(profile.evidence)} evidence records "
+            f"and {len(profile.claims)} claims")
+    target = CandidateProfileRow(id=profile.id) if row is None else row
+    target.user_id = profile.user_id
+    target.display_name = profile.display_name
+    target.headline = profile.headline
+    _apply_location(target, profile.base_location)
+    availability = profile.availability
+    _apply_availability(target, availability)
+    target.updated_at = profile.updated_at
+    # As in `opportunity_to_row`, the children hang from the row being written and
+    # are matched by their natural key, so re-saving a profile updates the rows
+    # already there and a language the candidate removed is deleted.
+    profile_id = CandidateProfileId(target.id)
+    languages = {child.language: child for child in (row.languages if row else [])}
+    target.languages = [
+        _language_to_row(proficiency, profile_id, ordinal,
+                         languages.get(proficiency.language))
+        for ordinal, proficiency in enumerate(profile.languages)]
+    authorizations = {child.country: child
+                      for child in (row.work_authorizations if row else [])}
+    target.work_authorizations = [
+        _work_authorization_to_row(authorization, profile_id, ordinal,
+                                   authorizations.get(authorization.country))
+        for ordinal, authorization in enumerate(profile.work_authorizations)]
+    slots = {(child.weekday, child.start_hour): child
+             for child in (row.availability_slots if row else [])}
+    target.availability_slots = [
+        _availability_slot_to_row(slot, profile_id, ordinal,
+                                  slots.get((slot.weekday, slot.start_hour)))
+        for ordinal, slot in enumerate(
+            () if availability is None else availability.weekly_slots)]
+    return target
+
+
+def candidate_profile_to_domain(row: CandidateProfileRow) -> CandidateProfile:
+    """A row and its children as a `CandidateProfile`.
+
+    `evidence` and `claims` are left at their defaults — empty — which is the
+    truthful reading of a schema that has nowhere to store them.
+    """
+    return CandidateProfile(
+        id=CandidateProfileId(row.id),
+        user_id=UserId(row.user_id),
+        display_name=row.display_name,
+        headline=row.headline,
+        base_location=_read_location(row),
+        languages=tuple(
+            LanguageProficiency(language=child.language,
+                                level=LanguageLevel(child.level))
+            for child in row.languages),
+        work_authorizations=tuple(
+            WorkAuthorization(country=child.country,
+                              status=WorkAuthorizationStatus(child.status),
+                              permit_label=child.permit_label,
+                              valid_until=child.valid_until,
+                              permit_hours_cap=child.permit_hours_cap)
+            for child in row.work_authorizations),
+        availability=_read_availability(row),
+        updated_at=row.updated_at)
+
+
+def _area_to_row(area: SearchArea, search_profile_id: SearchProfileId, ordinal: int,
+                 row: SearchAreaRow | None = None) -> SearchAreaRow:
+    """One `SearchArea` onto the flattened row, narrowed by `isinstance`.
+
+    `isinstance` rather than `getattr(area, "country", None)`: the union's whole
+    value is that each shape has exactly the fields it needs, and `getattr` with a
+    default would hand a misspelled field name straight to a NULL column. Every
+    branch sets *all four* shape columns, including the ones it clears, so
+    `ck_search_areas_shape_matches_kind` cannot be tripped by a leftover value from
+    the row's previous kind.
+    """
+    target = (SearchAreaRow(id=search_area_row_id(search_profile_id, ordinal))
+              if row is None else row)
+    target.search_profile_id = search_profile_id
+    target.ordinal = ordinal
+    target.kind = area.kind
+    target.label = area.label
+    if isinstance(area, CountrySearchArea):
+        target.country = area.country
+        target.center = None
+        target.radius_km = None
+    elif isinstance(area, RadiusSearchArea):
+        target.country = None
+        target.center = area.center
+        target.radius_km = area.radius_km
+    else:
+        target.country = area.country
+        target.center = None
+        target.radius_km = None
+    return target
+
+
+def _area_to_domain(row: SearchAreaRow) -> SearchArea:
+    """One row back into the union member its `kind` names.
+
+    Raises `ValueError` on a row the kind's own columns do not support, as
+    `company_location_to_domain` does: `ck_search_areas_shape_matches_kind` makes
+    it unreachable through PostgreSQL, and a hand-built row in a test deserves a
+    sentence rather than a Pydantic traceback.
+    """
+    kind = SearchAreaKind(row.kind)
+    if kind is SearchAreaKind.COUNTRY:
+        if row.country is None:
+            raise ValueError(f"search_areas row {row.id} is COUNTRY with no country")
+        return CountrySearchArea(country=row.country, label=row.label)
+    if kind is SearchAreaKind.RADIUS:
+        if row.center is None or row.radius_km is None:
+            raise ValueError(
+                f"search_areas row {row.id} is RADIUS with no centre or radius")
+        return RadiusSearchArea(center=row.center, radius_km=row.radius_km,
+                                label=row.label)
+    return RemoteOnlySearchArea(country=row.country, label=row.label)
+
+
+def search_profile_to_row(profile: SearchProfile,
+                          row: SearchProfileRow | None = None) -> SearchProfileRow:
+    """A `SearchProfile` and its areas onto rows.
+
+    The eight filter tuples become `list[str]` because that is what `ARRAY(Text)`
+    binds; the enum tuples are written as `member.value` so what lands in the
+    column is what `ck_search_profiles_*_members` checks against. An empty tuple
+    becomes an empty array, never NULL — the two would mean the same thing and
+    only one of them survives a `= ANY`.
+    """
+    target = SearchProfileRow(id=profile.id) if row is None else row
+    target.user_id = profile.user_id
+    target.name = profile.name
+    target.is_active = profile.is_active
+    target.queries = list(profile.queries)
+    target.title_keywords = list(profile.title_keywords)
+    target.excluded_keywords = list(profile.excluded_keywords)
+    target.opportunity_types = [member.value for member in profile.opportunity_types]
+    target.contract_types = [member.value for member in profile.contract_types]
+    target.workplace_modes = [member.value for member in profile.workplace_modes]
+    target.posting_languages = list(profile.posting_languages)
+    target.source_keys = list(profile.source_keys)
+    _apply_workload(target, profile.workload)
+    target.created_at = profile.created_at
+    target.updated_at = profile.updated_at
+    # Matched by `ordinal`, which is this table's natural key: two radius areas can
+    # differ only by their radius, so there is nothing else to identify a row by.
+    search_profile_id = SearchProfileId(target.id)
+    existing = {child.ordinal: child for child in (row.areas if row else [])}
+    target.areas = [_area_to_row(area, search_profile_id, ordinal,
+                                 existing.get(ordinal))
+                    for ordinal, area in enumerate(profile.areas)]
+    return target
+
+
+def search_profile_to_domain(row: SearchProfileRow) -> SearchProfile:
+    """A row and its areas as a `SearchProfile`.
+
+    The enum arrays are re-validated on the way out rather than trusted: the CHECK
+    constraints police the column, but a row written by a migration or by hand
+    would fail here with the offending value named instead of surfacing later as an
+    enum comparison that quietly never matches.
+    """
+    return SearchProfile(
+        id=SearchProfileId(row.id),
+        user_id=UserId(row.user_id),
+        name=row.name,
+        is_active=row.is_active,
+        areas=tuple(_area_to_domain(child) for child in row.areas),
+        queries=tuple(row.queries),
+        title_keywords=tuple(row.title_keywords),
+        excluded_keywords=tuple(row.excluded_keywords),
+        opportunity_types=tuple(OpportunityType(value)
+                                for value in row.opportunity_types),
+        contract_types=tuple(ContractType(value) for value in row.contract_types),
+        workplace_modes=tuple(WorkplaceMode(value) for value in row.workplace_modes),
+        posting_languages=tuple(row.posting_languages),
+        workload=_read_workload(row),
+        source_keys=tuple(row.source_keys),
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+
+
 
 
 

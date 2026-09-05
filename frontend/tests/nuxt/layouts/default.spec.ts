@@ -11,7 +11,29 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
 import DefaultLayout from '~/layouts/default.vue'
+import { useSessionStore } from '~/stores/session'
 import { stubFetch } from '../support/http'
+import { signedIn } from '../support/v2-fixtures'
+import type { Route } from '../support/http'
+
+/**
+ * The shell's own requests: the copilot's history, and — since Phase 4 — the
+ * session behind the account affordance. 401 is the default because an anonymous
+ * visitor is a supported state on these pages (V1's API has no accounts).
+ *
+ * `extra` comes first: `stubFetch` answers from the first matching route, so a
+ * route passed in has to precede the default it replaces.
+ */
+function shellRoutes(...extra: Route[]): Route[] {
+  return [
+    ...extra,
+    { match: '/api/chat/history', json: { messages: [] } },
+    { match: '/api/v2/auth/session', status: 401, json: { error: 'not_authenticated' } },
+  ]
+}
+
+/** The nav links only. The topbar's account link is an anchor too. */
+const NAV = '.nav-link'
 
 function mountShell() {
   return mountSuspended(DefaultLayout, { slots: { default: () => 'content' } })
@@ -21,13 +43,16 @@ describe('default layout (V1 AppShell)', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     clearNuxtData()
-    stubFetch([{ match: '/api/chat/history', json: { messages: [] } }])
+    // The store outlives a test — it is the app's, not the wrapper's — so an
+    // authenticated case would otherwise leak into the next mount.
+    useSessionStore().$reset()
+    stubFetch(shellRoutes())
   })
 
   it('renders nav links and content', async () => {
     const wrapper = await mountShell()
 
-    const links = wrapper.findAll('a').map(a => a.text())
+    const links = wrapper.findAll(NAV).map(a => a.text())
     expect(links).toEqual(['Overview', 'Jobs', 'Analytics', 'Settings'])
     expect(wrapper.text()).toContain('content')
     expect(wrapper.text()).toContain('⌘ Command Center')
@@ -35,8 +60,29 @@ describe('default layout (V1 AppShell)', () => {
 
   it('points each nav link at its route', async () => {
     const wrapper = await mountShell()
-    expect(wrapper.findAll('a').map(a => a.attributes('href')))
+    expect(wrapper.findAll(NAV).map(a => a.attributes('href')))
       .toEqual(['/', '/jobs', '/analytics', '/settings'])
+  })
+
+  // The V1 pages this shell wraps work without an account, so an anonymous
+  // visitor gets an invitation rather than a redirect (app/middleware/auth.ts).
+  it('offers a sign-in link when there is no session', async () => {
+    const wrapper = await mountShell()
+    await flushPromises()
+
+    const account = wrapper.get('.topbar-account')
+    expect(account.text()).toBe('Sign in')
+    expect(account.attributes('href')).toBe('/login')
+  })
+
+  it('links to the account once a session is known', async () => {
+    stubFetch(shellRoutes({ match: '/api/v2/auth/session', json: signedIn() }))
+    const wrapper = await mountShell()
+    await flushPromises()
+
+    const account = wrapper.get('.topbar-account')
+    expect(account.text()).toBe('Test Candidate')
+    expect(account.attributes('href')).toBe('/profile')
   })
 
   it('toggles the global copilot panel', async () => {
@@ -62,7 +108,8 @@ describe('theme toggle (V1 useTheme)', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     clearNuxtData()
-    stubFetch([{ match: '/api/chat/history', json: { messages: [] } }])
+    useSessionStore().$reset()
+    stubFetch(shellRoutes())
   })
 
   // V1's "defaults to dark" and "reads persisted theme on init" are NOT asserted

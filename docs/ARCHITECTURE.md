@@ -116,6 +116,8 @@ Repository/query APIs must make accidental cross-user reads difficult.
 
 Avoid accepting arbitrary `user_id` values directly from frontend payloads. Resolve identity from authenticated context.
 
+Phase 4 realized this for the first user-owned tables (`candidate_profiles`, `search_profiles`). The owner is never in a path and never in a request body — `extra="forbid"` rejects one that invents a `user_id` — it comes from the session, and the repository puts it in the `WHERE` clause rather than filtering rows in Python. Another account's row is therefore absent rather than forbidden, and answers the same 404 as one that never existed. See [V2 Authentication](./AUTHENTICATION.md) §Authorization.
+
 ## 6. Background execution
 
 The current in-process FastAPI scheduler is suitable for V1 but not the long-term SaaS runtime.
@@ -361,6 +363,8 @@ Requirements:
 - explicit user authorization for application actions;
 - audit log for autonomous submissions;
 - server-side authorization on every candidate-owned resource.
+
+Phase 4 built the session half of this: Argon2id passwords, server-side sessions whose tokens are stored only as SHA-256 digests, a double-submit CSRF check compared against the session row, and cookies whose `Secure` flag is a deployment setting rather than an inference from the request scheme. [V2 Authentication](./AUTHENTICATION.md) is the reference, including what it deliberately leaves out.
 
 ## 16. Migration philosophy
 

@@ -61,10 +61,16 @@ export function sseResponse(chunks: string[], status = 200): Response {
   })
 }
 
+/** Statuses the Response constructor refuses to give a body to. */
+const BODYLESS = new Set([204, 205, 304])
+
 function build(route: Route, url: string, init?: RequestInit): Response | Promise<Response> {
   if (route.respond) return route.respond(url, init)
   if (route.sse) return sseResponse(route.sse, route.status ?? 200)
   const status = route.status ?? 200
+  // `new Response("", {status: 204})` throws — a 204 may not carry a body at all,
+  // even an empty string. The V2 deletes answer 204, so this is the shape they need.
+  if (BODYLESS.has(status)) return new Response(null, { status })
   if (route.text !== undefined) return new Response(route.text, { status })
   return new Response(JSON.stringify(route.json ?? null), {
     status,

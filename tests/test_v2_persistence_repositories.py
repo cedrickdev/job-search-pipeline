@@ -66,6 +66,7 @@ from tests.v2_builders import (
     an_evaluation,
     an_opportunity,
 )
+from tests.v2_rows import a_candidate_profile_row, a_user_row
 
 # Every test in this module is async, and pytest-asyncio runs in strict mode
 # (pyproject.toml), so the marker is applied once here rather than on 20 functions.
@@ -123,23 +124,25 @@ async def evaluation_prerequisites(db_session, opportunities):
     """The rows an evaluation needs a foreign key to.
 
     `users` and `candidate_profiles` are written as ORM rows rather than through a
-    repository because Phase 2 deliberately does not have one: they exist as
-    foreign-key targets, and Phase 4 owns what a user actually is.
+    repository because there is no repository for either: `AuthenticationService` and
+    `OnboardingService` own what a user and a profile are, and what these tests need
+    is only a valid foreign-key target (`tests/v2_rows.py`).
     """
     db_session.add_all([
-        UserRow(id=USER, display_name="owner"),
-        UserRow(id=OTHER_USER, display_name="somebody else"),
+        a_user_row(display_name="owner"),
+        a_user_row(id=OTHER_USER, display_name="somebody else"),
     ])
     # Flushed before the profiles rather than added alongside them: no
-    # `relationship()` joins the two tables — Phase 4 owns what a user is — so
-    # SQLAlchemy's unit of work has no dependency edge to sort the inserts by and
-    # orders them by mapper name, which puts `candidate_profiles` first and
+    # `relationship()` joins the two tables — the profile's owner is a plain column
+    # — so SQLAlchemy's unit of work has no dependency edge to sort the inserts by
+    # and orders them by mapper name, which puts `candidate_profiles` first and
     # violates the foreign key.
     await db_session.flush()
     db_session.add_all([
-        CandidateProfileRow(id=PROFILE, user_id=USER, label="graduate"),
-        CandidateProfileRow(id=SECOND_PROFILE, user_id=USER, label="student"),
-        CandidateProfileRow(id=OTHER_PROFILE, user_id=OTHER_USER, label="student"),
+        a_candidate_profile_row(display_name="graduate"),
+        a_candidate_profile_row(id=SECOND_PROFILE, display_name="student"),
+        a_candidate_profile_row(id=OTHER_PROFILE, user_id=OTHER_USER,
+                                display_name="student"),
     ])
     await opportunities.upsert(an_opportunity())
     await db_session.flush()
@@ -241,8 +244,7 @@ async def test_an_aware_non_utc_instant_is_stored_as_the_same_instant(db_session
     in — which is what makes a stored instant unambiguous.
     """
     zurich = datetime(2026, 3, 1, 10, 30, tzinfo=ZoneInfo("Europe/Zurich"))
-    db_session.add(UserRow(id=USER, display_name="owner",
-                           created_at=zurich, updated_at=zurich))
+    db_session.add(a_user_row(created_at=zurich, updated_at=zurich))
     await db_session.flush()
     db_session.expunge_all()
     result = await db_session.execute(select(UserRow).where(UserRow.id == USER))
@@ -260,8 +262,7 @@ async def test_a_naive_datetime_is_refused_at_the_driver_boundary(db_session):
     SQLAlchemy raises it while binding parameters, with the statement attached.
     """
     naive = datetime(2026, 3, 1, 10, 30)
-    db_session.add(UserRow(id=USER, display_name="owner",
-                           created_at=naive, updated_at=naive))
+    db_session.add(a_user_row(created_at=naive, updated_at=naive))
     with pytest.raises(StatementError, match="refusing to store a naive datetime"):
         await db_session.flush()
 

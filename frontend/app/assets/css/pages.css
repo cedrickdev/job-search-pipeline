@@ -125,3 +125,78 @@
 .settings-actions { display: flex; align-items: center; gap: var(--space-3); }
 .settings-ok { color: var(--text-dim); }
 .settings-err { color: #e5534b; }
+
+/* ── Authentication and account screens (Phase 4) ──────────────────────────────
+   New styles rather than ported ones: V1 had no accounts, so there is nothing to
+   reproduce here. They stay in the same vocabulary as the pages above — the same
+   tokens, the same surface/border pairing — because these screens sit beside the
+   ported ones and a second visual language would be the change nobody asked for.
+
+   `.auth-*` is the signed-out frame (login, register, onboarding), `.acct-*` the
+   forms and the account page, `.onb-*` the onboarding progress list. */
+.auth-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: var(--space-6); background: var(--bg); }
+.auth-page--wide { align-items: flex-start; padding-top: var(--space-8); }
+.auth-card {
+  width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: var(--space-2);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: var(--space-6); box-shadow: var(--shadow);
+}
+.auth-card--wide { max-width: 640px; gap: var(--space-4); }
+.auth-card h1 { font-size: 20px; margin-bottom: var(--space-2); }
+.auth-card h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
+.auth-field { font-size: 13px; color: var(--text-dim); margin-top: var(--space-2); }
+.auth-optional { color: var(--text-dim); font-weight: 400; }
+.auth-hint { color: var(--text-dim); font-size: 12px; line-height: 1.5; }
+.auth-error { background: var(--accent-tint); border: 1px solid var(--danger); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); color: var(--text); }
+.auth-field-error { color: var(--danger); font-size: 12px; }
+.auth-alt { color: var(--text-dim); font-size: 13px; margin-top: var(--space-4); }
+.btn-link { background: none; border: none; padding: 0; color: var(--accent); font: inherit; }
+
+/* One rule for every control on these screens: the forms are shared between the
+   signed-out card and the account page, so their inputs cannot be styled by the
+   container they happen to be in. */
+.auth-card input, .auth-card select, .auth-card textarea,
+.acct-form input, .acct-form select, .acct-form textarea {
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: var(--space-2); font: inherit; width: 100%;
+}
+.auth-card input[type="checkbox"], .acct-form input[type="checkbox"] { width: auto; }
+.auth-card button[type="submit"], .acct-form button[type="submit"] { margin-top: var(--space-2); }
+
+.acct-form { display: flex; flex-direction: column; gap: var(--space-2); }
+.acct-field { font-size: 13px; color: var(--text-dim); margin-top: var(--space-2); }
+.acct-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); align-items: end; }
+.acct-row--list { grid-template-columns: 1fr 1fr auto; }
+.acct-fieldset { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-3); }
+.acct-fieldset legend { font-size: 13px; color: var(--text-dim); padding: 0 var(--space-1); }
+.acct-checks { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
+.acct-check { display: inline-flex; align-items: center; gap: var(--space-2); font-size: 13px; }
+.acct-kept { font-size: 13px; color: var(--text-dim); }
+.acct-actions { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3); }
+
+.acct-page { max-width: 720px; display: flex; flex-direction: column; gap: var(--space-4); }
+.acct-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+.acct-head h1 { font-size: 22px; }
+.acct-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-3); margin: 0; }
+.acct-facts dt { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.acct-facts dd { margin: 0; font-size: 13px; word-break: break-word; }
+.acct-searches { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.acct-search { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+.acct-search-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.acct-search-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 200px; min-width: 0; }
+.acct-search-name { font-weight: 600; }
+.acct-search-meta { font-size: 12px; color: var(--text-dim); }
+.acct-live { font-size: 12px; color: var(--ok); }
+.acct-paused { font-size: 12px; color: var(--text-dim); }
+.acct-new { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+.acct-new h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
+
+.onb-steps { list-style: none; display: flex; gap: var(--space-2); margin: 0; padding: 0; counter-reset: step; }
+.onb-step { counter-increment: step; flex: 1 1 0; font-size: 12px; color: var(--text-dim); border-top: 2px solid var(--border); padding-top: var(--space-2); }
+.onb-step::before { content: counter(step) " · "; font-family: var(--font-mono); }
+.onb-step.current { color: var(--text); border-top-color: var(--accent); }
+.onb-step.done { color: var(--ok); border-top-color: var(--ok); }
+.onb-panel { display: flex; flex-direction: column; gap: var(--space-2); }
+
+.topbar-account { color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); font-size: 13px; }
+.topbar-account:hover { color: var(--text); }

@@ -6,7 +6,7 @@
 // their `open` events to the drawer or that an action reaches the API from a real
 // click. Completion criterion 4 (application actions work) is this file.
 import { expect, test } from '@playwright/test'
-import { mockApi } from './support/api'
+import { ANONYMOUS_SESSION, mockApi } from './support/api'
 import { IDLE_RUN, card, jobDetail, overview } from './support/fixtures'
 
 const JOBS = {
@@ -23,6 +23,7 @@ const ROUTES = [
   { match: '/api/overview', json: overview() },
   { match: '/api/runs/status', json: IDLE_RUN },
   { match: '/api/chat/history', json: { messages: [] } },
+  ANONYMOUS_SESSION,
 ]
 
 test('opens a job from the board and approves it through the confirmation gate', async ({ page }) => {

@@ -65,9 +65,10 @@ services:
     restart: unless-stopped
 
   # Added in Phase 3, because a migrated frontend needs an API to talk to inside
-  # the composition (completion criterion 8). This is still V1's FastAPI
-  # application: Phase 3 migrates the frontend and nothing else, so the image is
-  # the same one `migrate` and `import-v1` build.
+  # the composition (completion criterion 8). One FastAPI application serves both
+  # surfaces: V1's 29 SQLite-backed operations and, since Phase 4, `/api/v2`
+  # against PostgreSQL (server/app.py mounts `create_v2_router()`), which is the
+  # image `migrate` and `import-v1` also build.
   api:
     build:
       context: .
@@ -76,6 +77,19 @@ services:
       # server/app.py reads this before paths.DB_PATH. Explicit, so the tracker is
       # unambiguously the mounted volume below and not a file baked into a layer.
       JOBSEARCH_DB_PATH: /app/data/tracker.db
+      # V2's database, the same URL `migrate` upgrades. Without it the V2 settings
+      # would fall back to LOCAL_DEV_DATABASE_URL on 127.0.0.1:55432 — the port
+      # published to the *host* — and every `/api/v2` request would answer 503 from
+      # inside the container, where that address is the container itself.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobsearch}:${POSTGRES_PASSWORD:-jobsearch_dev_only}@postgres:5432/${POSTGRES_DB:-jobsearch_dev}
+      # The one supported way to run without `Secure` cookies, declared rather than
+      # inferred (docs/AUTHENTICATION.md §`Secure` is a deployment setting, never an
+      # inference). This composition is reached over `http://localhost`, and a jar
+      # that has accepted a `Secure` cookie will not send it back over HTTP: with the
+      # default policy a developer would get a login that appears to succeed and then
+      # does not. It also drops the `__Host-` prefix, which a non-`Secure` cookie
+      # cannot carry. Never set this in a deployment a browser reaches over HTTPS.
+      JOBSEARCH_AUTH_COOKIE_SECURE: "false"
     volumes:
       # A named volume, NOT a bind mount of ./data. That directory holds the
       # operator's real tracker, job-board logins and answers.yaml; a container
@@ -118,10 +132,17 @@ services:
       retries: 6
       start_period: 15s
     restart: unless-stopped
-    # No `depends_on: postgres`. V1's API is SQLite-only and nothing in it reads
-    # PostgreSQL yet — Phase 2 imports *into* the database through its CLI. A
-    # declared dependency here would be decoration, and would make `up api` wait on
-    # a service it never queries.
+    depends_on:
+      # `service_healthy` since Phase 4: `/api/v2` needs the database, and the engine
+      # is created lazily by the first request that touches it, so an API started
+      # ahead of PostgreSQL would answer 503 to the sign-in the frontend does on load.
+      # V1's routes do not care — they are SQLite — which is why this was decoration
+      # before and is not now.
+      postgres:
+        condition: service_healthy
+    # The schema is still `docker compose run --rm migrate`'s job, not a startup
+    # step: a service that migrates on boot migrates on every scale-up and every
+    # restart loop. `/api/v2` answers 503 until it has been run once.
     #
     # This container answers /api only. `paths.FRONTEND_DIST` — frontend/.output/public
     # since Phase 3 closure — is excluded from the build context by .dockerignore, so

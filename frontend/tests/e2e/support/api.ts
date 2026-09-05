@@ -39,6 +39,22 @@ export interface ApiMock {
   callsTo: (fragment: string) => RecordedCall[]
 }
 
+/**
+ * No session, which is the shell's normal case in these tests.
+ *
+ * `app/layouts/default.vue` calls `session.ensure()` on mount, so every screen
+ * inside the shell asks for the session once. The V1-ported screens are not
+ * guarded — an anonymous visitor is a supported state there and gets a "Sign in"
+ * link — so 401 is the answer that leaves those tests testing what they were
+ * written to test. Without it the request would land in `unmatched`.
+ */
+export const ANONYMOUS_SESSION: MockRoute = {
+  match: '/api/v2/auth/session',
+  method: 'GET',
+  status: 401,
+  json: { error: 'not_authenticated', detail: 'no session cookie' },
+}
+
 /** Install the route table on `page`. Call before `page.goto`. */
 export async function mockApi(page: Page, routes: MockRoute[]): Promise<ApiMock> {
   const calls: RecordedCall[] = []

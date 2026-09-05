@@ -2,10 +2,18 @@
 """The database rules, asserted against the metadata instead of a code review.
 
 `docs/ENGINEERING_STANDARDS.md §Database rules` and the Phase 2 order state four
-policies that are easy to hold on nine tables and impossible to hold on ninety
+policies that are easy to hold on four tables and impossible to hold on ninety
 without a test: timezone-aware timestamps, native UUID keys, generated constraint
 names, and enums as TEXT + CHECK. Each is checked here over *every* mapped column,
-so a tenth table inherits the rule automatically and a table that opts out fails.
+so a fifteenth table inherits the rule automatically and a table that opts out
+fails.
+
+Ownership is the other thing asserted here, in three groups. A shared fact carries
+no `user_id`; a user-owned row names its owner and cascades from `users`; a
+parent-owned row reaches its owner through exactly one parent and cascades from it.
+Every table belongs to one group, which is what makes "delete my account" a single
+`DELETE` (docs/ENGINEERING_STANDARDS.md §Security) and what Phase 4's
+authorization filter relies on.
 
 No database is needed: `Base.metadata` is the declaration, and these are questions
 about the declaration. The companion file `test_v2_persistence_migrations.py` asks
@@ -16,7 +24,16 @@ from decimal import Decimal
 from uuid import UUID
 
 import pytest
-from sqlalchemy import DateTime, Double, Enum, ForeignKeyConstraint, Numeric, Text
+from sqlalchemy import (
+    ARRAY,
+    CheckConstraint,
+    DateTime,
+    Double,
+    Enum,
+    ForeignKeyConstraint,
+    Numeric,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 
@@ -32,9 +49,21 @@ TABLES = Base.metadata.tables
 SHARED_TABLES = ("companies", "company_locations", "opportunities",
                  "opportunity_source_records")
 
-# Rows one user owns. Phase 4 adds authentication on top of these columns; Phase 2
-# owes the columns and the cascade.
-USER_OWNED_TABLES = ("candidate_profiles", "match_evaluations")
+# Rows one user owns, named by the `user_id` Phase 4's authorization filter reads.
+USER_OWNED_TABLES = ("candidate_profiles", "match_evaluations", "search_profiles",
+                     "user_sessions")
+
+# Rows owned through a parent instead of directly: a language belongs to a profile,
+# an area to a search profile, a dimension score to an evaluation. They carry no
+# `user_id` on purpose — a second copy of the owner is a second thing that can be
+# wrong — so each one is listed with the parent it cascades from.
+PARENT_OWNED_TABLES = {
+    "candidate_availability_slots": "candidate_profiles",
+    "candidate_languages": "candidate_profiles",
+    "candidate_work_authorizations": "candidate_profiles",
+    "match_dimension_scores": "match_evaluations",
+    "search_areas": "search_profiles",
+}
 
 # PostgreSQL truncates anything longer, and a truncated name is one a later
 # migration cannot drop by name.
@@ -60,15 +89,17 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_nine_v2_tables():
+def test_the_metadata_holds_exactly_the_fourteen_v2_tables():
     """A tripwire on the shape of the schema itself.
 
-    `models.py` is the only place a V2 table may be declared, so this list is the
-    inventory. A new table has to be added here — which is the moment to ask
-    whether it needs `user_id`, a cascade and a migration.
+    `models.py` is the only place a V2 table may be declared, so the three
+    ownership groups plus `users` are the inventory. A new table has to be added to
+    one of them — which is the moment to ask whether it needs `user_id`, a cascade
+    and a migration.
     """
-    assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | {
-        "users", "match_dimension_scores"}
+    assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
+        PARENT_OWNED_TABLES) | {"users"}
+    assert len(TABLES) == 14
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
@@ -160,18 +191,37 @@ def test_a_shared_fact_carries_no_owner(table_name):
 
 @pytest.mark.parametrize("table_name", USER_OWNED_TABLES)
 def test_user_owned_rows_name_their_owner_and_cascade_from_users(table_name):
-    """The column Phase 4's authorization filter will use, and its cascade.
+    """The column the authorization filter reads, and its cascade.
 
-    `ondelete="CASCADE"` from `users` is what makes "delete my account" a single
-    statement instead of a script that has to know every table — which matters
-    for a project that will hold candidate data (docs/ENGINEERING_STANDARDS.md
-    §Security).
+    Every read of these tables is `WHERE user_id = :current_user`
+    (`backend/app/repositories/sqlalchemy_repositories.py`), so the column has to
+    exist and may not be NULL. `ondelete="CASCADE"` from `users` is what makes
+    "delete my account" a single statement instead of a script that has to know
+    every table — which matters for a project that will hold candidate data
+    (docs/ENGINEERING_STANDARDS.md §Security).
     """
     table = TABLES[table_name]
     assert "user_id" in table.columns
     assert table.columns["user_id"].nullable is False
     to_users = [fk for fk in table.foreign_keys if fk.column.table.name == "users"]
     assert [fk.ondelete for fk in to_users] == ["CASCADE"]
+
+
+@pytest.mark.parametrize("table_name", sorted(PARENT_OWNED_TABLES))
+def test_parent_owned_rows_reach_their_owner_through_one_cascading_parent(table_name):
+    """No second copy of the owner, and no way to orphan a child.
+
+    A candidate's languages are the candidate's, and the only route to a user is
+    the profile — so the parent FK is NOT NULL and cascades, and `user_id` is
+    absent rather than duplicated. Two columns naming the same owner is two columns
+    that can disagree, and the one a query forgets is the one that leaks.
+    """
+    table = TABLES[table_name]
+    assert "user_id" not in table.columns
+    parent = PARENT_OWNED_TABLES[table_name]
+    to_parent = [fk for fk in table.foreign_keys if fk.column.table.name == parent]
+    assert [fk.ondelete for fk in to_parent] == ["CASCADE"]
+    assert table.columns[to_parent[0].parent.name].nullable is False
 
 
 def test_every_foreign_key_states_what_happens_on_delete():
@@ -231,31 +281,45 @@ def test_free_text_columns_are_text_not_varchar():
     """`TEXT`, except where a length is a domain rule.
 
     PostgreSQL stores them identically, so a `VARCHAR(255)` on a job description
-    buys nothing and costs a migration the day a posting is longer. The
-    exceptions are the ISO code columns, where the length *is* the validation.
+    buys nothing and costs a migration the day a posting is longer. The exceptions
+    are the ISO code columns, where the length *is* the validation, and the two
+    session digests, where 64 is what a hex SHA-256 measures and a different length
+    means the value is not one.
     """
     sized = {(table, column.name) for table, column in _columns()
              if _python_type(column) is str
              and not isinstance(column.type, Text | Enum)}
     assert sized == {("opportunities", "posting_language"),
                      ("opportunities", "salary_currency"),
+                     ("candidate_languages", "language"),
+                     ("candidate_profiles", "location_country"),
+                     ("candidate_work_authorizations", "country"),
                      ("company_locations", "location_country"),
-                     ("opportunities", "location_country")}
+                     ("opportunities", "location_country"),
+                     ("search_areas", "country"),
+                     ("user_sessions", "token_digest"),
+                     ("user_sessions", "csrf_token_digest")}
 
 
-def test_the_two_geography_columns_are_wgs84_points():
-    """One SRID, one geometry type, in both tables that store a location.
+def test_every_geography_column_is_a_wgs84_point():
+    """One SRID and one geometry type across all four tables that store a location.
 
-    A radius query is written once and runs against either column, which is only
-    true while they are declared identically — and `geography` (not `geometry`)
-    is what makes `ST_DWithin(…, 100_000)` mean 100 km rather than 100 000
-    degrees.
+    A radius query is written once and runs against any of them, which is only true
+    while they are declared identically — and `geography` (not `geometry`) is what
+    makes `ST_DWithin(…, 100_000)` mean 100 km rather than 100 000 degrees.
+
+    `search_areas.center` is the one that is not called `location_point`: it is not
+    where something *is* but where a search is centred, and the radius beside it is
+    the user's rather than the posting's.
     """
     points = [(table, column) for table, column in _columns()
               if isinstance(column.type, GeographyPoint)]
-    assert [table for table, _ in points] == ["company_locations", "opportunities"]
+    assert {(table, column.name) for table, column in points} == {
+        ("candidate_profiles", "location_point"),
+        ("company_locations", "location_point"),
+        ("opportunities", "location_point"),
+        ("search_areas", "center")}
     for table, column in points:
-        assert column.name == "location_point"
         assert column.type.get_col_spec() == "geography(Point,4326)", table
 
 
@@ -273,3 +337,29 @@ def test_json_payloads_are_jsonb_with_an_empty_server_default():
     for table, column in payloads:
         assert column.nullable is False, f"{table}.{column.name}"
         assert column.server_default is not None, f"{table}.{column.name}"
+
+
+def test_every_array_filter_is_an_empty_by_default_text_array_with_a_check():
+    """`TEXT[] NOT NULL DEFAULT '{}'`, and never a bare array.
+
+    An empty array is the saved search's way of saying "no restriction", so NULL
+    would be a second spelling of the same intent — and the first query written with
+    `= ANY` against the NULL one matches nothing without failing.
+
+    The CHECK is the other half. An array column accepts anything the element type
+    accepts, including a NULL element and a value no enum member matches, so each
+    filter names itself in a constraint of its own table; a new allow-list added
+    without one fails here rather than in the first search that reads it.
+    """
+    arrays = [(table, column) for table, column in _columns()
+              if isinstance(column.type, ARRAY)]
+    assert len(arrays) >= 8
+    for table, column in arrays:
+        where = f"{table}.{column.name}"
+        assert isinstance(column.type.item_type, Text), where
+        assert column.nullable is False, where
+        assert column.server_default is not None, where
+        checks = [constraint for constraint in TABLES[table].constraints
+                  if isinstance(constraint, CheckConstraint)
+                  and column.name in str(constraint.sqltext)]
+        assert checks, f"{where}: no CHECK mentions this column"

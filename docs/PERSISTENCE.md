@@ -108,11 +108,11 @@ Two columns are deliberately not `TIMESTAMPTZ`:
 
 ## Schema
 
-Eight tables, all keyed by `UUID` (never a serial), created by `rev_0002`:
+Fourteen tables, all keyed by `UUID` (never a serial). Eight came from `rev_0002`:
 
 | Table | Holds | Ownership |
 | --- | --- | --- |
-| `users` | id and display name only | — |
+| `users` | the account: login identifier, credential, lockout counters | — |
 | `candidate_profiles` | a candidate's profile | `user_id` → `users`, CASCADE |
 | `companies` | employer, website, careers URL | shared fact |
 | `company_locations` | a site, flattened `Location` | `company_id`, CASCADE |
@@ -121,9 +121,35 @@ Eight tables, all keyed by `UUID` (never a serial), created by `rev_0002`:
 | `match_evaluations` | one score per (profile, posting) | `user_id` + `candidate_profile_id`, CASCADE |
 | `match_dimension_scores` | per-dimension detail | `match_evaluation_id`, CASCADE |
 
-`users` carries no credentials, no email and no authentication: Phase 4 owns identity.
-It exists now so user-scoped rows can carry a real foreign key instead of a loose
-column that would have to be backfilled later.
+and six from `rev_0003`, which is Phase 4's:
+
+| Table | Holds | Ownership |
+| --- | --- | --- |
+| `user_sessions` | one revocable session, as two SHA-256 digests | `user_id`, CASCADE |
+| `candidate_languages` | a language and its level | `candidate_profile_id`, CASCADE |
+| `candidate_work_authorizations` | a country and the right held there | `candidate_profile_id`, CASCADE |
+| `candidate_availability_slots` | when the candidate can start | `candidate_profile_id`, CASCADE |
+| `search_profiles` | one saved search: typed allow-lists and a workload band | `user_id`, CASCADE |
+| `search_areas` | where that search looks, ordered | `search_profile_id`, CASCADE |
+
+`rev_0002` created `users` and `candidate_profiles` deliberately empty of everything
+identity needs, so that user-scoped rows could carry a real foreign key before anything
+could authenticate; `rev_0003` completed both — `users` gained `email`,
+`password_hash`, `status`, the lockout counters and `onboarding_completed_at`, and
+`candidate_profiles` gained a name, a base location and an availability window. Three of
+those columns are `NOT NULL` with no backfill, which is safe by construction rather than
+by luck: nothing between the two revisions could write a row into either table. The
+credential columns and the session table are documented in
+[V2 Authentication](./AUTHENTICATION.md) §Schema, which is also where the constraints
+that keep a token digest from being stored raw live.
+
+`search_profiles` is what replaces V1's single-user `config/searches.yaml`, and two
+differences carry the phase: the areas are a child table with real
+`geography(Point,4326)` and a GiST index rather than free-text place names, and the
+filters are allow-lists of typed values rather than a keyword blacklist. `search_areas`
+is keyed on `(search_profile_id, ordinal)` because two radius areas can differ only by
+their radius — the ordinal is the natural key, and it is what makes re-saving a search
+an update of the same rows instead of a delete-and-reinsert.
 
 `Opportunity` and `Company` are shared facts and carry no `user_id`: two candidates
 looking at the same posting are looking at one row. `match_evaluations` denormalizes
@@ -262,6 +288,7 @@ Current revisions:
 | --- | --- |
 | `0001` | `CREATE EXTENSION IF NOT EXISTS postgis`, alone and first |
 | `0002` | the eight core tables, their indexes and constraints |
+| `0003` | Phase 4: six tables for identity and saved searches, and the columns that complete `users` and `candidate_profiles` |
 
 `0001` is separate because no `geography` column can be declared before the extension
 exists, and `IF NOT EXISTS` makes it a silent no-op on the development database (where
@@ -272,14 +299,15 @@ dropping it would pull it out from under anything else that uses it.
 
 ## Docker
 
-One long-running service and two one-shot commands — the persistence foundation and
-nothing more. The Nuxt frontend and the FastAPI API join in Phase 3, and Redis, the
-background worker and the Playwright browser worker no earlier than Phase 12; all of
-them are absent rather than declared and disabled, since an inert service still has to
-be maintained and docs/ARCHITECTURE.md §13 already records the target composition.
+Three long-running services and two one-shot commands: the database from this phase,
+the FastAPI API and the Nuxt dev server from Phase 3. Redis, the background worker and
+the Playwright browser worker join no earlier than Phase 12; they are absent rather than
+declared and disabled, since an inert service still has to be maintained and
+docs/ARCHITECTURE.md §13 already records the target composition.
 
 ```
-docker compose up -d postgres            start the database
+docker compose up -d                     database + API + frontend
+docker compose up -d postgres            the database alone
 docker compose run --rm migrate          alembic upgrade head
 docker compose run --rm import-v1 --help the V1 SQLite import
 docker compose down                      stop, keep the data
@@ -288,6 +316,16 @@ docker compose down -v                   stop and delete the data
 
 `migrate` and `import-v1` sit behind the `tools` profile, so `docker compose up` never
 runs a migration as a side effect.
+
+Since Phase 4 the `api` service reads the database too — `/api/v2` is mounted into the
+same FastAPI application — so it carries the same `DATABASE_URL` as `migrate` and waits
+on `postgres: service_healthy`. It also sets `JOBSEARCH_AUTH_COOKIE_SECURE=false`,
+because the composition is reached over `http://localhost` and a jar that has accepted a
+`Secure` cookie will not send it back over HTTP; that is the one supported way to run
+without it, and it is a declared setting rather than something inferred from the request
+scheme (docs/AUTHENTICATION.md §`Secure` is a deployment setting, never an inference).
+The schema is still `migrate`'s job and not a startup step, so `/api/v2` answers 503
+until it has been run once.
 
 The image is `imresamu/postgis:17-3.5`, pinned to a minor line: the extension version
 decides what `ST_AsEWKT` prints, and exact coordinate round-tripping is asserted. It is
@@ -471,7 +509,7 @@ temporary directory — never from real candidate data.
 
 ```
 docker compose up -d postgres    then
-python -m pytest -q              the whole suite, 1044 tests
+python -m pytest -q              the whole suite, 1194 tests
 ```
 
 With no container running, the database-backed tests **skip** with a message naming the

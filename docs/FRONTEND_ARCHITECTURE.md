@@ -60,6 +60,8 @@ Pinia is for client/global state that benefits from explicit stores:
 
 Backend entities remain server state.
 
+As built in Phase 4, `stores/session.ts` is the single store that holds backend data, and the file argues the exception rather than assuming it: a route middleware runs before any component exists, so it cannot call `useAsyncData`, and something outside the component tree has to answer "is there a session?" before a page is allowed to render. It holds the account and the session window and nothing else — the candidate profile, the saved searches and the onboarding counts are server state with pages of their own and stay in `useApiQuery`'s cache (`composables/useAccount.ts`). `status` has three values (`unknown`, `authenticated`, `anonymous`), because "we have not asked yet" is not "there is nobody", and collapsing them is what makes a login form flash on screen for a signed-in user.
+
 ## Map
 
 Use MapLibre GL JS behind a Nuxt component/composable boundary.
@@ -84,3 +86,18 @@ What that produced, and what a later phase must not silently regress:
 - a checked contract: FastAPI → `frontend/openapi.json` → `frontend/app/types/api.d.ts`, regenerated and diffed by the `api-contract` CI job.
 
 Redesign work, onboarding surfaces and the map are separate phases.
+
+## Accounts (added in Phase 4)
+
+Four pages joined the four V1 ones — `login`, `register` (both `layout: false`, since a sign-in form has no shell to sit in), `onboarding` and `profile` — plus `ProfileForm` and `SearchProfileForm`, `composables/useAccount.ts`, `stores/session.ts`, `middleware/auth.ts`, `types/v2.ts` and `utils/v2-errors.ts`.
+
+Four rules in that work are contracts rather than preferences, and [V2 Authentication](./AUTHENTICATION.md) §Frontend contract is the full statement of them:
+
+- **The guard is named, not global.** A page opts in with `definePageMeta({ middleware: 'auth' })`, and only `/profile` and `/onboarding` do. The V1-ported screens stay unguarded because V1's `/api/**` has no accounts, so a guard there would demand a login the data behind it cannot use. The guard chooses a screen; the API is what refuses a request.
+- **`X-CSRF-Token` on every unsafe request.** `utils/api-client.ts` reads the CSRF cookie per request — never a cached copy, because another tab can log out — and never touches the session cookie, which is `HttpOnly` by design.
+- **No credential is stored client-side.** Not in Pinia, not in `localStorage`, not in a component. There is no field for one.
+- **A refusal becomes one sentence.** `utils/v2-errors.ts` maps the `error` slug to a human sentence beside the form, and nothing redirects on a 401 from a write — a redirect out of a mutation would discard what the user typed.
+
+The suite grew with the surfaces: **265** Vitest specs in `frontend/tests/nuxt/` and **21** Playwright flows in `frontend/tests/e2e/`, still with every `/api/**` request stubbed in the browser and every test asserting that nothing went unstubbed. Two of those Playwright tests exist because the assertion is only possible in a real browser: that the CSRF header actually leaves it, and that the router obeys the guard's `navigateTo`.
+
+One Phase 3 defect was fixed here rather than deferred: `useApiQuery`'s `getCachedData` served its 15-second window to `refreshNuxtData` as well, so a post-write `invalidate()` could answer from the payload the write had just invalidated (`experimental.granularCachedData` consults it on every run), and it read a legitimately `null` payload as a cache miss. Both are pinned by `tests/nuxt/composables/useApiQuery.spec.ts`.

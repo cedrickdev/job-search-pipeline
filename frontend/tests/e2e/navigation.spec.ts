@@ -6,7 +6,7 @@
 // renders its own surface, which is completion criterion 1 (every supported V1
 // route has a Nuxt equivalent).
 import { expect, test } from '@playwright/test'
-import { mockApi } from './support/api'
+import { ANONYMOUS_SESSION, mockApi } from './support/api'
 import { ANALYTICS, IDLE_RUN, SETTINGS, card, overview } from './support/fixtures'
 
 const ROUTES = [
@@ -16,6 +16,7 @@ const ROUTES = [
   { match: '/api/runs/status', json: IDLE_RUN },
   { match: '/api/jobs', method: 'GET', json: { board: { 'Ready to apply': [card()] } } },
   { match: '/api/chat/history', json: { messages: [] } },
+  ANONYMOUS_SESSION,
 ]
 
 test('walks the sidebar through every migrated route', async ({ page }) => {
@@ -23,7 +24,10 @@ test('walks the sidebar through every migrated route', async ({ page }) => {
   await page.goto('/')
 
   await expect(page.locator('.brand')).toHaveText('⌘ Command Center')
-  await expect(page.getByRole('link')).toHaveText(['Overview', 'Jobs', 'Analytics', 'Settings'])
+  // Scoped to the sidebar: Phase 4 put an account link in the topbar, and the nav
+  // is what this test walks. That link is asserted in tests/e2e/auth.spec.ts.
+  await expect(page.locator('.sidebar').getByRole('link'))
+    .toHaveText(['Overview', 'Jobs', 'Analytics', 'Settings'])
   await expect(page.getByText('Today — do these first')).toBeVisible()
 
   await page.getByRole('link', { name: 'Jobs' }).click()

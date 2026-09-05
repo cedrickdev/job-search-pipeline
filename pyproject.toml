@@ -39,6 +39,18 @@ dependencies = [
     # and a single wire implementation to reason about. `[binary]` ships libpq in
     # the wheel, so no system PostgreSQL client is required to run the tests.
     "psycopg[binary]>=3.2",
+    # --- Phase 4: authentication -------------------------------------------
+    # Argon2id, the password hash the OWASP storage cheat sheet recommends first
+    # and the only memory-hard algorithm available without a compiled extension
+    # of our own. bcrypt truncates at 72 bytes and PBKDF2 is cheap on a GPU;
+    # neither is worth choosing for a new table. `PasswordHasher` also carries
+    # `check_needs_rehash`, which is what lets the cost parameters be raised later
+    # without invalidating anybody's password (docs/AUTHENTICATION.md).
+    "argon2-cffi>=23.1",
+    # Pydantic's `EmailStr` raises at import time without it, and an email address
+    # is the login identifier — so this is a runtime dependency of the API, not a
+    # convenience for the tests.
+    "email-validator>=2.1",
 ]
 
 [project.optional-dependencies]
@@ -78,7 +90,8 @@ packages = ["pipeline", "pipeline.sources", "pipeline.apply", "dashboard", "serv
             "backend", "backend.app", "backend.app.domain", "backend.app.compat",
             "backend.app.core", "backend.app.infrastructure",
             "backend.app.infrastructure.database", "backend.app.repositories",
-            "backend.app.cli"]
+            "backend.app.cli", "backend.app.services", "backend.app.api",
+            "backend.app.api.routes"]
 
 # --------------------------------------------------------------------------
 # Ruff (Phase 0). The full rule set below applies to EVERY Python file. V1

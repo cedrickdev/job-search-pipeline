@@ -40,13 +40,29 @@ from tests.v2_database import (
     upgrade_to_head,
 )
 
-# The tables revision 0002 creates, in the order it creates them: parents before
-# the rows that reference them. Spelled out rather than derived from the metadata
-# so that a table silently dropped from a model is a failure here.
+# Every table the revisions create, in dependency order: parents before the rows
+# that reference them. Spelled out rather than derived from the metadata so that a
+# table silently dropped from a model is a failure here.
 V2_TABLES = frozenset({
-    "companies", "company_locations", "users", "candidate_profiles",
+    "companies", "company_locations", "users", "user_sessions",
+    "candidate_profiles", "candidate_languages", "candidate_work_authorizations",
+    "candidate_availability_slots", "search_profiles", "search_areas",
     "opportunities", "opportunity_source_records", "match_evaluations",
     "match_dimension_scores",
+})
+
+# The revision `alembic upgrade head` is expected to stop at. A revision added
+# without updating this line is a revision nobody decided to ship.
+HEAD_REVISION = "0003"
+
+# Every `geography(Point,4326)` column, by the table that holds it. One radius
+# query has to run against any of them, so they are declared identically and
+# indexed identically — see the two tests below.
+GEOGRAPHY_COLUMNS = frozenset({
+    ("candidate_profiles", "location_point"),
+    ("company_locations", "location_point"),
+    ("opportunities", "location_point"),
+    ("search_areas", "center"),
 })
 
 _TYPE_BOUND_CHECKS = type_bound_check_constraint_names(Base.metadata)
@@ -98,7 +114,7 @@ def test_an_empty_database_becomes_the_whole_schema(schema_engine):
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")).scalar_one()
     assert V2_TABLES <= tables
-    assert version == "0002"
+    assert version == HEAD_REVISION
 
 
 def test_the_migrated_schema_and_the_models_describe_the_same_database(schema_engine):
@@ -124,10 +140,10 @@ def test_the_first_revision_installs_postgis_itself(schema_engine):
             text("SELECT f_table_name, f_geography_column, type, srid "
                  "FROM geography_columns"))}
     assert "postgis" in installed
-    # Both point columns are registered as WGS84 points, which is what makes
+    # Every point column is registered as a WGS84 point, which is what makes
     # `ST_DWithin` a metre-based radius query rather than a degree-based one.
-    assert registered == {("company_locations", "location_point", "Point", 4326),
-                          ("opportunities", "location_point", "Point", 4326)}
+    assert registered == {(table, column, "Point", 4326)
+                          for table, column in GEOGRAPHY_COLUMNS}
 
 
 def test_the_geography_columns_are_indexed_for_radius_queries(schema_engine):
@@ -138,12 +154,12 @@ def test_the_geography_columns_are_indexed_for_radius_queries(schema_engine):
     look right in `models.py`.
     """
     reset_schema(schema_engine)
+    expected = {f"ix_{table}_{column}" for table, column in GEOGRAPHY_COLUMNS}
     with schema_engine.connect() as connection:
         definitions = {row[0]: row[1] for row in connection.execute(
             text("SELECT indexname, indexdef FROM pg_indexes "
-                 "WHERE indexname LIKE '%location_point'"))}
-    assert set(definitions) == {"ix_company_locations_location_point",
-                                "ix_opportunities_location_point"}
+                 "WHERE indexname = ANY(:names)"), {"names": sorted(expected)})}
+    assert set(definitions) == expected
     for definition in definitions.values():
         assert "USING gist" in definition
 

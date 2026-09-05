@@ -42,16 +42,20 @@ from sqlalchemy import (
     Numeric,
     SmallInteger,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql.elements import TextClause
 
-from backend.app.domain.common import GeoPoint, SalaryPeriod
+from backend.app.domain.candidate import WorkAuthorizationStatus
+from backend.app.domain.common import GeoPoint, LanguageLevel, SalaryPeriod, Weekday
 from backend.app.domain.matching import MatchDimension
 from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
+from backend.app.domain.search import SearchAreaKind
+from backend.app.domain.user import UserStatus
 from backend.app.infrastructure.database.base import Base, TimestampedMixin
 
 # Advertised pay. `NUMERIC`, never a float: 4500.10 has to come back as 4500.10.
@@ -64,6 +68,12 @@ _MONEY: Final[Numeric[Decimal]] = Numeric(14, 2)
 # migration or by psql is as valid as one inserted by SQLAlchemy.
 _EMPTY_JSON_OBJECT: Final[TextClause] = text("'{}'::jsonb")
 _EMPTY_JSON_ARRAY: Final[TextClause] = text("'[]'::jsonb")
+
+# A saved search's allow-lists are `TEXT[]`, not child tables and not JSONB. They
+# are read and written whole, they are never joined, and PostgreSQL can still
+# index and containment-query them (`<@`, `&&`) — which JSONB would also allow but
+# with no element type at all. An array of TEXT keeps the CHECKs below expressible.
+_EMPTY_TEXT_ARRAY: Final[TextClause] = text("'{}'::text[]")
 
 _LOCATION_COMPONENTS: Final[tuple[str, ...]] = (
     "location_country", "location_region", "location_city", "location_postal_code",
@@ -110,6 +120,80 @@ def _code_format(column: str, pattern: str) -> CheckConstraint:
     return CheckConstraint(f"{column} ~ '{pattern}'", name=f"{column}_format")
 
 
+def _text_array_elements_present(column: str) -> CheckConstraint:
+    """No NULL and no empty string inside a `TEXT[]`.
+
+    Every array here holds `NonEmptyStr` or an enum value in the domain, and an
+    array is the one column type where PostgreSQL's NOT NULL says nothing about
+    the elements: `ARRAY[NULL]::text[]` is a perfectly non-null array of one null.
+    `array_position` is the containment test that works for NULL — `= ANY` would
+    evaluate to NULL and pass.
+
+    A whitespace-only element is *not* caught, and that is stated rather than
+    faked: `btrim` inside a per-element test needs `unnest`, and a CHECK may not
+    contain a subquery. The domain's `NonEmptyStr` is what rejects "  ".
+    """
+    return CheckConstraint(
+        f"array_position({column}, NULL) IS NULL"
+        f" AND array_position({column}, '') IS NULL",
+        name=f"{column}_elements_present")
+
+
+def _enum_array_members(column: str, enum_class: type[StrEnum]) -> CheckConstraint:
+    """A `TEXT[]` whose every element is a member of `enum_class`.
+
+    `<@` is array containment, which is exactly "every element of the left array
+    appears in the right one" — the array form of the CHECK `enum_column` writes
+    for a scalar. An empty array is contained in anything, which matches the
+    domain's convention that an empty allow-list restricts nothing.
+    """
+    members = ", ".join(f"'{member.value}'" for member in enum_class)
+    return CheckConstraint(f"{column} <@ ARRAY[{members}]::text[]",
+                           name=f"{column}_members")
+
+
+def _code_array_format(column: str, pattern: str) -> CheckConstraint:
+    """A `TEXT[]` whose every element matches `pattern`.
+
+    `unnest` would need a subquery, which a CHECK may not contain, so the array is
+    joined and the joined form is matched: a separator that cannot appear inside
+    the pattern turns "every element matches" into one regular expression.
+    `array_to_string` is IMMUTABLE, which is what makes it legal here.
+    """
+    return CheckConstraint(
+        f"array_to_string({column}, ',') ~ '^({pattern}(,{pattern})*)?$'",
+        name=f"{column}_format")
+
+
+def _sha256_hex(column: str) -> CheckConstraint:
+    """A stored token digest, constrained to the shape `SessionTokenDigest` accepts.
+
+    The database repeating the domain's validator is the point: a code path that
+    wrote a raw 43-character `token_urlsafe` value into a digest column would be
+    storing a live credential in the clear, and this is the layer that would still
+    refuse it if the write did not go through the model.
+    """
+    return CheckConstraint(f"{column} ~ '^[0-9a-f]{{64}}$'", name=f"{column}_format")
+
+
+# `WorkloadRange` bounds, shared by `opportunities` (what the posting offers) and
+# `search_profiles` (what the candidate wants). One pair of expressions for both,
+# because the two column groups mean the same thing and a saved search whose
+# workload the database accepted but an opportunity's would refuse would be a
+# filter that can never match anything.
+_WORKLOAD_PERCENT_RANGE: Final[str] = (
+    "workload_min_percent BETWEEN 1 AND 100"
+    " AND workload_max_percent BETWEEN 1 AND 100"
+)
+
+_WORKLOAD_HOURS_RANGE: Final[str] = (
+    "workload_min_weekly_hours > 0 AND workload_min_weekly_hours <= 168"
+    " AND workload_max_weekly_hours > 0 AND workload_max_weekly_hours <= 168"
+)
+
+
+
+
 class LocationColumnsMixin:
     """`Location` flattened, with one definition for both tables that embed it.
 
@@ -133,41 +217,439 @@ class LocationColumnsMixin:
     location_raw: Mapped[str | None]
 
 
-class UserRow(TimestampedMixin, Base):
-    """The owner of user-scoped rows, and nothing more.
+# A SHA-256 rendered as lower-case hex is always 64 characters, so the column is
+# fixed-width by nature. `String(64)` rather than TEXT because the width is a real
+# constraint here and stating it lets the database reject a wrong-length value
+# without consulting the CHECK.
+_DIGEST_LENGTH: Final[int] = 64
 
-    Deliberately minimal: Phase 2 needs a foreign-key target so that
-    `match_evaluations` can be user-scoped from the first migration, and Phase 4
-    owns authentication. There is no password, no email and no session here, so
-    nothing in this table can leak a credential before the phase that is
-    supposed to design one.
+
+class UserRow(TimestampedMixin, Base):
+    """One account: the login identifier, the credential, and the login counters.
+
+    Phase 2 created this table with a display name and nothing else, so that
+    user-owned rows could carry a real foreign key before anything could
+    authenticate. Phase 4 fills it in.
+
+    Two columns are worth explaining. `email` is unique *and* CHECKed to be its own
+    normalized form: the unique index alone would let `Ada@x.com` and `ada@x.com`
+    both register, since PostgreSQL compares TEXT case-sensitively, and the whole
+    point of `normalize_email` in the domain is that one person has one account.
+    Enforcing the normalized form here is what makes the index mean what it says.
+
+    `password_hash` is TEXT with no width. Argon2id's encoded form is 97 characters
+    today, and a parameter bump — which `check_needs_rehash` exists to make routine
+    — changes that length. A `VARCHAR(97)` would turn the next cost increase into a
+    migration.
     """
 
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("email"),
+        # Trimmed, lower-cased, and containing an `@` that is neither first nor
+        # last. Not an attempt to validate an address — `EmailStr` does that with
+        # the `email-validator` package — but enough that a row written by psql or
+        # by a future backfill cannot be a login identifier nobody can ever match.
+        CheckConstraint(
+            "email = lower(btrim(email))"
+            " AND position('@' in email) > 1"
+            " AND position('@' in email) < length(email)",
+            name="email_normalized"),
+        CheckConstraint("failed_login_attempts >= 0",
+                        name="failed_login_attempts_non_negative"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
+    email: Mapped[str]
+    password_hash: Mapped[str]
+    status: Mapped[UserStatus] = mapped_column(
+        enum_column(UserStatus, "user_status"),
+        server_default=text(f"'{UserStatus.ACTIVE.value}'"))
     display_name: Mapped[str | None]
+    # NULL for every account in Phase 4: nothing sends mail yet. The column exists
+    # so the authorization layer has somewhere truthful to look later, and it is
+    # deliberately not defaulted to `now()` — a verified-at that nothing verified
+    # is worse than a NULL.
+    email_verified_at: Mapped[datetime | None]
+    last_login_at: Mapped[datetime | None]
+    failed_login_attempts: Mapped[int] = mapped_column(
+        SmallInteger, server_default=text("0"))
+    locked_until: Mapped[datetime | None]
+    onboarding_completed_at: Mapped[datetime | None]
+
+    sessions: Mapped[list["UserSessionRow"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="UserSessionRow.issued_at")
 
 
-class CandidateProfileRow(TimestampedMixin, Base):
-    """A candidate profile, as a foreign-key target for evaluations.
+class UserSessionRow(TimestampedMixin, Base):
+    """One authenticated browser, as a revocable server-side row.
 
-    Separate from `users` because one person legitimately searches under more
-    than one profile (a student job and a graduate role weigh education
-    differently), and an evaluation is against a profile, not against an account.
-    The profile's contents arrive with onboarding in Phase 4 and the evidence
-    store in Phase 10; this is the identity those rows will hang from.
+    What is stored is a digest, never a token: the value the browser holds exists
+    only in the response that set the cookie (docs/AUTHENTICATION.md §Sessions). So
+    a leaked dump of this table is not a set of working credentials, and the CHECKs
+    below are what keep it that way — a 43-character `token_urlsafe` value written
+    here by mistake violates `token_digest_format` instead of persisting.
+
+    There is no IP address and no user-agent column. Both are personal data with
+    retention rules of their own, neither is used by any decision in this phase,
+    and a session table is the easiest place to accumulate a request log nobody
+    asked for (docs/ENGINEERING_STANDARDS.md §Security).
+
+    `csrf_token_digest` lives here rather than in its own table because a CSRF
+    token has exactly the lifetime of the session it protects. Keeping it beside
+    the session is also what turns the double-submit cookie into a comparison
+    against server-side state: a token planted in the cookie jar by a sibling host
+    matches the cookie it was planted in, and nothing else.
     """
 
-    __tablename__ = "candidate_profiles"
+    __tablename__ = "user_sessions"
     __table_args__ = (
-        Index("ix_candidate_profiles_user_id", "user_id"),
+        # The lookup every authenticated request performs, so it is the constraint
+        # that also serves as its index. Unique because two sessions sharing a
+        # token digest would be two browsers holding one credential.
+        UniqueConstraint("token_digest"),
+        _sha256_hex("token_digest"),
+        _sha256_hex("csrf_token_digest"),
+        # `UserSession._the_two_digests_differ`: issuing one secret twice would
+        # hand the session token to any script that can read the CSRF cookie.
+        CheckConstraint("token_digest <> csrf_token_digest",
+                        name="digests_are_independent"),
+        CheckConstraint("expires_at > issued_at", name="window_is_forward"),
+        CheckConstraint("last_seen_at >= issued_at", name="last_seen_after_issued"),
+        # "Revoke my other sessions" and the expiry sweep both read by user; the
+        # sweep also reads by expiry, hence the second column.
+        Index("ix_user_sessions_user_id_expires_at", "user_id", "expires_at"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"))
+    token_digest: Mapped[str] = mapped_column(String(_DIGEST_LENGTH))
+    csrf_token_digest: Mapped[str] = mapped_column(String(_DIGEST_LENGTH))
+    issued_at: Mapped[datetime]
+    expires_at: Mapped[datetime]
+    last_seen_at: Mapped[datetime]
+    # NULL means live. A `revoked` boolean would lose *when*, which is the column a
+    # security question ("was this session active at 14:05?") actually needs.
+    revoked_at: Mapped[datetime | None]
+
+    user: Mapped["UserRow"] = relationship(back_populates="sessions", lazy="raise")
+
+
+
+class CandidateProfileRow(LocationColumnsMixin, TimestampedMixin, Base):
+    """What the platform knows about one candidate, minus the evidence store.
+
+    Separate from `users` because one person legitimately searches under more than
+    one profile (a student job and a graduate role weigh education differently),
+    and an evaluation is against a profile, not against an account. Onboarding
+    creates one profile per account and derives its id from the account's, so a
+    double-submitted onboarding collides on the primary key instead of producing
+    two profiles; a second profile would be an explicit act with a fresh id.
+
+    `evidence` and `claims` are absent, and their absence is enforced rather than
+    tolerated: the evidence store is Phase 10's, and
+    `SqlAlchemyCandidateProfileRepository` refuses a profile carrying either
+    instead of silently dropping records a claim depends on.
+
+    Availability is flattened into five columns plus a child table for the weekly
+    slots, and all five are nullable: an all-NULL group with no slots reads back as
+    `None`, the same convention `_read_location` follows. `Availability()` with
+    nothing set is therefore indistinguishable from "not stated", which is what it
+    means anyway.
+    """
+
+    __tablename__ = "candidate_profiles"
+    __table_args__ = (
+        _code_format("location_country", "^[A-Z]{2}$"),
+        CheckConstraint(
+            "availability_earliest_start <= availability_latest_end",
+            name="availability_window_ordered"),
+        CheckConstraint(
+            "availability_min_weekly_hours <= availability_max_weekly_hours",
+            name="availability_hours_ordered"),
+        CheckConstraint(
+            "availability_min_weekly_hours BETWEEN 0 AND 168"
+            " AND availability_max_weekly_hours > 0"
+            " AND availability_max_weekly_hours <= 168",
+            name="availability_hours_range"),
+        CheckConstraint("availability_notice_period_days >= 0",
+                        name="availability_notice_non_negative"),
+        Index("ix_candidate_profiles_user_id", "user_id"),
+        # The profile's own coordinates, so Phase 7 can answer "how far is this
+        # posting from home?" with the same index type the postings use.
+        Index("ix_candidate_profiles_location_point", "location_point",
+              postgresql_using="gist"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    display_name: Mapped[str]
+    headline: Mapped[str | None]
+
+    availability_earliest_start: Mapped[date | None]
+    availability_latest_end: Mapped[date | None]
+    availability_min_weekly_hours: Mapped[float | None]
+    availability_max_weekly_hours: Mapped[float | None]
+    availability_notice_period_days: Mapped[int | None] = mapped_column(SmallInteger)
+
+    languages: Mapped[list["CandidateLanguageRow"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="CandidateLanguageRow.ordinal")
+    work_authorizations: Mapped[list["CandidateWorkAuthorizationRow"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="CandidateWorkAuthorizationRow.ordinal")
+    availability_slots: Mapped[list["CandidateAvailabilitySlotRow"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="CandidateAvailabilitySlotRow.ordinal")
+
+
+# The domain's collections are tuples, and tuple order is information the candidate
+# supplied — the first language listed is the one they lead with. A child table has
+# no inherent order, so every one of them carries an explicit `ordinal` and every
+# relationship sorts by it. Without that, a profile read back would be equal to the
+# one written only by luck, and the round-trip tests would be asserting nothing.
+_ORDINAL_DOC: Final[str] = "position in the domain tuple, so order survives a round trip"
+
+# The three child tables below say `profile_id`, not `candidate_profile_id` like
+# `match_evaluations` does. The qualifier is redundant inside a table already named
+# `candidate_…`, and it is also unaffordable: the naming convention derives
+# `fk_candidate_work_authorizations_candidate_profile_id_candidate_profiles`, which
+# is 72 characters, and PostgreSQL truncates at 63 — a silently truncated name with
+# a hash suffix is one a migration cannot reliably drop.
+_PROFILE_FK: Final[str] = "candidate_profiles.id"
+
+
+class CandidateLanguageRow(TimestampedMixin, Base):
+    """One language the candidate speaks, at one CEFR level.
+
+    A child table rather than JSONB because docs/V2_SPECIFICATION.md §9 asks for
+    "candidates who read German at B2 or better", which is a comparison across
+    rows, and because `LanguageLevel` is an enum the database can then police.
+    """
+
+    __tablename__ = "candidate_languages"
+    __table_args__ = (
+        # `CandidateProfile._one_entry_per_language_and_country`, as a constraint.
+        # It also indexes the foreign key, which is why there is no separate index.
+        UniqueConstraint("profile_id", "language"),
+        _code_format("language", "^[a-z]{2}$"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey(_PROFILE_FK, ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(SmallInteger, doc=_ORDINAL_DOC)
+    language: Mapped[str] = mapped_column(String(2))
+    level: Mapped[LanguageLevel] = mapped_column(
+        enum_column(LanguageLevel, "language_level"))
+
+    profile: Mapped["CandidateProfileRow"] = relationship(
+        back_populates="languages", lazy="raise")
+
+
+class CandidateWorkAuthorizationRow(TimestampedMixin, Base):
+    """The candidate's right to work in one country.
+
+    `permit_hours_cap` is the column that makes a class of eligibility
+    deterministic: a student permit capped at 15h/week makes a 20h/week job
+    *ineligible* rather than a poor schedule fit. It is a legal fact a Country Pack
+    supplies in Phase 5; this table only carries it.
+
+    `evidence_ids` from the domain object is not stored. Phase 10 owns the evidence
+    table, and a column holding ids with no table to point at would be a foreign key
+    that cannot be declared.
+    """
+
+    __tablename__ = "candidate_work_authorizations"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "country"),
+        _code_format("country", "^[A-Z]{2}$"),
+        CheckConstraint("permit_hours_cap > 0 AND permit_hours_cap <= 168",
+                        name="permit_hours_cap_range"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey(_PROFILE_FK, ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(SmallInteger, doc=_ORDINAL_DOC)
+    country: Mapped[str] = mapped_column(String(2))
+    status: Mapped[WorkAuthorizationStatus] = mapped_column(
+        enum_column(WorkAuthorizationStatus, "work_authorization_status"))
+    permit_label: Mapped[str | None]
+    valid_until: Mapped[date | None]
+    permit_hours_cap: Mapped[float | None]
+
+    profile: Mapped["CandidateProfileRow"] = relationship(
+        back_populates="work_authorizations", lazy="raise")
+
+
+class CandidateAvailabilitySlotRow(TimestampedMixin, Base):
+    """A recurring window the candidate can work, in whole local hours.
+
+    No timezone, matching `WeeklyAvailabilitySlot`: "Saturday mornings" means it in
+    the shop's local time, and storing an instant would invent precision nobody
+    supplied.
+
+    Overlap between two slots on the same day is a domain invariant that no CHECK
+    can express — a row constraint cannot see another row, and an exclusion
+    constraint would need a range type the domain does not use. The exact-duplicate
+    case *is* expressible, and is refused.
+    """
+
+    __tablename__ = "candidate_availability_slots"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "weekday", "start_hour"),
+        CheckConstraint("start_hour BETWEEN 0 AND 23 AND end_hour BETWEEN 1 AND 24",
+                        name="slot_hours_range"),
+        CheckConstraint("start_hour < end_hour", name="slot_hours_ordered"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey(_PROFILE_FK, ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(SmallInteger, doc=_ORDINAL_DOC)
+    weekday: Mapped[Weekday] = mapped_column(enum_column(Weekday, "weekday"))
+    start_hour: Mapped[int] = mapped_column(SmallInteger)
+    end_hour: Mapped[int] = mapped_column(SmallInteger)
+
+    profile: Mapped["CandidateProfileRow"] = relationship(
+        back_populates="availability_slots", lazy="raise")
+
+
+
+class SearchProfileRow(TimestampedMixin, Base):
+    """One saved search belonging to one user.
+
+    This is what replaces V1's `config/searches.yaml`, which is a single-user file
+    of free-text `locations` and a keyword blacklist. Two differences carry the
+    phase: the areas are a child table with real geometry rather than strings, and
+    the filters are allow-lists of typed values rather than excluded words — V1
+    excludes "stage" and "apprenti", which are exactly the opportunity types
+    docs/V2_SPECIFICATION.md §7 makes first-class.
+
+    **An empty array means "no restriction", not "match nothing".** The domain
+    states the convention once and every filter here inherits it, which is why the
+    server defaults are `'{}'` rather than NULL: a nullable array would give the
+    same intent two representations, and the first query written with `= ANY` on
+    the NULL one would silently match nothing.
+    """
+
+    __tablename__ = "search_profiles"
+    __table_args__ = (
+        CheckConstraint("workload_min_percent <= workload_max_percent",
+                        name="workload_percent_ordered"),
+        CheckConstraint("workload_min_weekly_hours <= workload_max_weekly_hours",
+                        name="workload_hours_ordered"),
+        CheckConstraint(_WORKLOAD_PERCENT_RANGE, name="workload_percent_range"),
+        CheckConstraint(_WORKLOAD_HOURS_RANGE, name="workload_hours_range"),
+        _text_array_elements_present("queries"),
+        _text_array_elements_present("title_keywords"),
+        _text_array_elements_present("excluded_keywords"),
+        _text_array_elements_present("source_keys"),
+        _enum_array_members("opportunity_types", OpportunityType),
+        _enum_array_members("contract_types", ContractType),
+        _enum_array_members("workplace_modes", WorkplaceMode),
+        _code_array_format("posting_languages", "[a-z]{2}"),
+        # Discovery reads "every active search", and the account page reads "my
+        # searches". One index serves both, because a partial index on `is_active`
+        # could not answer the second.
+        Index("ix_search_profiles_user_id_is_active", "user_id", "is_active"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    name: Mapped[str]
+    is_active: Mapped[bool] = mapped_column(server_default=text("true"))
+
+    queries: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
+    title_keywords: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
+    excluded_keywords: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
+    opportunity_types: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
+    contract_types: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
+    workplace_modes: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
+    posting_languages: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
+    source_keys: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
+
+    workload_min_percent: Mapped[int | None] = mapped_column(SmallInteger)
+    workload_max_percent: Mapped[int | None] = mapped_column(SmallInteger)
+    workload_min_weekly_hours: Mapped[float | None]
+    workload_max_weekly_hours: Mapped[float | None]
+
+    areas: Mapped[list["SearchAreaRow"]] = relationship(
+        back_populates="search_profile", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise", order_by="SearchAreaRow.ordinal")
+
+
+# `SearchArea` is a discriminated union of three shapes, and a single table with
+# nullable columns is the flattening every ORM reaches for. What makes it safe here
+# is that the union's exhaustiveness is written down as a constraint: each kind
+# names exactly which columns must be present and which must be absent, so a row
+# cannot be a RADIUS area with no centre or a COUNTRY area with a stray radius.
+# Without this, the discriminator would be a label and the coherence the domain
+# guarantees would be lost at the first `INSERT` that did not go through Pydantic.
+_AREA_SHAPE_MATCHES_KIND: Final[str] = (
+    f"(kind = '{SearchAreaKind.COUNTRY.value}'"
+    " AND country IS NOT NULL AND center IS NULL AND radius_km IS NULL)"
+    f" OR (kind = '{SearchAreaKind.RADIUS.value}'"
+    " AND country IS NULL AND center IS NOT NULL AND radius_km IS NOT NULL)"
+    f" OR (kind = '{SearchAreaKind.REMOTE_ONLY.value}'"
+    " AND center IS NULL AND radius_km IS NULL)"
+)
+
+
+class SearchAreaRow(TimestampedMixin, Base):
+    """Where one saved search looks: a country, a radius, or nowhere in particular.
+
+    `ordinal` is the natural key rather than a convenience: two radius areas can
+    differ only by their radius, so there is nothing else to identify a row by, and
+    `UNIQUE (search_profile_id, ordinal)` is what makes re-saving a search an update
+    of the same rows instead of a delete-and-reinsert.
+    """
+
+    __tablename__ = "search_areas"
+    __table_args__ = (
+        UniqueConstraint("search_profile_id", "ordinal"),
+        CheckConstraint(_AREA_SHAPE_MATCHES_KIND, name="shape_matches_kind"),
+        CheckConstraint("radius_km > 0 AND radius_km <= 500", name="radius_km_range"),
+        _code_format("country", "^[A-Z]{2}$"),
+        # The same GiST index the opportunities carry, so Phase 7's `ST_DWithin`
+        # can start from either end of the question.
+        Index("ix_search_areas_center", "center", postgresql_using="gist"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    search_profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("search_profiles.id", ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(SmallInteger, doc=_ORDINAL_DOC)
+    kind: Mapped[SearchAreaKind] = mapped_column(
+        enum_column(SearchAreaKind, "search_area_kind"))
+    country: Mapped[str | None] = mapped_column(String(2))
+    center: Mapped[GeoPoint | None]
+    radius_km: Mapped[float | None]
     label: Mapped[str | None]
+
+    search_profile: Mapped["SearchProfileRow"] = relationship(
+        back_populates="areas", lazy="raise")
+
+
+
+
 
 
 class CompanyRow(TimestampedMixin, Base):
@@ -251,16 +733,6 @@ _SALARY_COMPLETE_OR_ABSENT: Final[str] = (
     " AND salary_minimum IS NULL AND salary_maximum IS NULL)"
     " OR (salary_currency IS NOT NULL AND salary_period IS NOT NULL"
     " AND (salary_minimum IS NOT NULL OR salary_maximum IS NOT NULL))"
-)
-
-_WORKLOAD_PERCENT_RANGE: Final[str] = (
-    "workload_min_percent BETWEEN 1 AND 100"
-    " AND workload_max_percent BETWEEN 1 AND 100"
-)
-
-_WORKLOAD_HOURS_RANGE: Final[str] = (
-    "workload_min_weekly_hours > 0 AND workload_min_weekly_hours <= 168"
-    " AND workload_max_weekly_hours > 0 AND workload_max_weekly_hours <= 168"
 )
 
 

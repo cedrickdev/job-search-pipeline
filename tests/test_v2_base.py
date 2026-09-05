@@ -164,7 +164,7 @@ def test_a_newtype_id_field_still_accepts_plain_uuid_input():
 def test_every_id_factory_mints_a_distinct_uuid():
     factories = [value for name, value in vars(identifiers).items()
                  if name.startswith("new_") and callable(value)]
-    assert len(factories) == 11, "one factory per identifier type"
+    assert len(factories) == 12, "one factory per identifier type"
     minted = [factory() for factory in factories] + [factories[0]()]
     assert all(isinstance(value, UUID) for value in minted)
     assert len(set(minted)) == len(minted)

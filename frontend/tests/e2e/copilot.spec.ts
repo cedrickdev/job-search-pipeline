@@ -10,7 +10,7 @@
 // `json.dumps`-ed payload per event (server/routes/chat.py) — so the parser's
 // CRLF normalisation is covered by the same pass.
 import { expect, test } from '@playwright/test'
-import { mockApi } from './support/api'
+import { ANONYMOUS_SESSION, mockApi } from './support/api'
 import { IDLE_RUN, card, jobDetail, overview } from './support/fixtures'
 
 function frame(event: string, data: unknown): string {
@@ -47,6 +47,7 @@ function routes(sse: string[] = TURN) {
     { match: '/api/jobs', method: 'GET', json: { board: { 'Ready to apply': [card()] } } },
     { match: '/api/overview', json: overview() },
     { match: '/api/runs/status', json: IDLE_RUN },
+    ANONYMOUS_SESSION,
   ]
 }
 

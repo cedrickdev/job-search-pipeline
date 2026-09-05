@@ -7,7 +7,7 @@
 // "reads the persisted choice" are only answerable where the script executes.
 // That is here.
 import { expect, test } from '@playwright/test'
-import { mockApi } from './support/api'
+import { ANONYMOUS_SESSION, mockApi } from './support/api'
 import { overview } from './support/fixtures'
 
 declare global {
@@ -20,6 +20,7 @@ declare global {
 const ROUTES = [
   { match: '/api/overview', json: overview() },
   { match: '/api/chat/history', json: { messages: [] } },
+  ANONYMOUS_SESSION,
 ]
 
 test('applies dark before the app hydrates', async ({ page }) => {

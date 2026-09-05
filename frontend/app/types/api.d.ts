@@ -490,10 +490,253 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Log In
+         * @description Verify a password and issue a session.
+         *
+         *     Every refusal is raised by the service and mapped by `install_v2_error_handlers`:
+         *     401 for credentials, 403 for a disabled account, 423 for a locked one. There is
+         *     no branching here, which is what keeps the enumeration property a property of
+         *     the service rather than of this handler.
+         */
+        post: operations["log_in_api_v2_auth_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Log Out
+         * @description Revoke this session server-side and drop both cookies.
+         *
+         *     Revocation is what makes it real: clearing a cookie only asks the browser to
+         *     forget a credential that would otherwise still work if it had been copied.
+         */
+        post: operations["log_out_api_v2_auth_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register
+         * @description Create an account and sign it in.
+         *
+         *     201, and the body is the same `SignedInResponse` a login returns, so the client
+         *     has one code path for "I now have a session" rather than two.
+         */
+        post: operations["register_api_v2_auth_register_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/auth/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Session
+         * @description Who the caller is, for a page that has just loaded.
+         *
+         *     This is how the frontend rehydrates: the session cookie is `HttpOnly`, so the
+         *     client cannot inspect it and has to ask. A 401 here is the normal answer for a
+         *     visitor, not an error to report.
+         */
+        get: operations["read_session_api_v2_auth_session_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Profile
+         * @description This account's candidate profile.
+         *
+         *     404 when onboarding has not saved one yet. Not an empty 200: "no profile" is a
+         *     different state from "a profile with no fields filled in", and the onboarding
+         *     screen has to tell them apart.
+         */
+        get: operations["read_profile_api_v2_me_profile_get"];
+        /**
+         * Save Profile
+         * @description Create or replace this account's candidate profile.
+         *
+         *     The draft *is* the request model — the same value objects the aggregate holds,
+         *     minus the id, the owner and the timestamp. There is no `user_id` field for a
+         *     body to set, which is the point of the draft existing at all.
+         */
+        put: operations["save_profile_api_v2_me_profile_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/search-profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Search Profiles */
+        get: operations["list_search_profiles_api_v2_me_search_profiles_get"];
+        put?: never;
+        /** Create Search Profile */
+        post: operations["create_search_profile_api_v2_me_search_profiles_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/search-profiles/{search_profile_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Update Search Profile
+         * @description Replace one saved search, keeping its id and its creation time.
+         */
+        put: operations["update_search_profile_api_v2_me_search_profiles__search_profile_id__put"];
+        post?: never;
+        /**
+         * Delete Search Profile
+         * @description Delete one saved search.
+         *
+         *     Not idempotent, on purpose: a second `DELETE` answers 404 rather than 204. A
+         *     client that deleted a search twice is working from a stale list, and telling it
+         *     so is more useful than pretending the second call did something.
+         */
+        delete: operations["delete_search_profile_api_v2_me_search_profiles__search_profile_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/onboarding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read State
+         * @description What has been saved so far, and whether finishing would succeed.
+         */
+        get: operations["read_state_api_v2_onboarding_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/onboarding/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete
+         * @description Record that onboarding is done, or refuse with 409 and say what is missing.
+         *
+         *     Returns the account rather than the onboarding state, because the stamp lives on
+         *     the account and the client's cached copy of it is now stale — answering with the
+         *     new account is what lets the frontend update without a second request.
+         */
+        post: operations["complete_api_v2_onboarding_complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AccountResponse
+         * @description What a client learns about its own account. No credential fields exist.
+         */
+        AccountResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Display Name */
+            display_name: string | null;
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Onboarding Completed At */
+            onboarding_completed_at: string | null;
+            status: components["schemas"]["UserStatus"];
+        };
         /** AppliedBody */
         AppliedBody: {
             /**
@@ -502,10 +745,89 @@ export interface components {
              */
             channel: string;
         };
+        /**
+         * Availability
+         * @description When, and how much, the candidate wants to work.
+         *
+         *     Distinct from `WorkAuthorization.permit_hours_cap` on purpose: this is a
+         *     preference and feeds the `SCHEDULE_FIT` score, while a permit cap is a legal
+         *     limit and feeds eligibility. Collapsing the two would turn "I would rather
+         *     not work Sundays" into "this candidate may not work Sundays".
+         */
+        Availability: {
+            /** Earliest Start */
+            earliest_start?: string | null;
+            /** Latest End */
+            latest_end?: string | null;
+            /** Max Weekly Hours */
+            max_weekly_hours?: number | null;
+            /** Min Weekly Hours */
+            min_weekly_hours?: number | null;
+            /** Notice Period Days */
+            notice_period_days?: number | null;
+            /**
+             * Weekly Slots
+             * @default []
+             */
+            weekly_slots: components["schemas"]["WeeklyAvailabilitySlot"][];
+        };
         /** Body_post_transcribe_api_transcribe_post */
         Body_post_transcribe_api_transcribe_post: {
             /** File */
             file: string;
+        };
+        /**
+         * CandidateProfileDraft
+         * @description A candidate profile as submitted: no id, no owner, no timestamps.
+         *
+         *     Every field is the domain's own value object, so the validation a request body
+         *     gets is exactly the validation the aggregate enforces — the language code
+         *     pattern, the availability window ordering, the permit hour cap. Nothing is
+         *     re-specified here that `CandidateProfile` already specifies.
+         */
+        CandidateProfileDraft: {
+            availability?: components["schemas"]["Availability"] | null;
+            base_location?: components["schemas"]["Location"] | null;
+            /** Display Name */
+            display_name: string;
+            /** Headline */
+            headline?: string | null;
+            /**
+             * Languages
+             * @default []
+             */
+            languages: components["schemas"]["LanguageProficiency"][];
+            /**
+             * Work Authorizations
+             * @default []
+             */
+            work_authorizations: components["schemas"]["WorkAuthorization"][];
+        };
+        /**
+         * CandidateProfileResponse
+         * @description A saved profile, echoed back with the two fields the draft could not carry.
+         *
+         *     `evidence` and `claims` are not here either: they have no storage until Phase
+         *     10, and a field that was always `[]` would read as "this candidate has no
+         *     evidence" rather than "this system does not keep any yet".
+         */
+        CandidateProfileResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            profile: components["schemas"]["CandidateProfileDraft"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
         };
         /** ChatBody */
         ChatBody: {
@@ -521,6 +843,46 @@ export interface components {
              * @default 0
              */
             scope_id: number;
+        };
+        /**
+         * ContractType
+         * @description The legal basis of the engagement, in country-neutral terms.
+         *
+         *     Separate from `OpportunityType` because the two vary independently: an
+         *     internship can be fixed-term or an agency placement, and a part-time role
+         *     can be open-ended. Local contract names map onto these members in a Country
+         *     Pack.
+         * @enum {string}
+         */
+        ContractType: "PERMANENT" | "FIXED_TERM" | "TEMPORARY_AGENCY" | "SERVICE_CONTRACT";
+        /**
+         * CountrySearchArea
+         * @description An entire country.
+         */
+        CountrySearchArea: {
+            /** Country */
+            country: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "COUNTRY";
+            /** Label */
+            label?: string | null;
+        };
+        /**
+         * GeoPoint
+         * @description WGS84 coordinates.
+         *
+         *     Stored as two floats rather than a geometry type: the domain must not depend
+         *     on PostGIS (docs/ARCHITECTURE.md §11 puts the geometry in the persistence
+         *     layer, which Phase 2 introduces).
+         */
+        GeoPoint: {
+            /** Latitude */
+            latitude: number;
+            /** Longitude */
+            longitude: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -547,10 +909,119 @@ export interface components {
             /** Scheduled For */
             scheduled_for?: string | null;
         };
+        /**
+         * LanguageLevel
+         * @description CEFR levels plus NATIVE.
+         *
+         *     CEFR is a cross-border scale rather than one country's vocabulary, so it is
+         *     safe in the universal model; a Country Pack that publishes its own scale maps
+         *     onto these levels instead of adding members here.
+         * @enum {string}
+         */
+        LanguageLevel: "A1" | "A2" | "B1" | "B2" | "C1" | "C2" | "NATIVE";
+        /**
+         * LanguageProficiency
+         * @description A language the candidate actually has, at the level they have it.
+         */
+        LanguageProficiency: {
+            /** Language */
+            language: string;
+            level: components["schemas"]["LanguageLevel"];
+        };
+        /**
+         * Location
+         * @description A place, at whatever precision the source actually gave us.
+         *
+         *     Every field is optional but the whole must say something: a source that
+         *     reports only "Yverdon-les-Bains, Suisse" produces `raw="…"` with nothing
+         *     parsed, and a geocoding pass later fills `city`/`country`/`point`. Keeping
+         *     `raw` is what allows that pass to be re-run and audited instead of guessed
+         *     once and forgotten.
+         */
+        Location: {
+            /** City */
+            city?: string | null;
+            /** Country */
+            country?: string | null;
+            point?: components["schemas"]["GeoPoint"] | null;
+            /** Postal Code */
+            postal_code?: string | null;
+            /** Raw */
+            raw?: string | null;
+            /** Region */
+            region?: string | null;
+        };
+        /** LoginRequest */
+        LoginRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /**
+             * Password
+             * Format: password
+             */
+            password: string;
+        };
         /** NotesBody */
         NotesBody: {
             /** Notes Md */
             notes_md: string;
+        };
+        /**
+         * OnboardingStateResponse
+         * @description Which step the frontend should show, and whether finishing is possible.
+         *
+         *     `may_complete` is computed here rather than in the client, so the button's
+         *     enabled state and the server's 409 can never disagree.
+         */
+        OnboardingStateResponse: {
+            /** Active Search Profiles */
+            active_search_profiles: number;
+            /** Completed At */
+            completed_at: string | null;
+            /** Has Profile */
+            has_profile: boolean;
+            /** Is Complete */
+            is_complete: boolean;
+            /** May Complete */
+            may_complete: boolean;
+            /** Search Profiles */
+            search_profiles: number;
+        };
+        /**
+         * OpportunityType
+         * @description What kind of engagement is on offer.
+         *
+         *     One enum, no country terminology: the Swiss/French "alternance" and the
+         *     German "duales Studium" are both `WORK_STUDY`, and the mapping from those
+         *     words lives in a Country Pack, not here. `None` on an `Opportunity` means
+         *     "not classified yet", which is honest and different from a catch-all member
+         *     that would quietly absorb every failed classification.
+         * @enum {string}
+         */
+        OpportunityType: "FULL_TIME" | "PART_TIME" | "STUDENT_JOB" | "INTERNSHIP" | "APPRENTICESHIP" | "WORK_STUDY" | "GRADUATE" | "TEMPORARY" | "FREELANCE";
+        /**
+         * RadiusSearchArea
+         * @description Everything within `radius_km` of `center`.
+         *
+         *     No country field, and that is the point: a 30 km radius around Geneva covers
+         *     two countries, and a search that silently added a country filter would drop
+         *     the French side of a commute the candidate would happily make. Right-to-work
+         *     is an eligibility question (`WorkAuthorization`), not a discovery filter.
+         */
+        RadiusSearchArea: {
+            center: components["schemas"]["GeoPoint"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "RADIUS";
+            /** Label */
+            label?: string | null;
+            /** Radius Km */
+            radius_km: number;
         };
         /** RegenBody */
         RegenBody: {
@@ -561,6 +1032,163 @@ export interface components {
             creativity: string;
             /** Notes */
             notes: string;
+        };
+        /** RegisterRequest */
+        RegisterRequest: {
+            /** Display Name */
+            display_name?: string | null;
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /**
+             * Password
+             * Format: password
+             */
+            password: string;
+        };
+        /**
+         * RemoteOnlySearchArea
+         * @description Location-independent work.
+         *
+         *     `country` is an optional narrowing ("remote, but contracted in CH"), not a
+         *     place the work happens.
+         */
+        RemoteOnlySearchArea: {
+            /** Country */
+            country?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "REMOTE_ONLY";
+            /** Label */
+            label?: string | null;
+        };
+        /**
+         * SearchProfileDraft
+         * @description A saved search as submitted: no id, no owner, no timestamps.
+         *
+         *     The eight filter tuples keep the domain's convention, and it is worth repeating
+         *     where a client can read it: **an empty list means "no restriction", not "match
+         *     nothing"**. `areas` is the one exception — at least one is required, because an
+         *     unbounded geographic search is what makes a discovery run sweep the planet.
+         */
+        SearchProfileDraft: {
+            /** Areas */
+            areas: (components["schemas"]["CountrySearchArea"] | components["schemas"]["RadiusSearchArea"] | components["schemas"]["RemoteOnlySearchArea"])[];
+            /**
+             * Contract Types
+             * @default []
+             */
+            contract_types: components["schemas"]["ContractType"][];
+            /**
+             * Excluded Keywords
+             * @default []
+             */
+            excluded_keywords: string[];
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /** Name */
+            name: string;
+            /**
+             * Opportunity Types
+             * @default []
+             */
+            opportunity_types: components["schemas"]["OpportunityType"][];
+            /**
+             * Posting Languages
+             * @default []
+             */
+            posting_languages: string[];
+            /**
+             * Queries
+             * @default []
+             */
+            queries: string[];
+            /**
+             * Source Keys
+             * @default []
+             */
+            source_keys: string[];
+            /**
+             * Title Keywords
+             * @default []
+             */
+            title_keywords: string[];
+            workload?: components["schemas"]["WorkloadRange"] | null;
+            /**
+             * Workplace Modes
+             * @default []
+             */
+            workplace_modes: components["schemas"]["WorkplaceMode"][];
+        };
+        /**
+         * SearchProfileListResponse
+         * @description A wrapper, not a bare array.
+         *
+         *     A top-level JSON array cannot grow a field, so the first time this needs a
+         *     count or a cursor it would have to become a breaking change. It also keeps
+         *     every V2 response an object, which is one rule for the client to hold.
+         */
+        SearchProfileListResponse: {
+            /** Search Profiles */
+            search_profiles: components["schemas"]["SearchProfileResponse"][];
+        };
+        /**
+         * SearchProfileResponse
+         * @description A saved search, echoed back with its id and timestamps.
+         */
+        SearchProfileResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            search: components["schemas"]["SearchProfileDraft"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /**
+         * SessionResponse
+         * @description The current session's window — issued, expires — and nothing identifying it.
+         *
+         *     No session id and no digest. The client has the cookie; an id in a body would
+         *     only be useful to something that wanted to name somebody else's session.
+         */
+        SessionResponse: {
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Issued At
+             * Format: date-time
+             */
+            issued_at: string;
+            /**
+             * Last Seen At
+             * Format: date-time
+             */
+            last_seen_at: string;
         };
         /** SettingsBody */
         SettingsBody: {
@@ -603,6 +1231,18 @@ export interface components {
             /** Tailor Creativity */
             tailor_creativity: string;
         };
+        /**
+         * SignedInResponse
+         * @description The reply to register, login and `GET /auth/session`.
+         *
+         *     The tokens are absent from this model by construction — they leave in two
+         *     `Set-Cookie` headers, written by `backend.app.api.cookies`, which is the only
+         *     place in the process that touches their raw values.
+         */
+        SignedInResponse: {
+            account: components["schemas"]["AccountResponse"];
+            session: components["schemas"]["SessionResponse"];
+        };
         /** SnoozeBody */
         SnoozeBody: {
             /**
@@ -618,6 +1258,18 @@ export interface components {
             /** Status */
             status: string;
         };
+        /**
+         * UserStatus
+         * @description Whether the account may be used at all.
+         *
+         *     Two members, because two is what Phase 4 can enforce honestly. `DISABLED`
+         *     refuses both a login and an already-issued session, so an operator can stop
+         *     an account with one `UPDATE` — the mechanism is live and tested even though no
+         *     endpoint sets it. A `PENDING_VERIFICATION` member would be decoration until
+         *     the phase that can actually send an email.
+         * @enum {string}
+         */
+        UserStatus: "ACTIVE" | "DISABLED";
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -631,6 +1283,88 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /**
+         * Weekday
+         * @enum {string}
+         */
+        Weekday: "MONDAY" | "TUESDAY" | "WEDNESDAY" | "THURSDAY" | "FRIDAY" | "SATURDAY" | "SUNDAY";
+        /**
+         * WeeklyAvailabilitySlot
+         * @description A recurring window the candidate can work, in whole local hours.
+         *
+         *     Hour granularity, and no timezone: a candidate saying "Saturday mornings"
+         *     means it in the shop's local time, and modelling that as an instant would
+         *     invent precision nobody supplied.
+         */
+        WeeklyAvailabilitySlot: {
+            /** End Hour */
+            end_hour: number;
+            /** Start Hour */
+            start_hour: number;
+            weekday: components["schemas"]["Weekday"];
+        };
+        /**
+         * WorkAuthorization
+         * @description The candidate's right to work in one country.
+         *
+         *     `permit_hours_cap` is what makes a whole class of eligibility deterministic:
+         *     a student permit that caps paid work at 15h/week makes a 20h/week student job
+         *     *ineligible*, not merely a poor schedule fit. The cap itself is a legal fact
+         *     a Country Pack supplies (Phase 5); the domain only carries it.
+         */
+        WorkAuthorization: {
+            /** Country */
+            country: string;
+            /**
+             * Evidence Ids
+             * @default []
+             */
+            evidence_ids: string[];
+            /** Permit Hours Cap */
+            permit_hours_cap?: number | null;
+            /** Permit Label */
+            permit_label?: string | null;
+            status: components["schemas"]["WorkAuthorizationStatus"];
+            /** Valid Until */
+            valid_until?: string | null;
+        };
+        /**
+         * WorkAuthorizationStatus
+         * @description Right-to-work status, in country-neutral terms.
+         *
+         *     A Swiss B/C/L permit, a French titre de séjour and a US H-1B all map onto
+         *     these members from a Country Pack (docs/V2_SPECIFICATION.md §5); the local
+         *     name travels in `WorkAuthorization.permit_label`. `UNKNOWN` exists because
+         *     "not asked yet" must not be silently read as authorized.
+         * @enum {string}
+         */
+        WorkAuthorizationStatus: "CITIZEN" | "PERMANENT_RESIDENT" | "WORK_PERMIT_HELD" | "STUDENT_PERMIT_WITH_WORK_RIGHTS" | "REQUIRES_SPONSORSHIP" | "NOT_AUTHORIZED" | "UNKNOWN";
+        /**
+         * WorkloadRange
+         * @description How much of a week the opportunity asks for.
+         *
+         *     Two scales, because sources use both and neither converts safely: a
+         *     percentage band (a 60-80% position) and a weekly-hours band (a student job
+         *     "8-12h/week"). Percent cannot be turned into hours without knowing the
+         *     local full-time week, which is Country Pack knowledge (Phase 5), so the
+         *     domain keeps whichever the source gave and lets the matcher decide.
+         */
+        WorkloadRange: {
+            /** Max Percent */
+            max_percent?: number | null;
+            /** Max Weekly Hours */
+            max_weekly_hours?: number | null;
+            /** Min Percent */
+            min_percent?: number | null;
+            /** Min Weekly Hours */
+            min_weekly_hours?: number | null;
+        };
+        /**
+         * WorkplaceMode
+         * @description Where the work happens. Orthogonal to `OpportunityType`.
+         * @enum {string}
+         */
+        WorkplaceMode: "ON_SITE" | "HYBRID" | "REMOTE";
     };
     responses: never;
     parameters: never;
@@ -1530,6 +2264,332 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    log_in_api_v2_auth_login_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedInResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    log_out_api_v2_auth_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    register_api_v2_auth_register_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedInResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_session_api_v2_auth_session_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedInResponse"];
+                };
+            };
+        };
+    };
+    read_profile_api_v2_me_profile_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateProfileResponse"];
+                };
+            };
+        };
+    };
+    save_profile_api_v2_me_profile_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CandidateProfileDraft"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_search_profiles_api_v2_me_search_profiles_get: {
+        parameters: {
+            query?: {
+                /** @description Return only searches that are active. */
+                active_only?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchProfileListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_search_profile_api_v2_me_search_profiles_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SearchProfileDraft"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_search_profile_api_v2_me_search_profiles__search_profile_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                search_profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SearchProfileDraft"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_search_profile_api_v2_me_search_profiles__search_profile_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                search_profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_state_api_v2_onboarding_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OnboardingStateResponse"];
+                };
+            };
+        };
+    };
+    complete_api_v2_onboarding_complete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountResponse"];
                 };
             };
         };

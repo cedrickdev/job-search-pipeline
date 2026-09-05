@@ -28,7 +28,7 @@ COMPAT_DIR = REPO_ROOT / "backend" / "app" / "compat"
 # point backwards in this tuple, which is what keeps the graph acyclic and keeps
 # `eligibility` from growing into `matching`.
 DEPENDENCY_ORDER = (
-    "base", "identifiers", "common", "opportunity", "company", "candidate",
+    "base", "identifiers", "user", "common", "opportunity", "company", "candidate",
     "search", "matching", "eligibility", "policy", "decision",
 )
 
@@ -82,7 +82,7 @@ def _domain_path(module):
     return DOMAIN_DIR / f"{module}.py"
 
 
-def test_the_domain_package_is_the_eleven_modules_its_docstring_lists():
+def test_the_domain_package_is_the_modules_its_docstring_lists():
     """A new module has to be placed in the declared order, not just dropped in."""
     assert DOMAIN_MODULES == tuple(sorted(DEPENDENCY_ORDER))
 

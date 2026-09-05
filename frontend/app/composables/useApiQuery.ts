@@ -68,6 +68,26 @@ export async function invalidate(...prefixes: string[]): Promise<void> {
   if (keys.length) await refreshNuxtData(keys)
 }
 
+/**
+ * Drop every cached payload under these prefixes without refetching.
+ *
+ * The counterpart to `invalidate`, and Phase 4 is why it exists: when a session
+ * ends, the previous account's profile and saved searches must not sit in the cache
+ * waiting for the next one. `invalidate` is the wrong tool for that — it *refetches*
+ * the keys, which after a logout means a burst of 401s, and it only reaches keys
+ * that are still mounted. A logout navigates away first, so by the time this runs
+ * the components are gone and the registry is empty; matching on the cache's own
+ * keys instead is what makes the payloads actually disappear.
+ */
+export function clearCached(...prefixes: string[]): void {
+  const matches = (key: string) =>
+    prefixes.some(prefix => key === prefix || key.startsWith(`${prefix}:`))
+  for (const key of [...fetchedAt.keys()]) {
+    if (matches(key)) fetchedAt.delete(key)
+  }
+  clearNuxtData(matches)
+}
+
 export interface ApiQueryOptions<T> {
   /** Poll interval in ms as a function of the latest data; false to stop. */
   pollInterval?: (data: T | null) => number | false
@@ -79,9 +99,15 @@ export interface ApiQueryOptions<T> {
  * A cached, invalidatable GET.
  *
  * `getCachedData` reproduces V1's `staleTime: 15_000`: a remount inside the
- * window reuses the payload instead of refetching, but `invalidate()` still
- * forces a real request because Nuxt clears the cache entry first. V1 also set
+ * window reuses the payload instead of refetching. V1 also set
  * `refetchOnWindowFocus: false`, which is already Nuxt's default.
+ *
+ * The `cause` check is what keeps that window from swallowing invalidation.
+ * `refreshNuxtData` does not clear the payload — it re-runs `execute`, and Nuxt
+ * 4 consults `getCachedData` on every run (`experimental.granularCachedData`
+ * defaults to true). A window-only implementation would therefore answer a
+ * post-write `invalidate()` from the very payload the write just invalidated.
+ * Nuxt's own default refuses the cache for exactly these two causes.
  */
 export function useApiQuery<T>(
   key: MaybeRefOrGetter<string>,
@@ -95,8 +121,17 @@ export function useApiQuery<T>(
     return data
   }, {
     immediate: options.enabled === undefined ? true : toValue(options.enabled),
-    getCachedData(cacheKey, nuxtApp) {
-      const cached = nuxtApp.payload.data[cacheKey] ?? nuxtApp.static.data[cacheKey]
+    getCachedData(cacheKey, nuxtApp, context) {
+      // A refresh is a request for the server's answer, not for this one.
+      if (context.cause === 'refresh:manual' || context.cause === 'refresh:hook') {
+        return undefined
+      }
+      // Presence, not truthiness: `null` is a real payload here — it is how
+      // useAccount.ts spells "this account has no profile yet" — and `??` would
+      // read it as a miss and refetch on every remount.
+      const cached = cacheKey in nuxtApp.payload.data
+        ? nuxtApp.payload.data[cacheKey]
+        : nuxtApp.static.data[cacheKey]
       if (cached === undefined) return undefined
       const at = fetchedAt.get(cacheKey)
       if (at !== undefined && Date.now() - at > STALE_MS) return undefined

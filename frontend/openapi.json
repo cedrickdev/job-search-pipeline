@@ -1,6 +1,63 @@
 {
   "components": {
     "schemas": {
+      "AccountResponse": {
+        "additionalProperties": false,
+        "description": "What a client learns about its own account. No credential fields exist.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "onboarding_completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Onboarding Completed At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/UserStatus"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "status",
+          "onboarding_completed_at",
+          "created_at"
+        ],
+        "title": "AccountResponse",
+        "type": "object"
+      },
       "AppliedBody": {
         "properties": {
           "channel": {
@@ -10,6 +67,84 @@
           }
         },
         "title": "AppliedBody",
+        "type": "object"
+      },
+      "Availability": {
+        "additionalProperties": false,
+        "description": "When, and how much, the candidate wants to work.\n\nDistinct from `WorkAuthorization.permit_hours_cap` on purpose: this is a\npreference and feeds the `SCHEDULE_FIT` score, while a permit cap is a legal\nlimit and feeds eligibility. Collapsing the two would turn \"I would rather\nnot work Sundays\" into \"this candidate may not work Sundays\".",
+        "properties": {
+          "earliest_start": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Earliest Start"
+          },
+          "latest_end": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest End"
+          },
+          "max_weekly_hours": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 168.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Weekly Hours"
+          },
+          "min_weekly_hours": {
+            "anyOf": [
+              {
+                "maximum": 168.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Weekly Hours"
+          },
+          "notice_period_days": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notice Period Days"
+          },
+          "weekly_slots": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/WeeklyAvailabilitySlot"
+            },
+            "title": "Weekly Slots",
+            "type": "array"
+          }
+        },
+        "title": "Availability",
         "type": "object"
       },
       "Body_post_transcribe_api_transcribe_post": {
@@ -24,6 +159,100 @@
           "file"
         ],
         "title": "Body_post_transcribe_api_transcribe_post",
+        "type": "object"
+      },
+      "CandidateProfileDraft": {
+        "additionalProperties": false,
+        "description": "A candidate profile as submitted: no id, no owner, no timestamps.\n\nEvery field is the domain's own value object, so the validation a request body\ngets is exactly the validation the aggregate enforces — the language code\npattern, the availability window ordering, the permit hour cap. Nothing is\nre-specified here that `CandidateProfile` already specifies.",
+        "properties": {
+          "availability": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Availability"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "base_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Location"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline"
+          },
+          "languages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/LanguageProficiency"
+            },
+            "title": "Languages",
+            "type": "array"
+          },
+          "work_authorizations": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/WorkAuthorization"
+            },
+            "title": "Work Authorizations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "title": "CandidateProfileDraft",
+        "type": "object"
+      },
+      "CandidateProfileResponse": {
+        "additionalProperties": false,
+        "description": "A saved profile, echoed back with the two fields the draft could not carry.\n\n`evidence` and `claims` are not here either: they have no storage until Phase\n10, and a field that was always `[]` would read as \"this candidate has no\nevidence\" rather than \"this system does not keep any yet\".",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/CandidateProfileDraft"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "updated_at",
+          "profile"
+        ],
+        "title": "CandidateProfileResponse",
         "type": "object"
       },
       "ChatBody": {
@@ -47,6 +276,74 @@
           "message"
         ],
         "title": "ChatBody",
+        "type": "object"
+      },
+      "ContractType": {
+        "description": "The legal basis of the engagement, in country-neutral terms.\n\nSeparate from `OpportunityType` because the two vary independently: an\ninternship can be fixed-term or an agency placement, and a part-time role\ncan be open-ended. Local contract names map onto these members in a Country\nPack.",
+        "enum": [
+          "PERMANENT",
+          "FIXED_TERM",
+          "TEMPORARY_AGENCY",
+          "SERVICE_CONTRACT"
+        ],
+        "title": "ContractType",
+        "type": "string"
+      },
+      "CountrySearchArea": {
+        "additionalProperties": false,
+        "description": "An entire country.",
+        "properties": {
+          "country": {
+            "pattern": "^[A-Z]{2}$",
+            "title": "Country",
+            "type": "string"
+          },
+          "kind": {
+            "const": "COUNTRY",
+            "default": "COUNTRY",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          }
+        },
+        "required": [
+          "country"
+        ],
+        "title": "CountrySearchArea",
+        "type": "object"
+      },
+      "GeoPoint": {
+        "additionalProperties": false,
+        "description": "WGS84 coordinates.\n\nStored as two floats rather than a geometry type: the domain must not depend\non PostGIS (docs/ARCHITECTURE.md §11 puts the geometry in the persistence\nlayer, which Phase 2 introduces).",
+        "properties": {
+          "latitude": {
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Latitude",
+            "type": "number"
+          },
+          "longitude": {
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Longitude",
+            "type": "number"
+          }
+        },
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "title": "GeoPoint",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -147,6 +444,136 @@
         "title": "InterviewPatch",
         "type": "object"
       },
+      "LanguageLevel": {
+        "description": "CEFR levels plus NATIVE.\n\nCEFR is a cross-border scale rather than one country's vocabulary, so it is\nsafe in the universal model; a Country Pack that publishes its own scale maps\nonto these levels instead of adding members here.",
+        "enum": [
+          "A1",
+          "A2",
+          "B1",
+          "B2",
+          "C1",
+          "C2",
+          "NATIVE"
+        ],
+        "title": "LanguageLevel",
+        "type": "string"
+      },
+      "LanguageProficiency": {
+        "additionalProperties": false,
+        "description": "A language the candidate actually has, at the level they have it.",
+        "properties": {
+          "language": {
+            "pattern": "^[a-z]{2}$",
+            "title": "Language",
+            "type": "string"
+          },
+          "level": {
+            "$ref": "#/components/schemas/LanguageLevel"
+          }
+        },
+        "required": [
+          "language",
+          "level"
+        ],
+        "title": "LanguageProficiency",
+        "type": "object"
+      },
+      "Location": {
+        "additionalProperties": false,
+        "description": "A place, at whatever precision the source actually gave us.\n\nEvery field is optional but the whole must say something: a source that\nreports only \"Yverdon-les-Bains, Suisse\" produces `raw=\"…\"` with nothing\nparsed, and a geocoding pass later fills `city`/`country`/`point`. Keeping\n`raw` is what allows that pass to be re-run and audited instead of guessed\nonce and forgotten.",
+        "properties": {
+          "city": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Z]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "point": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GeoPoint"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "postal_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Postal Code"
+          },
+          "raw": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          }
+        },
+        "title": "Location",
+        "type": "object"
+      },
+      "LoginRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "format": "password",
+            "title": "Password",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "LoginRequest",
+        "type": "object"
+      },
       "NotesBody": {
         "properties": {
           "notes_md": {
@@ -158,6 +585,108 @@
           "notes_md"
         ],
         "title": "NotesBody",
+        "type": "object"
+      },
+      "OnboardingStateResponse": {
+        "additionalProperties": false,
+        "description": "Which step the frontend should show, and whether finishing is possible.\n\n`may_complete` is computed here rather than in the client, so the button's\nenabled state and the server's 409 can never disagree.",
+        "properties": {
+          "active_search_profiles": {
+            "title": "Active Search Profiles",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "has_profile": {
+            "title": "Has Profile",
+            "type": "boolean"
+          },
+          "is_complete": {
+            "title": "Is Complete",
+            "type": "boolean"
+          },
+          "may_complete": {
+            "title": "May Complete",
+            "type": "boolean"
+          },
+          "search_profiles": {
+            "title": "Search Profiles",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "has_profile",
+          "search_profiles",
+          "active_search_profiles",
+          "completed_at",
+          "is_complete",
+          "may_complete"
+        ],
+        "title": "OnboardingStateResponse",
+        "type": "object"
+      },
+      "OpportunityType": {
+        "description": "What kind of engagement is on offer.\n\nOne enum, no country terminology: the Swiss/French \"alternance\" and the\nGerman \"duales Studium\" are both `WORK_STUDY`, and the mapping from those\nwords lives in a Country Pack, not here. `None` on an `Opportunity` means\n\"not classified yet\", which is honest and different from a catch-all member\nthat would quietly absorb every failed classification.",
+        "enum": [
+          "FULL_TIME",
+          "PART_TIME",
+          "STUDENT_JOB",
+          "INTERNSHIP",
+          "APPRENTICESHIP",
+          "WORK_STUDY",
+          "GRADUATE",
+          "TEMPORARY",
+          "FREELANCE"
+        ],
+        "title": "OpportunityType",
+        "type": "string"
+      },
+      "RadiusSearchArea": {
+        "additionalProperties": false,
+        "description": "Everything within `radius_km` of `center`.\n\nNo country field, and that is the point: a 30 km radius around Geneva covers\ntwo countries, and a search that silently added a country filter would drop\nthe French side of a commute the candidate would happily make. Right-to-work\nis an eligibility question (`WorkAuthorization`), not a discovery filter.",
+        "properties": {
+          "center": {
+            "$ref": "#/components/schemas/GeoPoint"
+          },
+          "kind": {
+            "const": "RADIUS",
+            "default": "RADIUS",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "radius_km": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 500.0,
+            "title": "Radius Km",
+            "type": "number"
+          }
+        },
+        "required": [
+          "center",
+          "radius_km"
+        ],
+        "title": "RadiusSearchArea",
         "type": "object"
       },
       "RegenBody": {
@@ -176,6 +705,286 @@
           "notes"
         ],
         "title": "RegenBody",
+        "type": "object"
+      },
+      "RegisterRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "format": "password",
+            "maxLength": 1024,
+            "minLength": 12,
+            "title": "Password",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "RegisterRequest",
+        "type": "object"
+      },
+      "RemoteOnlySearchArea": {
+        "additionalProperties": false,
+        "description": "Location-independent work.\n\n`country` is an optional narrowing (\"remote, but contracted in CH\"), not a\nplace the work happens.",
+        "properties": {
+          "country": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Z]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "kind": {
+            "const": "REMOTE_ONLY",
+            "default": "REMOTE_ONLY",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          }
+        },
+        "title": "RemoteOnlySearchArea",
+        "type": "object"
+      },
+      "SearchProfileDraft": {
+        "additionalProperties": false,
+        "description": "A saved search as submitted: no id, no owner, no timestamps.\n\nThe eight filter tuples keep the domain's convention, and it is worth repeating\nwhere a client can read it: **an empty list means \"no restriction\", not \"match\nnothing\"**. `areas` is the one exception — at least one is required, because an\nunbounded geographic search is what makes a discovery run sweep the planet.",
+        "properties": {
+          "areas": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "COUNTRY": "#/components/schemas/CountrySearchArea",
+                  "RADIUS": "#/components/schemas/RadiusSearchArea",
+                  "REMOTE_ONLY": "#/components/schemas/RemoteOnlySearchArea"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/CountrySearchArea"
+                },
+                {
+                  "$ref": "#/components/schemas/RadiusSearchArea"
+                },
+                {
+                  "$ref": "#/components/schemas/RemoteOnlySearchArea"
+                }
+              ]
+            },
+            "minItems": 1,
+            "title": "Areas",
+            "type": "array"
+          },
+          "contract_types": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ContractType"
+            },
+            "title": "Contract Types",
+            "type": "array"
+          },
+          "excluded_keywords": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Excluded Keywords",
+            "type": "array"
+          },
+          "is_active": {
+            "default": true,
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "opportunity_types": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/OpportunityType"
+            },
+            "title": "Opportunity Types",
+            "type": "array"
+          },
+          "posting_languages": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z]{2}$",
+              "type": "string"
+            },
+            "title": "Posting Languages",
+            "type": "array"
+          },
+          "queries": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Queries",
+            "type": "array"
+          },
+          "source_keys": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Keys",
+            "type": "array"
+          },
+          "title_keywords": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Title Keywords",
+            "type": "array"
+          },
+          "workload": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkloadRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workplace_modes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/WorkplaceMode"
+            },
+            "title": "Workplace Modes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "areas"
+        ],
+        "title": "SearchProfileDraft",
+        "type": "object"
+      },
+      "SearchProfileListResponse": {
+        "additionalProperties": false,
+        "description": "A wrapper, not a bare array.\n\nA top-level JSON array cannot grow a field, so the first time this needs a\ncount or a cursor it would have to become a breaking change. It also keeps\nevery V2 response an object, which is one rule for the client to hold.",
+        "properties": {
+          "search_profiles": {
+            "items": {
+              "$ref": "#/components/schemas/SearchProfileResponse"
+            },
+            "title": "Search Profiles",
+            "type": "array"
+          }
+        },
+        "required": [
+          "search_profiles"
+        ],
+        "title": "SearchProfileListResponse",
+        "type": "object"
+      },
+      "SearchProfileResponse": {
+        "additionalProperties": false,
+        "description": "A saved search, echoed back with its id and timestamps.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "search": {
+            "$ref": "#/components/schemas/SearchProfileDraft"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "created_at",
+          "updated_at",
+          "search"
+        ],
+        "title": "SearchProfileResponse",
+        "type": "object"
+      },
+      "SessionResponse": {
+        "additionalProperties": false,
+        "description": "The current session's window — issued, expires — and nothing identifying it.\n\nNo session id and no digest. The client has the cookie; an id in a body would\nonly be useful to something that wanted to name somebody else's session.",
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "issued_at",
+          "expires_at",
+          "last_seen_at"
+        ],
+        "title": "SessionResponse",
         "type": "object"
       },
       "SettingsBody": {
@@ -236,6 +1045,24 @@
         "title": "SettingsBody",
         "type": "object"
       },
+      "SignedInResponse": {
+        "additionalProperties": false,
+        "description": "The reply to register, login and `GET /auth/session`.\n\nThe tokens are absent from this model by construction — they leave in two\n`Set-Cookie` headers, written by `backend.app.api.cookies`, which is the only\nplace in the process that touches their raw values.",
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/AccountResponse"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionResponse"
+          }
+        },
+        "required": [
+          "account",
+          "session"
+        ],
+        "title": "SignedInResponse",
+        "type": "object"
+      },
       "SnoozeBody": {
         "properties": {
           "days": {
@@ -270,6 +1097,15 @@
         ],
         "title": "StatusBody",
         "type": "object"
+      },
+      "UserStatus": {
+        "description": "Whether the account may be used at all.\n\nTwo members, because two is what Phase 4 can enforce honestly. `DISABLED`\nrefuses both a login and an already-issued session, so an operator can stop\nan account with one `UPDATE` — the mechanism is live and tested even though no\nendpoint sets it. A `PENDING_VERIFICATION` member would be decoration until\nthe phase that can actually send an email.",
+        "enum": [
+          "ACTIVE",
+          "DISABLED"
+        ],
+        "title": "UserStatus",
+        "type": "string"
       },
       "ValidationError": {
         "properties": {
@@ -310,6 +1146,196 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "Weekday": {
+        "enum": [
+          "MONDAY",
+          "TUESDAY",
+          "WEDNESDAY",
+          "THURSDAY",
+          "FRIDAY",
+          "SATURDAY",
+          "SUNDAY"
+        ],
+        "title": "Weekday",
+        "type": "string"
+      },
+      "WeeklyAvailabilitySlot": {
+        "additionalProperties": false,
+        "description": "A recurring window the candidate can work, in whole local hours.\n\nHour granularity, and no timezone: a candidate saying \"Saturday mornings\"\nmeans it in the shop's local time, and modelling that as an instant would\ninvent precision nobody supplied.",
+        "properties": {
+          "end_hour": {
+            "maximum": 24.0,
+            "minimum": 1.0,
+            "title": "End Hour",
+            "type": "integer"
+          },
+          "start_hour": {
+            "maximum": 23.0,
+            "minimum": 0.0,
+            "title": "Start Hour",
+            "type": "integer"
+          },
+          "weekday": {
+            "$ref": "#/components/schemas/Weekday"
+          }
+        },
+        "required": [
+          "weekday",
+          "start_hour",
+          "end_hour"
+        ],
+        "title": "WeeklyAvailabilitySlot",
+        "type": "object"
+      },
+      "WorkAuthorization": {
+        "additionalProperties": false,
+        "description": "The candidate's right to work in one country.\n\n`permit_hours_cap` is what makes a whole class of eligibility deterministic:\na student permit that caps paid work at 15h/week makes a 20h/week student job\n*ineligible*, not merely a poor schedule fit. The cap itself is a legal fact\na Country Pack supplies (Phase 5); the domain only carries it.",
+        "properties": {
+          "country": {
+            "pattern": "^[A-Z]{2}$",
+            "title": "Country",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "permit_hours_cap": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 168.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permit Hours Cap"
+          },
+          "permit_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permit Label"
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkAuthorizationStatus"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          }
+        },
+        "required": [
+          "country",
+          "status"
+        ],
+        "title": "WorkAuthorization",
+        "type": "object"
+      },
+      "WorkAuthorizationStatus": {
+        "description": "Right-to-work status, in country-neutral terms.\n\nA Swiss B/C/L permit, a French titre de séjour and a US H-1B all map onto\nthese members from a Country Pack (docs/V2_SPECIFICATION.md §5); the local\nname travels in `WorkAuthorization.permit_label`. `UNKNOWN` exists because\n\"not asked yet\" must not be silently read as authorized.",
+        "enum": [
+          "CITIZEN",
+          "PERMANENT_RESIDENT",
+          "WORK_PERMIT_HELD",
+          "STUDENT_PERMIT_WITH_WORK_RIGHTS",
+          "REQUIRES_SPONSORSHIP",
+          "NOT_AUTHORIZED",
+          "UNKNOWN"
+        ],
+        "title": "WorkAuthorizationStatus",
+        "type": "string"
+      },
+      "WorkloadRange": {
+        "additionalProperties": false,
+        "description": "How much of a week the opportunity asks for.\n\nTwo scales, because sources use both and neither converts safely: a\npercentage band (a 60-80% position) and a weekly-hours band (a student job\n\"8-12h/week\"). Percent cannot be turned into hours without knowing the\nlocal full-time week, which is Country Pack knowledge (Phase 5), so the\ndomain keeps whichever the source gave and lets the matcher decide.",
+        "properties": {
+          "max_percent": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Percent"
+          },
+          "max_weekly_hours": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 168.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Weekly Hours"
+          },
+          "min_percent": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Percent"
+          },
+          "min_weekly_hours": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 168.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Weekly Hours"
+          }
+        },
+        "title": "WorkloadRange",
+        "type": "object"
+      },
+      "WorkplaceMode": {
+        "description": "Where the work happens. Orthogonal to `OpportunityType`.",
+        "enum": [
+          "ON_SITE",
+          "HYBRID",
+          "REMOTE"
+        ],
+        "title": "WorkplaceMode",
+        "type": "string"
       }
     }
   },
@@ -1540,6 +2566,406 @@
           }
         },
         "summary": "Post Transcribe"
+      }
+    },
+    "/api/v2/auth/login": {
+      "post": {
+        "description": "Verify a password and issue a session.\n\nEvery refusal is raised by the service and mapped by `install_v2_error_handlers`:\n401 for credentials, 403 for a disabled account, 423 for a locked one. There is\nno branching here, which is what keeps the enumeration property a property of\nthe service rather than of this handler.",
+        "operationId": "log_in_api_v2_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedInResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Log In",
+        "tags": [
+          "v2-auth"
+        ]
+      }
+    },
+    "/api/v2/auth/logout": {
+      "post": {
+        "description": "Revoke this session server-side and drop both cookies.\n\nRevocation is what makes it real: clearing a cookie only asks the browser to\nforget a credential that would otherwise still work if it had been copied.",
+        "operationId": "log_out_api_v2_auth_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Log Out",
+        "tags": [
+          "v2-auth"
+        ]
+      }
+    },
+    "/api/v2/auth/register": {
+      "post": {
+        "description": "Create an account and sign it in.\n\n201, and the body is the same `SignedInResponse` a login returns, so the client\nhas one code path for \"I now have a session\" rather than two.",
+        "operationId": "register_api_v2_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedInResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register",
+        "tags": [
+          "v2-auth"
+        ]
+      }
+    },
+    "/api/v2/auth/session": {
+      "get": {
+        "description": "Who the caller is, for a page that has just loaded.\n\nThis is how the frontend rehydrates: the session cookie is `HttpOnly`, so the\nclient cannot inspect it and has to ask. A 401 here is the normal answer for a\nvisitor, not an error to report.",
+        "operationId": "read_session_api_v2_auth_session_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedInResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Session",
+        "tags": [
+          "v2-auth"
+        ]
+      }
+    },
+    "/api/v2/me/profile": {
+      "get": {
+        "description": "This account's candidate profile.\n\n404 when onboarding has not saved one yet. Not an empty 200: \"no profile\" is a\ndifferent state from \"a profile with no fields filled in\", and the onboarding\nscreen has to tell them apart.",
+        "operationId": "read_profile_api_v2_me_profile_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Profile",
+        "tags": [
+          "v2-me"
+        ]
+      },
+      "put": {
+        "description": "Create or replace this account's candidate profile.\n\nThe draft *is* the request model — the same value objects the aggregate holds,\nminus the id, the owner and the timestamp. There is no `user_id` field for a\nbody to set, which is the point of the draft existing at all.",
+        "operationId": "save_profile_api_v2_me_profile_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CandidateProfileDraft"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Profile",
+        "tags": [
+          "v2-me"
+        ]
+      }
+    },
+    "/api/v2/me/search-profiles": {
+      "get": {
+        "operationId": "list_search_profiles_api_v2_me_search_profiles_get",
+        "parameters": [
+          {
+            "description": "Return only searches that are active.",
+            "in": "query",
+            "name": "active_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Return only searches that are active.",
+              "title": "Active Only",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchProfileListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Search Profiles",
+        "tags": [
+          "v2-me"
+        ]
+      },
+      "post": {
+        "operationId": "create_search_profile_api_v2_me_search_profiles_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchProfileDraft"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Search Profile",
+        "tags": [
+          "v2-me"
+        ]
+      }
+    },
+    "/api/v2/me/search-profiles/{search_profile_id}": {
+      "delete": {
+        "description": "Delete one saved search.\n\nNot idempotent, on purpose: a second `DELETE` answers 404 rather than 204. A\nclient that deleted a search twice is working from a stale list, and telling it\nso is more useful than pretending the second call did something.",
+        "operationId": "delete_search_profile_api_v2_me_search_profiles__search_profile_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "search_profile_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Search Profile Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Search Profile",
+        "tags": [
+          "v2-me"
+        ]
+      },
+      "put": {
+        "description": "Replace one saved search, keeping its id and its creation time.",
+        "operationId": "update_search_profile_api_v2_me_search_profiles__search_profile_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "search_profile_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Search Profile Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchProfileDraft"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Search Profile",
+        "tags": [
+          "v2-me"
+        ]
+      }
+    },
+    "/api/v2/onboarding": {
+      "get": {
+        "description": "What has been saved so far, and whether finishing would succeed.",
+        "operationId": "read_state_api_v2_onboarding_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OnboardingStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read State",
+        "tags": [
+          "v2-onboarding"
+        ]
+      }
+    },
+    "/api/v2/onboarding/complete": {
+      "post": {
+        "description": "Record that onboarding is done, or refuse with 409 and say what is missing.\n\nReturns the account rather than the onboarding state, because the stamp lives on\nthe account and the client's cached copy of it is now stale — answering with the\nnew account is what lets the frontend update without a second request.",
+        "operationId": "complete_api_v2_onboarding_complete_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Complete",
+        "tags": [
+          "v2-onboarding"
+        ]
       }
     }
   }

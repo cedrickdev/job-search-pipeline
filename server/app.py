@@ -10,6 +10,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.app.api.dependencies import ENGINE_ATTRIBUTE
+from backend.app.api.errors import install_v2_error_handlers
+from backend.app.api.router import create_v2_router
 from pipeline import paths
 from pipeline.db import connect, init_db
 from server.apply_dispatch import ApplyDispatcher
@@ -20,7 +23,12 @@ from server.runs import RunManager
 async def _lifespan(app: FastAPI):
     """Run the in-process daily scheduler for the life of the app, then cancel
     it. The tick loop sleeps before its first tick, so a short-lived TestClient
-    never fires a run during a test."""
+    never fires a run during a test.
+
+    The V2 engine is disposed on the way out. It is created lazily by the first
+    ``/api/v2`` request that needs it (see ``backend.app.api.dependencies``), so
+    the attribute is usually absent — an app that served only V1 has no pool to
+    close."""
     from server.scheduler import scheduler_loop
     task = asyncio.create_task(scheduler_loop(app))
     app.state.scheduler_task = task
@@ -30,6 +38,9 @@ async def _lifespan(app: FastAPI):
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+        engine = getattr(app.state, ENGINE_ATTRIBUTE, None)
+        if engine is not None:
+            await engine.dispose()
 
 
 def _mount_spa(app: FastAPI, spa_dist: Path) -> None:
@@ -105,6 +116,13 @@ def create_app(db_path: str | Path | None = None,
     app.include_router(chat_routes.router)
     app.include_router(transcribe_routes.router)
     app.include_router(runs_routes.router)
+
+    # V2, mounted at /api/v2 alongside V1 rather than replacing anything. The
+    # error handlers are registered on the app because Starlette resolves them
+    # per application; the /api/v2-only ones are scoped by path inside
+    # backend.app.api.errors so V1 bodies are untouched.
+    install_v2_error_handlers(app)
+    app.include_router(create_v2_router())
 
     # SPA mount is registered LAST so every /api route keeps precedence.
     spa_path = Path(spa_dist) if spa_dist is not None else paths.FRONTEND_DIST

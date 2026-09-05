@@ -1,0 +1,89 @@
+# Swiss eligibility PARAMETERS. Not an engine — Phase 9 owns that (§9).
+#
+# Everything here is configuration an operator maintains and a future phase reads.
+# This repository asserts no legal advice: the numbers below are the ones a Swiss
+# candidate search has to reason about, each with the authority to check them
+# against, and docs/COUNTRY_PACKS.md §Eligibility says in the same words that they
+# must be reviewed rather than trusted.
+#
+# Why they belong in a pack at all: `WorkAuthorization.permit_hours_cap` in the
+# universal domain carries a cap and refuses to know where it comes from, and
+# `EligibilityRequirement` names nine checks without saying which ones a given
+# country has data for. This file answers both, for Switzerland.
+
+# The Labour Act's general minimum age for employment. Limited exceptions exist
+# from 13 for light work and for cultural, artistic and sporting activities, so a
+# Phase 9 rule using this number must treat it as a default and not a hard floor.
+minimum_working_age: 15
+
+# Not exhaustive. The six below are the ones that change what a candidate may
+# accept in practice; the asylum-related permits (F, N, S) are omitted rather than
+# guessed at, because their work rights depend on cantonal authorization and a
+# wrong entry here would become a wrong eligibility verdict with nothing in between
+# to catch it.
+permits:
+  - code: CH
+    display_name: Swiss citizenship
+    status: CITIZEN
+
+  - code: C
+    display_name: Permit C — settlement permit (autorisation d'établissement)
+    status: PERMANENT_RESIDENT
+    reference_url: https://www.sem.admin.ch/
+    notes: No restriction on employer, canton, occupation or hours.
+
+  - code: B
+    display_name: Permit B — residence permit (autorisation de séjour)
+    status: WORK_PERMIT_HELD
+    reference_url: https://www.sem.admin.ch/
+    notes: >-
+      Gainful employment is permitted; the conditions attached depend on
+      nationality (EU/EFTA versus third-country) and on the permit's own terms.
+
+  - code: B_STUDENT
+    display_name: Permit B for studies — student residence permit
+    status: STUDENT_PERMIT_WITH_WORK_RIGHTS
+    weekly_hours_cap: 15.0
+    reference_url: https://www.sem.admin.ch/
+    notes: >-
+      Third-country students are limited to part-time work alongside their studies,
+      commonly stated as 15 hours per week during term, with cantonal authorization
+      and a waiting period after arrival. This is the cap
+      `WorkAuthorization.permit_hours_cap` exists for, and it is the single most
+      consequential number in this file for a student-jobs product: verify it with
+      the cantonal migration office before a Phase 9 rule refuses an opportunity
+      because of it.
+
+  - code: L
+    display_name: Permit L — short-term residence permit (courte durée)
+    status: WORK_PERMIT_HELD
+    reference_url: https://www.sem.admin.ch/
+
+  - code: G
+    display_name: Permit G — cross-border commuter (frontalier)
+    status: WORK_PERMIT_HELD
+    reference_url: https://www.sem.admin.ch/
+    notes: >-
+      Relevant around Geneva and the Jura arc, where a commute crosses the border.
+      `RadiusSearchArea` deliberately carries no country for the same reason.
+
+# Which of the nine `EligibilityRequirement` members this pack can actually feed.
+# Declaring one without the data behind it is refused at load time: it would
+# promise a check nothing could perform. LOCATION_REACHABLE is absent because it
+# needs distances, which Phase 7 owns; EDUCATION_LEVEL, CERTIFICATION,
+# DRIVING_LICENCE and AVAILABILITY_WINDOW are candidate-side or posting-side facts
+# rather than country parameters.
+requirements_in_scope:
+  - WORK_AUTHORIZATION
+  - PERMIT_HOURS_CAP
+  - MINIMUM_AGE
+  - LANGUAGE_MINIMUM
+
+reference_urls:
+  - https://www.sem.admin.ch/
+  - https://www.seco.admin.ch/
+
+notes: >-
+  Phase 5 reads none of this at run time. It is loaded, validated and carried so
+  that Phase 9 finds a typed, country-scoped place to put its rules instead of
+  hardcoding Swiss permit codes into a matcher.

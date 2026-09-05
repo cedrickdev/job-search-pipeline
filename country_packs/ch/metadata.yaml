@@ -1,0 +1,38 @@
+# Switzerland — identity and the parameters the universal domain refuses to guess.
+#
+# `full_time_weekly_hours` is the one that has teeth: `WorkloadRange` deliberately
+# keeps percentages and weekly hours apart because "80%" cannot be turned into
+# hours without knowing the local full-time week. Three Swiss sources publish an
+# activity rate as a percentage, so without this number the platform could not
+# compare a "60-80%" position against a candidate's "max 15 h/week".
+#
+# 42 is a convention, not a legal figure: contractual full-time weeks in
+# Switzerland cluster between 40 and 42 hours, and the Labour Act caps the working
+# week at 45 hours for office, technical and retail staff (50 for others). Treat it
+# as an operator-maintained parameter and review it per employer if a future phase
+# needs precision — see docs/COUNTRY_PACKS.md §Workload.
+country: CH
+display_name: Switzerland
+default_locale: fr-CH
+# French first because the reference deployment searches Vaud, and every V1 source
+# module fetches the `/fr/` variant of its site. The other three are declared
+# because a Swiss pack that could not describe a German-language posting would be
+# wrong about the country, not just about the deployment.
+locales:
+  - fr-CH
+  - de-CH
+  - it-CH
+  - en-CH
+currency: CHF
+languages:
+  - fr
+  - de
+  - it
+  - en
+timezone: Europe/Zurich
+full_time_weekly_hours: 42.0
+documentation_url: https://www.seco.admin.ch/
+notes: >-
+  Romansh (rm) is a national language but no source in this pack publishes in it,
+  so it is left out of `languages` rather than declared and unused; `locales` would
+  have to grow with it.

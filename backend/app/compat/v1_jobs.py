@@ -25,6 +25,7 @@ import re
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, tzinfo
 from enum import StrEnum
+from hashlib import sha256
 from typing import Any, Final
 from uuid import UUID, uuid5
 
@@ -104,7 +105,7 @@ _LANGUAGE_CODE_RE = re.compile(r"^[a-z]{2}$")
 # Welcome to the Jungle's values ("fulltime", "partial", "punctual", "no") are
 # absent on purpose: "fulltime" reads as a workload, not as full remote, and a
 # wrong guess here would put an on-site job in a remote search.
-_WORKPLACE_MODE_BY_TOKEN: Final[Mapping[str, WorkplaceMode]] = {
+V1_WORKPLACE_MODE_BY_TOKEN: Final[Mapping[str, WorkplaceMode]] = {
     "remote": WorkplaceMode.REMOTE,
     "fully remote": WorkplaceMode.REMOTE,
     "hybrid": WorkplaceMode.HYBRID,
@@ -117,7 +118,7 @@ _WORKPLACE_MODE_BY_TOKEN: Final[Mapping[str, WorkplaceMode]] = {
 # self-explanatory English/ATS tokens appear: "stage", "alternance", "CDI" and
 # "Temporärarbeit" are country vocabulary, and docs/V2_SPECIFICATION.md §5 puts
 # those in a Country Pack (Phase 5), not in a compatibility shim.
-_OPPORTUNITY_TYPE_BY_TOKEN: Final[Mapping[str, OpportunityType]] = {
+V1_OPPORTUNITY_TYPE_BY_TOKEN: Final[Mapping[str, OpportunityType]] = {
     "full time": OpportunityType.FULL_TIME,
     "fulltime": OpportunityType.FULL_TIME,
     "part time": OpportunityType.PART_TIME,
@@ -136,7 +137,7 @@ _OPPORTUNITY_TYPE_BY_TOKEN: Final[Mapping[str, OpportunityType]] = {
 # tokens V1 can produce whose legal meaning is unambiguous without a country.
 # "Contract" is not among them: on one board it means a fixed-term employee and
 # on another an external contractor.
-_CONTRACT_TYPE_BY_TOKEN: Final[Mapping[str, ContractType]] = {
+V1_CONTRACT_TYPE_BY_TOKEN: Final[Mapping[str, ContractType]] = {
     "permanent": ContractType.PERMANENT,
     "fixed term": ContractType.FIXED_TERM,
 }
@@ -151,6 +152,21 @@ def opportunity_id_for_v1_job(job_id: int) -> OpportunityId:
     return OpportunityId(uuid5(V1_OPPORTUNITY_NAMESPACE, f"v1:jobs:{job_id}"))
 
 
+def v1_dedup_fingerprint(company: str, title: str) -> str:
+    """V1's cross-source deduplication key, byte-for-byte.
+
+    `pipeline.jobs.dedup_hash` is what V1's `jobs.dedup_hash` column already
+    holds, and Phase 2's import copies those values across. A live V2 sweep has to
+    compute the *same* hash for the same posting, or the first sweep after the
+    migration re-inserts every row V1 already had. Reimplemented rather than
+    imported so `backend` keeps no dependency on `pipeline`
+    (tests/test_v2_domain_purity.py); a test asserts the two agree on the V1
+    fixtures, which is the check that keeps this honest.
+    """
+    normalized = (re.sub(r"[^a-z0-9]", "", part.lower()) for part in (company, title))
+    return sha256("|".join(normalized).encode()).hexdigest()
+
+
 def v1_score_to_unit_interval(score: int) -> Score:
     """Convert a V1 0-100 score to the unit interval V2 scores use.
 
@@ -163,7 +179,7 @@ def v1_score_to_unit_interval(score: int) -> Score:
     return score / 100.0
 
 
-def _token(value: str) -> str:
+def v1_token(value: str) -> str:
     """Normalize a vendor token: lower case, one space between words.
 
     Folds the three spellings the boards actually use — "Full-time" (Lever),
@@ -172,7 +188,7 @@ def _token(value: str) -> str:
     return re.sub(r"[\s_-]+", " ", value.strip().lower())
 
 
-def _text(row: Mapping[str, Any], column: str) -> str | None:
+def v1_text(row: Mapping[str, Any], column: str) -> str | None:
     """A column as trimmed text, or `None` when absent, NULL or blank."""
     value = row.get(column)
     if value is None:
@@ -182,7 +198,7 @@ def _text(row: Mapping[str, Any], column: str) -> str | None:
 
 
 def _required_text(row: Mapping[str, Any], column: str) -> str:
-    text = _text(row, column)
+    text = v1_text(row, column)
     if text is None:
         raise V1MappingError(
             f"V1 jobs row is missing required column {column!r}",
@@ -190,7 +206,7 @@ def _required_text(row: Mapping[str, Any], column: str) -> str:
     return text
 
 
-def _parse_date(value: str) -> date | None:
+def v1_parse_date(value: str) -> date | None:
     """V1 writes `YYYY-MM-DD`; anything else is left for `raw` to carry."""
     try:
         return date.fromisoformat(value[:10])
@@ -243,19 +259,19 @@ def opportunity_from_v1_job(row: Mapping[str, Any], *,
             f"{discovered_text!r}",
             code=V1MappingErrorCode.DISCOVERED_DATE_INVALID)
 
-    url = _text(row, "url")
+    url = v1_text(row, "url")
     # Anything that is not http(s) — a `mailto:` or a scraped fragment — is left
     # out of the typed field: `HttpUrlStr` exists so no adapter downstream can be
     # handed a scheme it should not open.
     source_url = url if url is not None and url.startswith(("http://", "https://")) \
         else None
 
-    location_text = _text(row, "location")
-    remote_token = _text(row, "remote_policy")
-    contract_token = _text(row, "contract_type")
-    normalized_contract = _token(contract_token) if contract_token is not None else ""
-    language = _text(row, "language")
-    posted_text = _text(row, "posted_date")
+    location_text = v1_text(row, "location")
+    remote_token = v1_text(row, "remote_policy")
+    contract_token = v1_text(row, "contract_type")
+    normalized_contract = v1_token(contract_token) if contract_token is not None else ""
+    language = v1_text(row, "language")
+    posted_text = v1_text(row, "posted_date")
 
     return Opportunity(
         id=opportunity_id_for_v1_job(job_id),
@@ -274,10 +290,10 @@ def opportunity_from_v1_job(row: Mapping[str, Any], *,
         ),
         company_name=_required_text(row, "company"),
         title=_required_text(row, "title"),
-        description=_text(row, "description"),
-        opportunity_type=_OPPORTUNITY_TYPE_BY_TOKEN.get(normalized_contract),
-        contract_type=_CONTRACT_TYPE_BY_TOKEN.get(normalized_contract),
-        workplace_mode=(_WORKPLACE_MODE_BY_TOKEN.get(_token(remote_token))
+        description=v1_text(row, "description"),
+        opportunity_type=V1_OPPORTUNITY_TYPE_BY_TOKEN.get(normalized_contract),
+        contract_type=V1_CONTRACT_TYPE_BY_TOKEN.get(normalized_contract),
+        workplace_mode=(V1_WORKPLACE_MODE_BY_TOKEN.get(v1_token(remote_token))
                         if remote_token is not None else None),
         # Free text, unparsed: "Yverdon-les-Bains, Suisse" becomes `Location.raw`
         # and a Phase 7 geocoding pass fills city, country and point.
@@ -285,12 +301,12 @@ def opportunity_from_v1_job(row: Mapping[str, Any], *,
         posting_language=(language.lower()
                           if language is not None and _LANGUAGE_CODE_RE.match(
                               language.lower()) else None),
-        posted_at=_parse_date(posted_text) if posted_text is not None else None,
+        posted_at=v1_parse_date(posted_text) if posted_text is not None else None,
         discovered_at=discovered_at,
         # V1's `url` is the posting page, which is not necessarily where one
         # applies, so it is not promoted to `application_url`.
         application_url=None,
-        dedup_fingerprint=_text(row, "dedup_hash"),
+        dedup_fingerprint=v1_text(row, "dedup_hash"),
     )
 
 
@@ -304,7 +320,7 @@ def _raw_snapshot(row: Mapping[str, Any]) -> dict[str, str]:
     for column in V1_JOB_COLUMNS:
         if column in _VERBATIM_COLUMNS:
             continue
-        text = _text(row, column)
+        text = v1_text(row, column)
         if text is not None:
             snapshot[f"v1_{column}"] = text
     return snapshot

@@ -1,0 +1,102 @@
+# The rest of the Swiss vocabulary a normalizer needs.
+#
+# Every entry below was chosen from what the twelve V1 sources actually print, not
+# from what a country might theoretically say. V1 stores these strings verbatim in
+# `jobs.remote_policy`, `jobs.contract_type`, `jobs.language` and — the one that
+# matters most — `jobs.salary`, and nothing interprets any of them.
+#
+# Keys are pre-normalized (lower case, accents folded, apostrophes flattened) and
+# matched whole-word, longest-first. The loader rejects an unnormalized key.
+
+# --- where the work happens -------------------------------------------------
+# `ashby` sets remote_policy="remote" and `indeed_ch` does the same for a remote
+# location, so those two hit the English key directly.
+workplace_modes:
+  teletravail: REMOTE
+  "travail a distance": REMOTE
+  "a distance": REMOTE
+  "home office": REMOTE
+  homeoffice: REMOTE
+  remote: REMOTE
+  "lavoro da remoto": REMOTE
+  hybride: HYBRID
+  hybrid: HYBRID
+  ibrido: HYBRID
+  "sur site": ON_SITE
+  "sur place": ON_SITE
+  presentiel: ON_SITE
+  "vor ort": ON_SITE
+  "in sede": ON_SITE
+  "on site": ON_SITE
+  on-site: ON_SITE
+
+# --- the legal basis of the engagement --------------------------------------
+# Bare "temporaire" is deliberately absent: it is an opportunity *type* (see
+# opportunity_types.yaml) and reading it as an agency contract would assert
+# something about the employer that the posting does not say. "interim",
+# "travail temporaire" and "personalverleih" — the Swiss legal term for staff
+# leasing — do say it.
+contract_types:
+  cdi: PERMANENT
+  "contrat a duree indeterminee": PERMANENT
+  "duree indeterminee": PERMANENT
+  "poste fixe": PERMANENT
+  unbefristet: PERMANENT
+  festanstellung: PERMANENT
+  permanent: PERMANENT
+  cdd: FIXED_TERM
+  "contrat a duree determinee": FIXED_TERM
+  "duree determinee": FIXED_TERM
+  befristet: FIXED_TERM
+  "fixed term": FIXED_TERM
+  fixed-term: FIXED_TERM
+  interim: TEMPORARY_AGENCY
+  "travail temporaire": TEMPORARY_AGENCY
+  "mission temporaire": TEMPORARY_AGENCY
+  personalverleih: TEMPORARY_AGENCY
+  temporararbeit: TEMPORARY_AGENCY
+  mandat: SERVICE_CONTRACT
+  "contrat de mandat": SERVICE_CONTRACT
+  auftrag: SERVICE_CONTRACT
+  werkvertrag: SERVICE_CONTRACT
+
+# --- the language a posting is written in ------------------------------------
+# The ISO codes are keys too, because `wtj` publishes a `language` field that is
+# already "fr" or "en". Feed this mapping a language field only — never a
+# description, where a bare "fr" could be part of a price.
+languages:
+  fr: fr
+  francais: fr
+  french: fr
+  franzosisch: fr
+  de: de
+  allemand: de
+  deutsch: de
+  german: de
+  it: it
+  italien: it
+  italiano: it
+  italian: it
+  italienisch: it
+  en: en
+  anglais: en
+  english: en
+  englisch: en
+  inglese: en
+
+# --- what introduces a percentage -------------------------------------------
+# `migros`, `coop` and `jobscout24` all put the activity rate ("80%") in V1's
+# *salary* column, so a normalizer that trusted the column name would report an
+# 80-franc wage. These labels — plus a bare percentage in a field a source is
+# known to use for workload — are what let it recognise a workload instead.
+# "pensum" is here because Coop's own field is literally `sza_pensum.max`.
+activity_rate_labels:
+  - "taux d'activite"
+  - "taux d'occupation"
+  - "activity rate"
+  - workload
+  - pensum
+  - arbeitspensum
+  - beschaftigungsgrad
+  - anstellungsgrad
+  - "grado di occupazione"

@@ -95,6 +95,24 @@ def new_opportunity_id() -> OpportunityId:
     return OpportunityId(uuid4())
 
 
+def discovered_opportunity_id(source_key: str, external_key: str) -> OpportunityId:
+    """The id of an opportunity a source just handed back.
+
+    Derived, for the same reason as `default_candidate_profile_id`: a sweep that
+    runs twice an hour meets the same posting repeatedly, and a random id per
+    sighting would turn one vacancy into twelve rows a day. `external_key` is
+    whatever the source can promise is stable for that posting — its own id when
+    it publishes one, its URL otherwise — and `source_key` scopes it, because two
+    boards numbering their postings from 1 are not describing the same job.
+
+    Deduplication *across* sources is a different question with a different
+    answer: `Opportunity.dedup_fingerprint` (company + title), which V1 already
+    computes and Phase 6 will sharpen.
+    """
+    return OpportunityId(
+        uuid5(SURROGATE_KEY_NAMESPACE, f"opportunity:{source_key}:{external_key}"))
+
+
 def new_match_evaluation_id() -> MatchEvaluationId:
     return MatchEvaluationId(uuid4())
 

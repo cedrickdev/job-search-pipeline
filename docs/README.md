@@ -12,7 +12,8 @@ This directory is the source of truth for the V2 product and implementation plan
 6. [Engineering Standards](./ENGINEERING_STANDARDS.md)
 7. [V2 Persistence](./PERSISTENCE.md) — PostgreSQL/PostGIS, timezone policy, migrations, Docker and the V1 import, built in Phase 2
 8. [V2 Authentication](./AUTHENTICATION.md) — accounts, server-side sessions, the two cookies, CSRF and the onboarding gate, built in Phase 4
-9. [V1 Baseline](./V1_BASELINE.md) — what V1 is and what its checks report, measured in Phase 0
+9. [Country Packs and Source Plugins](./COUNTRY_PACKS.md) — the pack contract, the source contract, capabilities, health, the Swiss reference pack, built in Phase 5
+10. [V1 Baseline](./V1_BASELINE.md) — what V1 is and what its checks report, measured in Phase 0
 
 ## Product principle
 

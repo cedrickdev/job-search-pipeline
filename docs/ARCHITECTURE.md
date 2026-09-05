@@ -152,24 +152,33 @@ Task families:
 
 ## 7. Source plugin contract
 
+Implemented in Phase 5. See [Country Packs and Source Plugins](./COUNTRY_PACKS.md)
+for the full contract, the capability model and the health semantics.
+
 ```python
 class OpportunitySource(Protocol):
-    key: str
+    @property
+    def metadata(self) -> SourceMetadata: ...
 
-    async def discover(self, request: SearchRequest) -> list[DiscoveredOpportunity]:
-        ...
+    async def discover(self, request: DiscoveryRequest) -> DiscoveryResult: ...
 
-    async def fetch_detail(self, external_id: str) -> OpportunityDetail | None:
-        ...
-
-    async def healthcheck(self) -> SourceHealth:
-        ...
-
-    def capabilities(self) -> SourceCapabilities:
-        ...
+    async def healthcheck(self) -> SourceHealth: ...
 ```
 
-Capabilities describe country support, discovery, detail fetching, authentication and application support.
+Three members, none of which mentions HTTP, HTML, an ATS or a browser: the
+orchestrator cannot tell one transport from another.
+
+`metadata` carries identity and declared capabilities — country support, query
+shape, traversal, which fields come back typed, and downstream use such as direct
+apply URLs and ATS metadata. Capabilities a source honours only as a ranking hint
+are declared separately as advisory, so a caller can be told the answer was not
+filtered.
+
+`discover` returns rather than raises: a failing source reports a non-HEALTHY
+`SourceHealth` inside its `DiscoveryResult`, which is the only shape that can also
+carry the postings it did collect. Detail fetching is not part of the Phase 5
+contract; a later phase adds it as its own capability rather than as a mandatory
+method.
 
 ## 8. Application adapter contract
 

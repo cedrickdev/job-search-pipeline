@@ -1,0 +1,113 @@
+# Swiss vocabulary for engagement types → the universal `OpportunityType`.
+#
+# §2 of the phase order is the reason this file exists: "Do not add ALTERNANCE to
+# the universal enum merely because one country uses that vocabulary." So
+# `alternance` is a key here and `WORK_STUDY` is the value, and the German
+# `duales studium` maps to the same member without either word reaching
+# `backend/app/domain/opportunity.py`.
+#
+# Keys are pre-normalized: lower case, accents folded, apostrophes flattened,
+# single spaces. The loader refuses a key that is not, because an unnormalized key
+# would never match and the symptom would be silent.
+#
+# Matching is whole-word and longest-first, which is not a detail: "stage" occurs
+# inside "stagiaire", and "lehre" inside "Lehrer" (teacher). Both are excluded by
+# the word boundary rather than by luck.
+#
+# One trap this file cannot solve on its own: "apprentissage automatique" is French
+# for machine learning, so a data-science posting would classify as an
+# APPRENTICESHIP if the description were searched. That is why
+# `backend/app/discovery/normalization.py` classifies from the title and the
+# contract field only, and never from the description.
+
+# The categories a Swiss search expects to see. Descriptive — nothing filters on
+# it — so a board printing something else is recorded, not rejected.
+supported:
+  - FULL_TIME
+  - PART_TIME
+  - STUDENT_JOB
+  - INTERNSHIP
+  - APPRENTICESHIP
+  - WORK_STUDY
+  - GRADUATE
+  - TEMPORARY
+  - FREELANCE
+
+terms:
+  # --- apprenticeship: the Swiss dual system, in three languages -------------
+  apprentissage: APPRENTICESHIP
+  "place d'apprentissage": APPRENTICESHIP
+  apprenti: APPRENTICESHIP
+  apprentie: APPRENTICESHIP
+  lehrstelle: APPRENTICESHIP
+  lehre: APPRENTICESHIP
+  berufslehre: APPRENTICESHIP
+  lehrbetrieb: APPRENTICESHIP
+  apprendistato: APPRENTICESHIP
+  apprendista: APPRENTICESHIP
+
+  # --- internship -----------------------------------------------------------
+  stage: INTERNSHIP
+  stagiaire: INTERNSHIP
+  "stage pratique": INTERNSHIP
+  praktikum: INTERNSHIP
+  praktikant: INTERNSHIP
+  praktikantin: INTERNSHIP
+  tirocinio: INTERNSHIP
+  internship: INTERNSHIP
+  intern: INTERNSHIP
+
+  # --- student jobs: the reference deployment's own target -------------------
+  "emploi etudiant": STUDENT_JOB
+  "job etudiant": STUDENT_JOB
+  "travail etudiant": STUDENT_JOB
+  "auxiliaire etudiant": STUDENT_JOB
+  studentenjob: STUDENT_JOB
+  "studentische hilfskraft": STUDENT_JOB
+  werkstudent: STUDENT_JOB
+  "student job": STUDENT_JOB
+
+  # --- work-study: §2's worked example --------------------------------------
+  alternance: WORK_STUDY
+  alternant: WORK_STUDY
+  "contrat de professionnalisation": WORK_STUDY
+  "duales studium": WORK_STUDY
+  "formation en alternance": WORK_STUDY
+
+  # --- graduate programmes --------------------------------------------------
+  "jeune diplome": GRADUATE
+  "programme graduate": GRADUATE
+  graduate: GRADUATE
+  hochschulabsolvent: GRADUATE
+  absolvent: GRADUATE
+  trainee: GRADUATE
+
+  # --- temporary work -------------------------------------------------------
+  temporaire: TEMPORARY
+  "mission temporaire": TEMPORARY
+  "travail temporaire": TEMPORARY
+  interim: TEMPORARY
+  temporar: TEMPORARY
+  temporarstelle: TEMPORARY
+  aushilfe: TEMPORARY
+  "lavoro temporaneo": TEMPORARY
+
+  # --- workload shape, when a board states it as a category -----------------
+  "temps plein": FULL_TIME
+  "plein temps": FULL_TIME
+  vollzeit: FULL_TIME
+  "tempo pieno": FULL_TIME
+  "full time": FULL_TIME
+  full-time: FULL_TIME
+  "temps partiel": PART_TIME
+  teilzeit: PART_TIME
+  "tempo parziale": PART_TIME
+  "part time": PART_TIME
+  part-time: PART_TIME
+
+  # --- independent work -----------------------------------------------------
+  freelance: FREELANCE
+  independant: FREELANCE
+  "travailleur independant": FREELANCE
+  selbststandig: FREELANCE
+  freiberuflich: FREELANCE

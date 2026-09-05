@@ -91,7 +91,16 @@ packages = ["pipeline", "pipeline.sources", "pipeline.apply", "dashboard", "serv
             "backend.app.core", "backend.app.infrastructure",
             "backend.app.infrastructure.database", "backend.app.repositories",
             "backend.app.cli", "backend.app.services", "backend.app.api",
-            "backend.app.api.routes"]
+            "backend.app.api.routes", "backend.app.discovery",
+            "backend.app.discovery.adapters",
+            "country_packs", "country_packs.ch"]
+
+# A Country Pack is five YAML files and a six-line loader (Phase 5): without this
+# the wheel would ship the loader and none of its content, and `load_pack()`
+# would raise COUNTRY_PACK_FILE_MISSING from an installed environment while
+# working perfectly from a source checkout.
+[tool.setuptools.package-data]
+"country_packs.ch" = ["*.yaml"]
 
 # --------------------------------------------------------------------------
 # Ruff (Phase 0). The full rule set below applies to EVERY Python file. V1
@@ -196,3 +205,18 @@ warn_return_any = true
 warn_unused_ignores = true
 strict_equality = true
 extra_checks = true
+
+# Phase 5. The V2 source adapters wrap V1's `pipeline/sources/*` modules rather
+# than reimplementing them, so `mypy backend country_packs` now *follows* imports
+# into V1 — where five of the 22 documented baseline errors live
+# (docs/V1_BASELINE.md). Without this the strict step would fail on legacy debt it
+# does not own, and the only ways to make it pass would be to rewrite V1 (Phase 0
+# forbids it) or to relax a rule (this phase's order forbids it).
+#
+# This is a *reporting scope* setting, not a relaxed rule: `follow_imports` has no
+# effect on modules named explicitly, and `files` above names `pipeline`. So the
+# bare `mypy` run still checks every V1 module and still reports exactly the 22
+# errors CI gates on — both tiers keep the strength they had.
+[[tool.mypy.overrides]]
+module = ["pipeline.*"]
+follow_imports = "silent"

@@ -1,0 +1,118 @@
+# Which sources Switzerland uses, in what order, and what it relies on them for.
+#
+# This file is the replacement for `pipeline/discover.py`'s two hardcoded dicts
+# (`ATS_SOURCES` and `QUERY_SOURCES`). The V2 orchestrator has no such list, and
+# `tests/test_v2_discovery_boundaries.py` fails if one appears.
+#
+# Two things are NOT here. Capabilities are declared by the adapter, because they
+# are properties of the implementation, not of the country — `expects_capabilities`
+# below is a contract *check* (bootstrap refuses to start if an adapter stopped
+# claiming what this pack relies on), not a claim. And no credential: only
+# `config_env_vars`, which names variables and is constrained to a shape a real key
+# cannot have.
+#
+# `priority` is a Swiss judgement, which is exactly why it lives in a pack: the
+# local boards go first because they carry most of the Vaud-area volume the
+# reference deployment searches for, then the internationals, then the ATS boards,
+# which are empty until an operator adds tokens to `config/companies.yaml`.
+#
+# `indeed` (fr.indeed.com) is deliberately absent, not disabled. Its adapter
+# declares `countries: ("FR",)`, so the registry excludes it from a CH sweep by
+# country and a binding here would contradict the adapter. V1 achieved the same
+# thing with a nine-line comment in the middle of its orchestrator.
+sources:
+  - source_key: jobup
+    priority: 10
+    expects_capabilities: [KEYWORD_SEARCH, LOCATION_SEARCH]
+    notes: >-
+      Largest Swiss board (JobCloud). Read from the page's server-rendered
+      __INIT__ blob because the JSON API is WAF-gated for anonymous callers, so
+      it is the most fragile of the twelve; it earns first place on coverage.
+      Location is folded into the free-text term and only affects ranking, which
+      is why the adapter also lists LOCATION_SEARCH as advisory.
+
+  - source_key: indeed_ch
+    priority: 20
+    expects_capabilities: [KEYWORD_SEARCH, LOCATION_SEARCH, INCREMENTAL_DISCOVERY]
+    notes: >-
+      ch-fr.indeed.com. One of only two sources that can be asked for "since N
+      days" (`fromage`), which is what makes a daily sweep cheap.
+
+  - source_key: jobscout24
+    priority: 25
+    expects_capabilities: [STRUCTURED_WORKLOAD]
+    notes: >-
+      Independent of the JobCloud database, so it surfaces genuinely different
+      listings. The adapter fetches one per-city listing page that already
+      aggregates a radius around it; it accepts neither a keyword nor a location,
+      and says so with KEYWORD_IGNORED / LOCATION_IGNORED warnings.
+
+  - source_key: migros
+    priority: 30
+    expects_capabilities: [STRUCTURED_WORKLOAD]
+    notes: >-
+      One Migros cooperative's vacancies (Vaud). A career site, not a board: it
+      answers for one employer and ignores the request's keywords and locations.
+
+  - source_key: coop
+    priority: 35
+    expects_capabilities: [LOCATION_SEARCH, STRUCTURED_WORKLOAD]
+    notes: >-
+      Coop via the Prospective platform's public JSON API. The only source whose
+      location handling is a real filter rather than a ranking hint — it is applied
+      client-side on the canton attribute — while its own text relevance is loose
+      enough that the adapter marks KEYWORD_SEARCH advisory.
+
+  - source_key: manpower
+    priority: 40
+    notes: >-
+      Staffing agency, one city listing page. The employer shown is usually
+      Manpower itself rather than the end client, which is why Phase 6's company
+      canonicalization will need to treat it as an agency rather than an employer.
+
+  - source_key: wtj
+    priority: 50
+    expects_capabilities: [KEYWORD_SEARCH]
+    notes: >-
+      Welcome to the Jungle's public Algolia index. Keyword and location are
+      concatenated into one free-text query, so the location changes ranking and
+      not the result set.
+
+  - source_key: linkedin
+    priority: 60
+    expects_capabilities: [KEYWORD_SEARCH, LOCATION_SEARCH, INCREMENTAL_DISCOVERY]
+    notes: >-
+      Guest search endpoint, best-effort by nature: LinkedIn answers a 403 or 429
+      often enough that its health status is expected to vary. The adapter
+      deliberately does not claim HEALTHCHECK — probing a hostile endpoint would
+      add unsolicited requests for no information a sweep does not already give.
+
+  - source_key: jooble
+    priority: 70
+    expects_capabilities: [KEYWORD_SEARCH, LOCATION_SEARCH]
+    config_env_vars: [JOOBLE_API_KEY]
+    notes: >-
+      The only documented, key-based API in the set, and the only source that can
+      report MISCONFIGURED: without JOOBLE_API_KEY the adapter says so instead of
+      claiming an outage, which is what V1 reports today.
+
+  - source_key: greenhouse
+    priority: 80
+    expects_capabilities: [COMPANY_FILTER, ATS_METADATA]
+    notes: >-
+      ATS board, one request per company token from `config/companies.yaml`. That
+      file is empty by default, so this source returns nothing and makes no request
+      until an operator adds a target employer — the behaviour V1 has today.
+
+  - source_key: lever
+    priority: 81
+    expects_capabilities: [COMPANY_FILTER, ATS_METADATA]
+    notes: Same shape as greenhouse; see `config/companies.yaml`.
+
+  - source_key: ashby
+    priority: 82
+    expects_capabilities: [COMPANY_FILTER, ATS_METADATA]
+    notes: >-
+      Same shape as greenhouse. Publishes a compensation string
+      (`compensationTierSummary`), which is human text rather than a range, so the
+      adapter does not claim STRUCTURED_SALARY.

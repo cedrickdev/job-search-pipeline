@@ -68,10 +68,10 @@ Five YAML files, one per concern:
 
 | File | Field | Holds |
 | --- | --- | --- |
-| `metadata.yaml` | `metadata` | ISO code, display name, default locale, locales, languages, currency, timezone, full-time weekly hours |
+| `metadata.yaml` | `metadata` | ISO code, display name, default locale, locales, languages, currency, timezone, full-time weekly hours, preferred company domain endings |
 | `sources.yaml` | `sources` | which sources are enabled here, their priority and their expected capabilities |
 | `opportunity_types.yaml` | `opportunity_types` | local vocabulary -> universal `OpportunityType` |
-| `terminology.yaml` | `terminology` | workplace modes, contract types, languages, activity-rate labels |
+| `terminology.yaml` | `terminology` | workplace modes, contract types, languages, activity-rate labels, company legal suffixes |
 | `eligibility.yaml` | `eligibility` | permit rules and which requirement kinds are in scope |
 
 `load_pack(directory, expected_country="CH")` reads all five, validates them and
@@ -497,6 +497,15 @@ WORK_STUDY), **17** workplace-mode terms, **22** contract-type terms, **18**
 language terms and **9** activity-rate labels. Eligibility adds **6** permits and a
 minimum working age of 15.
 
+Phase 6 added two company-identity fields to the pack: **27** legal suffixes in
+`terminology.company_legal_suffixes` (`sa`, `sàrl`, `ag`, `gmbh`, `spa`, `srl`,
+`genossenschaft`, `verein`, `stiftung` and the English forms Swiss boards print for
+foreign parents) and two preferred domain endings in
+`metadata.company_domain_suffixes` (`.ch`, `.swiss`). Both are read by
+`backend/app/companies/identity.py` and neither is a filter — a suffix match alone
+never merges two employers, and a Swiss company on a `.com` is ordinary. See
+[Company Discovery](./COMPANY_DISCOVERY.md) §Identity.
+
 ### Universal enum, local words
 
 `WORK_STUDY` stays the universal type (§2). *Alternance* is not added to the enum
@@ -530,16 +539,22 @@ Nothing in `orchestrator.py`, `registry.py` or `contracts.py` changes.
 2. Fill the vocabulary in the languages actually used there, and map every local
    term onto an existing universal `OpportunityType`. If a genuinely new *universal*
    category appears, that is a domain change and its own discussion.
-3. Bind the sources that serve the country — including existing country-neutral
+3. List the legal suffixes a registered company name ends with there
+   (`terminology.company_legal_suffixes`) and the domain endings an employer's own
+   site tends to use (`metadata.company_domain_suffixes`). Both are optional: a pack
+   that declares neither still loads, and company identity simply has one fewer
+   comparison form and one fewer tie-break. Never list a meaningful word — a country
+   name in a company name is part of the company name.
+4. Bind the sources that serve the country — including existing country-neutral
    ones such as the three ATS boards.
-4. Register the pack in `build_country_packs`.
-5. Declare the new package and its YAML in `pyproject.toml` —
+5. Register the pack in `build_country_packs`.
+6. Declare the new package and its YAML in `pyproject.toml` —
    `[tool.setuptools.packages] packages` and
    `[tool.setuptools.package-data] "country_packs.xx" = ["*.yaml"]`. Without the
    second line the wheel ships the loader without its content and `load_pack`
    raises `COUNTRY_PACK_FILE_MISSING` from an installed environment while working
    perfectly from a source checkout.
-6. Add tests mirroring `tests/test_v2_country_packs.py`.
+7. Add tests mirroring `tests/test_v2_country_packs.py`.
 
 Again: no orchestration change. That is acceptance criterion 8, and
 `tests/test_v2_discovery_boundaries.py` is what keeps it true.
@@ -561,8 +576,11 @@ Identity is derived, not random: `discovered_opportunity_id` is a `uuid5` of
 id when it publishes one and the URL otherwise. A sweep that runs twice an hour
 therefore meets the same posting and produces the same id, instead of turning one
 vacancy into twelve rows a day. Cross-source deduplication is a different question
-answered by `dedup_fingerprint` (company + title), which V1 already computes and
-Phase 6 will sharpen.
+answered by `dedup_fingerprint` (company + title), which V1 already computes; Phase 6
+left it untouched and answered the *company* half separately, by resolving a posting's
+company name to a canonical employer (`Opportunity.company_id`) without ever
+overwriting the string the board published. See
+[Company Discovery](./COMPANY_DISCOVERY.md).
 
 A posting that cannot be normalized is skipped with a `POSTING_SKIPPED` warning and
 counted in `DiscoveryMetrics.postings_skipped`; it never becomes a half-built
@@ -622,7 +640,7 @@ neither the key nor the host.
 
 | Concern | Phase |
 | --- | --- |
-| Company discovery, ATS detection from arbitrary career sites, company canonicalization | 6 |
+| Company discovery, ATS detection, company canonicalization — delivered in Phase 6, see [Company Discovery](./COMPANY_DISCOVERY.md). ATS detection from *arbitrary* career sites needs crawling and is still out of scope. | 6 |
 | Geocoding and database-backed radius semantics | 7 |
 | Map UI | 8 |
 | Matching and the eligibility engine that consumes the pack's metadata | 9 |

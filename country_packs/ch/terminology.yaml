@@ -100,3 +100,52 @@ activity_rate_labels:
   - beschaftigungsgrad
   - anstellungsgrad
   - "grado di occupazione"
+
+# --- what a Swiss legal name ends with --------------------------------------
+# The forms an employer's registered name carries in the four language regions.
+# "Logitech Europe S.A." and "Logitech Europe" differ by one of these and are the
+# same employer; that is the only use — a suffix is stripped to build a *comparison*
+# key during identity resolution, never to rewrite a stored name, and a suffix match
+# alone never merges two companies (docs/COMPANY_DISCOVERY.md §Identity).
+#
+# Punctuation is dropped before matching, so "sa" also covers "S.A." and "sarl"
+# covers "Sàrl" — listing the dotted variants would be listing the same key twice.
+# Longest first at use, so "societe cooperative" cannot be shadowed by "cooperative".
+#
+# Deliberately absent: "group", "holding", "suisse", "switzerland", "schweiz" — all
+# meaningful words. Stripping them would turn "Acme Switzerland" into "Acme", which
+# §3 of the phase order forbids by name.
+company_legal_suffixes:
+  # French
+  - sa
+  - sarl
+  - snc
+  - "societe anonyme"
+  - "societe a responsabilite limitee"
+  # German
+  - ag
+  - gmbh
+  - kg
+  - aktiengesellschaft
+  - "gesellschaft mit beschrankter haftung"
+  # Italian
+  - spa
+  - srl
+  - sagl
+  - "societa anonima"
+  - "societa a responsabilita limitata"
+  # Cooperatives, associations and foundations — Migros and Coop are both
+  # "Genossenschaft" entities, so this is not a theoretical branch.
+  - genossenschaft
+  - cooperative
+  - "societe cooperative"
+  - "societa cooperativa"
+  - verein
+  - association
+  - stiftung
+  - fondation
+  # English, for the foreign parents Swiss boards print verbatim
+  - ltd
+  - limited
+  - inc
+  - llc

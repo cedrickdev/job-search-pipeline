@@ -24,6 +24,7 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   // body arrives without one.
   account_locked: 'Too many failed sign-in attempts. Try again later.',
   candidate_profile_not_found: 'No profile has been saved for this account yet.',
+  company_not_found: 'That company is not in the directory.',
   conflict: 'That change conflicts with something already saved. Reload and retry.',
   csrf_failed: 'This request could not be verified. Reload the page and try again.',
   database_unavailable: 'The service is temporarily unavailable. Try again in a moment.',

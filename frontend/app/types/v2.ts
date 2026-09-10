@@ -48,6 +48,24 @@ export type SearchProfileList = Schemas['SearchProfileListResponse']
 /** Which onboarding step to show, and whether finishing is allowed. */
 export type OnboardingState = Schemas['OnboardingStateResponse']
 
+/** One employer, as the directory describes it. Shared: no owner, no `user_id`. */
+export type Company = Schemas['CompanyResponse']
+
+/** One page of employers, with the window it came from. */
+export type CompanyList = Schemas['CompanyListResponse']
+
+/** One employer with its aliases, its careers endpoints and its provenance. */
+export type CompanyDetail = Schemas['CompanyDetailResponse']
+
+/** What a discovery pass did: what ran, what was written, what stayed ambiguous. */
+export type CompanyDiscoveryRun = Schemas['CompanyDiscoveryRunResponse']
+
+/** Which ATS an employer publishes on. A closed set — Phase 6 supports three. */
+export type AtsPlatform = Schemas['AtsPlatform']
+
+/** `SUPPORTED | NOT_SUPPORTED | UNKNOWN`. The third is not a missing answer. */
+export type SpontaneousSupport = Schemas['SpontaneousApplicationSupport']
+
 export type Location = Schemas['Location']
 export type LanguageProficiency = Schemas['LanguageProficiency']
 export type LanguageLevel = LanguageProficiency['level']
@@ -68,6 +86,7 @@ export type V2ErrorCode =
   | 'account_disabled'
   | 'account_locked'
   | 'candidate_profile_not_found'
+  | 'company_not_found'
   | 'conflict'
   | 'csrf_failed'
   | 'database_unavailable'

@@ -108,7 +108,7 @@ Two columns are deliberately not `TIMESTAMPTZ`:
 
 ## Schema
 
-Fourteen tables, all keyed by `UUID` (never a serial). Eight came from `rev_0002`:
+Seventeen tables, all keyed by `UUID` (never a serial). Eight came from `rev_0002`:
 
 | Table | Holds | Ownership |
 | --- | --- | --- |
@@ -131,6 +131,22 @@ and six from `rev_0003`, which is Phase 4's:
 | `candidate_availability_slots` | when the candidate can start | `candidate_profile_id`, CASCADE |
 | `search_profiles` | one saved search: typed allow-lists and a workload band | `user_id`, CASCADE |
 | `search_areas` | where that search looks, ordered | `search_profile_id`, CASCADE |
+
+and three from `rev_0004`, which is Phase 6's:
+
+| Table | Holds | Ownership |
+| --- | --- | --- |
+| `company_aliases` | another label the same employer is published under, with provenance | `company_id`, CASCADE |
+| `company_career_sites` | one careers endpoint: corporate page, ATS board, spontaneous form | `company_id`, CASCADE |
+| `company_discovery_records` | one provider's sighting of one employer | `company_id`, **SET NULL** |
+
+`rev_0004` also adds thirteen columns to `companies` — the two comparison forms
+(`normalized_name`, `normalized_domain`), `country`, `identity_status`, the flattened
+ATS detection and the flattened spontaneous-application channel. All three new tables
+are **shared facts with no `user_id`**, for the reason `companies` has none: an
+employer is a fact about the world, not a row belonging to whoever discovered it
+first. The identity rules, the evidence model and the ambiguity policy behind these
+columns are in [Company Discovery](./COMPANY_DISCOVERY.md).
 
 `rev_0002` created `users` and `candidate_profiles` deliberately empty of everything
 identity needs, so that user-scoped rows could carry a real foreign key before anything
@@ -161,8 +177,10 @@ Deletion is a decision in both directions, and the two directions differ:
 
 - `opportunities.company_id` is `ON DELETE SET NULL`, and `company_name` is kept
   beside it. A posting is a fact that was observed; the employer it was attributed to
-  is an inference. Phase 6 will merge duplicate company records, and losing the
-  inference must not lose the fact.
+  is an inference. Phase 6 resolves that inference and may later have to correct a
+  duplicate employer, and losing the inference must not lose the fact — which is why
+  `company_discovery_records.company_id` is `SET NULL` for the same reason: the
+  provenance that revealed a duplication must survive the correction.
 - Everything a user owns is `ON DELETE CASCADE`, so "delete my account" is one
   statement. The shared posting stays: it is not the user's to delete.
 
@@ -186,6 +204,24 @@ Three uniqueness rules carry the idempotency of every write path:
   fingerprint could not be computed is still storable.
 - `uq_company_locations_company_id_headquarters` — a *partial* unique index
   (`WHERE is_headquarters`), so at most one head office and any number of branches.
+
+`rev_0004` adds four more, and together they are what makes a repeated company
+discovery pass an update rather than a duplication:
+
+- `uq_company_discovery_records_provider_key_external_id` — the same provider
+  reporting the same employer twice is one sighting.
+- `uq_company_aliases_company_id_normalized_alias` — the second sighting of
+  `LOGITECH` moves `last_seen_at` and leaves `first_seen_at` alone.
+- `uq_company_career_sites_company_id_url` — re-detecting a board updates that row.
+- `uq_companies_ats_platform_organization_id` — a *partial* unique index
+  (`WHERE ats_organization_id IS NOT NULL`), because `boards.greenhouse.io/acme` is
+  one employer's board. Partial, so the employers with no detected ATS do not all
+  collide on NULL.
+
+Neither `normalized_name` nor `normalized_domain` is unique. Deciding that `Migros`,
+`Migros SA` and `MIGROS Vaud` are one employer is evidence-based work in
+`backend/app/companies/resolution.py`; a unique index would be the database making
+exactly the decision that module refuses to make.
 
 ## Enums
 
@@ -265,8 +301,16 @@ Rules for writing a revision:
   that has already run on real databases, so it must keep producing the same schema
   after `UtcDateTime` or `GeographyPoint` is renamed, moved or deleted. Column types
   are spelled out in SQLAlchemy and PostGIS terms — `sa.DateTime(timezone=True)`, a
-  local `Geography` user-defined type. A migration creates columns; it never reads or
-  writes rows, so it needs none of the Python-side conversions.
+  local `Geography` user-defined type.
+- **A revision that has to write rows restates the function it needs.** Most
+  revisions only create columns. `rev_0004` is the exception: `normalized_name` is
+  `NOT NULL` and no SQL expression can produce it — `lower(btrim(name))` is *wrong*,
+  because the normalizer deletes joining punctuation and folds accents — so the
+  revision copies `normalize_company_name` and `normalize_domain` into itself and
+  backfills with them. Copied rather than imported, for the rule above: an imported
+  helper would make a re-run on a restored database write values the original run did
+  not. The cost is stated in the revision's own docstring — if the normalizer ever
+  changes, that revision does not, and a new revision has to re-backfill.
 - **Every constraint is named**, via `MetaData(naming_convention=NAMING_CONVENTION)`
   and `op.f(...)`. The convention uses `%(column_0_N_name)s` so a composite index or
   unique constraint names every column it covers. An anonymous CHECK cannot be
@@ -289,6 +333,7 @@ Current revisions:
 | `0001` | `CREATE EXTENSION IF NOT EXISTS postgis`, alone and first |
 | `0002` | the eight core tables, their indexes and constraints |
 | `0003` | Phase 4: six tables for identity and saved searches, and the columns that complete `users` and `candidate_profiles` |
+| `0004` | Phase 6: three company tables, thirteen columns on `companies`, and the backfill that gives every existing employer its comparison forms |
 
 `0001` is separate because no `geography` column can be declared before the extension
 exists, and `IF NOT EXISTS` makes it a silent no-op on the development database (where

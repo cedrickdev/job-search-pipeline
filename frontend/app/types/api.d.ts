@@ -585,6 +585,89 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/companies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Companies
+         * @description One page of employers, filtered by the five values §20 names.
+         *
+         *     An employer with no active opportunity is in this list like any other — that is
+         *     acceptance criterion §28, and `has_opportunities` is a filter a client may apply
+         *     rather than a condition the directory imposes.
+         *
+         *     `spontaneous_support` is an enum and not a boolean because `UNKNOWN` is an answer
+         *     here (§12): "show me the employers nobody has checked" is a real question, and a
+         *     boolean parameter could not ask it.
+         */
+        get: operations["list_companies_api_v2_companies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/companies/{company_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Company
+         * @description One employer with its aliases, its careers endpoints and its provenance.
+         *
+         *     404 for an id nothing is stored under, and that is the only reason it can happen:
+         *     there is no owner to hide behind the same status (§21). The provenance in the
+         *     response is the typed subset — `raw` provider metadata never leaves the backend
+         *     (§29).
+         */
+        get: operations["read_company_api_v2_companies__company_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/company-discovery/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Discovery
+         * @description Ask every eligible provider, persist what they said, link the postings.
+         *
+         *     200 rather than 201: a pass is idempotent by design (§23), so a second identical
+         *     call creates nothing and "201 Created" would be a lie about the common case. What
+         *     happened is in the body — `created`, `matched`, `ambiguous` and the link counts.
+         *
+         *     A provider that failed is reported in `health`, never raised (§26): one unreadable
+         *     source must not cancel the other providers' findings, and hiding the failure would
+         *     make an empty result indistinguishable from an empty configuration.
+         *
+         *     The body is optional so a plain `POST` runs the default pass.
+         */
+        post: operations["run_discovery_api_v2_company_discovery_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/me/profile": {
         parameters: {
             query?: never;
@@ -746,6 +829,16 @@ export interface components {
             channel: string;
         };
         /**
+         * AtsPlatform
+         * @description The applicant tracking systems this deployment can already read (§9).
+         *
+         *     Exactly the three V1 has adapters for. Adding a fourth means adding a source
+         *     plugin, so the enum grows with the capability rather than ahead of it — a
+         *     member nobody can fetch would be a promise the platform does not keep.
+         * @enum {string}
+         */
+        AtsPlatform: "GREENHOUSE" | "LEVER" | "ASHBY";
+        /**
          * Availability
          * @description When, and how much, the candidate wants to work.
          *
@@ -829,6 +922,43 @@ export interface components {
              */
             user_id: string;
         };
+        /**
+         * CareerSiteKind
+         * @description What one careers endpoint of a company actually is (§11).
+         *
+         *     A company has several and they are not interchangeable: the corporate page is
+         *     where a human starts, the ATS board is what a source plugin can fetch, and the
+         *     spontaneous-application form is the only one that answers §12's question.
+         *     Keeping them apart is why `CareerSite` exists as a record instead of the single
+         *     `Company.careers_url` field Phase 1 had.
+         * @enum {string}
+         */
+        CareerSiteKind: "CAREERS_PAGE" | "ATS_BOARD" | "SPONTANEOUS_APPLICATION";
+        /**
+         * CareerSiteResponse
+         * @description One place an employer publishes, of possibly several (§11).
+         *
+         *     `last_checked_at` is `null` for everything Phase 6 records, and the field exists
+         *     anyway because the distinction it carries is real: a URL that was verified a
+         *     month ago and one that has never been fetched are different facts, and Phase 6
+         *     only ever produces the second.
+         */
+        CareerSiteResponse: {
+            /**
+             * Discovered At
+             * Format: date-time
+             */
+            discovered_at: string;
+            kind: components["schemas"]["CareerSiteKind"];
+            /** Last Checked At */
+            last_checked_at: string | null;
+            platform: components["schemas"]["AtsPlatform"] | null;
+            /** Source Key */
+            source_key: string;
+            /** Url */
+            url: string;
+            verification_status: components["schemas"]["DetectionStatus"];
+        };
         /** ChatBody */
         ChatBody: {
             /** Message */
@@ -844,6 +974,276 @@ export interface components {
              */
             scope_id: number;
         };
+        /**
+         * CompanyAliasResponse
+         * @description A name an employer is also known by, and who called it that.
+         *
+         *     `source_key` and the two timestamps are the provenance §4 asks for: an alias is
+         *     an observation by somebody at some time, and one that arrived without those is
+         *     indistinguishable from a guess.
+         */
+        CompanyAliasResponse: {
+            /** Alias */
+            alias: string;
+            /**
+             * First Seen At
+             * Format: date-time
+             */
+            first_seen_at: string;
+            /**
+             * Last Seen At
+             * Format: date-time
+             */
+            last_seen_at: string;
+            /** Normalized Alias */
+            normalized_alias: string;
+            /** Source Key */
+            source_key: string;
+        };
+        /**
+         * CompanyDetailResponse
+         * @description One employer with its aliases, its careers endpoints and its provenance.
+         *
+         *     `discovered_by` is the summary of the records below it — the providers that have
+         *     reported this employer, in report order — so a client that only wants the badge
+         *     does not have to fold the list itself.
+         */
+        CompanyDetailResponse: {
+            /** Aliases */
+            aliases: components["schemas"]["CompanyAliasResponse"][];
+            /** Career Sites */
+            career_sites: components["schemas"]["CareerSiteResponse"][];
+            company: components["schemas"]["CompanyResponse"];
+            /** Discovered By */
+            discovered_by: string[];
+            /** Discoveries */
+            discoveries: components["schemas"]["CompanyDiscoveryRecordResponse"][];
+        };
+        /**
+         * CompanyDiscoveryRecordResponse
+         * @description How one provider came to report this employer (§5).
+         *
+         *     No `raw`. The stored record keeps whatever the provider handed over, and this
+         *     model deliberately has nowhere to put it: the typed fields answer "discovered via
+         *     what, when, how confident", which is the question a company page asks, and a
+         *     passthrough bag is how a header or a query parameter would eventually reach a
+         *     client (§29).
+         *
+         *     `company_name` is the label *that provider* used, which is why it can differ from
+         *     the canonical name — that difference is the provenance, not a defect.
+         */
+        CompanyDiscoveryRecordResponse: {
+            /** Company Name */
+            company_name: string;
+            confidence: components["schemas"]["DetectionStatus"];
+            /**
+             * Discovered At
+             * Format: date-time
+             */
+            discovered_at: string;
+            /** External Id */
+            external_id: string;
+            /** Provider Key */
+            provider_key: string;
+            seed_kind: components["schemas"]["CompanySeedKind"];
+            /** Source Url */
+            source_url: string | null;
+        };
+        /**
+         * CompanyDiscoveryRunRequest
+         * @description What a discovery pass is allowed to do. No seeds.
+         *
+         *     A caller may narrow the pass — one country, a named provider, a smaller page —
+         *     and may not add an employer through it (§21): companies are shared facts, so a
+         *     request body that carried a seed would let any authenticated account write into
+         *     every other account's directory. New seeds are configuration, not a request.
+         *
+         *     `limit` is `null` by default rather than a number, so the ceiling per provider
+         *     stays stated once, in `CompanyDiscoveryRequest`.
+         */
+        CompanyDiscoveryRunRequest: {
+            /** Country */
+            country?: string | null;
+            /** Limit */
+            limit?: number | null;
+            /**
+             * Link Limit
+             * @default 100
+             */
+            link_limit: number;
+            /**
+             * Provider Keys
+             * @default []
+             */
+            provider_keys: string[];
+        };
+        /**
+         * CompanyDiscoveryRunResponse
+         * @description The outcome of one pass: what ran, what was written, what stayed ambiguous.
+         *
+         *     `ambiguous` is a first-class count rather than an error total (§14): a claim that
+         *     matched two employers was recorded and merged into neither, which is the intended
+         *     behaviour and the number an operator should watch. `created` and `matched`
+         *     together are what makes idempotence visible — a second identical pass reports
+         *     `created: 0`.
+         *
+         *     No company bodies. A pass may touch hundreds of employers, and the client that
+         *     wants them has `GET /companies`; returning them here would make one endpoint's
+         *     response size depend on how long since the last run.
+         */
+        CompanyDiscoveryRunResponse: {
+            /** Ambiguous */
+            ambiguous: number;
+            /** Company Ids */
+            company_ids: string[];
+            /** Country */
+            country: string | null;
+            /** Created */
+            created: number;
+            /** Duration Ms */
+            duration_ms: number;
+            /** Health */
+            health: components["schemas"]["ProviderHealthResponse"][];
+            /** Is Complete */
+            is_complete: boolean;
+            links: components["schemas"]["OpportunityLinkResponse"];
+            /** Matched */
+            matched: number;
+            /** Providers */
+            providers: string[];
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Unusable Providers */
+            unusable_providers: string[];
+            /** Warnings */
+            warnings: components["schemas"]["CompanyDiscoveryWarningResponse"][];
+        };
+        /**
+         * CompanyDiscoveryWarningCode
+         * @description Why a company discovery answer is narrower than the question.
+         *
+         *     The same idea as `DiscoveryWarningCode` and a separate enum for the same reason
+         *     the protocols are separate: `KEYWORD_IGNORED` means nothing here, and
+         *     `NO_PROVIDER_SELECTED` has no counterpart there. Every member is a fact a
+         *     provider or the orchestrator *knows* at the moment it happens.
+         * @enum {string}
+         */
+        CompanyDiscoveryWarningCode: "NO_PROVIDER_SELECTED" | "COUNTRY_FILTER_NOT_SUPPORTED" | "LIMIT_TRUNCATED" | "SEED_SKIPPED" | "PARTIAL_RESULTS" | "NOTHING_CONFIGURED";
+        /**
+         * CompanyDiscoveryWarningResponse
+         * @description Something a pass could not do, without failing the pass.
+         */
+        CompanyDiscoveryWarningResponse: {
+            code: components["schemas"]["CompanyDiscoveryWarningCode"];
+            /** Detail */
+            detail: string;
+            /** Provider Key */
+            provider_key: string | null;
+        };
+        /**
+         * CompanyIdentityStatus
+         * @description How much we trust that this row is one real employer (§1).
+         *
+         *     Three members because three is what Phase 6 can justify. `SEEDED` is a name
+         *     somebody handed us — a posting's `company_name`, a line in
+         *     `config/companies.yaml` — with nothing corroborating it. `PROVISIONAL` means a
+         *     second independent signal agreed (a website, an ATS organization). `VERIFIED`
+         *     is reserved for a human confirmation or a redirect we followed ourselves; no
+         *     Phase 6 code path sets it automatically, which is the point.
+         * @enum {string}
+         */
+        CompanyIdentityStatus: "SEEDED" | "PROVISIONAL" | "VERIFIED";
+        /**
+         * CompanyListResponse
+         * @description One page of employers, with the window it came from.
+         *
+         *     `total` is what makes the page navigable, and `limit`/`offset` are echoed back
+         *     because the server clamps them — a client that asked for 500 needs to be told it
+         *     received 100, or its "next page" arithmetic silently skips rows (§20).
+         */
+        CompanyListResponse: {
+            /** Companies */
+            companies: components["schemas"]["CompanyResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+        };
+        /**
+         * CompanyLocationResponse
+         * @description One place an employer is, as text.
+         *
+         *     No latitude and no longitude, and that is Phase 6's scope rather than an
+         *     oversight: §22 leaves geocoding to Phase 7 and the map to Phase 8, so a
+         *     coordinate pair in this model would be either always null or a promise the
+         *     backend cannot keep. `raw` is what a source wrote when it named no city, which
+         *     is what a list has left to display.
+         */
+        CompanyLocationResponse: {
+            /** City */
+            city: string | null;
+            /** Country */
+            country: string | null;
+            /** Is Headquarters */
+            is_headquarters: boolean;
+            /** Postal Code */
+            postal_code: string | null;
+            /** Raw */
+            raw: string | null;
+            /** Region */
+            region: string | null;
+        };
+        /**
+         * CompanyResponse
+         * @description One employer as the API describes it.
+         *
+         *     `normalized_name` is included on purpose: it is the value identity resolution
+         *     compares (§3), so a client that wants to explain why two companies stayed
+         *     separate — or a support request asking why they did not merge — has the answer in
+         *     the payload rather than in a backend log.
+         *
+         *     `accepts_spontaneous_applications` is the tri-state boolean beside the channel,
+         *     and the two can never disagree because `Company` refuses a row where they do.
+         */
+        CompanyResponse: {
+            /** Accepts Spontaneous Applications */
+            accepts_spontaneous_applications: boolean | null;
+            /** Careers Url */
+            careers_url: string | null;
+            /** Country */
+            country: string | null;
+            detected_ats: components["schemas"]["DetectedAtsResponse"] | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            identity_status: components["schemas"]["CompanyIdentityStatus"];
+            /** Locations */
+            locations: components["schemas"]["CompanyLocationResponse"][];
+            /** Name */
+            name: string;
+            /** Normalized Name */
+            normalized_name: string;
+            spontaneous_application: components["schemas"]["SpontaneousApplicationResponse"] | null;
+            /** Website */
+            website: string | null;
+        };
+        /**
+         * CompanySeedKind
+         * @description Where a company came from, before anything was resolved (§7).
+         *
+         *     Recorded on the discovery record, so "how did we learn this employer exists?"
+         *     has an answer that survives canonicalization. A seed is not a company: it is a
+         *     claim that one might exist, and the resolution step decides.
+         * @enum {string}
+         */
+        CompanySeedKind: "OPPORTUNITY" | "CONFIGURED" | "ATS_ORGANIZATION" | "WEBSITE" | "MANUAL";
         /**
          * ContractType
          * @description The legal basis of the engagement, in country-neutral terms.
@@ -869,6 +1269,56 @@ export interface components {
             kind: "COUNTRY";
             /** Label */
             label?: string | null;
+        };
+        /**
+         * DetectedAtsResponse
+         * @description Which platform an employer publishes on, and how sure that is.
+         *
+         *     `status` is the whole point (§10): `CONFIRMED` came from the platform's own
+         *     address space, `LIKELY` from configuration a human typed. A client that showed
+         *     the two the same way would be inventing certainty the backend refused to claim.
+         */
+        DetectedAtsResponse: {
+            /** Detected By */
+            detected_by: string;
+            /** Evidence */
+            evidence: components["schemas"]["EvidenceResponse"][];
+            /** Organization Id */
+            organization_id: string | null;
+            platform: components["schemas"]["AtsPlatform"];
+            status: components["schemas"]["DetectionStatus"];
+        };
+        /**
+         * DetectionStatus
+         * @description How firmly a detection holds — for an ATS, and for a careers endpoint (§10).
+         *
+         *     Detection is not verification. A redirect from `acme.test/jobs` to
+         *     `boards.greenhouse.io/acme` is `CONFIRMED`: the organization identifier came
+         *     out of the URL a server sent us. An HTML page that merely contains the word
+         *     "Greenhouse" is `LIKELY` at best, and a configured organization id nobody has
+         *     fetched is `LIKELY` too. `UNKNOWN` is what a detector returns when it
+         *     concluded nothing; it never reaches a stored `DetectedATS`.
+         * @enum {string}
+         */
+        DetectionStatus: "CONFIRMED" | "LIKELY" | "UNKNOWN";
+        /**
+         * EvidenceResponse
+         * @description Why the backend believes one thing about a company.
+         *
+         *     Carried out to the client because §10 and §12 both rest on it: "this employer is
+         *     on Greenhouse" and "this employer takes spontaneous applications" are only worth
+         *     showing next to what they were concluded from. A code the UI can branch on, a
+         *     sentence a human can read, and — when there is one — the URL that said so.
+         */
+        EvidenceResponse: {
+            /** Code */
+            code: string;
+            /** Detail */
+            detail: string;
+            /** Observed At */
+            observed_at: string | null;
+            /** Source Url */
+            source_url: string | null;
         };
         /**
          * GeoPoint
@@ -991,6 +1441,23 @@ export interface components {
             search_profiles: number;
         };
         /**
+         * OpportunityLinkResponse
+         * @description What the posting-link half of a pass did (§27).
+         *
+         *     The four numbers need not sum to `examined`, and the report says why: a posting
+         *     another pass linked between this one's read and write counts in none of them.
+         */
+        OpportunityLinkResponse: {
+            /** Ambiguous */
+            ambiguous: number;
+            /** Examined */
+            examined: number;
+            /** Linked */
+            linked: number;
+            /** Unresolved */
+            unresolved: number;
+        };
+        /**
          * OpportunityType
          * @description What kind of engagement is on offer.
          *
@@ -1002,6 +1469,34 @@ export interface components {
          * @enum {string}
          */
         OpportunityType: "FULL_TIME" | "PART_TIME" | "STUDENT_JOB" | "INTERNSHIP" | "APPRENTICESHIP" | "WORK_STUDY" | "GRADUATE" | "TEMPORARY" | "FREELANCE";
+        /**
+         * ProviderHealthResponse
+         * @description What one company discovery provider last said about itself.
+         *
+         *     Reported even when a pass succeeded, because docs/V2_SPECIFICATION.md §22 lists
+         *     hiding failed source health as a non-goal: a client that saw an empty result with
+         *     no health could not tell "no employer is configured" from "the provider that
+         *     knows them could not read its file".
+         *
+         *     `reason` and `detail` are the normalized pair §26 requires — a code from a closed
+         *     set and a sentence the adapter wrote. Neither is ever a serialized exception, so
+         *     neither can carry a credential, a token or a query string.
+         */
+        ProviderHealthResponse: {
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /** Detail */
+            detail: string | null;
+            /** Latency Ms */
+            latency_ms: number | null;
+            /** Provider Key */
+            provider_key: string;
+            reason: components["schemas"]["SourceFailureCode"] | null;
+            status: components["schemas"]["SourceHealthStatus"];
+        };
         /**
          * RadiusSearchArea
          * @description Everything within `radius_km` of `center`.
@@ -1251,6 +1746,59 @@ export interface components {
              */
             days: number;
         };
+        /**
+         * SourceFailureCode
+         * @description Why a source did not answer, as a code a dashboard can group by.
+         *
+         *     `SOURCE_UNAVAILABLE` and `SOURCE_RATE_LIMITED` are the two
+         *     docs/ENGINEERING_STANDARDS.md §Observability names; the rest split what would
+         *     otherwise be lumped into the first and lose the distinction that matters.
+         * @enum {string}
+         */
+        SourceFailureCode: "SOURCE_UNAVAILABLE" | "SOURCE_RATE_LIMITED" | "SOURCE_FORBIDDEN" | "SOURCE_NOT_FOUND" | "SOURCE_TIMEOUT" | "SOURCE_MISCONFIGURED" | "SOURCE_PARSE_FAILED" | "SOURCE_PARTIAL_FAILURE" | "SOURCE_ADAPTER_ERROR";
+        /**
+         * SourceHealthStatus
+         * @description The four normalized answers to "is this source working?" (§12).
+         *
+         *     V1 reports one boolean per source (`{"ok": false}`), which cannot distinguish
+         *     the three failures an operator would act on differently: a board that is down
+         *     (wait), a board that returned some of its pages (results are incomplete), and
+         *     a board that was never configured (set the variable). `MISCONFIGURED` is the
+         *     one that saves the most time — `jooble` without `JOOBLE_API_KEY` is not an
+         *     outage, and V1 reports it as one.
+         * @enum {string}
+         */
+        SourceHealthStatus: "HEALTHY" | "DEGRADED" | "UNAVAILABLE" | "MISCONFIGURED";
+        /**
+         * SpontaneousApplicationResponse
+         * @description Whether an unsolicited application is possible — including "we do not know".
+         *
+         *     Three states, not a boolean (§12), because the third is the common one and
+         *     collapsing it into `false` would turn "nobody has checked" into "this employer
+         *     refuses", which no source ever said. `observed_by` names the provider that
+         *     formed the verdict so an operator can tell who to disbelieve.
+         */
+        SpontaneousApplicationResponse: {
+            /** Evidence */
+            evidence: components["schemas"]["EvidenceResponse"][];
+            /** Observed By */
+            observed_by: string | null;
+            support: components["schemas"]["SpontaneousApplicationSupport"];
+            /** Url */
+            url: string | null;
+        };
+        /**
+         * SpontaneousApplicationSupport
+         * @description Whether unsolicited applications are possible (§12).
+         *
+         *     Three-valued, and the third member is the one that carries the phase order's
+         *     prohibition: `UNKNOWN` means nobody has looked. Reading it as `NOT_SUPPORTED`
+         *     would skip every employer we simply have not examined, and inferring
+         *     `SUPPORTED` from "this company has no active postings" is invalid — a company
+         *     with nothing open is the *normal* case, not evidence of a channel.
+         * @enum {string}
+         */
+        SpontaneousApplicationSupport: "SUPPORTED" | "NOT_SUPPORTED" | "UNKNOWN";
         /** StatusBody */
         StatusBody: {
             /** Detail */
@@ -2368,6 +2916,107 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SignedInResponse"];
+                };
+            };
+        };
+    };
+    list_companies_api_v2_companies_get: {
+        parameters: {
+            query?: {
+                text?: string | null;
+                country?: string | null;
+                ats_platform?: components["schemas"]["AtsPlatform"] | null;
+                spontaneous_support?: components["schemas"]["SpontaneousApplicationSupport"] | null;
+                has_opportunities?: boolean | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_company_api_v2_companies__company_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_discovery_api_v2_company_discovery_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CompanyDiscoveryRunRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyDiscoveryRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

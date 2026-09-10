@@ -1,6 +1,6 @@
 """Per-request wiring: the engine, the clock, the session cookie, the CSRF guard.
 
-Four decisions here are worth the paragraphs, because each one is the sort of thing
+Five decisions here are worth the paragraphs, because each one is the sort of thing
 a reader would otherwise be tempted to simplify:
 
 **The engine is created lazily and cached on `app.state`.** `create_app` must boot
@@ -24,6 +24,12 @@ Any authenticated route that uses an unsafe method is checked, so protection can
 be forgotten by omitting a `Depends`. `Sec-Fetch-Site` is rejected separately, at
 router level, so it also covers the two unauthenticated `POST`s
 (docs/AUTHENTICATION.md §CSRF).
+
+**Every service is a dependency, including the composed ones.** Company discovery
+needs three repositories, a provider registry and an orchestrator, and it is assembled
+here rather than reached for inside a route: this is the only module a request-flow
+test has to override to run the whole V2 surface without PostgreSQL, and a route that
+built its own service would take that property away.
 """
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -34,7 +40,12 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.api.errors import csrf_failed, not_authenticated
+from backend.app.companies.bootstrap import build_company_discovery
+from backend.app.companies.providers.manual_seed import (
+    PROVIDER_KEY as MANUAL_SEED_PROVIDER,
+)
 from backend.app.core.settings import AuthSettings, DatabaseSettings
+from backend.app.discovery.bootstrap import build_country_packs
 from backend.app.infrastructure.database.engine import (
     create_async_database_engine,
     create_session_factory,
@@ -42,6 +53,10 @@ from backend.app.infrastructure.database.engine import (
 )
 from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyCandidateProfileRepository,
+    SqlAlchemyCareerSiteRepository,
+    SqlAlchemyCompanyDiscoveryRepository,
+    SqlAlchemyCompanyRepository,
+    SqlAlchemyOpportunityRepository,
     SqlAlchemySearchProfileRepository,
     SqlAlchemySessionRepository,
     SqlAlchemyUserRepository,
@@ -51,7 +66,13 @@ from backend.app.services.authentication import (
     AuthenticationService,
     csrf_token_matches,
 )
+from backend.app.services.company_directory import CompanyDirectoryService
+from backend.app.services.company_discovery import (
+    CompanyDiscoveryService,
+    CompanyResolutionService,
+)
 from backend.app.services.onboarding import OnboardingService
+from country_packs.registry import CountryPackRegistry
 
 # The header the client copies the CSRF cookie into. Named here rather than
 # inline so `frontend/app/utils/api-client.ts` and the tests refer to one spelling.
@@ -68,6 +89,7 @@ AUTH_SETTINGS_ATTRIBUTE: Final[str] = "v2_auth_settings"
 DATABASE_SETTINGS_ATTRIBUTE: Final[str] = "v2_database_settings"
 SESSION_FACTORY_ATTRIBUTE: Final[str] = "v2_session_factory"
 ENGINE_ATTRIBUTE: Final[str] = "v2_engine"
+COUNTRY_PACKS_ATTRIBUTE: Final[str] = "v2_country_packs"
 
 
 def now() -> datetime:
@@ -150,6 +172,75 @@ def onboarding_service(
                              SqlAlchemyUserRepository(session))
 
 
+def country_packs(request: Request) -> CountryPackRegistry:
+    """The country packs, loaded once per application and cached like the engine.
+
+    A pack is YAML on disk, so re-reading it per request would put three file reads
+    in front of every company query for configuration that cannot change while the
+    process runs. Cached on `app.state` rather than in a module global for the same
+    reason the engine is: two applications in one process — which is what the test
+    suite is — must not share one.
+    """
+    existing = getattr(request.app.state, COUNTRY_PACKS_ATTRIBUTE, None)
+    if isinstance(existing, CountryPackRegistry):
+        return existing
+    loaded = build_country_packs()
+    setattr(request.app.state, COUNTRY_PACKS_ATTRIBUTE, loaded)
+    return loaded
+
+
+def company_directory_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> CompanyDirectoryService:
+    """The read side of the company directory. No clock, no orchestrator."""
+    return CompanyDirectoryService(SqlAlchemyCompanyRepository(session),
+                                   SqlAlchemyCareerSiteRepository(session),
+                                   SqlAlchemyCompanyDiscoveryRepository(session))
+
+
+def company_discovery_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        packs: Annotated[CountryPackRegistry, Depends(country_packs)],
+        instant: Annotated[datetime, Depends(now)],
+) -> CompanyDiscoveryService:
+    """A discovery pass, composed for this request.
+
+    Built per request rather than once per process because the providers and the
+    resolution service both need this request's session, and a cached composition
+    would hold a session that closed at the end of the last one.
+
+    Three decisions are made here and nowhere else, which is what §17 and §18 ask
+    for — the orchestrator names no provider and the services take what they are
+    given:
+
+    - **the clock is this request's instant**, so a provider's `discovered_at` and
+      the row the resolution service writes for it cannot disagree about when the
+      pass happened;
+    - **the posting lister is `list_recent`**, bound as a callable so the
+      posting-derived provider still cannot reach the rest of the repository;
+    - **manual seeds count as confirmed aliases** (§2): an operator writing "LOGITECH
+      is Logitech" is the manually confirmed alias identity resolution may trust,
+      while a job board's spelling of the same name is only an observation.
+
+    `manual_seeds` is empty: Phase 6 has no operator seed file, and the provider is
+    registered anyway so a status page reports `NOTHING_CONFIGURED` rather than
+    silence.
+    """
+    opportunities = SqlAlchemyOpportunityRepository(session)
+    composition = build_company_discovery(
+        opportunities=lambda limit: opportunities.list_recent(limit=limit),
+        clock=lambda: instant)
+    return CompanyDiscoveryService(
+        composition.orchestrator,
+        CompanyResolutionService(
+            SqlAlchemyCompanyRepository(session),
+            SqlAlchemyCareerSiteRepository(session),
+            SqlAlchemyCompanyDiscoveryRepository(session),
+            opportunities,
+            packs=packs,
+            confirmed_alias_sources=frozenset({MANUAL_SEED_PROVIDER})))
+
+
 async def current_session(
         request: Request,
         service: Annotated[AuthenticationService, Depends(authentication_service)],
@@ -200,3 +291,6 @@ Now = Annotated[datetime, Depends(now)]
 Auth = Annotated[AuthSettings, Depends(auth_settings)]
 Authentication = Annotated[AuthenticationService, Depends(authentication_service)]
 Onboarding = Annotated[OnboardingService, Depends(onboarding_service)]
+Companies = Annotated[CompanyDirectoryService, Depends(company_directory_service)]
+CompanyDiscovery = Annotated[CompanyDiscoveryService,
+                             Depends(company_discovery_service)]

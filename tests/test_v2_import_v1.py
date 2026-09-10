@@ -163,6 +163,13 @@ class FakeOpportunityRepository:
                         limit: int = 100) -> tuple[object, ...]:
         raise NotImplementedError
 
+    async def list_unlinked(self, *, limit: int = 100) -> tuple[Opportunity, ...]:
+        raise NotImplementedError
+
+    async def link_company(self, opportunity_id: OpportunityId,
+                           company_id: object) -> bool:
+        raise NotImplementedError
+
 
 async def run_import(*rows: dict[str, object], **options) -> ImportReport:
     """Import `rows` through a fake repository, with no savepoint and no database.

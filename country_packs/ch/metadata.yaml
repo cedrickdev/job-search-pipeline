@@ -31,6 +31,13 @@ languages:
   - en
 timezone: Europe/Zurich
 full_time_weekly_hours: 42.0
+# The domains a Swiss employer's own site is most likely to sit on. Used as a
+# tie-break when two candidate websites are otherwise equally plausible, never as a
+# filter: a Swiss company on a .com is ordinary, and refusing it would lose half the
+# market (docs/COMPANY_DISCOVERY.md §Identity).
+company_domain_suffixes:
+  - .ch
+  - .swiss
 documentation_url: https://www.seco.admin.ch/
 notes: >-
   Romansh (rm) is a national language but no source in this pack publishes in it,

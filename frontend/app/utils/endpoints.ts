@@ -70,7 +70,7 @@ export function job(template: JobTemplate, jobId: number): string {
 // (docs/AUTHENTICATION.md). One merged table would hide that split behind an
 // alphabetical list.
 //
-// Twelve operations over these nine paths: `/me/profile` has a GET and a PUT,
+// Twelve paths, fifteen operations: `/me/profile` has a GET and a PUT,
 // `/me/search-profiles` a GET and a POST, and `{search_profile_id}` a PUT and a
 // DELETE. The `satisfies` clause is the same compile-time guard.
 export const V2_ENDPOINTS = {
@@ -83,16 +83,31 @@ export const V2_ENDPOINTS = {
   searchProfile: '/api/v2/me/search-profiles/{search_profile_id}',
   onboarding: '/api/v2/onboarding',
   onboardingComplete: '/api/v2/onboarding/complete',
+  companies: '/api/v2/companies',
+  company: '/api/v2/companies/{company_id}',
+  companyDiscoveryRun: '/api/v2/company-discovery/run',
 } as const satisfies Record<string, keyof paths>
 
 /**
- * Resolve the one V2 template that takes a path parameter.
+ * Resolve the saved-search template.
  *
- * A saved search id is a UUID string, and it is the *only* thing that goes in a V2
- * path: the owner never does. `/me/...` is the authorization model — the account
- * comes from the session cookie, so there is no user id here for a caller to
- * change (docs/AUTHENTICATION.md §Authorization).
+ * A saved search id is a UUID string, and the owner never appears in the path:
+ * `/me/...` is the authorization model — the account comes from the session cookie,
+ * so there is no user id here for a caller to change
+ * (docs/AUTHENTICATION.md §Authorization).
  */
 export function searchProfile(searchProfileId: string): string {
   return V2_ENDPOINTS.searchProfile.replace('{search_profile_id}', searchProfileId)
+}
+
+/**
+ * Resolve the company template.
+ *
+ * The other kind of V2 path parameter, and the difference from the one above is the
+ * whole of Phase 6's authorization story: a company belongs to nobody. There is no
+ * `/me/companies`, because an employer is a shared fact and two accounts asking for
+ * this id get the same answer (docs/COMPANY_DISCOVERY.md §Sharing).
+ */
+export function company(companyId: string): string {
+  return V2_ENDPOINTS.company.replace('{company_id}', companyId)
 }

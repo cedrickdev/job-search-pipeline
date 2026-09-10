@@ -69,6 +69,16 @@
         "title": "AppliedBody",
         "type": "object"
       },
+      "AtsPlatform": {
+        "description": "The applicant tracking systems this deployment can already read (§9).\n\nExactly the three V1 has adapters for. Adding a fourth means adding a source\nplugin, so the enum grows with the capability rather than ahead of it — a\nmember nobody can fetch would be a promise the platform does not keep.",
+        "enum": [
+          "GREENHOUSE",
+          "LEVER",
+          "ASHBY"
+        ],
+        "title": "AtsPlatform",
+        "type": "string"
+      },
       "Availability": {
         "additionalProperties": false,
         "description": "When, and how much, the candidate wants to work.\n\nDistinct from `WorkAuthorization.permit_hours_cap` on purpose: this is a\npreference and feeds the `SCHEDULE_FIT` score, while a permit cap is a legal\nlimit and feeds eligibility. Collapsing the two would turn \"I would rather\nnot work Sundays\" into \"this candidate may not work Sundays\".",
@@ -255,6 +265,74 @@
         "title": "CandidateProfileResponse",
         "type": "object"
       },
+      "CareerSiteKind": {
+        "description": "What one careers endpoint of a company actually is (§11).\n\nA company has several and they are not interchangeable: the corporate page is\nwhere a human starts, the ATS board is what a source plugin can fetch, and the\nspontaneous-application form is the only one that answers §12's question.\nKeeping them apart is why `CareerSite` exists as a record instead of the single\n`Company.careers_url` field Phase 1 had.",
+        "enum": [
+          "CAREERS_PAGE",
+          "ATS_BOARD",
+          "SPONTANEOUS_APPLICATION"
+        ],
+        "title": "CareerSiteKind",
+        "type": "string"
+      },
+      "CareerSiteResponse": {
+        "additionalProperties": false,
+        "description": "One place an employer publishes, of possibly several (§11).\n\n`last_checked_at` is `null` for everything Phase 6 records, and the field exists\nanyway because the distinction it carries is real: a URL that was verified a\nmonth ago and one that has never been fetched are different facts, and Phase 6\nonly ever produces the second.",
+        "properties": {
+          "discovered_at": {
+            "format": "date-time",
+            "title": "Discovered At",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CareerSiteKind"
+          },
+          "last_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Checked At"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AtsPlatform"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_key": {
+            "title": "Source Key",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "verification_status": {
+            "$ref": "#/components/schemas/DetectionStatus"
+          }
+        },
+        "required": [
+          "url",
+          "kind",
+          "platform",
+          "source_key",
+          "verification_status",
+          "discovered_at",
+          "last_checked_at"
+        ],
+        "title": "CareerSiteResponse",
+        "type": "object"
+      },
       "ChatBody": {
         "properties": {
           "message": {
@@ -277,6 +355,570 @@
         ],
         "title": "ChatBody",
         "type": "object"
+      },
+      "CompanyAliasResponse": {
+        "additionalProperties": false,
+        "description": "A name an employer is also known by, and who called it that.\n\n`source_key` and the two timestamps are the provenance §4 asks for: an alias is\nan observation by somebody at some time, and one that arrived without those is\nindistinguishable from a guess.",
+        "properties": {
+          "alias": {
+            "title": "Alias",
+            "type": "string"
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "title": "First Seen At",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "normalized_alias": {
+            "title": "Normalized Alias",
+            "type": "string"
+          },
+          "source_key": {
+            "title": "Source Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alias",
+          "normalized_alias",
+          "source_key",
+          "first_seen_at",
+          "last_seen_at"
+        ],
+        "title": "CompanyAliasResponse",
+        "type": "object"
+      },
+      "CompanyDetailResponse": {
+        "additionalProperties": false,
+        "description": "One employer with its aliases, its careers endpoints and its provenance.\n\n`discovered_by` is the summary of the records below it — the providers that have\nreported this employer, in report order — so a client that only wants the badge\ndoes not have to fold the list itself.",
+        "properties": {
+          "aliases": {
+            "items": {
+              "$ref": "#/components/schemas/CompanyAliasResponse"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
+          "career_sites": {
+            "items": {
+              "$ref": "#/components/schemas/CareerSiteResponse"
+            },
+            "title": "Career Sites",
+            "type": "array"
+          },
+          "company": {
+            "$ref": "#/components/schemas/CompanyResponse"
+          },
+          "discovered_by": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Discovered By",
+            "type": "array"
+          },
+          "discoveries": {
+            "items": {
+              "$ref": "#/components/schemas/CompanyDiscoveryRecordResponse"
+            },
+            "title": "Discoveries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "company",
+          "aliases",
+          "career_sites",
+          "discoveries",
+          "discovered_by"
+        ],
+        "title": "CompanyDetailResponse",
+        "type": "object"
+      },
+      "CompanyDiscoveryRecordResponse": {
+        "additionalProperties": false,
+        "description": "How one provider came to report this employer (§5).\n\nNo `raw`. The stored record keeps whatever the provider handed over, and this\nmodel deliberately has nowhere to put it: the typed fields answer \"discovered via\nwhat, when, how confident\", which is the question a company page asks, and a\npassthrough bag is how a header or a query parameter would eventually reach a\nclient (§29).\n\n`company_name` is the label *that provider* used, which is why it can differ from\nthe canonical name — that difference is the provenance, not a defect.",
+        "properties": {
+          "company_name": {
+            "title": "Company Name",
+            "type": "string"
+          },
+          "confidence": {
+            "$ref": "#/components/schemas/DetectionStatus"
+          },
+          "discovered_at": {
+            "format": "date-time",
+            "title": "Discovered At",
+            "type": "string"
+          },
+          "external_id": {
+            "title": "External Id",
+            "type": "string"
+          },
+          "provider_key": {
+            "title": "Provider Key",
+            "type": "string"
+          },
+          "seed_kind": {
+            "$ref": "#/components/schemas/CompanySeedKind"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          }
+        },
+        "required": [
+          "provider_key",
+          "external_id",
+          "seed_kind",
+          "company_name",
+          "source_url",
+          "discovered_at",
+          "confidence"
+        ],
+        "title": "CompanyDiscoveryRecordResponse",
+        "type": "object"
+      },
+      "CompanyDiscoveryRunRequest": {
+        "additionalProperties": false,
+        "description": "What a discovery pass is allowed to do. No seeds.\n\nA caller may narrow the pass — one country, a named provider, a smaller page —\nand may not add an employer through it (§21): companies are shared facts, so a\nrequest body that carried a seed would let any authenticated account write into\nevery other account's directory. New seeds are configuration, not a request.\n\n`limit` is `null` by default rather than a number, so the ceiling per provider\nstays stated once, in `CompanyDiscoveryRequest`.",
+        "properties": {
+          "country": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Z]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 500.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit"
+          },
+          "link_limit": {
+            "default": 100,
+            "maximum": 500.0,
+            "minimum": 0.0,
+            "title": "Link Limit",
+            "type": "integer"
+          },
+          "provider_keys": {
+            "default": [],
+            "items": {
+              "maxLength": 40,
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            "title": "Provider Keys",
+            "type": "array"
+          }
+        },
+        "title": "CompanyDiscoveryRunRequest",
+        "type": "object"
+      },
+      "CompanyDiscoveryRunResponse": {
+        "additionalProperties": false,
+        "description": "The outcome of one pass: what ran, what was written, what stayed ambiguous.\n\n`ambiguous` is a first-class count rather than an error total (§14): a claim that\nmatched two employers was recorded and merged into neither, which is the intended\nbehaviour and the number an operator should watch. `created` and `matched`\ntogether are what makes idempotence visible — a second identical pass reports\n`created: 0`.\n\nNo company bodies. A pass may touch hundreds of employers, and the client that\nwants them has `GET /companies`; returning them here would make one endpoint's\nresponse size depend on how long since the last run.",
+        "properties": {
+          "ambiguous": {
+            "title": "Ambiguous",
+            "type": "integer"
+          },
+          "company_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Company Ids",
+            "type": "array"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "created": {
+            "title": "Created",
+            "type": "integer"
+          },
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "health": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderHealthResponse"
+            },
+            "title": "Health",
+            "type": "array"
+          },
+          "is_complete": {
+            "title": "Is Complete",
+            "type": "boolean"
+          },
+          "links": {
+            "$ref": "#/components/schemas/OpportunityLinkResponse"
+          },
+          "matched": {
+            "title": "Matched",
+            "type": "integer"
+          },
+          "providers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Providers",
+            "type": "array"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "unusable_providers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unusable Providers",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/CompanyDiscoveryWarningResponse"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "country",
+          "started_at",
+          "duration_ms",
+          "providers",
+          "unusable_providers",
+          "is_complete",
+          "created",
+          "matched",
+          "ambiguous",
+          "company_ids",
+          "health",
+          "warnings",
+          "links"
+        ],
+        "title": "CompanyDiscoveryRunResponse",
+        "type": "object"
+      },
+      "CompanyDiscoveryWarningCode": {
+        "description": "Why a company discovery answer is narrower than the question.\n\nThe same idea as `DiscoveryWarningCode` and a separate enum for the same reason\nthe protocols are separate: `KEYWORD_IGNORED` means nothing here, and\n`NO_PROVIDER_SELECTED` has no counterpart there. Every member is a fact a\nprovider or the orchestrator *knows* at the moment it happens.",
+        "enum": [
+          "NO_PROVIDER_SELECTED",
+          "COUNTRY_FILTER_NOT_SUPPORTED",
+          "LIMIT_TRUNCATED",
+          "SEED_SKIPPED",
+          "PARTIAL_RESULTS",
+          "NOTHING_CONFIGURED"
+        ],
+        "title": "CompanyDiscoveryWarningCode",
+        "type": "string"
+      },
+      "CompanyDiscoveryWarningResponse": {
+        "additionalProperties": false,
+        "description": "Something a pass could not do, without failing the pass.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/CompanyDiscoveryWarningCode"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "provider_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Key"
+          }
+        },
+        "required": [
+          "code",
+          "detail",
+          "provider_key"
+        ],
+        "title": "CompanyDiscoveryWarningResponse",
+        "type": "object"
+      },
+      "CompanyIdentityStatus": {
+        "description": "How much we trust that this row is one real employer (§1).\n\nThree members because three is what Phase 6 can justify. `SEEDED` is a name\nsomebody handed us — a posting's `company_name`, a line in\n`config/companies.yaml` — with nothing corroborating it. `PROVISIONAL` means a\nsecond independent signal agreed (a website, an ATS organization). `VERIFIED`\nis reserved for a human confirmation or a redirect we followed ourselves; no\nPhase 6 code path sets it automatically, which is the point.",
+        "enum": [
+          "SEEDED",
+          "PROVISIONAL",
+          "VERIFIED"
+        ],
+        "title": "CompanyIdentityStatus",
+        "type": "string"
+      },
+      "CompanyListResponse": {
+        "additionalProperties": false,
+        "description": "One page of employers, with the window it came from.\n\n`total` is what makes the page navigable, and `limit`/`offset` are echoed back\nbecause the server clamps them — a client that asked for 500 needs to be told it\nreceived 100, or its \"next page\" arithmetic silently skips rows (§20).",
+        "properties": {
+          "companies": {
+            "items": {
+              "$ref": "#/components/schemas/CompanyResponse"
+            },
+            "title": "Companies",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "companies",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "CompanyListResponse",
+        "type": "object"
+      },
+      "CompanyLocationResponse": {
+        "additionalProperties": false,
+        "description": "One place an employer is, as text.\n\nNo latitude and no longitude, and that is Phase 6's scope rather than an\noversight: §22 leaves geocoding to Phase 7 and the map to Phase 8, so a\ncoordinate pair in this model would be either always null or a promise the\nbackend cannot keep. `raw` is what a source wrote when it named no city, which\nis what a list has left to display.",
+        "properties": {
+          "city": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "is_headquarters": {
+            "title": "Is Headquarters",
+            "type": "boolean"
+          },
+          "postal_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Postal Code"
+          },
+          "raw": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          }
+        },
+        "required": [
+          "city",
+          "region",
+          "postal_code",
+          "country",
+          "raw",
+          "is_headquarters"
+        ],
+        "title": "CompanyLocationResponse",
+        "type": "object"
+      },
+      "CompanyResponse": {
+        "additionalProperties": false,
+        "description": "One employer as the API describes it.\n\n`normalized_name` is included on purpose: it is the value identity resolution\ncompares (§3), so a client that wants to explain why two companies stayed\nseparate — or a support request asking why they did not merge — has the answer in\nthe payload rather than in a backend log.\n\n`accepts_spontaneous_applications` is the tri-state boolean beside the channel,\nand the two can never disagree because `Company` refuses a row where they do.",
+        "properties": {
+          "accepts_spontaneous_applications": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepts Spontaneous Applications"
+          },
+          "careers_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Careers Url"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "detected_ats": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DetectedAtsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "identity_status": {
+            "$ref": "#/components/schemas/CompanyIdentityStatus"
+          },
+          "locations": {
+            "items": {
+              "$ref": "#/components/schemas/CompanyLocationResponse"
+            },
+            "title": "Locations",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "normalized_name": {
+            "title": "Normalized Name",
+            "type": "string"
+          },
+          "spontaneous_application": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpontaneousApplicationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "website": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Website"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "normalized_name",
+          "website",
+          "careers_url",
+          "country",
+          "identity_status",
+          "detected_ats",
+          "spontaneous_application",
+          "accepts_spontaneous_applications",
+          "locations"
+        ],
+        "title": "CompanyResponse",
+        "type": "object"
+      },
+      "CompanySeedKind": {
+        "description": "Where a company came from, before anything was resolved (§7).\n\nRecorded on the discovery record, so \"how did we learn this employer exists?\"\nhas an answer that survives canonicalization. A seed is not a company: it is a\nclaim that one might exist, and the resolution step decides.",
+        "enum": [
+          "OPPORTUNITY",
+          "CONFIGURED",
+          "ATS_ORGANIZATION",
+          "WEBSITE",
+          "MANUAL"
+        ],
+        "title": "CompanySeedKind",
+        "type": "string"
       },
       "ContractType": {
         "description": "The legal basis of the engagement, in country-neutral terms.\n\nSeparate from `OpportunityType` because the two vary independently: an\ninternship can be fixed-term or an agency placement, and a part-time role\ncan be open-ended. Local contract names map onto these members in a Country\nPack.",
@@ -320,6 +962,104 @@
           "country"
         ],
         "title": "CountrySearchArea",
+        "type": "object"
+      },
+      "DetectedAtsResponse": {
+        "additionalProperties": false,
+        "description": "Which platform an employer publishes on, and how sure that is.\n\n`status` is the whole point (§10): `CONFIRMED` came from the platform's own\naddress space, `LIKELY` from configuration a human typed. A client that showed\nthe two the same way would be inventing certainty the backend refused to claim.",
+        "properties": {
+          "detected_by": {
+            "title": "Detected By",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceResponse"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "organization_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/AtsPlatform"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DetectionStatus"
+          }
+        },
+        "required": [
+          "platform",
+          "organization_id",
+          "status",
+          "detected_by",
+          "evidence"
+        ],
+        "title": "DetectedAtsResponse",
+        "type": "object"
+      },
+      "DetectionStatus": {
+        "description": "How firmly a detection holds — for an ATS, and for a careers endpoint (§10).\n\nDetection is not verification. A redirect from `acme.test/jobs` to\n`boards.greenhouse.io/acme` is `CONFIRMED`: the organization identifier came\nout of the URL a server sent us. An HTML page that merely contains the word\n\"Greenhouse\" is `LIKELY` at best, and a configured organization id nobody has\nfetched is `LIKELY` too. `UNKNOWN` is what a detector returns when it\nconcluded nothing; it never reaches a stored `DetectedATS`.",
+        "enum": [
+          "CONFIRMED",
+          "LIKELY",
+          "UNKNOWN"
+        ],
+        "title": "DetectionStatus",
+        "type": "string"
+      },
+      "EvidenceResponse": {
+        "additionalProperties": false,
+        "description": "Why the backend believes one thing about a company.\n\nCarried out to the client because §10 and §12 both rest on it: \"this employer is\non Greenhouse\" and \"this employer takes spontaneous applications\" are only worth\nshowing next to what they were concluded from. A code the UI can branch on, a\nsentence a human can read, and — when there is one — the URL that said so.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          }
+        },
+        "required": [
+          "code",
+          "detail",
+          "source_url",
+          "observed_at"
+        ],
+        "title": "EvidenceResponse",
         "type": "object"
       },
       "GeoPoint": {
@@ -635,6 +1375,36 @@
         "title": "OnboardingStateResponse",
         "type": "object"
       },
+      "OpportunityLinkResponse": {
+        "additionalProperties": false,
+        "description": "What the posting-link half of a pass did (§27).\n\nThe four numbers need not sum to `examined`, and the report says why: a posting\nanother pass linked between this one's read and write counts in none of them.",
+        "properties": {
+          "ambiguous": {
+            "title": "Ambiguous",
+            "type": "integer"
+          },
+          "examined": {
+            "title": "Examined",
+            "type": "integer"
+          },
+          "linked": {
+            "title": "Linked",
+            "type": "integer"
+          },
+          "unresolved": {
+            "title": "Unresolved",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "examined",
+          "linked",
+          "ambiguous",
+          "unresolved"
+        ],
+        "title": "OpportunityLinkResponse",
+        "type": "object"
+      },
       "OpportunityType": {
         "description": "What kind of engagement is on offer.\n\nOne enum, no country terminology: the Swiss/French \"alternance\" and the\nGerman \"duales Studium\" are both `WORK_STUDY`, and the mapping from those\nwords lives in a Country Pack, not here. `None` on an `Opportunity` means\n\"not classified yet\", which is honest and different from a catch-all member\nthat would quietly absorb every failed classification.",
         "enum": [
@@ -650,6 +1420,66 @@
         ],
         "title": "OpportunityType",
         "type": "string"
+      },
+      "ProviderHealthResponse": {
+        "additionalProperties": false,
+        "description": "What one company discovery provider last said about itself.\n\nReported even when a pass succeeded, because docs/V2_SPECIFICATION.md §22 lists\nhiding failed source health as a non-goal: a client that saw an empty result with\nno health could not tell \"no employer is configured\" from \"the provider that\nknows them could not read its file\".\n\n`reason` and `detail` are the normalized pair §26 requires — a code from a closed\nset and a sentence the adapter wrote. Neither is ever a serialized exception, so\nneither can carry a credential, a token or a query string.",
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "provider_key": {
+            "title": "Provider Key",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceFailureCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/SourceHealthStatus"
+          }
+        },
+        "required": [
+          "provider_key",
+          "status",
+          "checked_at",
+          "latency_ms",
+          "reason",
+          "detail"
+        ],
+        "title": "ProviderHealthResponse",
+        "type": "object"
       },
       "RadiusSearchArea": {
         "additionalProperties": false,
@@ -1073,6 +1903,89 @@
         },
         "title": "SnoozeBody",
         "type": "object"
+      },
+      "SourceFailureCode": {
+        "description": "Why a source did not answer, as a code a dashboard can group by.\n\n`SOURCE_UNAVAILABLE` and `SOURCE_RATE_LIMITED` are the two\ndocs/ENGINEERING_STANDARDS.md §Observability names; the rest split what would\notherwise be lumped into the first and lose the distinction that matters.",
+        "enum": [
+          "SOURCE_UNAVAILABLE",
+          "SOURCE_RATE_LIMITED",
+          "SOURCE_FORBIDDEN",
+          "SOURCE_NOT_FOUND",
+          "SOURCE_TIMEOUT",
+          "SOURCE_MISCONFIGURED",
+          "SOURCE_PARSE_FAILED",
+          "SOURCE_PARTIAL_FAILURE",
+          "SOURCE_ADAPTER_ERROR"
+        ],
+        "title": "SourceFailureCode",
+        "type": "string"
+      },
+      "SourceHealthStatus": {
+        "description": "The four normalized answers to \"is this source working?\" (§12).\n\nV1 reports one boolean per source (`{\"ok\": false}`), which cannot distinguish\nthe three failures an operator would act on differently: a board that is down\n(wait), a board that returned some of its pages (results are incomplete), and\na board that was never configured (set the variable). `MISCONFIGURED` is the\none that saves the most time — `jooble` without `JOOBLE_API_KEY` is not an\noutage, and V1 reports it as one.",
+        "enum": [
+          "HEALTHY",
+          "DEGRADED",
+          "UNAVAILABLE",
+          "MISCONFIGURED"
+        ],
+        "title": "SourceHealthStatus",
+        "type": "string"
+      },
+      "SpontaneousApplicationResponse": {
+        "additionalProperties": false,
+        "description": "Whether an unsolicited application is possible — including \"we do not know\".\n\nThree states, not a boolean (§12), because the third is the common one and\ncollapsing it into `false` would turn \"nobody has checked\" into \"this employer\nrefuses\", which no source ever said. `observed_by` names the provider that\nformed the verdict so an operator can tell who to disbelieve.",
+        "properties": {
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceResponse"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "observed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed By"
+          },
+          "support": {
+            "$ref": "#/components/schemas/SpontaneousApplicationSupport"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "support",
+          "url",
+          "observed_by",
+          "evidence"
+        ],
+        "title": "SpontaneousApplicationResponse",
+        "type": "object"
+      },
+      "SpontaneousApplicationSupport": {
+        "description": "Whether unsolicited applications are possible (§12).\n\nThree-valued, and the third member is the one that carries the phase order's\nprohibition: `UNKNOWN` means nobody has looked. Reading it as `NOT_SUPPORTED`\nwould skip every employer we simply have not examined, and inferring\n`SUPPORTED` from \"this company has no active postings\" is invalid — a company\nwith nothing open is the *normal* case, not evidence of a channel.",
+        "enum": [
+          "SUPPORTED",
+          "NOT_SUPPORTED",
+          "UNKNOWN"
+        ],
+        "title": "SpontaneousApplicationSupport",
+        "type": "string"
       },
       "StatusBody": {
         "properties": {
@@ -2686,6 +3599,239 @@
         "summary": "Read Session",
         "tags": [
           "v2-auth"
+        ]
+      }
+    },
+    "/api/v2/companies": {
+      "get": {
+        "description": "One page of employers, filtered by the five values §20 names.\n\nAn employer with no active opportunity is in this list like any other — that is\nacceptance criterion §28, and `has_opportunities` is a filter a client may apply\nrather than a condition the directory imposes.\n\n`spontaneous_support` is an enum and not a boolean because `UNKNOWN` is an answer\nhere (§12): \"show me the employers nobody has checked\" is a real question, and a\nboolean parameter could not ask it.",
+        "operationId": "list_companies_api_v2_companies_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "text",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Text"
+            }
+          },
+          {
+            "in": "query",
+            "name": "country",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Z]{2}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Country"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ats_platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AtsPlatform"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ats Platform"
+            }
+          },
+          {
+            "in": "query",
+            "name": "spontaneous_support",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SpontaneousApplicationSupport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Spontaneous Support"
+            }
+          },
+          {
+            "in": "query",
+            "name": "has_opportunities",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Has Opportunities"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Companies",
+        "tags": [
+          "v2-companies"
+        ]
+      }
+    },
+    "/api/v2/companies/{company_id}": {
+      "get": {
+        "description": "One employer with its aliases, its careers endpoints and its provenance.\n\n404 for an id nothing is stored under, and that is the only reason it can happen:\nthere is no owner to hide behind the same status (§21). The provenance in the\nresponse is the typed subset — `raw` provider metadata never leaves the backend\n(§29).",
+        "operationId": "read_company_api_v2_companies__company_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "company_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Company Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Company",
+        "tags": [
+          "v2-companies"
+        ]
+      }
+    },
+    "/api/v2/company-discovery/run": {
+      "post": {
+        "description": "Ask every eligible provider, persist what they said, link the postings.\n\n200 rather than 201: a pass is idempotent by design (§23), so a second identical\ncall creates nothing and \"201 Created\" would be a lie about the common case. What\nhappened is in the body — `created`, `matched`, `ambiguous` and the link counts.\n\nA provider that failed is reported in `health`, never raised (§26): one unreadable\nsource must not cancel the other providers' findings, and hiding the failure would\nmake an empty result indistinguishable from an empty configuration.\n\nThe body is optional so a plain `POST` runs the default pass.",
+        "operationId": "run_discovery_api_v2_company_discovery_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CompanyDiscoveryRunRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyDiscoveryRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Discovery",
+        "tags": [
+          "v2-companies"
         ]
       }
     },

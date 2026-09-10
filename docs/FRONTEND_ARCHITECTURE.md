@@ -101,3 +101,17 @@ Four rules in that work are contracts rather than preferences, and [V2 Authentic
 The suite grew with the surfaces: **265** Vitest specs in `frontend/tests/nuxt/` and **21** Playwright flows in `frontend/tests/e2e/`, still with every `/api/**` request stubbed in the browser and every test asserting that nothing went unstubbed. Two of those Playwright tests exist because the assertion is only possible in a real browser: that the CSRF header actually leaves it, and that the router obeys the guard's `navigateTo`.
 
 One Phase 3 defect was fixed here rather than deferred: `useApiQuery`'s `getCachedData` served its 15-second window to `refreshNuxtData` as well, so a post-write `invalidate()` could answer from the payload the write had just invalidated (`experimental.granularCachedData` consults it on every run), and it read a legitimately `null` payload as a cache miss. Both are pinned by `tests/nuxt/composables/useApiQuery.spec.ts`.
+
+## Companies (added in Phase 6)
+
+Two pages — `companies/index.vue` (the filtered, paginated directory plus a `Run discovery` button) and `companies/[id].vue` (one employer and what every claim on the page rests on) — plus `composables/useCompanies.ts`, the first of the target domain composables listed above to be built.
+
+Intentionally simple, because §31 of the phase order asks for the minimum that proves the API rather than a designed surface: no map, no coordinates, no scoring. The map is Phase 8.
+
+Three rules in it are contracts rather than preferences, and [Company Discovery](./COMPANY_DISCOVERY.md) is the full statement of them:
+
+- **A claim never appears without its status.** The ATS platform is rendered beside its `CONFIRMED`/`LIKELY` state and its evidence codes, because "on Greenhouse" concluded from a URL and concluded from a configuration file are not the same fact.
+- **`UNKNOWN` is rendered as unknown, never as "no".** A verdict nobody has formed and an employer that refuses unsolicited applications are different facts, and only the second is a reason not to write. The same rule makes a null `last_checked_at` read "checked never".
+- **The cache keys carry no account.** A company is a shared fact, so `companies:list:…` keys on the filters only and there is no per-user variant to invalidate. The nav link is session-gated because the pages are guarded, not because the data is private.
+
+The suite grew again: **294** Vitest specs across 27 files in `frontend/tests/nuxt/` and **25** Playwright flows in `frontend/tests/e2e/`, still with every `/api/**` request stubbed in the browser and every test asserting that nothing went unstubbed. The four new browser flows exist for what only a browser can show: that the directory is reachable from the nav, that `has_opportunities=false` survives a real round trip, that the discovery pass leaves with its CSRF header and **no request body**, and that the guard sends an anonymous visitor to `/login`.

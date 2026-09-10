@@ -12,6 +12,10 @@ routers it includes, so the router objects are not the list a client sees, and t
 document is exactly what `scripts/dump_openapi.py` hands the frontend's type
 generator. A route added without a test fails the first assertion in this module,
 which is the point of pinning a count that a normal change has no reason to touch.
+
+The counts moved once, at Phase 6: the three company operations are published beside
+the twelve Phase 4 defines, and they are held to the same four rules — under the
+prefix, authenticated, safe where they read, and carrying no credential field.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -19,25 +23,31 @@ from datetime import timedelta
 import pytest
 
 from backend.app.api import API_V2_PREFIX
+from backend.app.domain.identifiers import CompanyId
 from backend.app.services.authentication import SESSION_TOUCH_INTERVAL
 from tests.v2_api import (
+    PLACEHOLDER_ID,
     api_harness,
     concrete,
     operations,
     schema_property_names,
 )
+from tests.v2_builders import a_company
 
-# The whole V2 surface as of Phase 4, spelled out. Written as a literal on purpose:
+# The whole V2 surface as of Phase 6, spelled out. Written as a literal on purpose:
 # a test that derived it from the application would agree with any change.
 V2_OPERATIONS = (
     ("DELETE", "/api/v2/me/search-profiles/{search_profile_id}"),
     ("GET", "/api/v2/auth/session"),
+    ("GET", "/api/v2/companies"),
+    ("GET", "/api/v2/companies/{company_id}"),
     ("GET", "/api/v2/me/profile"),
     ("GET", "/api/v2/me/search-profiles"),
     ("GET", "/api/v2/onboarding"),
     ("POST", "/api/v2/auth/login"),
     ("POST", "/api/v2/auth/logout"),
     ("POST", "/api/v2/auth/register"),
+    ("POST", "/api/v2/company-discovery/run"),
     ("POST", "/api/v2/me/search-profiles"),
     ("POST", "/api/v2/onboarding/complete"),
     ("PUT", "/api/v2/me/profile"),
@@ -65,7 +75,7 @@ V1_PATHS = 28
 
 
 @pytest.mark.asyncio
-async def test_the_v2_surface_is_exactly_the_twelve_operations_phase_4_defines(
+async def test_the_v2_surface_is_exactly_the_fifteen_operations_phases_4_and_6_define(
         tmp_path):
     """The inventory, and every path scoped under the one prefix.
 
@@ -78,22 +88,25 @@ async def test_the_v2_surface_is_exactly_the_twelve_operations_phase_4_defines(
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 9
+        assert len({path for _, path in published}) == 12
 
 
 @pytest.mark.asyncio
 async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path):
     """The inventory half of "no GET mutates state".
 
-    Four `GET`s, all of them reports. `POST /onboarding/complete` exists precisely so
+    Six `GET`s, all of them reports. `POST /onboarding/complete` exists precisely so
     that the screen displaying progress does not have to be the thing that records
-    it, and this is the assertion that the split is still there.
+    it, and `POST /company-discovery/run` is the same split for the directory: reading
+    it is safe, filling it is a write an operator triggers.
     """
     async with api_harness(tmp_path) as api:
         published = operations(api.app, under=API_V2_PREFIX)
 
         assert {path for method, path in published if method == "GET"} == {
             "/api/v2/auth/session",
+            "/api/v2/companies",
+            "/api/v2/companies/{company_id}",
             "/api/v2/me/profile",
             "/api/v2/me/search-profiles",
             "/api/v2/onboarding"}
@@ -102,21 +115,29 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_calling_every_get_twice_leaves_all_four_stores_identical(tmp_path):
+async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
     """The behavioural half, asserted against the stores rather than the bodies.
 
     A `GET` that wrote something would be a request an attacker's page could make
     cross-site with the browser's cookie attached — `SameSite=Lax` sends the session
     cookie on a top-level navigation, and no CSRF header is required of a safe
     method. So the rule has to hold in the handlers, not only in the route table.
+
+    The company stored under `PLACEHOLDER_ID` is what makes the sweep meaningful for
+    the detail route: without it that `GET` would 404 before reaching the service, and
+    a handler that wrote on the way to a 200 would never be exercised.
     """
     async with api_harness(tmp_path) as api:
         await api.sign_in()
         await api.finish_onboarding()
+        await api.companies.upsert(a_company(id=CompanyId(PLACEHOLDER_ID),
+                                             locations=()))
         reads = [concrete(path) for method, path in operations(
             api.app, under=API_V2_PREFIX) if method == "GET"]
         before = deepcopy((api.users.users, api.sessions.sessions,
-                           api.profiles.profiles, api.searches.searches))
+                           api.profiles.profiles, api.searches.searches,
+                           api.companies.companies, api.career_sites.sites,
+                           api.discoveries.records, api.postings.opportunities))
 
         for path in reads:
             for _ in range(2):
@@ -124,7 +145,9 @@ async def test_calling_every_get_twice_leaves_all_four_stores_identical(tmp_path
                 assert response.status_code == 200, path
 
         assert (api.users.users, api.sessions.sessions, api.profiles.profiles,
-                api.searches.searches) == before
+                api.searches.searches, api.companies.companies,
+                api.career_sites.sites, api.discoveries.records,
+                api.postings.opportunities) == before
 
 
 @pytest.mark.asyncio
@@ -156,7 +179,7 @@ async def test_the_one_write_a_get_performs_is_last_seen_at_and_it_cannot_extend
 @pytest.mark.asyncio
 async def test_every_operation_but_register_and_login_refuses_an_anonymous_caller(
         tmp_path):
-    """401 from all ten, with no body sent and nothing created.
+    """401 from all thirteen, with no body sent and nothing created.
 
     No payload is needed because FastAPI resolves the session dependency before it
     validates a body, so the refusal happens before the request is read — which is
@@ -168,7 +191,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
         protected = [(method, path) for method, path in operations(
             api.app, under=API_V2_PREFIX) if (method, path) not in PUBLIC_OPERATIONS]
 
-        assert len(protected) == 10
+        assert len(protected) == 13
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 
@@ -180,6 +203,8 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
         assert api.sessions.sessions == {}
         assert api.profiles.profiles == {}
         assert api.searches.searches == {}
+        assert api.companies.companies == {}
+        assert api.discoveries.records == {}
 
 
 @pytest.mark.asyncio

@@ -52,6 +52,14 @@ from sqlalchemy.sql.elements import TextClause
 
 from backend.app.domain.candidate import WorkAuthorizationStatus
 from backend.app.domain.common import GeoPoint, LanguageLevel, SalaryPeriod, Weekday
+from backend.app.domain.company import (
+    AtsPlatform,
+    CareerSiteKind,
+    CompanyIdentityStatus,
+    CompanySeedKind,
+    DetectionStatus,
+    SpontaneousApplicationSupport,
+)
 from backend.app.domain.matching import MatchDimension
 from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
 from backend.app.domain.search import SearchAreaKind
@@ -652,32 +660,151 @@ class SearchAreaRow(TimestampedMixin, Base):
 
 
 
+# A provenance key — a source or provider key — as `ProvenanceKey` validates it:
+# `^[a-z][a-z0-9_]*$`, at most 40 characters. Width stated rather than left to TEXT
+# because the domain states it, and a 200-character value in this column would be a
+# bug somewhere upstream rather than a long name.
+_PROVENANCE_KEY_LENGTH: Final[int] = 40
+
+# `DetectedATS` is all-or-nothing when present, exactly as the value object is: a
+# status, a detector and evidence only mean something next to a platform, and §10's
+# rule that a `CONFIRMED` detection must name the organization identifier is the
+# second clause. Without this the flattening would allow a status asserting
+# confidence about a platform nobody detected.
+_ATS_COMPLETE_OR_ABSENT: Final[str] = (
+    "(ats_platform IS NULL AND ats_organization_id IS NULL"
+    " AND ats_status IS NULL AND ats_detected_by IS NULL"
+    " AND ats_evidence = '[]'::jsonb)"
+    " OR (ats_platform IS NOT NULL AND ats_status IS NOT NULL"
+    " AND ats_detected_by IS NOT NULL AND ats_evidence <> '[]'::jsonb"
+    f" AND (ats_status <> '{DetectionStatus.CONFIRMED.value}'"
+    " OR ats_organization_id IS NOT NULL))"
+)
+
+# `Company._the_channel_and_the_flag_agree` and
+# `SpontaneousApplicationChannel._a_verdict_shows_its_work`, as one expression: the
+# boolean the API exposes and the evidence-backed verdict §12 asks for have to give
+# the same answer, a decided verdict has to carry evidence and an observer, and
+# NOT_SUPPORTED with a URL contradicts itself.
+_SPONTANEOUS_SUPPORT_MATCHES_FLAG: Final[str] = (
+    "(spontaneous_support IS NULL"
+    " AND spontaneous_url IS NULL AND spontaneous_observed_by IS NULL"
+    " AND spontaneous_evidence = '[]'::jsonb)"
+    f" OR (spontaneous_support = '{SpontaneousApplicationSupport.UNKNOWN.value}'"
+    " AND accepts_spontaneous_applications IS NULL)"
+    f" OR (spontaneous_support = '{SpontaneousApplicationSupport.SUPPORTED.value}'"
+    " AND accepts_spontaneous_applications IS TRUE"
+    " AND spontaneous_observed_by IS NOT NULL"
+    " AND spontaneous_evidence <> '[]'::jsonb)"
+    f" OR (spontaneous_support = '{SpontaneousApplicationSupport.NOT_SUPPORTED.value}'"
+    " AND accepts_spontaneous_applications IS FALSE"
+    " AND spontaneous_url IS NULL AND spontaneous_observed_by IS NOT NULL"
+    " AND spontaneous_evidence <> '[]'::jsonb)"
+)
+
+
 class CompanyRow(TimestampedMixin, Base):
     """A canonical employer.
 
-    `name` is indexed but not unique. Two legally distinct companies share a name
-    often enough that a unique constraint would reject real data, and
-    canonicalizing "Migros", "Migros SA" and "MIGROS Vaud" into one identity is
-    Phase 6's discovery work. Until then identity comes from the primary key: the
-    V1 importer derives it deterministically (uuid5) from the employer string, so
-    re-importing the same string updates the same row instead of adding a
-    duplicate.
+    `name` is indexed but not unique, and `normalized_name` is indexed and not
+    unique either. Two legally distinct companies share a name often enough that a
+    unique constraint would reject real data — and, more to the point, deciding that
+    "Migros", "Migros SA" and "MIGROS Vaud" are one employer is evidence-based work
+    the database cannot do: §2 forbids merging on name similarity, so a unique index
+    on the normalized form would be the database silently making exactly the decision
+    `backend.app.companies.resolution` refuses to make. Identity comes from the
+    primary key, and `normalized_name` is what narrows the shortlist that `resolve`
+    then judges.
+
+    Phase 6 added thirteen columns and every one of them is read off the domain
+    object rather than computed here. `normalized_name` and `normalized_domain` are
+    projections of `Company.normalized_name`/`normalized_domain` — properties, not
+    fields, so the column cannot disagree with the name beside it — and the CHECK
+    that each equals its own lower-cased form is what keeps a hand-written `INSERT`
+    from putting a display name in the comparison column.
 
     `accepts_spontaneous_applications` is nullable because the domain models it as
     three-valued — NULL is "nobody has looked", which an application strategy must
-    not read as "no".
+    not read as "no" — and `spontaneous_*` beside it is the evidence §12 requires
+    for a decided answer. `ck_companies_spontaneous_support_matches_flag` is
+    `Company._the_channel_and_the_flag_agree` as a constraint: the two
+    representations exist because Phase 1's boolean is what the API exposes, and a
+    row where they contradict each other would make the answer depend on which
+    column the reader picked.
+
+    The ATS columns are `DetectedATS` flattened, with the same all-or-nothing rule
+    the value object has: no platform means no status, no evidence and no
+    organization, and a `CONFIRMED` detection must name the organization or nothing
+    can fetch the board.
     """
 
     __tablename__ = "companies"
     __table_args__ = (
+        # `Company._a_name_has_a_comparison_form`, and the reason the column is NOT
+        # NULL: a company whose name normalizes to nothing can never be compared
+        # against anything, so it is not a usable identity.
+        CheckConstraint("normalized_name = lower(normalized_name)"
+                        " AND normalized_name <> ''",
+                        name="normalized_name_is_comparison_form"),
+        CheckConstraint("normalized_domain = lower(normalized_domain)"
+                        " AND normalized_domain <> ''",
+                        name="normalized_domain_is_comparison_form"),
+        _code_format("country", "^[A-Z]{2}$"),
+        CheckConstraint(_ATS_COMPLETE_OR_ABSENT, name="ats_complete_or_absent"),
+        CheckConstraint(_SPONTANEOUS_SUPPORT_MATCHES_FLAG,
+                        name="spontaneous_support_matches_flag"),
         Index("ix_companies_name", "name"),
+        # The two shortlist lookups `resolution.name_lookup_keys` and
+        # `strong_lookup_keys` drive. Without them every resolution is a sequential
+        # scan of the whole employer table, which is fine on an empty development
+        # database and is the outage §23's repeated passes would cause on a real one.
+        Index("ix_companies_normalized_name", "normalized_name"),
+        Index("ix_companies_normalized_domain", "normalized_domain"),
+        # The ATS organization as an identity: unique per platform, because
+        # `boards.greenhouse.io/acme` is one employer's board and two companies
+        # claiming it is the duplicate `resolve` reports as AMBIGUOUS. Partial, so
+        # the thousands of companies with no detected ATS do not collide on NULL.
+        Index("uq_companies_ats_platform_organization_id",
+              "ats_platform", "ats_organization_id", unique=True,
+              postgresql_where=text("ats_organization_id IS NOT NULL")),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
     name: Mapped[str]
+    # A projection of `Company.normalized_name`. NOT NULL: every company has one by
+    # construction, and a nullable column would invite a query that misses rows.
+    normalized_name: Mapped[str]
     website: Mapped[str | None]
     careers_url: Mapped[str | None]
+    # A projection of `Company.normalized_domain`, which falls back to the careers
+    # host when there is no website. Nullable because plenty of employers arrive
+    # with neither.
+    normalized_domain: Mapped[str | None]
+    country: Mapped[str | None] = mapped_column(String(2))
+    identity_status: Mapped[CompanyIdentityStatus] = mapped_column(
+        enum_column(CompanyIdentityStatus, "company_identity_status"),
+        server_default=text(f"'{CompanyIdentityStatus.SEEDED.value}'"))
+    ats_platform: Mapped[AtsPlatform | None] = mapped_column(
+        enum_column(AtsPlatform, "ats_platform"))
+    ats_organization_id: Mapped[str | None]
+    ats_status: Mapped[DetectionStatus | None] = mapped_column(
+        enum_column(DetectionStatus, "ats_detection_status"))
+    ats_detected_by: Mapped[str | None] = mapped_column(
+        String(_PROVENANCE_KEY_LENGTH))
+    # `tuple[Evidence, ...]` as JSONB, the same shape `reasons_to_json` writes for a
+    # match evaluation. A child table would be the third provenance table in this
+    # phase for a collection that is never queried by its elements — §15 asks for the
+    # smallest normalized schema, and evidence is read whole with its detection.
+    ats_evidence: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, server_default=_EMPTY_JSON_ARRAY)
     accepts_spontaneous_applications: Mapped[bool | None]
+    spontaneous_support: Mapped[SpontaneousApplicationSupport | None] = mapped_column(
+        enum_column(SpontaneousApplicationSupport, "spontaneous_application_support"))
+    spontaneous_url: Mapped[str | None]
+    spontaneous_observed_by: Mapped[str | None] = mapped_column(
+        String(_PROVENANCE_KEY_LENGTH))
+    spontaneous_evidence: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, server_default=_EMPTY_JSON_ARRAY)
 
     locations: Mapped[list["CompanyLocationRow"]] = relationship(
         back_populates="company", cascade="all, delete-orphan",
@@ -685,6 +812,132 @@ class CompanyRow(TimestampedMixin, Base):
         # Deterministic order, so a company read twice produces an equal domain
         # object and a round-trip test can compare tuples directly.
         order_by="CompanyLocationRow.id")
+
+
+class CompanyAliasRow(TimestampedMixin, Base):
+    """Another label the same employer is published under (§4).
+
+    Its own table because an alias has provenance, and `UNIQUE (company_id,
+    normalized_alias)` is what makes §23's repeated pass an update rather than an
+    insert: the second sighting of `LOGITECH` moves `last_seen_at` and leaves
+    `first_seen_at` alone. The primary key is derived (`company_alias_id`, uuid5 over
+    the same pair), so the upsert can be written without a prior SELECT and the
+    unique constraint is the backstop rather than the mechanism.
+
+    `alias` keeps the spelling the source used and `normalized_alias` is the
+    comparison form. Both, because §4's rule is that another source's label must not
+    overwrite the canonical name — showing an operator `Logitech Europe S.A.` is only
+    possible if the original spelling survived.
+    """
+
+    __tablename__ = "company_aliases"
+    __table_args__ = (
+        UniqueConstraint("company_id", "normalized_alias"),
+        CheckConstraint("normalized_alias = lower(normalized_alias)"
+                        " AND normalized_alias <> ''",
+                        name="normalized_alias_is_comparison_form"),
+        CheckConstraint("last_seen_at >= first_seen_at", name="seen_window_ordered"),
+        Index("ix_company_aliases_normalized_alias", "normalized_alias"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"))
+    alias: Mapped[str]
+    normalized_alias: Mapped[str]
+    source_key: Mapped[str] = mapped_column(String(_PROVENANCE_KEY_LENGTH))
+    first_seen_at: Mapped[datetime]
+    last_seen_at: Mapped[datetime]
+
+
+class CompanyCareerSiteRow(TimestampedMixin, Base):
+    """One careers endpoint of one company (§11).
+
+    Several per company is the normal case — a corporate page, an ATS board, a
+    spontaneous-application form — which is why §11 asks for records instead of one
+    `careers_url` column. `Company.careers_url` survives as the *preferred* endpoint,
+    which §11 explicitly permits.
+
+    `UNIQUE (company_id, url)` with a derived primary key, for the same idempotence
+    reason as the aliases: rediscovering the same board updates one row.
+
+    `last_checked_at` is nullable and Phase 6 never sets it: nothing in this phase
+    fetches a URL, so a timestamp here would claim a check that never happened.
+    """
+
+    __tablename__ = "company_career_sites"
+    __table_args__ = (
+        UniqueConstraint("company_id", "url"),
+        # `CareerSite._an_ats_board_names_its_platform`: a board nothing can identify
+        # the platform of is a board no source plugin can read.
+        CheckConstraint(
+            f"kind <> '{CareerSiteKind.ATS_BOARD.value}' OR platform IS NOT NULL",
+            name="ats_board_names_its_platform"),
+        CheckConstraint("last_checked_at IS NULL OR last_checked_at >= discovered_at",
+                        name="checked_after_discovered"),
+        Index("ix_company_career_sites_company_id", "company_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"))
+    url: Mapped[str]
+    kind: Mapped[CareerSiteKind] = mapped_column(
+        enum_column(CareerSiteKind, "career_site_kind"))
+    platform: Mapped[AtsPlatform | None] = mapped_column(
+        enum_column(AtsPlatform, "career_site_platform"))
+    source_key: Mapped[str] = mapped_column(String(_PROVENANCE_KEY_LENGTH))
+    verification_status: Mapped[DetectionStatus] = mapped_column(
+        enum_column(DetectionStatus, "career_site_verification_status"),
+        server_default=text(f"'{DetectionStatus.LIKELY.value}'"))
+    discovered_at: Mapped[datetime]
+    last_checked_at: Mapped[datetime | None]
+
+
+class CompanyDiscoveryRecordRow(TimestampedMixin, Base):
+    """How one provider came to tell us about one company (§5).
+
+    `UNIQUE (provider_key, external_id)` is §23's external identity uniqueness: the
+    same provider reporting the same employer twice is one sighting, updated. The
+    primary key is `company_discovery_record_id`, uuid5 over exactly that pair, so
+    the constraint and the key say the same thing and neither can drift.
+
+    `company_id` is nullable and the foreign key is `ON DELETE SET NULL`. Both matter:
+    §14 leaves an `AMBIGUOUS` seed unlinked rather than guessing, and a sighting we
+    keep is what stops the next pass rediscovering and re-refusing it; and merging two
+    duplicate employers must not delete the provenance that revealed the duplication.
+
+    `raw` is JSONB and the domain refuses credential-shaped keys before it ever gets
+    here (`CompanyDiscoveryRecord._raw_carries_no_secrets`, §5, §26). No CHECK
+    mirrors that: the forbidden set is a substring list that will grow, and a CHECK
+    over JSONB keys would be a second copy of it that silently disagrees.
+    """
+
+    __tablename__ = "company_discovery_records"
+    __table_args__ = (
+        UniqueConstraint("provider_key", "external_id"),
+        Index("ix_company_discovery_records_company_id", "company_id"),
+        # "What did this provider find, most recent first" — the operator's question
+        # on a provenance screen.
+        Index("ix_company_discovery_records_provider_key_discovered_at",
+              "provider_key", "discovered_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    provider_key: Mapped[str] = mapped_column(String(_PROVENANCE_KEY_LENGTH))
+    external_id: Mapped[str]
+    seed_kind: Mapped[CompanySeedKind] = mapped_column(
+        enum_column(CompanySeedKind, "company_seed_kind"))
+    company_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("companies.id", ondelete="SET NULL"))
+    company_name: Mapped[str]
+    source_url: Mapped[str | None]
+    discovered_at: Mapped[datetime]
+    confidence: Mapped[DetectionStatus] = mapped_column(
+        enum_column(DetectionStatus, "discovery_record_confidence"),
+        server_default=text(f"'{DetectionStatus.LIKELY.value}'"))
+    raw: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=_EMPTY_JSON_OBJECT)
 
 
 class CompanyLocationRow(LocationColumnsMixin, TimestampedMixin, Base):

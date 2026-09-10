@@ -47,6 +47,11 @@ from backend.app.domain.opportunity import (
 # in a `lang` attribute.
 Locale = Annotated[str, Field(pattern=r"^[a-z]{2}(-[A-Z]{2})?$")]
 
+# A public-suffix ending, leading dot required: ".ch", ".swiss", ".co.uk". The
+# pattern is what stops a pack writing a whole host ("migros.ch") where a suffix
+# belongs, which would make every comparison against it fail silently.
+DomainSuffix = Annotated[str, Field(pattern=r"^(\.[a-z0-9-]+)+$", max_length=24)]
+
 
 def normalize_term(value: str) -> str:
     """The comparable form of a local term.
@@ -143,6 +148,11 @@ class PackMetadata(DomainModel):
     languages: Annotated[tuple[LanguageCode, ...], Field(min_length=1)]
     timezone: NonEmptyStr
     full_time_weekly_hours: Annotated[float, Field(gt=0.0, le=80.0)]
+    # The public-suffix endings an employer's own site tends to have in this
+    # country. A *tie-break* for company identity, never a filter: a Swiss company
+    # on a .com is ordinary (docs/COMPANY_DISCOVERY.md §Identity). Empty means the
+    # country expresses no preference, which restricts nothing.
+    company_domain_suffixes: tuple[DomainSuffix, ...] = ()
     documentation_url: HttpUrlStr | None = None
     notes: NonEmptyStr | None = None
 
@@ -161,6 +171,9 @@ class PackMetadata(DomainModel):
         if orphans:
             raise ValueError(
                 f"locales declare languages the pack does not support: {orphans}")
+        if len(set(self.company_domain_suffixes)) != len(
+                self.company_domain_suffixes):
+            raise ValueError("company_domain_suffixes must not repeat")
         return self
 
     def weekly_hours_for_percent(self, percent: float) -> float:
@@ -263,6 +276,11 @@ class TerminologyMap(DomainModel):
       `pipeline/sources/{migros,coop,jobscout24}.py` put "80%" in the *salary*
       column, so a normalizer that trusted the column name would report an 80-franc
       salary. The labels are what let it recognise a workload instead.
+    - `company_legal_suffixes` — "SA", "Sàrl", "AG", "GmbH", "Genossenschaft". What
+      distinguishes "Logitech Europe S.A." from "Logitech Europe". Read by company
+      identity resolution to build a *comparison* key; the algorithm lives in
+      `backend/app/companies/identity.py`, because §19 puts configuration in the
+      pack and the workflow in the service.
 
     Lookups follow the same deterministic longest-first rule as
     `OpportunityTypeMap.classify`.
@@ -272,6 +290,7 @@ class TerminologyMap(DomainModel):
     contract_types: Mapping[str, ContractType] = Field(default_factory=dict)
     languages: Mapping[str, LanguageCode] = Field(default_factory=dict)
     activity_rate_labels: tuple[NonEmptyStr, ...] = ()
+    company_legal_suffixes: tuple[NonEmptyStr, ...] = ()
 
     @model_validator(mode="after")
     def _terms_are_normalized(self) -> Self:
@@ -284,6 +303,16 @@ class TerminologyMap(DomainModel):
             raise ValueError(
                 "terminology.activity_rate_labels must be normalized; rewrite "
                 f"{unnormalized}")
+        stray = sorted(suffix for suffix in self.company_legal_suffixes
+                       if suffix != normalize_term(suffix))
+        if stray:
+            raise ValueError(
+                "terminology.company_legal_suffixes must be normalized; rewrite "
+                f"{stray}")
+        if len(set(self.company_legal_suffixes)) != len(
+                self.company_legal_suffixes):
+            raise ValueError(
+                "terminology.company_legal_suffixes must not repeat a suffix")
         return self
 
     def workplace_mode_for(self, *texts: str | None) -> WorkplaceMode | None:

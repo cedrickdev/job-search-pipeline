@@ -12,6 +12,10 @@ import type {
   Account,
   CandidateProfile,
   CandidateProfileDraft,
+  Company,
+  CompanyDetail,
+  CompanyDiscoveryRun,
+  CompanyList,
   OnboardingState,
   SearchProfile,
   SearchProfileDraft,
@@ -22,6 +26,7 @@ import type {
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const PROFILE_ID = '22222222-2222-4222-8222-222222222222'
 const SEARCH_ID = '33333333-3333-4333-8333-333333333333'
+const COMPANY_ID = '44444444-4444-4444-8444-444444444444'
 
 export function account(overrides: Partial<Account> = {}): Account {
   return {
@@ -128,4 +133,73 @@ export function onboarding(overrides: Partial<OnboardingState> = {}): Onboarding
 /** The list wrapper `GET /me/search-profiles` answers with. */
 export function searchList(...profiles: SearchProfile[]) {
   return { search_profiles: profiles }
+}
+
+/**
+ * One employer, with nothing concluded about it.
+ *
+ * The default is the honest default the backend produces for a name seen on a
+ * posting: `SEEDED`, no ATS, `UNKNOWN` spontaneous support. A test that wants a
+ * detected platform or a decided channel says so, which keeps "we do not know" from
+ * being something a fixture accidentally hides.
+ */
+export function company(overrides: Partial<Company> = {}): Company {
+  return {
+    id: COMPANY_ID,
+    name: 'Logitech',
+    normalized_name: 'logitech',
+    website: 'https://www.logitech.invalid',
+    careers_url: null,
+    country: 'CH',
+    identity_status: 'SEEDED',
+    detected_ats: null,
+    spontaneous_application: null,
+    accepts_spontaneous_applications: null,
+    locations: [],
+    ...overrides,
+  }
+}
+
+/** One page of employers. `total` defaults to what was passed, not to a guess. */
+export function companyList(companies: Company[] = [company()],
+                            overrides: Partial<CompanyList> = {}): CompanyList {
+  return {
+    companies,
+    total: companies.length,
+    limit: 20,
+    offset: 0,
+    ...overrides,
+  }
+}
+
+export function companyDetail(overrides: Partial<CompanyDetail> = {}): CompanyDetail {
+  return {
+    company: company(),
+    aliases: [],
+    career_sites: [],
+    discoveries: [],
+    discovered_by: [],
+    ...overrides,
+  }
+}
+
+/** What a pass reports. Zeroes everywhere, so a test states its own numbers. */
+export function discoveryRun(
+  overrides: Partial<CompanyDiscoveryRun> = {}): CompanyDiscoveryRun {
+  return {
+    country: null,
+    started_at: '2026-01-02T10:00:00Z',
+    duration_ms: 12,
+    providers: [],
+    unusable_providers: [],
+    is_complete: true,
+    created: 0,
+    matched: 0,
+    ambiguous: 0,
+    company_ids: [],
+    health: [],
+    warnings: [],
+    links: { examined: 0, linked: 0, ambiguous: 0, unresolved: 0 },
+    ...overrides,
+  }
 }

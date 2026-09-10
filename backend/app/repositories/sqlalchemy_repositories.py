@@ -11,17 +11,38 @@ relationships are `lazy="raise"`, so a forgotten `selectinload` is an immediate
 error here rather than an implicit query — under asyncio a lazy load is not a
 performance footnote, it is an exception at the worst possible moment.
 """
+from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 from pydantic import SecretStr
-from sqlalchemy import CursorResult, Result, Select, delete, select, update
+from sqlalchemy import (
+    ColumnElement,
+    CursorResult,
+    Result,
+    Select,
+    delete,
+    exists,
+    false,
+    func,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.domain.candidate import CandidateProfile
 from backend.app.domain.common import GeoPoint
-from backend.app.domain.company import Company
+from backend.app.domain.company import (
+    AtsPlatform,
+    CareerSite,
+    Company,
+    CompanyAlias,
+    CompanyDiscoveryRecord,
+    normalize_company_name,
+)
 from backend.app.domain.identifiers import (
     CandidateProfileId,
     CompanyId,
@@ -38,8 +59,14 @@ from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.infrastructure.database.mappers import (
     candidate_profile_to_domain,
     candidate_profile_to_row,
+    career_site_to_domain,
+    career_site_to_row,
+    company_alias_to_domain,
+    company_alias_to_row,
     company_to_domain,
     company_to_row,
+    discovery_record_to_domain,
+    discovery_record_to_row,
     match_evaluation_to_domain,
     match_evaluation_to_row,
     opportunity_to_domain,
@@ -53,6 +80,9 @@ from backend.app.infrastructure.database.mappers import (
 )
 from backend.app.infrastructure.database.models import (
     CandidateProfileRow,
+    CompanyAliasRow,
+    CompanyCareerSiteRow,
+    CompanyDiscoveryRecordRow,
     CompanyLocationRow,
     CompanyRow,
     MatchEvaluationRow,
@@ -63,11 +93,19 @@ from backend.app.infrastructure.database.models import (
     UserSessionRow,
 )
 from backend.app.infrastructure.database.types import distance_meters, within_radius
-from backend.app.repositories.contracts import DEFAULT_LIMIT, OpportunityNearby
+from backend.app.repositories.contracts import (
+    DEFAULT_LIMIT,
+    CompanyCandidate,
+    CompanyFilter,
+    CompanyPage,
+    OpportunityNearby,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
     from backend.app.repositories.contracts import (
         CandidateProfileRepository,
+        CareerSiteRepository,
+        CompanyDiscoveryRepository,
         CompanyRepository,
         MatchEvaluationRepository,
         OpportunityRepository,
@@ -77,8 +115,9 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
     )
 
     def _implements_contracts(session: AsyncSession) -> tuple[
-            "CompanyRepository", "OpportunityRepository", "MatchEvaluationRepository",
-            "UserRepository", "SessionRepository", "CandidateProfileRepository",
+            "CompanyRepository", "CareerSiteRepository", "CompanyDiscoveryRepository",
+            "OpportunityRepository", "MatchEvaluationRepository", "UserRepository",
+            "SessionRepository", "CandidateProfileRepository",
             "SearchProfileRepository"]:
         """Structural conformance, enforced by `mypy backend`.
 
@@ -88,6 +127,8 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
         of this function is that check, and it costs nothing at runtime.
         """
         return (SqlAlchemyCompanyRepository(session),
+                SqlAlchemyCareerSiteRepository(session),
+                SqlAlchemyCompanyDiscoveryRepository(session),
                 SqlAlchemyOpportunityRepository(session),
                 SqlAlchemyMatchEvaluationRepository(session),
                 SqlAlchemyUserRepository(session),
@@ -151,6 +192,228 @@ class SqlAlchemyCompanyRepository:
             .order_by(CompanyRow.name, CompanyRow.id)
             .limit(limit))
         return tuple(company_to_domain(row) for row in result.scalars())
+
+    async def _aliases_for(
+            self,
+            company_ids: Sequence[UUID]) -> dict[UUID, tuple[CompanyAlias, ...]]:
+        """Every alias of several companies at once, grouped by company.
+
+        One statement for the whole shortlist rather than one per candidate: a
+        resolution pass over a few hundred postings would otherwise issue a query
+        per company it considered, which is the N+1 that makes the difference
+        between a pass that finishes and one that is killed.
+        """
+        if not company_ids:
+            return {}
+        result = await self._session.execute(
+            select(CompanyAliasRow)
+            .where(CompanyAliasRow.company_id.in_(company_ids))
+            .order_by(CompanyAliasRow.first_seen_at, CompanyAliasRow.id))
+        grouped: dict[UUID, list[CompanyAlias]] = {}
+        for row in result.scalars():
+            grouped.setdefault(row.company_id, []).append(company_alias_to_domain(row))
+        return {company_id: tuple(aliases) for company_id, aliases in grouped.items()}
+
+    async def find_candidates(
+            self, *, name_forms: Sequence[str] = (), domain: str | None = None,
+            ats_platform: AtsPlatform | None = None,
+            ats_organization_id: str | None = None,
+            limit: int = DEFAULT_LIMIT) -> tuple[CompanyCandidate, ...]:
+        forms = tuple(dict.fromkeys(form for form in name_forms if form))
+        matches: list[ColumnElement[bool]] = []
+        if forms:
+            matches.append(CompanyRow.normalized_name.in_(forms))
+            # An alias is a name this employer is known by, so a hit on one puts the
+            # company on the shortlist exactly as a hit on `normalized_name` does.
+            # `IN (subquery)` rather than a join, so an employer with four matching
+            # aliases is still one candidate.
+            matches.append(CompanyRow.id.in_(
+                select(CompanyAliasRow.company_id)
+                .where(CompanyAliasRow.normalized_alias.in_(forms))))
+        if domain:
+            matches.append(CompanyRow.normalized_domain == domain)
+        if ats_platform is not None and ats_organization_id:
+            # Both halves or neither: an organization id is only an identity within
+            # its platform, and `acme` on Greenhouse is not `acme` on Lever.
+            matches.append((CompanyRow.ats_platform == ats_platform)
+                           & (CompanyRow.ats_organization_id == ats_organization_id))
+        if not matches:
+            # No evidence to look up means no shortlist. Returning the first hundred
+            # companies instead would hand `resolve` a page of employers nothing
+            # connects to the claim, and the first one to share a country would look
+            # like a candidate.
+            return ()
+        result = await self._session.execute(
+            self._base_select()
+            .where(or_(*matches))
+            .order_by(CompanyRow.name, CompanyRow.id)
+            .limit(limit))
+        rows = tuple(result.scalars())
+        aliases = await self._aliases_for(tuple(row.id for row in rows))
+        return tuple(CompanyCandidate(company_to_domain(row), aliases.get(row.id, ()))
+                     for row in rows)
+
+    def _filters(self, filters: CompanyFilter) -> list[ColumnElement[bool]]:
+        """`CompanyFilter` as a conjunction of predicates.
+
+        Shared by the page query and the count so the two cannot disagree — a total
+        computed under different predicates than the rows is worse than no total.
+        """
+        predicates: list[ColumnElement[bool]] = []
+        if filters.text is not None:
+            # Matched on the comparison form, not the display name: a search for
+            # `logitech sa` has to find `Logitech S.A.`, and only the normalizer
+            # knows that those are the same characters. `autoescape` because a `%`
+            # the user typed is a literal percent sign and not "match anything".
+            key = normalize_company_name(filters.text)
+            if key:
+                predicates.append(or_(
+                    CompanyRow.normalized_name.contains(key, autoescape=True),
+                    CompanyRow.id.in_(
+                        select(CompanyAliasRow.company_id)
+                        .where(CompanyAliasRow.normalized_alias.contains(
+                            key, autoescape=True)))))
+            else:
+                # A query that is nothing but punctuation has no comparison form, so
+                # nothing can match it. `contains("")` would match every employer,
+                # which is the opposite of what was asked.
+                predicates.append(false())
+        if filters.country is not None:
+            predicates.append(CompanyRow.country == filters.country)
+        if filters.ats_platform is not None:
+            predicates.append(CompanyRow.ats_platform == filters.ats_platform)
+        if filters.spontaneous_support is not None:
+            predicates.append(
+                CompanyRow.spontaneous_support == filters.spontaneous_support)
+        if filters.has_opportunities is not None:
+            linked = exists().where(OpportunityRow.company_id == CompanyRow.id)
+            predicates.append(linked if filters.has_opportunities else ~linked)
+        return predicates
+
+    async def search(self, filters: CompanyFilter, *, limit: int = DEFAULT_LIMIT,
+                     offset: int = 0) -> CompanyPage:
+        predicates = self._filters(filters)
+        total = await self._session.execute(
+            select(func.count()).select_from(CompanyRow).where(*predicates))
+        result = await self._session.execute(
+            self._base_select()
+            .where(*predicates)
+            # `id` breaks the tie on name. Without it two employers called `Migros`
+            # could be ordered differently by two queries, which is how a paginated
+            # list shows one of them twice and the other not at all.
+            .order_by(CompanyRow.name, CompanyRow.id)
+            .limit(limit).offset(offset))
+        return CompanyPage(
+            companies=tuple(company_to_domain(row) for row in result.scalars()),
+            total=total.scalar_one())
+
+    async def aliases(self, company_id: CompanyId) -> tuple[CompanyAlias, ...]:
+        result = await self._session.execute(
+            select(CompanyAliasRow)
+            .where(CompanyAliasRow.company_id == company_id)
+            .order_by(CompanyAliasRow.first_seen_at, CompanyAliasRow.id))
+        return tuple(company_alias_to_domain(row) for row in result.scalars())
+
+    async def upsert_alias(self, alias: CompanyAlias) -> CompanyAlias:
+        result = await self._session.execute(
+            select(CompanyAliasRow).where(CompanyAliasRow.id == alias.id))
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            # The stored window and the new sighting, unioned. `min`/`max` rather
+            # than "overwrite" because a provider may report an *older* sighting
+            # than the one already recorded — a seed file being read for the first
+            # time, say — and the answer to "since when have we called it this?"
+            # must only ever move backwards.
+            alias = alias.model_copy(update={
+                "first_seen_at": min(alias.first_seen_at, existing.first_seen_at),
+                "last_seen_at": max(alias.last_seen_at, existing.last_seen_at)})
+        row = company_alias_to_row(alias, existing)
+        self._session.add(row)
+        await self._session.flush()
+        return company_alias_to_domain(row)
+
+
+class SqlAlchemyCareerSiteRepository:
+    """`CareerSiteRepository` over an `AsyncSession`.
+
+    One row per `(company_id, url)`, and the id is uuid5 over exactly that pair, so
+    an upsert needs no `SELECT` to know which row it is about — the load here exists
+    only to preserve what the stored row already knew.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list_for_company(self, company_id: CompanyId) -> tuple[CareerSite, ...]:
+        result = await self._session.execute(
+            select(CompanyCareerSiteRow)
+            .where(CompanyCareerSiteRow.company_id == company_id)
+            .order_by(CompanyCareerSiteRow.discovered_at, CompanyCareerSiteRow.id))
+        return tuple(career_site_to_domain(row) for row in result.scalars())
+
+    async def upsert(self, site: CareerSite) -> CareerSite:
+        result = await self._session.execute(
+            select(CompanyCareerSiteRow).where(CompanyCareerSiteRow.id == site.id))
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            checked = [instant for instant
+                       in (site.last_checked_at, existing.last_checked_at)
+                       if instant is not None]
+            site = site.model_copy(update={
+                "discovered_at": min(site.discovered_at, existing.discovered_at),
+                # A pass that did not check the URL leaves `last_checked_at` unset,
+                # and must not erase the instant a pass that did check it recorded.
+                "last_checked_at": max(checked) if checked else None})
+        row = career_site_to_row(site, existing)
+        self._session.add(row)
+        await self._session.flush()
+        return career_site_to_domain(row)
+
+
+class SqlAlchemyCompanyDiscoveryRepository:
+    """`CompanyDiscoveryRepository` over an `AsyncSession`.
+
+    Provenance, so nothing here deletes: a sighting outlives both the pass that
+    produced it and — through `ON DELETE SET NULL` — the company it was linked to.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_external(self, provider_key: str,
+                              external_id: str) -> CompanyDiscoveryRecord | None:
+        result = await self._session.execute(
+            select(CompanyDiscoveryRecordRow).where(
+                CompanyDiscoveryRecordRow.provider_key == provider_key,
+                CompanyDiscoveryRecordRow.external_id == external_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else discovery_record_to_domain(row)
+
+    async def upsert(self, record: CompanyDiscoveryRecord) -> CompanyDiscoveryRecord:
+        result = await self._session.execute(
+            select(CompanyDiscoveryRecordRow).where(
+                CompanyDiscoveryRecordRow.id == record.id))
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            # First sighting wins, for the same reason as an alias: §23's repeated
+            # pass must leave "when did we first hear about this employer?" alone.
+            record = record.model_copy(update={
+                "discovered_at": min(record.discovered_at, existing.discovered_at)})
+        row = discovery_record_to_row(record, existing)
+        self._session.add(row)
+        await self._session.flush()
+        return discovery_record_to_domain(row)
+
+    async def list_for_company(
+            self, company_id: CompanyId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[CompanyDiscoveryRecord, ...]:
+        result = await self._session.execute(
+            select(CompanyDiscoveryRecordRow)
+            .where(CompanyDiscoveryRecordRow.company_id == company_id)
+            .order_by(CompanyDiscoveryRecordRow.discovered_at.desc(),
+                      CompanyDiscoveryRecordRow.id)
+            .limit(limit))
+        return tuple(discovery_record_to_domain(row) for row in result.scalars())
 
 
 class SqlAlchemyOpportunityRepository:
@@ -221,6 +484,37 @@ class SqlAlchemyOpportunityRepository:
             .limit(limit))
         return tuple(OpportunityNearby(opportunity_to_domain(row), float(meters))
                      for row, meters in result.all())
+
+    async def list_unlinked(self, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[Opportunity, ...]:
+        result = await self._session.execute(
+            self._base_select()
+            .where(OpportunityRow.company_id.is_(None),
+                   # A posting with no employer string is not a seed: there is
+                   # nothing to resolve, and returning it would put an unresolvable
+                   # row at the head of every pass forever.
+                   OpportunityRow.company_name != "")
+            # Oldest first, so repeated bounded passes work through the backlog
+            # instead of re-reading the same page of recent postings.
+            .order_by(OpportunityRow.discovered_at, OpportunityRow.id)
+            .limit(limit))
+        return tuple(opportunity_to_domain(row) for row in result.scalars())
+
+    async def link_company(self, opportunity_id: OpportunityId,
+                           company_id: CompanyId) -> bool:
+        result = await self._session.execute(
+            update(OpportunityRow)
+            .where(OpportunityRow.id == opportunity_id,
+                   # `IS DISTINCT FROM` rather than `!=`, which is NULL for a
+                   # posting that has never been linked — i.e. every posting this is
+                   # called for. It is also what makes a repeated resolution report
+                   # `False` instead of writing the value that is already there.
+                   OpportunityRow.company_id.is_distinct_from(company_id))
+            # One column. `company_name` is not in this statement and cannot be:
+            # §13's "the posting's original company name remains provenance" is a
+            # property of the SQL here, not a rule somebody has to remember.
+            .values(company_id=company_id))
+        return bool(_rows_affected(result))
 
 
 class SqlAlchemyMatchEvaluationRepository:

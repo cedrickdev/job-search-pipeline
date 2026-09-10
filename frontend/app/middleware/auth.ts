@@ -5,8 +5,9 @@
 // the V1 pages — overview, jobs, analytics, settings — are **not** guarded, because
 // V1's `/api/**` has no accounts. Its 29 operations answer without a session cookie
 // (docs/AUTHENTICATION.md), so a guard in front of those screens would demand a
-// login the data behind them does not know about. Only `/profile` and `/onboarding`,
-// which read `/api/v2/me`, carry this.
+// login the data behind them does not know about. `/profile` and `/onboarding`, which
+// read `/api/v2/me`, carry this — and so do the Phase 6 company screens, whose data
+// is shared rather than owned but whose endpoints still answer 401 without a session.
 //
 // A global middleware with an exception list would invert that: every page added
 // from here on would be guarded by default and the list would be the thing to
@@ -14,7 +15,7 @@
 // screen that needs one.
 //
 // The guard is not the protection. The API refuses an unauthenticated request on its
-// own — that is what `tests/test_v2_api_surface.py` pins for all ten protected
+// own — that is what `tests/test_v2_api_surface.py` pins for all thirteen protected
 // operations — and this only decides which screen to show. A user who edits the
 // route table in their own browser gets a page that 401s, not somebody's data.
 import { useSessionStore } from '~/stores/session'

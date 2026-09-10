@@ -198,5 +198,22 @@
 .onb-step.done { color: var(--ok); border-top-color: var(--ok); }
 .onb-panel { display: flex; flex-direction: column; gap: var(--space-2); }
 
+/* The company directory. It borrows the account page's list and fact styles — the
+   shapes are the same — and only adds what it needs: a filter row that wraps, and
+   the evidence lists that make a Phase 6 claim readable next to its source. */
+.co-page { max-width: 900px; }
+.co-filters { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-3); }
+.co-filters .acct-field { display: flex; flex-direction: column; gap: 2px; margin-top: 0; }
+.co-filters input, .co-filters select {
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: var(--space-2); font: inherit;
+}
+.co-section { display: flex; flex-direction: column; gap: var(--space-2); }
+.co-section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
+.co-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); margin: 0; }
+.co-facts dt { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.co-facts dd { margin: 0; font-size: 13px; word-break: break-word; }
+.co-evidence { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--text-dim); }
+
 .topbar-account { color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); font-size: 13px; }
 .topbar-account:hover { color: var(--text); }

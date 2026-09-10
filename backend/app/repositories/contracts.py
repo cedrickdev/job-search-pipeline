@@ -19,9 +19,13 @@ uuid5 for anything derived from V1, uuid4 otherwise — so "create" and "update"
 are the same operation from the caller's point of view, and retrying a failed
 import is safe by construction.
 
-Small on purpose: Phase 2 owes the persistence foundation, and a method nobody
-calls yet is a guess about Phase 6 and 12 that would have to be unguessed.
+Small on purpose: a method nobody calls yet is a guess about Phase 12 that would
+have to be unguessed. Phase 6 added the company-side contracts, and split them the
+way §16 asks — one for employers and their aliases, one for careers endpoints, one
+for discovery provenance — rather than growing `CompanyRepository` into the object
+every company service would have to be handed whole.
 """
+from collections.abc import Sequence
 from datetime import datetime
 from typing import NamedTuple, Protocol, runtime_checkable
 
@@ -29,7 +33,14 @@ from pydantic import SecretStr
 
 from backend.app.domain.candidate import CandidateProfile
 from backend.app.domain.common import GeoPoint
-from backend.app.domain.company import Company
+from backend.app.domain.company import (
+    AtsPlatform,
+    CareerSite,
+    Company,
+    CompanyAlias,
+    CompanyDiscoveryRecord,
+    SpontaneousApplicationSupport,
+)
 from backend.app.domain.identifiers import (
     CandidateProfileId,
     CompanyId,
@@ -62,9 +73,55 @@ class OpportunityNearby(NamedTuple):
     distance_meters: float
 
 
+class CompanyCandidate(NamedTuple):
+    """A company that *might* be the one a caller is holding evidence about.
+
+    Carries the aliases with it because the comparison needs them: an employer
+    stored as `Logitech` with a confirmed alias `Logitech Europe S.A.` is a match on
+    a strong signal, and a shortlist that omitted the aliases would force the
+    resolver back to name similarity — which §2 forbids as a merge reason.
+    """
+
+    company: Company
+    aliases: tuple[CompanyAlias, ...]
+
+
+class CompanyFilter(NamedTuple):
+    """The company-directory query, as the values §20 lists.
+
+    Every field defaults to `None`, meaning "do not restrict on this". `None` and
+    "the user asked for the unknown ones" are different questions, which is why
+    `spontaneous_support` is an enum member rather than a boolean: `UNKNOWN` is a
+    filterable answer here, not the absence of one.
+    """
+
+    text: str | None = None
+    country: str | None = None
+    ats_platform: AtsPlatform | None = None
+    spontaneous_support: SpontaneousApplicationSupport | None = None
+    has_opportunities: bool | None = None
+
+
+class CompanyPage(NamedTuple):
+    """One page of companies plus how many the filter matched in total.
+
+    The total is what lets a caller say "showing 1–20 of 143" without asking for
+    143 rows, and §20's "do not return unbounded company lists" is the reason it is
+    a count rather than the rest of the list.
+    """
+
+    companies: tuple[Company, ...]
+    total: int
+
+
 @runtime_checkable
 class CompanyRepository(Protocol):
-    """Employers, with their sites."""
+    """Employers, with their sites, their aliases and the lookups identity needs.
+
+    Nothing here takes a `user_id`, and that is a decision rather than an omission
+    (§21): a company is a shared fact, and a per-user column on the table everyone
+    queries would be the first step towards one employer directory per account.
+    """
 
     async def get(self, company_id: CompanyId) -> Company | None:
         """The company and all of its locations, or `None`."""
@@ -75,6 +132,10 @@ class CompanyRepository(Protocol):
 
         Returns what is now stored, which is how a caller learns that a location
         it did not include has been deleted.
+
+        Aliases, careers endpoints and discovery records are *not* touched: each has
+        its own upsert, because a provider that knows one careers endpoint must not
+        erase what another provider found.
         """
         ...
 
@@ -84,6 +145,116 @@ class CompanyRepository(Protocol):
 
         The Phase 6 spontaneous-application question ("who is nearby") in its
         minimal form. Phase 7 builds the explorer on top of it.
+        """
+        ...
+
+    async def find_candidates(
+            self, *, name_forms: Sequence[str] = (), domain: str | None = None,
+            ats_platform: AtsPlatform | None = None,
+            ats_organization_id: str | None = None,
+            limit: int = DEFAULT_LIMIT) -> tuple[CompanyCandidate, ...]:
+        """The shortlist `companies.resolution.resolve` then judges (§2, §13).
+
+        Every argument is a *comparison key* the caller derived — the output of
+        `resolution.name_lookup_keys` and `strong_lookup_keys` — and the query is a
+        union of exact matches over the indexed columns: normalized name, normalized
+        domain, ATS organization, normalized alias. No fuzzy matching, because there
+        is none to do: §2 forbids merging on name similarity, so a `LIKE` here would
+        widen a shortlist that a comparison must then be careful to reject.
+
+        Deciding is emphatically not this method's job. It returns everything
+        comparable, including candidates that will turn out to be `DISTINCT`, and
+        `resolve` weighs them. A repository that filtered would be making the
+        identity decision where no evidence is visible.
+        """
+        ...
+
+    async def search(self, filters: CompanyFilter, *, limit: int = DEFAULT_LIMIT,
+                     offset: int = 0) -> CompanyPage:
+        """One page of the company directory, plus how many matched (§20).
+
+        Ordered by name and then id, so a page is stable across requests: an
+        `ORDER BY` that ties would let the same company appear on two pages and
+        another appear on none.
+        """
+        ...
+
+    async def aliases(self, company_id: CompanyId) -> tuple[CompanyAlias, ...]:
+        """Every label recorded for this employer, oldest sighting first."""
+        ...
+
+    async def upsert_alias(self, alias: CompanyAlias) -> CompanyAlias:
+        """Record a label, or move an existing one's `last_seen_at` forward (§4, §23).
+
+        The idempotent half of Phase 6's alias handling, and the reason it is a
+        repository method rather than a mapper concern: keeping the *earliest*
+        `first_seen_at` requires seeing what is already stored, so a caller that
+        rediscovers `LOGITECH` on every sweep gets one row whose window grows rather
+        than a second row claiming today as the first sighting.
+        """
+        ...
+
+
+@runtime_checkable
+class CareerSiteRepository(Protocol):
+    """Careers endpoints, one row per URL an employer publishes (§11).
+
+    Separate from `CompanyRepository` because the write patterns differ: a company
+    is written whole by whoever resolved it, while a careers endpoint is discovered
+    one at a time by providers that each know about one. A single `upsert` on the
+    company would make the second provider's find erase the first one's.
+    """
+
+    async def list_for_company(self, company_id: CompanyId) -> tuple[CareerSite, ...]:
+        """Every endpoint recorded for this employer, oldest discovery first."""
+        ...
+
+    async def upsert(self, site: CareerSite) -> CareerSite:
+        """Write the endpoint, or refresh what is known about one already stored.
+
+        Idempotent per `(company_id, url)` and, like `upsert_alias`, it keeps the
+        *earliest* `discovered_at` and the *latest* `last_checked_at`: rediscovering
+        a board must not make it look newly found, and a pass that did not check it
+        must not erase the instant one that did recorded.
+
+        Everything else comes from the argument. Whether a rediscovery may change a
+        `CONFIRMED` verification back to `LIKELY` is an evidence question (§10), and
+        the service that weighed the evidence is the only layer that can answer it.
+        """
+        ...
+
+
+@runtime_checkable
+class CompanyDiscoveryRepository(Protocol):
+    """How each company came to be known — the provenance §5 asks for.
+
+    Records are append-and-refresh, never deleted with the company they point at:
+    `company_id` is nullable so an ambiguous seed can be recorded unlinked (§14) and
+    a later explicit merge (§24) does not destroy the evidence that revealed the
+    duplication.
+    """
+
+    async def get_by_external(self, provider_key: str,
+                              external_id: str) -> CompanyDiscoveryRecord | None:
+        """What this provider already recorded under this identifier, or `None`.
+
+        The idempotency lookup for a discovery pass, and the reason §23's
+        "re-running creates no duplicates" is a property of the identifier rather
+        than of a heuristic: `(provider_key, external_id)` is unique in the schema.
+        """
+        ...
+
+    async def upsert(self, record: CompanyDiscoveryRecord) -> CompanyDiscoveryRecord:
+        """Write the sighting, keeping the first `discovered_at` it ever had."""
+        ...
+
+    async def list_for_company(
+            self, company_id: CompanyId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[CompanyDiscoveryRecord, ...]:
+        """Every sighting linked to this employer, most recent first.
+
+        What the company detail endpoint turns into "discovered via" (§29) — after
+        the API layer drops `raw`, which stays behind the backend boundary.
         """
         ...
 
@@ -118,6 +289,30 @@ class OpportunityRepository(Protocol):
     async def list_near(self, center: GeoPoint, radius_meters: float, *,
                         limit: int = DEFAULT_LIMIT) -> tuple[OpportunityNearby, ...]:
         """Postings within `radius_meters` of `center`, closest first."""
+        ...
+
+    async def list_unlinked(self, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[Opportunity, ...]:
+        """Postings that name an employer but are not linked to one yet (§27).
+
+        The seed query for opportunity-derived company discovery, oldest first so
+        repeated bounded passes work through the backlog instead of re-reading the
+        same page. A posting whose `company_name` is empty is not returned: there is
+        nothing to resolve, and returning it would guarantee an unresolvable seed on
+        every pass forever.
+        """
+        ...
+
+    async def link_company(self, opportunity_id: OpportunityId,
+                           company_id: CompanyId) -> bool:
+        """Point one posting at a resolved employer; `True` if that changed a row.
+
+        Deliberately not `upsert`. This writes `company_id` and nothing else, so
+        §13's rule — "the posting's original company name remains provenance" — is
+        structural rather than remembered: there is no argument here through which
+        `company_name` could be overwritten. Idempotent, and returns `False` when
+        the posting was already linked to this company.
+        """
         ...
 
 

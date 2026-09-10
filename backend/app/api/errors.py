@@ -85,6 +85,18 @@ def csrf_failed() -> ApiError:
                     "the CSRF cookie issued with this session")
 
 
+def company_not_found() -> ApiError:
+    """404 for a company id nothing is stored under.
+
+    An `ApiError` rather than a service exception, and for once that is not a
+    shortcut: a company is a shared fact with no owner (§21), so "no such company"
+    is the only reason this can happen — there is no "not yours" to keep
+    indistinguishable from it, which is what `SearchProfileNotFound` exists for.
+    """
+    return ApiError(status.HTTP_404_NOT_FOUND, "company_not_found",
+                    "no company is stored under that id")
+
+
 def _json(status_code: int, error: str, detail: str,
           **extra: Any) -> JSONResponse:
     return JSONResponse(status_code=status_code,

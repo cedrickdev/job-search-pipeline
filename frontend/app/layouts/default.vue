@@ -15,15 +15,16 @@
   overview's rows navigate to /jobs rather than opening it. Hoisting it into the
   shell would be a behaviour change.
 
-  Phase 4 added the account affordance in the topbar, and it is deliberately the
-  only account-aware thing in the shell. `session.ensure()` runs on mount — once per
-  page load, resolved from the store afterwards — and a 401 is an ordinary answer
-  here rather than a failure: the V1 pages this shell wraps have no accounts, so an
-  anonymous visitor is a supported state and gets a "Sign in" link instead of a
-  redirect. The nav is unchanged for the same reason (app/middleware/auth.ts).
+  Phase 4 added the account affordance in the topbar. `session.ensure()` runs on
+  mount — once per page load, resolved from the store afterwards — and a 401 is an
+  ordinary answer here rather than a failure: the V1 pages this shell wraps have no
+  accounts, so an anonymous visitor is a supported state and gets a "Sign in" link
+  instead of a redirect. The four V1 nav links are unconditional for the same reason;
+  Phase 6's Companies link is not, because that page has no anonymous form
+  (app/middleware/auth.ts).
 -->
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useSessionStore } from '~/stores/session'
 import { useUiStore } from '~/stores/ui'
 
@@ -34,9 +35,23 @@ const LINKS = [
   { to: '/settings', label: 'Settings', exact: false },
 ]
 
+/** The V2 screens, which only exist for a signed-in visitor. */
+const V2_LINKS = [
+  { to: '/companies', label: 'Companies', exact: false },
+]
+
 const colorMode = useColorMode()
 const ui = useUiStore()
 const session = useSessionStore()
+
+// Companies is behind the session, and not for secrecy — the directory is shared
+// data, not account data. It is that the page redirects to /login without one
+// (app/middleware/auth.ts), so offering it to an anonymous visitor advertises a dead
+// end. The four V1 links stay unconditional because the pages they point at work
+// without an account.
+const links = computed(() => (
+  session.isAuthenticated ? [...LINKS, ...V2_LINKS] : LINKS
+))
 
 // Fire and forget: the affordance renders "Sign in" until the answer lands, which
 // is what it would show anyway if there is no session.
@@ -56,7 +71,7 @@ function toggleTheme() {
         ⌘ Command Center
       </div>
       <NuxtLink
-        v-for="link in LINKS"
+        v-for="link in links"
         :key="link.to"
         :to="link.to"
         class="nav-link"

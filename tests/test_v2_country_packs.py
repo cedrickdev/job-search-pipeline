@@ -165,6 +165,52 @@ def test_terminology_maps_language_names_and_iso_codes(ch, text, expected):
     assert ch.terminology.language_for(text) == expected
 
 
+# --- §19: the company-identity configuration a pack supplies -----------------
+#
+# The pack holds the lists; `backend/app/companies/identity.py` holds the rules
+# that read them, and `tests/test_v2_company_identity.py` asserts the behaviour
+# against this same pack. What is asserted here is the configuration itself —
+# which is where a wrong entry would make a correct algorithm produce a wrong
+# answer.
+
+def test_ch_pack_lists_the_legal_forms_a_swiss_name_actually_ends_in(ch):
+    """All four language regions, plus the English forms Swiss boards print.
+
+    Every entry is already in the form a normalized name reduces to: `sa`, not
+    `S.A.`, because punctuation is dropped before matching and a dotted entry would
+    be a key nothing can ever match. The loader enforces that; this asserts the
+    coverage decision, which nothing else can.
+    """
+    suffixes = set(ch.terminology.company_legal_suffixes)
+    assert {"sa", "sarl", "ag", "gmbh", "spa", "srl"} <= suffixes
+    assert {"genossenschaft", "societe cooperative"} <= suffixes, "Migros and Coop"
+    assert {"ltd", "inc"} <= suffixes, "the foreign parents boards print verbatim"
+
+
+def test_ch_pack_lists_no_meaningful_word_as_a_legal_form(ch):
+    """§3's prohibition, at the layer that would have to spell it out.
+
+    `Acme Switzerland` and `Acme` are routinely two different legal entities. A pack
+    listing `switzerland` here would make the identity service strip a word §3
+    forbids stripping — without a single wrong line in the service.
+    """
+    meaningful = {"group", "groupe", "holding", "suisse", "switzerland", "schweiz",
+                  "svizzera"}
+    assert meaningful.isdisjoint(ch.terminology.company_legal_suffixes)
+
+
+def test_ch_pack_prefers_swiss_domains_without_ever_requiring_one(ch):
+    """A tie-break, and the leading dot is what keeps it one.
+
+    The pattern admits only an ending, so a pack cannot turn the preference into a
+    host allow-list — which matters because a Swiss employer on a `.com` is
+    ordinary, and filtering on this would lose half the market.
+    """
+    assert ch.metadata.company_domain_suffixes == (".ch", ".swiss")
+    assert all(suffix.startswith(".")
+               for suffix in ch.metadata.company_domain_suffixes)
+
+
 # --- §16: a malformed pack fails loudly, with a code ------------------------
 #
 # The valid pack below is France on purpose. It proves the loader is not
@@ -305,6 +351,51 @@ def test_a_credential_value_cannot_be_written_into_a_pack(tmp_path):
                  {"source_key": "jooble",
                   "config_env_vars": ["b7f3c1e9-secret-value"]}]}},
              CountryPackErrorCode.COUNTRY_PACK_INVALID_FIELD)
+
+
+def test_a_legal_form_the_normalizer_would_never_produce_is_refused(tmp_path):
+    """`Sàrl` in the file is a key no normalized name can match.
+
+    The failure it prevents is the quiet one: the pack looks right, the algorithm is
+    right, and the legal-form comparison simply never fires for that entry.
+    """
+    _rejects(tmp_path / "p",
+             {"terminology.yaml": {"company_legal_suffixes": ["Sàrl"]}},
+             CountryPackErrorCode.COUNTRY_PACK_INVALID_TERM_MAPPING)
+
+
+def test_the_same_legal_form_listed_twice_is_refused(tmp_path):
+    _rejects(tmp_path / "p",
+             {"terminology.yaml": {"company_legal_suffixes": ["sa", "sa"]}},
+             CountryPackErrorCode.COUNTRY_PACK_INVALID_TERM_MAPPING)
+
+
+@pytest.mark.parametrize("value", ["ch", ".CH", "migros.ch", "https://migros.ch"])
+def test_a_domain_preference_must_be_an_ending_and_nothing_else(tmp_path, value):
+    """A host, an upper-case ending or a URL would each mean something different."""
+    _rejects(tmp_path / "p",
+             {"metadata.yaml": _valid_files()["metadata.yaml"]
+              | {"company_domain_suffixes": [value]}},
+             CountryPackErrorCode.COUNTRY_PACK_INVALID_FIELD)
+
+
+def test_the_same_domain_preference_listed_twice_is_refused(tmp_path):
+    _rejects(tmp_path / "p",
+             {"metadata.yaml": _valid_files()["metadata.yaml"]
+              | {"company_domain_suffixes": [".ch", ".ch"]}},
+             CountryPackErrorCode.COUNTRY_PACK_INVALID_FIELD)
+
+
+def test_a_pack_that_expresses_no_company_preference_still_loads(tmp_path):
+    """Both fields are optional, and absent restricts nothing.
+
+    A country nobody has modelled for company identity has to stay loadable: the
+    comparison then runs on the whole normalized name, which can only ever produce
+    fewer matches — never wrong ones.
+    """
+    pack = load_pack(_write_pack(tmp_path / "fr"), expected_country="FR")
+    assert pack.terminology.company_legal_suffixes == ()
+    assert pack.metadata.company_domain_suffixes == ()
 
 
 # --- registration ------------------------------------------------------------

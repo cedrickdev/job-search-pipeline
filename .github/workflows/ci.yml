@@ -127,7 +127,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      # No WeasyPrint stack here: this job runs the eight V2 persistence modules
+      # No WeasyPrint stack here: this job runs the nine V2 persistence modules
       # only, and none of them render a PDF.
       - name: Install project
         run: |
@@ -152,6 +152,7 @@ jobs:
             tests/test_v2_persistence_constraints.py \
             tests/test_v2_persistence_repositories.py \
             tests/test_v2_persistence_geo.py \
+            tests/test_v2_company_persistence.py \
             tests/test_v2_import_v1.py \
             | tee pytest-database.log
           if grep -qE '[0-9]+ skipped' pytest-database.log; then

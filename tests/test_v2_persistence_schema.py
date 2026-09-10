@@ -46,8 +46,15 @@ TABLES = Base.metadata.tables
 # Facts about the world: no owner, and no `user_id` on any of them. A posting seen
 # by two users is one row (docs/V2_SPECIFICATION.md), so a `user_id` appearing here
 # later would be a design change and not a detail — hence the test.
-SHARED_TABLES = ("companies", "company_locations", "opportunities",
-                 "opportunity_source_records")
+#
+# `company_discovery_records` is in this group rather than the parent-owned one, and
+# the difference is the foreign key: its `company_id` is nullable and `ON DELETE SET
+# NULL`, because a sighting outlives the company it was attached to. §14 leaves an
+# ambiguous seed unlinked rather than guessing, and §24's explicit merge must not
+# delete the provenance that revealed the duplication. A record that can exist
+# without its parent is not owned by it.
+SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
+                 "opportunities", "opportunity_source_records")
 
 # Rows one user owns, named by the `user_id` Phase 4's authorization filter reads.
 USER_OWNED_TABLES = ("candidate_profiles", "match_evaluations", "search_profiles",
@@ -61,6 +68,8 @@ PARENT_OWNED_TABLES = {
     "candidate_availability_slots": "candidate_profiles",
     "candidate_languages": "candidate_profiles",
     "candidate_work_authorizations": "candidate_profiles",
+    "company_aliases": "companies",
+    "company_career_sites": "companies",
     "match_dimension_scores": "match_evaluations",
     "search_areas": "search_profiles",
 }
@@ -89,7 +98,7 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_fourteen_v2_tables():
+def test_the_metadata_holds_exactly_the_seventeen_v2_tables():
     """A tripwire on the shape of the schema itself.
 
     `models.py` is the only place a V2 table may be declared, so the three
@@ -99,7 +108,7 @@ def test_the_metadata_holds_exactly_the_fourteen_v2_tables():
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
         PARENT_OWNED_TABLES) | {"users"}
-    assert len(TABLES) == 14
+    assert len(TABLES) == 17
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
@@ -282,9 +291,11 @@ def test_free_text_columns_are_text_not_varchar():
 
     PostgreSQL stores them identically, so a `VARCHAR(255)` on a job description
     buys nothing and costs a migration the day a posting is longer. The exceptions
-    are the ISO code columns, where the length *is* the validation, and the two
-    session digests, where 64 is what a hex SHA-256 measures and a different length
-    means the value is not one.
+    are the ISO code columns, where the length *is* the validation; the two session
+    digests, where 64 is what a hex SHA-256 measures and a different length means
+    the value is not one; and every `ProvenanceKey` column, where 40 is the width
+    `backend.app.domain.company` states — a 200-character value in one of those is
+    a bug upstream, and the column says so rather than storing it.
     """
     sized = {(table, column.name) for table, column in _columns()
              if _python_type(column) is str
@@ -294,6 +305,12 @@ def test_free_text_columns_are_text_not_varchar():
                      ("candidate_languages", "language"),
                      ("candidate_profiles", "location_country"),
                      ("candidate_work_authorizations", "country"),
+                     ("companies", "country"),
+                     ("companies", "ats_detected_by"),
+                     ("companies", "spontaneous_observed_by"),
+                     ("company_aliases", "source_key"),
+                     ("company_career_sites", "source_key"),
+                     ("company_discovery_records", "provider_key"),
                      ("company_locations", "location_country"),
                      ("opportunities", "location_country"),
                      ("search_areas", "country"),

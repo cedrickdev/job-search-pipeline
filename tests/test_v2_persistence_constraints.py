@@ -87,6 +87,19 @@ def an_opportunity_row(**overrides) -> OpportunityRow:
     return OpportunityRow(**columns)
 
 
+def a_company_row(**overrides) -> CompanyRow:
+    """A parent employer, with the two columns Phase 6 made non-optional.
+
+    `normalized_name` is derived by the mapper from the domain object, so a raw row
+    has to supply it by hand — and must supply what `normalize_company_name` would
+    have produced, or the fixture would stand for a state the application cannot
+    reach. The tests below are about *other* constraints; this one only has to exist.
+    """
+    columns = {"id": COMPANY, "name": "Fixture SA", "normalized_name": "fixture sa"}
+    columns.update(overrides)
+    return CompanyRow(**columns)
+
+
 async def refuses(session, row, constraint: str) -> None:
     """Assert the flush fails, and that the row was rejected by `constraint`.
 
@@ -258,7 +271,7 @@ async def test_a_site_that_locates_nothing_is_refused(db_session):
     the Phase 8 map, and `CompanyLocation.location` is non-optional in the domain
     precisely to make it impossible.
     """
-    db_session.add(CompanyRow(id=COMPANY, name="Fixture SA"))
+    db_session.add(a_company_row())
     await db_session.flush()
     await refuses(db_session,
                   CompanyLocationRow(id=COMPANY_LOCATION, company_id=COMPANY),
@@ -272,7 +285,7 @@ async def test_a_company_has_at_most_one_headquarters(db_session):
     cost nothing, and only the one row that claims to be the head office is
     constrained.
     """
-    db_session.add(CompanyRow(id=COMPANY, name="Fixture SA"))
+    db_session.add(a_company_row())
     await db_session.flush()
     db_session.add(CompanyLocationRow(id=COMPANY_LOCATION, company_id=COMPANY,
                                       location_city="Lausanne",
@@ -286,7 +299,7 @@ async def test_a_company_has_at_most_one_headquarters(db_session):
 
 async def test_a_company_may_have_any_number_of_ordinary_sites(db_session):
     """The other half of the partial index: without it, this would fail too."""
-    db_session.add(CompanyRow(id=COMPANY, name="Fixture SA"))
+    db_session.add(a_company_row())
     await db_session.flush()
     db_session.add_all([
         CompanyLocationRow(id=COMPANY_LOCATION, company_id=COMPANY,
@@ -622,7 +635,7 @@ async def test_deleting_a_company_keeps_its_postings(db_session):
     observed; the employer it was attributed to is an inference, so losing the
     inference must not lose the fact.
     """
-    db_session.add(CompanyRow(id=COMPANY, name="Fixture SA"))
+    db_session.add(a_company_row())
     await db_session.flush()
     db_session.add(an_opportunity_row(company_id=COMPANY))
     await db_session.flush()

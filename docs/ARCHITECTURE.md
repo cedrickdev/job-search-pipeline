@@ -62,7 +62,20 @@ One autonomous search configuration.
 Country/radius/polygon/remote constraints.
 
 ### Company
-Canonical company identity.
+Canonical company identity. Realized in Phase 6: a first-class discovery target
+rather than a name printed on a posting, carrying the comparison forms identity
+resolution reads, a typed ATS detection, an evidence-backed spontaneous-application
+verdict and an identity status. A company exists whether or not it is hiring.
+See [Company Discovery](./COMPANY_DISCOVERY.md).
+
+### CompanyAlias
+Another label the same employer is published under, with the source that reported it.
+
+### CareerSite
+One careers endpoint of one company — corporate page, ATS board, spontaneous form.
+
+### CompanyDiscoveryRecord
+How one provider came to know about one employer. Survives the company it points at.
 
 ### CompanyLocation
 Physical location, preferably PostGIS geometry.
@@ -117,6 +130,14 @@ Repository/query APIs must make accidental cross-user reads difficult.
 Avoid accepting arbitrary `user_id` values directly from frontend payloads. Resolve identity from authenticated context.
 
 Phase 4 realized this for the first user-owned tables (`candidate_profiles`, `search_profiles`). The owner is never in a path and never in a request body — `extra="forbid"` rejects one that invents a `user_id` — it comes from the session, and the repository puts it in the `WHERE` clause rather than filtering rows in Python. Another account's row is therefore absent rather than forbidden, and answers the same 404 as one that never existed. See [V2 Authentication](./AUTHENTICATION.md) §Authorization.
+
+The converse is equally deliberate: a **shared fact carries no owner**. Companies,
+their aliases, their careers endpoints, their discovery provenance and the
+opportunities themselves have no `user_id`, so two accounts asking the same question
+get the same answer. Those endpoints still require a session — the directory is not
+public — but authorization has nothing to scope, and adding an owner column to make a
+read *look* scoped would be a lie about who the data belongs to. See
+[Company Discovery](./COMPANY_DISCOVERY.md) §Sharing.
 
 ## 6. Background execution
 
@@ -179,6 +200,28 @@ filtered.
 carry the postings it did collect. Detail fetching is not part of the Phase 5
 contract; a later phase adds it as its own capability rather than as a mandatory
 method.
+
+### 7b. Company discovery provider contract
+
+Implemented in Phase 6, and deliberately a **separate** protocol. See
+[Company Discovery](./COMPANY_DISCOVERY.md).
+
+```python
+class CompanyDiscoveryProvider(Protocol):
+    @property
+    def metadata(self) -> CompanyProviderMetadata: ...
+
+    async def discover(self, request: CompanyDiscoveryRequest) -> CompanyDiscoveryResult: ...
+
+    async def healthcheck(self) -> ProviderHealth: ...
+```
+
+The same three members, and the same "returns rather than raises" rule, over a
+different question: an `OpportunitySource` answers "what is open right now?" and a
+`CompanyDiscoveryProvider` answers "which employers exist?". One protocol serving both
+would force every provider to invent postings it has never seen and every source to
+promise a company identity it cannot resolve. Health, failure classification and
+secret redaction are Phase 5's, reused rather than reimplemented.
 
 ## 8. Application adapter contract
 

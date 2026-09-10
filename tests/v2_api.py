@@ -8,12 +8,20 @@ attributes on a `Set-Cookie`, the 401 for a missing session, the 403 for a missi
 `X-CSRF-Token`, the 404 rather than a 403 for somebody else's saved search. A test
 that called a service directly would assert none of them.
 
-**No database.** `authentication_service` and `onboarding_service` are overridden
-with services built over `tests/v2_fakes.py`, which replaces the whole dependency
-graph below the routes — `database_session` and `session_factory` are then never
-resolved. `session_factory` is overridden anyway, with a function that raises: a
-future route that reaches for a session instead of a service fails with a sentence
+**No database.** Every service dependency — `authentication_service`,
+`onboarding_service`, `company_directory_service`, `company_discovery_service` — is
+overridden with one built over `tests/v2_fakes.py`, which replaces the whole
+dependency graph below the routes; `database_session` and `session_factory` are then
+never resolved. `session_factory` is overridden anyway, with a function that raises:
+a future route that reaches for a session instead of a service fails with a sentence
 that says so, rather than by opening a socket to PostgreSQL.
+
+**The company provider registry is empty until a test fills it.** The discovery
+service is composed once per harness over a registry the test holds, so
+`api.providers.register(FakeCompanyProvider(...))` decides what a `POST
+/company-discovery/run` will find. An empty registry is a real case rather than a
+setup gap — it is what a deployment with nothing configured looks like, and the pass
+has to answer with a warning instead of an error.
 
 **The clock is an object.** `Clock` is what `now` resolves to, so a test advances
 time by assignment. The expiry and lockout flows are exercised in milliseconds and
@@ -51,16 +59,29 @@ from backend.app.api.dependencies import (
     CSRF_HEADER,
     auth_settings,
     authentication_service,
+    company_directory_service,
+    company_discovery_service,
     now,
     onboarding_service,
     session_factory,
 )
+from backend.app.companies.orchestrator import CompanyDiscoveryOrchestrator
+from backend.app.companies.registry import CompanyProviderRegistry
 from backend.app.core.settings import AuthSettings
 from backend.app.services.authentication import AuthenticationService
+from backend.app.services.company_directory import CompanyDirectoryService
+from backend.app.services.company_discovery import (
+    CompanyDiscoveryService,
+    CompanyResolutionService,
+)
 from backend.app.services.onboarding import OnboardingService
 from server.app import create_app
 from tests.v2_fakes import (
     FakeCandidateProfileRepository,
+    FakeCareerSiteRepository,
+    FakeCompanyDiscoveryRepository,
+    FakeCompanyRepository,
+    FakeOpportunityRepository,
     FakeSearchProfileRepository,
     FakeSessionRepository,
     FakeUserRepository,
@@ -151,12 +172,16 @@ def _no_database() -> Never:
 
 @dataclass(frozen=True, slots=True)
 class Harness:
-    """One application, the client that keeps its cookies, and the four stores.
+    """One application, the client that keeps its cookies, and the stores below it.
 
     The stores are exposed because half of what these tests assert is *server-side*:
     that a logout revoked the row, that a refused write left nothing behind, that
     one account's search never entered another's list. A response body cannot show
     any of that.
+
+    `providers` is the one store a test writes *before* the request rather than reads
+    after it: a company discovery pass has nothing to find until the test says what
+    the providers report.
     """
 
     client: httpx.AsyncClient
@@ -167,6 +192,11 @@ class Harness:
     sessions: FakeSessionRepository
     profiles: FakeCandidateProfileRepository
     searches: FakeSearchProfileRepository
+    postings: FakeOpportunityRepository
+    companies: FakeCompanyRepository
+    career_sites: FakeCareerSiteRepository
+    discoveries: FakeCompanyDiscoveryRepository
+    providers: CompanyProviderRegistry
 
     def url(self, path: str) -> str:
         """A V2 path, prefixed once so no test spells `/api/v2` itself."""
@@ -267,6 +297,18 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     sessions = FakeSessionRepository()
     profiles = FakeCandidateProfileRepository()
     searches = FakeSearchProfileRepository()
+    postings = FakeOpportunityRepository()
+    companies = FakeCompanyRepository(postings)
+    career_sites = FakeCareerSiteRepository()
+    discoveries = FakeCompanyDiscoveryRepository()
+    providers = CompanyProviderRegistry()
+    directory = CompanyDirectoryService(companies, career_sites, discoveries)
+    # Composed once, so the registry a test registers a provider into is the one the
+    # pass reads. The real dependency rebuilds this per request because it needs that
+    # request's session; nothing here holds one.
+    discovery = CompanyDiscoveryService(
+        CompanyDiscoveryOrchestrator(registry=providers, clock=clock),
+        CompanyResolutionService(companies, career_sites, discoveries, postings))
     app = create_app(db_path=tmp_path / "v1.db",
                      settings_path=tmp_path / "settings.json")
     app.dependency_overrides[now] = clock
@@ -275,12 +317,16 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
         users, sessions, resolved)
     app.dependency_overrides[onboarding_service] = lambda: OnboardingService(
         profiles, searches, users)
+    app.dependency_overrides[company_directory_service] = lambda: directory
+    app.dependency_overrides[company_discovery_service] = lambda: discovery
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:
         yield Harness(client=client, app=app, clock=clock, settings=resolved,
                       users=users, sessions=sessions, profiles=profiles,
-                      searches=searches)
+                      searches=searches, postings=postings, companies=companies,
+                      career_sites=career_sites, discoveries=discoveries,
+                      providers=providers)
 
 
 def operations(app: FastAPI, *, under: str) -> tuple[tuple[str, str], ...]:

@@ -85,6 +85,25 @@ describe('default layout (V1 AppShell)', () => {
     expect(account.attributes('href')).toBe('/profile')
   })
 
+  /**
+   * The company directory is offered to a signed-in visitor only.
+   *
+   * Not because the data is private — an employer is a shared fact, and Phase 6 keeps
+   * `user_id` off the companies table for exactly that reason. It is that the page is
+   * guarded, so an anonymous click would land on /login; the four V1 links stay
+   * unconditional because the pages behind them work without an account.
+   */
+  it('adds the company directory to the nav once there is a session', async () => {
+    stubFetch(shellRoutes({ match: '/api/v2/auth/session', json: signedIn() }))
+    const wrapper = await mountShell()
+    await flushPromises()
+
+    const links = wrapper.findAll(NAV)
+    expect(links.map(a => a.text()))
+      .toEqual(['Overview', 'Jobs', 'Analytics', 'Settings', 'Companies'])
+    expect(links.at(-1)!.attributes('href')).toBe('/companies')
+  })
+
   it('toggles the global copilot panel', async () => {
     const wrapper = await mountShell()
 

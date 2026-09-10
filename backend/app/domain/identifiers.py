@@ -9,9 +9,12 @@ service would type-check and then quietly query the wrong table.
 `NewType` is erased at runtime, so validation still sees a plain UUID and
 Pydantic keeps accepting the usual inputs.
 
-Most ids are random (`uuid4`). The exception is `SURROGATE_KEY_NAMESPACE` and the
-one derivation built on it here: an id that must be *recomputable* from what it
-belongs to cannot be random, or a retried write would produce a second row.
+Most ids are random (`uuid4`). The exceptions are `SURROGATE_KEY_NAMESPACE` and
+the derivations built on it here: an id that must be *recomputable* from what it
+belongs to cannot be random, or a retried write would produce a second row. Phase
+6 leans on that hard — company discovery is expected to run repeatedly over the
+same seeds, and §23 asks for idempotence by construction rather than by
+convention.
 """
 from typing import NewType
 from uuid import UUID, uuid4, uuid5
@@ -33,6 +36,9 @@ SearchProfileId = NewType("SearchProfileId", UUID)
 ApplicationPolicyId = NewType("ApplicationPolicyId", UUID)
 CompanyId = NewType("CompanyId", UUID)
 CompanyLocationId = NewType("CompanyLocationId", UUID)
+CompanyAliasId = NewType("CompanyAliasId", UUID)
+CareerSiteId = NewType("CareerSiteId", UUID)
+CompanyDiscoveryRecordId = NewType("CompanyDiscoveryRecordId", UUID)
 OpportunityId = NewType("OpportunityId", UUID)
 MatchEvaluationId = NewType("MatchEvaluationId", UUID)
 ApplicationDecisionId = NewType("ApplicationDecisionId", UUID)
@@ -89,6 +95,52 @@ def new_company_id() -> CompanyId:
 
 def new_company_location_id() -> CompanyLocationId:
     return CompanyLocationId(uuid4())
+
+
+def company_alias_id(company_id: CompanyId, normalized_alias: str) -> CompanyAliasId:
+    """The id of "this company is also called that".
+
+    Derived, so a provider that meets `LOGITECH` on every sweep records the alias
+    once. `normalized_alias` — not the raw label — is the key: `Logitech SA` and
+    `LOGITECH  SA` are the same claim about the same employer, and keying on the
+    raw string would store both and then have to explain which is canonical.
+
+    Callers pass the output of
+    `backend.app.domain.company.normalize_company_name` — the same value
+    `CompanyAlias.normalized_alias` exposes. Nothing here re-normalizes: this
+    module knows about UUIDs and must not grow a dependency on the identity rules
+    it would then have to keep in step.
+    """
+    return CompanyAliasId(
+        uuid5(SURROGATE_KEY_NAMESPACE, f"company_alias:{company_id}:{normalized_alias}"))
+
+
+def career_site_id(company_id: CompanyId, url: str) -> CareerSiteId:
+    """The id of one careers endpoint of one company.
+
+    A company legitimately has several — a corporate careers page, an ATS board,
+    a spontaneous-application form (§11) — so the URL is what distinguishes them.
+    Derived from it, so re-detecting the same board updates that row instead of
+    appending a duplicate.
+    """
+    return CareerSiteId(
+        uuid5(SURROGATE_KEY_NAMESPACE, f"career_site:{company_id}:{url}"))
+
+
+def company_discovery_record_id(provider_key: str,
+                                external_id: str) -> CompanyDiscoveryRecordId:
+    """The id of one provider's sighting of one company.
+
+    Keyed by the provider and *its* identifier for the employer, not by our
+    `company_id`: the record is the provenance of a discovery (§5), so it must
+    survive the resolution deciding which canonical company it points at. A
+    sighting that was first attached to a provisional company and later re-pointed
+    at the confirmed one is the same sighting, and re-running the provider must
+    update it rather than record a second.
+    """
+    return CompanyDiscoveryRecordId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"company_discovery_record:{provider_key}:{external_id}"))
 
 
 def new_opportunity_id() -> OpportunityId:

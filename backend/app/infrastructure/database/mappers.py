@@ -46,10 +46,22 @@ from backend.app.domain.common import (
     Weekday,
     WorkloadRange,
 )
-from backend.app.domain.company import Company, CompanyLocation
+from backend.app.domain.company import (
+    CareerSite,
+    Company,
+    CompanyAlias,
+    CompanyDiscoveryRecord,
+    CompanyLocation,
+    DetectedATS,
+    Evidence,
+    SpontaneousApplicationChannel,
+)
 from backend.app.domain.identifiers import (
     SURROGATE_KEY_NAMESPACE,
     CandidateProfileId,
+    CareerSiteId,
+    CompanyAliasId,
+    CompanyDiscoveryRecordId,
     CompanyId,
     CompanyLocationId,
     MatchEvaluationId,
@@ -80,6 +92,9 @@ from backend.app.infrastructure.database.models import (
     CandidateLanguageRow,
     CandidateProfileRow,
     CandidateWorkAuthorizationRow,
+    CompanyAliasRow,
+    CompanyCareerSiteRow,
+    CompanyDiscoveryRecordRow,
     CompanyLocationRow,
     CompanyRow,
     LocationColumnsMixin,
@@ -227,6 +242,81 @@ def company_location_to_domain(row: CompanyLocationRow) -> CompanyLocation:
                            is_headquarters=row.is_headquarters)
 
 
+def evidence_to_json(evidence: tuple[Evidence, ...]) -> list[dict[str, Any]]:
+    """`Evidence` objects as JSON-safe dicts.
+
+    A separate function from `reasons_to_json` even though the body would be
+    identical: `Evidence` and `Reason` are deliberately different shapes (a detection
+    points at a URL, a score points at candidate evidence), and one function typed
+    over both would have to be typed over `BaseModel`, which is how a `Reason` ends
+    up in an `ats_evidence` column.
+    """
+    return [item.model_dump(mode="json") for item in evidence]
+
+
+def evidence_from_json(payload: list[dict[str, Any]]) -> tuple[Evidence, ...]:
+    """Validate stored evidence back into domain objects, refusing extra keys."""
+    return tuple(Evidence.model_validate(item) for item in payload)
+
+
+def _apply_detected_ats(row: CompanyRow, detected: DetectedATS | None) -> None:
+    """Write a `DetectedATS` into the five `ats_*` columns, or clear them.
+
+    All five together, always: `ck_companies_ats_complete_or_absent` refuses a
+    partial group, which is what makes a caller unable to leave a stale status behind
+    a cleared platform.
+    """
+    row.ats_platform = None if detected is None else detected.platform
+    row.ats_organization_id = None if detected is None else detected.organization_id
+    row.ats_status = None if detected is None else detected.status
+    row.ats_detected_by = None if detected is None else detected.detected_by
+    row.ats_evidence = ([] if detected is None
+                        else evidence_to_json(detected.evidence))
+
+
+def _read_detected_ats(row: CompanyRow) -> DetectedATS | None:
+    """The `ats_*` columns as a `DetectedATS`, or `None` when no ATS was detected.
+
+    `ats_platform` decides, and the CHECK guarantees the rest of the group came with
+    it, so there is no partial state to reconstruct.
+    """
+    if row.ats_platform is None or row.ats_status is None \
+            or row.ats_detected_by is None:
+        return None
+    return DetectedATS(platform=row.ats_platform,
+                       organization_id=row.ats_organization_id,
+                       status=row.ats_status,
+                       detected_by=row.ats_detected_by,
+                       evidence=evidence_from_json(row.ats_evidence))
+
+
+def _apply_spontaneous(row: CompanyRow,
+                       channel: SpontaneousApplicationChannel | None) -> None:
+    """Write a `SpontaneousApplicationChannel` into the four `spontaneous_*` columns."""
+    row.spontaneous_support = None if channel is None else channel.support
+    row.spontaneous_url = None if channel is None else channel.url
+    row.spontaneous_observed_by = None if channel is None else channel.observed_by
+    row.spontaneous_evidence = ([] if channel is None
+                                else evidence_to_json(channel.evidence))
+
+
+def _read_spontaneous(row: CompanyRow) -> SpontaneousApplicationChannel | None:
+    """The `spontaneous_*` columns as a channel, or `None` when there is none.
+
+    `None` and a channel whose support is `UNKNOWN` are both "nobody has looked", and
+    both round-trip unchanged: the column group is NULL for the first and holds
+    `UNKNOWN` for the second, so a company that was explicitly examined and found
+    undecidable stays distinguishable from one nobody has read.
+    """
+    if row.spontaneous_support is None:
+        return None
+    return SpontaneousApplicationChannel(
+        support=row.spontaneous_support,
+        url=row.spontaneous_url,
+        observed_by=row.spontaneous_observed_by,
+        evidence=evidence_from_json(row.spontaneous_evidence))
+
+
 def company_to_row(company: Company, row: CompanyRow | None = None) -> CompanyRow:
     """A `Company` and its locations onto rows.
 
@@ -234,12 +324,29 @@ def company_to_row(company: Company, row: CompanyRow | None = None) -> CompanyRo
     existing children are matched by id so a location that is still present is
     updated in place, and one that has disappeared from the domain object is
     deleted by the `delete-orphan` cascade.
+
+    `normalized_name` and `normalized_domain` are read off the domain properties and
+    never computed here. That is the whole reason they are properties: this function
+    cannot write a comparison form that disagrees with the name beside it, because it
+    has no normalization code of its own to get wrong.
+
+    Aliases, career sites and discovery records are *not* written from here even
+    though they belong to the same employer. Each is its own idempotent upsert (§5,
+    §11), because a provider that knows one careers endpoint must not delete the
+    endpoints another provider found — which is exactly what a wholesale
+    `delete-orphan` reassignment would do.
     """
     target = CompanyRow(id=company.id) if row is None else row
     target.name = company.name
+    target.normalized_name = company.normalized_name
     target.website = company.website
     target.careers_url = company.careers_url
+    target.normalized_domain = company.normalized_domain
+    target.country = company.country
+    target.identity_status = company.identity_status
+    _apply_detected_ats(target, company.detected_ats)
     target.accepts_spontaneous_applications = company.accepts_spontaneous_applications
+    _apply_spontaneous(target, company.spontaneous_application_channel)
     existing = {} if row is None else {child.id: child for child in row.locations}
     target.locations = [company_location_to_row(location, existing.get(location.id))
                         for location in company.locations]
@@ -247,13 +354,123 @@ def company_to_row(company: Company, row: CompanyRow | None = None) -> CompanyRo
 
 
 def company_to_domain(row: CompanyRow) -> Company:
+    """A `companies` row as a `Company`.
+
+    `normalized_name` and `normalized_domain` are deliberately not passed: the domain
+    derives them, and a constructor that accepted them would let a stale column
+    override the name it is supposed to describe. A row whose column disagrees is a
+    bug the schema-drift and round-trip tests catch, not something to propagate.
+    """
     return Company(
         id=CompanyId(row.id),
         name=row.name,
         website=row.website,
         careers_url=row.careers_url,
+        country=row.country,
+        identity_status=row.identity_status,
+        detected_ats=_read_detected_ats(row),
+        spontaneous_application_channel=_read_spontaneous(row),
         locations=tuple(company_location_to_domain(child) for child in row.locations),
         accepts_spontaneous_applications=row.accepts_spontaneous_applications)
+
+
+def company_alias_to_row(alias: CompanyAlias,
+                         row: CompanyAliasRow | None = None) -> CompanyAliasRow:
+    """A `CompanyAlias` onto its row.
+
+    `first_seen_at` is written like any other column, which makes this function a
+    plain projection; keeping the *earliest* first sighting across passes is the
+    repository's job, because only it can see what is already stored.
+    """
+    target = CompanyAliasRow(id=alias.id) if row is None else row
+    target.company_id = alias.company_id
+    target.alias = alias.alias
+    target.normalized_alias = alias.normalized_alias
+    target.source_key = alias.source_key
+    target.first_seen_at = alias.first_seen_at
+    target.last_seen_at = alias.last_seen_at
+    return target
+
+
+def company_alias_to_domain(row: CompanyAliasRow) -> CompanyAlias:
+    return CompanyAlias(id=CompanyAliasId(row.id),
+                        company_id=CompanyId(row.company_id),
+                        alias=row.alias,
+                        source_key=row.source_key,
+                        first_seen_at=row.first_seen_at,
+                        last_seen_at=row.last_seen_at)
+
+
+def career_site_to_row(site: CareerSite,
+                       row: CompanyCareerSiteRow | None = None,
+                       ) -> CompanyCareerSiteRow:
+    """A `CareerSite` onto its row."""
+    target = CompanyCareerSiteRow(id=site.id) if row is None else row
+    target.company_id = site.company_id
+    target.url = site.url
+    target.kind = site.kind
+    target.platform = site.platform
+    target.source_key = site.source_key
+    target.verification_status = site.verification_status
+    target.discovered_at = site.discovered_at
+    target.last_checked_at = site.last_checked_at
+    return target
+
+
+def career_site_to_domain(row: CompanyCareerSiteRow) -> CareerSite:
+    return CareerSite(id=CareerSiteId(row.id),
+                      company_id=CompanyId(row.company_id),
+                      url=row.url,
+                      kind=row.kind,
+                      platform=row.platform,
+                      source_key=row.source_key,
+                      verification_status=row.verification_status,
+                      discovered_at=row.discovered_at,
+                      last_checked_at=row.last_checked_at)
+
+
+def discovery_record_to_row(record: CompanyDiscoveryRecord,
+                            row: CompanyDiscoveryRecordRow | None = None,
+                            ) -> CompanyDiscoveryRecordRow:
+    """A `CompanyDiscoveryRecord` onto its row.
+
+    `raw` is copied into a new dict rather than assigned: the domain object is frozen
+    but its `dict` field is not, and handing the same object to SQLAlchemy would let
+    a later mutation of the domain model change what is flushed.
+    """
+    target = (CompanyDiscoveryRecordRow(id=record.id) if row is None else row)
+    target.provider_key = record.provider_key
+    target.external_id = record.external_id
+    target.seed_kind = record.seed_kind
+    target.company_id = record.company_id
+    target.company_name = record.company_name
+    target.source_url = record.source_url
+    target.discovered_at = record.discovered_at
+    target.confidence = record.confidence
+    target.raw = dict(record.raw)
+    return target
+
+
+def discovery_record_to_domain(
+        row: CompanyDiscoveryRecordRow) -> CompanyDiscoveryRecord:
+    """A `company_discovery_records` row as a domain record.
+
+    Re-validating `raw` through the model is what re-applies
+    `_raw_carries_no_secrets` to a payload written by an older version of this code:
+    a credential-shaped key that somehow reached the table fails here rather than
+    being handed to an API response.
+    """
+    return CompanyDiscoveryRecord(
+        id=CompanyDiscoveryRecordId(row.id),
+        provider_key=row.provider_key,
+        external_id=row.external_id,
+        seed_kind=row.seed_kind,
+        company_id=None if row.company_id is None else CompanyId(row.company_id),
+        company_name=row.company_name,
+        source_url=row.source_url,
+        discovered_at=row.discovered_at,
+        confidence=row.confidence,
+        raw=dict(row.raw))
 
 
 def _apply_salary(row: OpportunityRow, salary: SalaryRange | None) -> None:

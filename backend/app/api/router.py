@@ -1,4 +1,4 @@
-"""The V2 router: one function that assembles the three route modules.
+"""The V2 router: one function that assembles the route modules.
 
 A factory rather than a module-level `router` object, for one reason that matters in
 the test suite: a router is stateful once mounted, and building a fresh one per
@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends
 
 from backend.app.api import API_V2_PREFIX
 from backend.app.api.dependencies import reject_cross_site_writes
-from backend.app.api.routes import auth, me, onboarding
+from backend.app.api.routes import auth, companies, me, onboarding
 
 
 def create_v2_router() -> APIRouter:
@@ -23,4 +23,6 @@ def create_v2_router() -> APIRouter:
     router.include_router(auth.router)
     router.include_router(me.router)
     router.include_router(onboarding.router)
+    router.include_router(companies.router)
+    router.include_router(companies.discovery_router)
     return router

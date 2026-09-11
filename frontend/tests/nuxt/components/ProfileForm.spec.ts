@@ -57,7 +57,7 @@ describe('ProfileForm', () => {
         profile: profileDraft({
           display_name: 'Test Candidate',
           headline: 'Backend engineer',
-          base_location: { city: 'Lausanne', country: 'CH' },
+          base_location: { city: 'Lausanne', country: 'CH', provenance: 'SOURCE_PROVIDED', precision: 'UNKNOWN' },
           languages: [{ language: 'fr', level: 'NATIVE' }, { language: 'en', level: 'C1' }],
         }),
       }),
@@ -127,6 +127,9 @@ describe('ProfileForm · what a save must not erase', () => {
           postal_code: '1000',
           raw: 'Lausanne, VD, Switzerland',
           point: { latitude: 46.52, longitude: 6.63 },
+          provenance: 'GEOCODED',
+          precision: 'EXACT_ADDRESS',
+          geocoder: 'nominatim',
         },
       }),
     })
@@ -169,7 +172,10 @@ describe('ProfileForm · what it sends', () => {
     await wrapper.get('form').trigger('submit')
 
     // Upper-cased for the server, which compares ISO codes; the city is left as typed.
-    expect(submitted(wrapper).base_location).toEqual({ city: null, country: 'CH' })
+    // A hand-typed location carries its honest provenance: source-provided, unknown
+    // precision, because nobody geocoded it (§7).
+    expect(submitted(wrapper).base_location).toEqual({
+      city: null, country: 'CH', provenance: 'SOURCE_PROVIDED', precision: 'UNKNOWN' })
   })
 
   it('trims the name and drops an empty headline', async () => {

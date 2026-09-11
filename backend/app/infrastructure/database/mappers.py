@@ -41,6 +41,8 @@ from backend.app.domain.common import (
     LanguageProficiency,
     LanguageRequirement,
     Location,
+    LocationPrecision,
+    LocationProvenance,
     Reason,
     SalaryRange,
     Weekday,
@@ -192,8 +194,15 @@ def reasons_from_json(payload: list[dict[str, Any]]) -> tuple[Reason, ...]:
     return tuple(Reason.model_validate(item) for item in payload)
 
 
-def _apply_location(row: LocationColumnsMixin, location: Location | None) -> None:
-    """Write a `Location` into the six `location_*` columns, or clear them."""
+def apply_location_to_row(
+        row: LocationColumnsMixin, location: Location | None) -> None:
+    """Write a `Location` into the `location_*` columns, or clear them.
+
+    Eleven columns since Phase 7: the six components and the five that describe
+    where the coordinates came from. The provenance group is written from the same
+    value object in the same call, which is what stops a row keeping the geocoder
+    and the timestamp of a point that a later save replaced with the source's own.
+    """
     row.location_country = None if location is None else location.country
     row.location_region = None if location is None else location.region
     row.location_city = None if location is None else location.city
@@ -201,13 +210,29 @@ def _apply_location(row: LocationColumnsMixin, location: Location | None) -> Non
     row.location_point = None if location is None else location.point
     row.location_raw = None if location is None else location.raw
 
+    # A cleared location is `SOURCE_PROVIDED`/`UNKNOWN` rather than NULL: the two
+    # columns are NOT NULL, and those are exactly the defaults `Location` itself
+    # applies when nothing is stated.
+    row.location_provenance = (LocationProvenance.SOURCE_PROVIDED if location is None
+                               else location.provenance)
+    row.location_precision = (LocationPrecision.UNKNOWN if location is None
+                              else location.precision)
+    row.location_confidence = None if location is None else location.confidence
+    row.location_geocoder = None if location is None else location.geocoder
+    row.location_geocoded_at = None if location is None else location.geocoded_at
+
 
 def _read_location(row: LocationColumnsMixin) -> Location | None:
-    """The six `location_*` columns as a `Location`, or `None` if all are NULL.
+    """The `location_*` columns as a `Location`, or `None` if the six are NULL.
 
     All-NULL has to become `None` rather than an empty `Location`: the domain
     refuses a `Location` that locates nothing, and "no location recorded" is what
     those six NULLs mean.
+
+    Emptiness is judged on the six components alone, deliberately. The provenance
+    pair is NOT NULL with a default, so including it would make every row look
+    located — and a row whose only content is "the source provided nothing at
+    UNKNOWN precision" still locates nothing.
     """
     components = (row.location_country, row.location_region, row.location_city,
                   row.location_postal_code, row.location_point, row.location_raw)
@@ -215,7 +240,13 @@ def _read_location(row: LocationColumnsMixin) -> Location | None:
         return None
     return Location(country=row.location_country, region=row.location_region,
                     city=row.location_city, postal_code=row.location_postal_code,
-                    point=row.location_point, raw=row.location_raw)
+                    point=row.location_point, raw=row.location_raw,
+                    provenance=row.location_provenance,
+                    precision=row.location_precision,
+                    confidence=row.location_confidence,
+                    geocoder=row.location_geocoder,
+                    geocoded_at=row.location_geocoded_at)
+
 
 
 def company_location_to_row(
@@ -225,7 +256,7 @@ def company_location_to_row(
     target = CompanyLocationRow(id=location.id) if row is None else row
     target.company_id = location.company_id
     target.is_headquarters = location.is_headquarters
-    _apply_location(target, location.location)
+    apply_location_to_row(target, location.location)
     return target
 
 
@@ -580,7 +611,7 @@ def opportunity_to_row(opportunity: Opportunity,
     target.workplace_mode = opportunity.workplace_mode
     _apply_workload(target, opportunity.workload)
     _apply_salary(target, opportunity.salary)
-    _apply_location(target, opportunity.location)
+    apply_location_to_row(target, opportunity.location)
     target.posting_language = opportunity.posting_language
     target.language_requirements = [
         requirement.model_dump(mode="json")
@@ -887,7 +918,7 @@ def candidate_profile_to_row(profile: CandidateProfile,
     target.user_id = profile.user_id
     target.display_name = profile.display_name
     target.headline = profile.headline
-    _apply_location(target, profile.base_location)
+    apply_location_to_row(target, profile.base_location)
     availability = profile.availability
     _apply_availability(target, availability)
     target.updated_at = profile.updated_at

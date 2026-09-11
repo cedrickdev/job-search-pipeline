@@ -43,6 +43,7 @@ from backend.app.domain.identifiers import (
     CompanyLocationId,
     MatchEvaluationId,
     OpportunityId,
+    SearchProfileId,
     UserId,
 )
 from backend.app.domain.matching import DimensionScore, MatchDimension, MatchEvaluation
@@ -53,6 +54,7 @@ from backend.app.domain.opportunity import (
     OpportunityType,
     WorkplaceMode,
 )
+from backend.app.domain.search import CountrySearchArea, SearchProfile
 
 NOW = datetime(2026, 3, 1, 9, 30, tzinfo=UTC)
 LATER = datetime(2026, 3, 2, 9, 30, tzinfo=UTC)
@@ -69,6 +71,8 @@ COMPANY_LOCATION = CompanyLocationId(UUID("00000000-0000-4000-8000-000000000035"
 EVALUATION = MatchEvaluationId(UUID("00000000-0000-4000-8000-000000000041"))
 POLICY = ApplicationPolicyId(UUID("00000000-0000-4000-8000-000000000051"))
 DECISION = ApplicationDecisionId(UUID("00000000-0000-4000-8000-000000000061"))
+SEARCH_PROFILE = SearchProfileId(UUID("00000000-0000-4000-8000-000000000071"))
+OTHER_SEARCH_PROFILE = SearchProfileId(UUID("00000000-0000-4000-8000-000000000072"))
 
 # Somewhere real, so a distance a test asserts on can be checked against a map.
 LAUSANNE = GeoPoint(latitude=46.5197, longitude=6.6323)
@@ -195,3 +199,23 @@ def a_company(*locations, **overrides):
     }
     fields.update(overrides)
     return Company(**fields)
+
+
+def a_search_profile(*areas, **overrides):
+    """A saved search owned by `USER`, over the areas given.
+
+    Defaults to a single `CountrySearchArea("CH")` so the derived query is an
+    ordinary `EXCLUDE_REMOTE` country search — the shape the saved-search geo
+    route exercises. A test that needs a radius or a remote-only search passes its
+    own areas; one that needs another owner passes `user_id=OTHER_USER`.
+    """
+    fields = {
+        "id": SEARCH_PROFILE,
+        "user_id": USER,
+        "name": "Suisse romande",
+        "areas": areas if areas else (CountrySearchArea(country="CH"),),
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return SearchProfile(**fields)

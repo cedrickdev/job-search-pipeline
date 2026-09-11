@@ -31,7 +31,7 @@ from sqlalchemy.dialects.postgresql.base import ischema_names
 from sqlalchemy.sql import ColumnElement
 from sqlalchemy.types import TypeDecorator, UserDefinedType
 
-from backend.app.domain.common import GeoPoint
+from backend.app.domain.common import GeoBounds, GeoPoint
 
 # WGS84. The only SRID this application stores: every source of coordinates
 # (geocoders, job boards, map clients) speaks it, and a mixed-SRID table makes
@@ -236,4 +236,16 @@ def distance_meters(column: ColumnExpressionArgument[Any],
                     center: GeoPoint) -> ColumnElement[float]:
     """Great-circle distance in metres, for ordering and for display."""
     return func.ST_Distance(column, geography_literal(center), type_=Float)
+
+
+def within_bounds(column: ColumnExpressionArgument[Any],
+                  bounds: GeoBounds) -> ColumnElement[bool]:
+    """Whether a point falls inside a WGS84 viewport rectangle."""
+    rectangle = func.cast(
+        func.ST_MakeEnvelope(
+            bounds.west, bounds.south, bounds.east, bounds.north, WGS84_SRID),
+        GeographyPoint("Polygon", WGS84_SRID),
+    )
+    return cast("ColumnElement[bool]",
+                func.ST_Intersects(column, rectangle, type_=Boolean))
 

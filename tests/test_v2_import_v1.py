@@ -163,6 +163,9 @@ class FakeOpportunityRepository:
                         limit: int = 100) -> tuple[object, ...]:
         raise NotImplementedError
 
+    async def search_geo(self, query: object) -> tuple[object, ...]:
+        raise NotImplementedError
+
     async def list_unlinked(self, *, limit: int = 100) -> tuple[Opportunity, ...]:
         raise NotImplementedError
 

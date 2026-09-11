@@ -682,6 +682,81 @@
         "title": "CompanyDiscoveryWarningResponse",
         "type": "object"
       },
+      "CompanyGeoItemResponse": {
+        "additionalProperties": false,
+        "description": "One employer on the map, at its nearest matching site.\n\nThe `CompanyResponse` is the same object `GET /companies` returns, so a client\nholds one company shape. Beside it is the *site* that matched — its coordinates\nand whether it is the headquarters — with the distance and the status the row\nwas admitted with.",
+        "properties": {
+          "company": {
+            "$ref": "#/components/schemas/CompanyResponse"
+          },
+          "distance_meters": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Meters"
+          },
+          "is_headquarters": {
+            "title": "Is Headquarters",
+            "type": "boolean"
+          },
+          "location": {
+            "$ref": "#/components/schemas/GeoLocationResponse"
+          },
+          "matched_radii": {
+            "items": {
+              "$ref": "#/components/schemas/MatchedRadiusResponse"
+            },
+            "title": "Matched Radii",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/GeoStatus"
+          }
+        },
+        "required": [
+          "company",
+          "location",
+          "is_headquarters",
+          "distance_meters",
+          "status",
+          "matched_radii"
+        ],
+        "title": "CompanyGeoItemResponse",
+        "type": "object"
+      },
+      "CompanyGeoResponse": {
+        "additionalProperties": false,
+        "description": "One geo page of employers, each once, with the window it came from.",
+        "properties": {
+          "companies": {
+            "items": {
+              "$ref": "#/components/schemas/CompanyGeoItemResponse"
+            },
+            "title": "Companies",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "companies",
+          "limit",
+          "offset"
+        ],
+        "title": "CompanyGeoResponse",
+        "type": "object"
+      },
       "CompanyIdentityStatus": {
         "description": "How much we trust that this row is one real employer (§1).\n\nThree members because three is what Phase 6 can justify. `SEEDED` is a name\nsomebody handed us — a posting's `company_name`, a line in\n`config/companies.yaml` — with nothing corroborating it. `PROVISIONAL` means a\nsecond independent signal agreed (a website, an ATS organization). `VERIFIED`\nis reserved for a human confirmation or a redirect we followed ourselves; no\nPhase 6 code path sets it automatically, which is the point.",
         "enum": [
@@ -1062,6 +1137,131 @@
         "title": "EvidenceResponse",
         "type": "object"
       },
+      "GeoLocationResponse": {
+        "additionalProperties": false,
+        "description": "A place, its coordinates, and where those coordinates came from (§7).\n\nUnlike `CompanyLocationResponse`, this one carries a `point`: Phase 7 is where\ncoordinates enter the API. The five provenance fields travel with it so a\nclient can tell a geocoded centroid from a source-provided address and draw\nthem differently (§32) — a bare pair of floats would overstate what is known.",
+        "properties": {
+          "city": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GeocodingConfidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "geocoded_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geocoded At"
+          },
+          "geocoder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geocoder"
+          },
+          "point": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GeoPointResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "postal_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Postal Code"
+          },
+          "precision": {
+            "$ref": "#/components/schemas/LocationPrecision"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/LocationProvenance"
+          },
+          "raw": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          }
+        },
+        "required": [
+          "city",
+          "region",
+          "postal_code",
+          "country",
+          "raw",
+          "point",
+          "provenance",
+          "precision",
+          "confidence",
+          "geocoder",
+          "geocoded_at"
+        ],
+        "title": "GeoLocationResponse",
+        "type": "object"
+      },
       "GeoPoint": {
         "additionalProperties": false,
         "description": "WGS84 coordinates.\n\nStored as two floats rather than a geometry type: the domain must not depend\non PostGIS (docs/ARCHITECTURE.md §11 puts the geometry in the persistence\nlayer, which Phase 2 introduces).",
@@ -1085,6 +1285,47 @@
         ],
         "title": "GeoPoint",
         "type": "object"
+      },
+      "GeoPointResponse": {
+        "additionalProperties": false,
+        "description": "WGS84 coordinates, as two floats.",
+        "properties": {
+          "latitude": {
+            "title": "Latitude",
+            "type": "number"
+          },
+          "longitude": {
+            "title": "Longitude",
+            "type": "number"
+          }
+        },
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "title": "GeoPointResponse",
+        "type": "object"
+      },
+      "GeoStatus": {
+        "description": "Why a result has the distance it has — or has none (Phase 7 §12).\n\nThe member that earns the enum is `UNRESOLVED`. Without it, a caller reading\n`distance_km = null` cannot tell \"this posting is remote, distance does not\napply\" from \"we do not know where this posting is\" from \"it is outside the\nradius\" — and the third is not even in the list, because a row outside the\nradius is not returned at all. §12 requires those to be distinguishable, and a\nnullable float cannot do it.\n\n`COMPANY_FALLBACK` is the other one that has to be visible. A posting with no\ncoordinates of its own, placed at its employer's office (§9, §31), is a\nweaker claim than one that geocoded its own address; a UI that draws both as\nthe same pin is overstating what is known, and an operator debugging \"why is\nthis job on the map at all\" needs the answer in the payload rather than in the\nquery plan.",
+        "enum": [
+          "RESOLVED",
+          "COMPANY_FALLBACK",
+          "REMOTE",
+          "UNRESOLVED"
+        ],
+        "title": "GeoStatus",
+        "type": "string"
+      },
+      "GeocodingConfidence": {
+        "description": "How sure the geocoder was, on a scale small enough to mean something.\n\nThree levels rather than a float: providers report confidence on scales that\ndo not compare (Nominatim's `importance` is a popularity measure, not a\nprobability), so a number here would imply an accuracy the input does not\nhave. Three buckets are enough for the one decision that reads them — §7 and\n§39's \"do not let a weaker answer replace a stronger one\" — and `rank` is what\nmakes that comparison explicit.",
+        "enum": [
+          "HIGH",
+          "MEDIUM",
+          "LOW"
+        ],
+        "title": "GeocodingConfidence",
+        "type": "string"
       },
       "HTTPValidationError": {
         "properties": {
@@ -1220,7 +1461,7 @@
       },
       "Location": {
         "additionalProperties": false,
-        "description": "A place, at whatever precision the source actually gave us.\n\nEvery field is optional but the whole must say something: a source that\nreports only \"Yverdon-les-Bains, Suisse\" produces `raw=\"…\"` with nothing\nparsed, and a geocoding pass later fills `city`/`country`/`point`. Keeping\n`raw` is what allows that pass to be re-run and audited instead of guessed\nonce and forgotten.",
+        "description": "A place, at whatever precision the source actually gave us.\n\nEvery field is optional but the whole must say something: a source that\nreports only \"Yverdon-les-Bains, Suisse\" produces `raw=\"…\"` with nothing\nparsed, and a geocoding pass later fills `city`/`country`/`point`. Keeping\n`raw` is what allows that pass to be re-run and audited instead of guessed\nonce and forgotten.\n\nPhase 7 added the five fields after `raw`, and they describe the *coordinates*\nrather than the place: where the point came from, how precisely it locates\nanything, how sure the geocoder was, which geocoder it was and when. Together\nthey are what makes the enrichment pass of §21 safe to re-run — it can see\nthat a point is already better than anything it could produce and skip it —\nand what stops a city centroid being drawn as a street address (§32).\n\nNothing here is required, because a `Location` that came off a job board has\nno provenance to state beyond \"the source said so\", which is the default.",
         "properties": {
           "city": {
             "anyOf": [
@@ -1233,6 +1474,16 @@
             ],
             "title": "City"
           },
+          "confidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GeocodingConfidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "country": {
             "anyOf": [
               {
@@ -1244,6 +1495,29 @@
               }
             ],
             "title": "Country"
+          },
+          "geocoded_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geocoded At"
+          },
+          "geocoder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geocoder"
           },
           "point": {
             "anyOf": [
@@ -1265,6 +1539,14 @@
               }
             ],
             "title": "Postal Code"
+          },
+          "precision": {
+            "$ref": "#/components/schemas/LocationPrecision",
+            "default": "UNKNOWN"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/LocationProvenance",
+            "default": "SOURCE_PROVIDED"
           },
           "raw": {
             "anyOf": [
@@ -1292,6 +1574,29 @@
         "title": "Location",
         "type": "object"
       },
+      "LocationPrecision": {
+        "description": "How precisely the coordinates locate the thing (Phase 7 §32).\n\nA city centroid and a building entrance are both a latitude and a longitude,\nand displaying the first as if it were the second is the specific mistake §32\nnames. Carrying the precision is what lets a UI draw a disc instead of a pin,\nand what lets a distance be reported as approximate.\n\n`UNKNOWN` is the honest answer when there are no coordinates at all, and is\nthe only value permitted in that case.",
+        "enum": [
+          "EXACT_ADDRESS",
+          "POSTAL_CODE",
+          "CITY",
+          "REGION",
+          "COUNTRY",
+          "UNKNOWN"
+        ],
+        "title": "LocationPrecision",
+        "type": "string"
+      },
+      "LocationProvenance": {
+        "description": "Where a location's coordinates came from (Phase 7 §7).\n\nThe distinction has teeth: §7 forbids overwriting source-provided coordinates\nwith lower-confidence geocoder output, and a column that only stored a point\ncould not tell the two apart. `MANUAL` is a human correction and outranks\nboth — nothing automated may replace it.",
+        "enum": [
+          "SOURCE_PROVIDED",
+          "GEOCODED",
+          "MANUAL"
+        ],
+        "title": "LocationProvenance",
+        "type": "string"
+      },
       "LoginRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1312,6 +1617,33 @@
           "password"
         ],
         "title": "LoginRequest",
+        "type": "object"
+      },
+      "MatchedRadiusResponse": {
+        "additionalProperties": false,
+        "description": "Which radius branch admitted a result, by its index and its label.",
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "radius_index": {
+            "title": "Radius Index",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "radius_index",
+          "label"
+        ],
+        "title": "MatchedRadiusResponse",
         "type": "object"
       },
       "NotesBody": {
@@ -1373,6 +1705,196 @@
           "may_complete"
         ],
         "title": "OnboardingStateResponse",
+        "type": "object"
+      },
+      "OpportunityGeoItemResponse": {
+        "additionalProperties": false,
+        "description": "One posting on the map: enough to place a pin and render a list card.\n\nA summary rather than the whole `Opportunity` — no salary, description or\nsource snapshot — because this is the explorer, not a posting-detail endpoint.\n`location` is where the pin goes, `status` says how sure that is (§12), and\n`distance_meters` is the database's answer, `null` for an unresolved or remote\nrow so a missing distance is never read as zero. `remote_scope` says how far a\nremote posting reaches (§10).",
+        "properties": {
+          "application_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Url"
+          },
+          "company_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Id"
+          },
+          "company_name": {
+            "title": "Company Name",
+            "type": "string"
+          },
+          "contract_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContractType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "discovered_at": {
+            "format": "date-time",
+            "title": "Discovered At",
+            "type": "string"
+          },
+          "distance_meters": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Meters"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GeoLocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "matched_radii": {
+            "items": {
+              "$ref": "#/components/schemas/MatchedRadiusResponse"
+            },
+            "title": "Matched Radii",
+            "type": "array"
+          },
+          "opportunity_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpportunityType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "posted_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Posted At"
+          },
+          "posting_language": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Posting Language"
+          },
+          "remote_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemoteScope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/GeoStatus"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "workplace_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkplaceMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "company_name",
+          "company_id",
+          "opportunity_type",
+          "contract_type",
+          "workplace_mode",
+          "posting_language",
+          "posted_at",
+          "discovered_at",
+          "application_url",
+          "location",
+          "distance_meters",
+          "status",
+          "remote_scope",
+          "matched_radii"
+        ],
+        "title": "OpportunityGeoItemResponse",
+        "type": "object"
+      },
+      "OpportunityGeoResponse": {
+        "additionalProperties": false,
+        "description": "One geo page of postings, with the window it came from.\n\nNo `total`, deliberately: the geo query is a windowed scan over a join, and a\nfaithful count would be a second query as costly as the first. `limit` and\n`offset` are echoed so a client can page — the same contract the query\nvalidates (§17).",
+        "properties": {
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "opportunities": {
+            "items": {
+              "$ref": "#/components/schemas/OpportunityGeoItemResponse"
+            },
+            "title": "Opportunities",
+            "type": "array"
+          }
+        },
+        "required": [
+          "opportunities",
+          "limit",
+          "offset"
+        ],
+        "title": "OpportunityGeoResponse",
         "type": "object"
       },
       "OpportunityLinkResponse": {
@@ -1610,6 +2132,27 @@
         },
         "title": "RemoteOnlySearchArea",
         "type": "object"
+      },
+      "RemoteScope": {
+        "description": "How far a remote posting actually reaches (Phase 7 §10, §11).\n\nDerived from the posting rather than stored, by `remote_scope_of` below, so it\ncannot drift from the workplace mode and location beside it.\n\n`HYBRID` is a member of this enum and *not* a kind of remote: a hybrid role\nkeeps a geographic anchor, is judged by distance like any on-site role, and\n§11 forbids treating it as fully remote. It is listed here because \"how far\ndoes this reach\" is the same question, and the answer for hybrid is \"as far as\na commute\".\n\nThe three genuinely remote members are ordered from the strongest claim to the\nweakest, and the derivation is deliberately reluctant to reach\n`REMOTE_ANYWHERE`: a posting that names a country or a region while saying\n\"remote\" has told us something, and §10 forbids reading bare \"Remote\" as\nworldwide eligibility.",
+        "enum": [
+          "REMOTE_ANYWHERE",
+          "REMOTE_COUNTRY_RESTRICTED",
+          "REMOTE_REGION_RESTRICTED",
+          "HYBRID"
+        ],
+        "title": "RemoteScope",
+        "type": "string"
+      },
+      "RemoteSelection": {
+        "description": "The `remote` query parameter — the short spelling of `RemotePolicy`.\n\nThree lowercase words a URL can carry, mapped to the domain policy in one\nplace. `exclude` is the default because a geographic search that silently\nincluded remote roles would answer a question the caller did not ask (§10).",
+        "enum": [
+          "exclude",
+          "include",
+          "only"
+        ],
+        "title": "RemoteSelection",
+        "type": "string"
       },
       "SearchProfileDraft": {
         "additionalProperties": false,
@@ -3835,6 +4378,304 @@
         ]
       }
     },
+    "/api/v2/geo/companies": {
+      "get": {
+        "description": "Employers with a site in scope, each once, at their nearest match.\n\nA `remote=only` search is valid but empty by construction — an employer is a\nplace, and \"remote only\" is a question about postings — so the route answers 200\nwith no companies rather than inventing one.",
+        "operationId": "search_companies_api_v2_geo_companies_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "radius",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Radius",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "country",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "pattern": "^[A-Z]{2}$",
+                "type": "string"
+              },
+              "title": "Country",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bounds",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Bounds"
+            }
+          },
+          {
+            "in": "query",
+            "name": "remote",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/RemoteSelection",
+              "default": "exclude"
+            }
+          },
+          {
+            "in": "query",
+            "name": "remote_country",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "pattern": "^[A-Z]{2}$",
+                "type": "string"
+              },
+              "title": "Remote Country",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "opportunity_type",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "$ref": "#/components/schemas/OpportunityType"
+              },
+              "title": "Opportunity Type",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workplace_mode",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "$ref": "#/components/schemas/WorkplaceMode"
+              },
+              "title": "Workplace Mode",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyGeoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Companies",
+        "tags": [
+          "v2-geo"
+        ]
+      }
+    },
+    "/api/v2/geo/opportunities": {
+      "get": {
+        "description": "Postings admitted by one geographic/remote query, closest first.\n\nThe window echoed in the body is the one the query validated, so a client pages\nagainst the same `limit`/`offset` it sent (§17). A posting with no point of its\nown is placed at its employer's nearest site and flagged `COMPANY_FALLBACK`, so a\nmap never silently drops it or draws the weaker pin like a geocoded one (§12).",
+        "operationId": "search_opportunities_api_v2_geo_opportunities_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "radius",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Radius",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "country",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "pattern": "^[A-Z]{2}$",
+                "type": "string"
+              },
+              "title": "Country",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bounds",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Bounds"
+            }
+          },
+          {
+            "in": "query",
+            "name": "remote",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/RemoteSelection",
+              "default": "exclude"
+            }
+          },
+          {
+            "in": "query",
+            "name": "remote_country",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "pattern": "^[A-Z]{2}$",
+                "type": "string"
+              },
+              "title": "Remote Country",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "opportunity_type",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "$ref": "#/components/schemas/OpportunityType"
+              },
+              "title": "Opportunity Type",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workplace_mode",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "$ref": "#/components/schemas/WorkplaceMode"
+              },
+              "title": "Workplace Mode",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpportunityGeoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Opportunities",
+        "tags": [
+          "v2-geo"
+        ]
+      }
+    },
     "/api/v2/me/profile": {
       "get": {
         "description": "This account's candidate profile.\n\n404 when onboarding has not saved one yet. Not an empty 200: \"no profile\" is a\ndifferent state from \"a profile with no fields filled in\", and the onboarding\nscreen has to tell them apart.",
@@ -4067,6 +4908,89 @@
         "summary": "Update Search Profile",
         "tags": [
           "v2-me"
+        ]
+      }
+    },
+    "/api/v2/me/search-profiles/{search_profile_id}/opportunities": {
+      "get": {
+        "description": "Run one of this account's saved searches as a geo query.\n\nThe scope is the profile's saved areas; the only query parameters are the optional\nmap `bounds` Phase 8 sends when the user pans, and the page window. A profile that\nis not this account's is the same 404 as one that does not exist — the service\nloads it scoped by the session user and never says which of the two it was.",
+        "operationId": "search_saved_profile_api_v2_me_search_profiles__search_profile_id__opportunities_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "search_profile_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Search Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bounds",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Bounds"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpportunityGeoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Saved Profile",
+        "tags": [
+          "v2-geo"
         ]
       }
     },

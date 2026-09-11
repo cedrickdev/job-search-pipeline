@@ -94,6 +94,7 @@ packages = ["pipeline", "pipeline.sources", "pipeline.apply", "dashboard", "serv
             "backend.app.api.routes", "backend.app.discovery",
             "backend.app.discovery.adapters",
             "backend.app.companies", "backend.app.companies.providers",
+            "backend.app.geo",
             "country_packs", "country_packs.ch"]
 
 # A Country Pack is five YAML files and a six-line loader (Phase 5): without this

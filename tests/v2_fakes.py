@@ -40,7 +40,14 @@ from backend.app.domain.company import (
     Company,
     CompanyAlias,
     CompanyDiscoveryRecord,
+    CompanyLocation,
     normalize_company_name,
+)
+from backend.app.domain.geo import (
+    GeoSearchQuery,
+    GeoStatus,
+    RemotePolicy,
+    remote_scope_of,
 )
 from backend.app.domain.identifiers import (
     CandidateProfileId,
@@ -63,8 +70,11 @@ from backend.app.repositories.contracts import (
     CompanyCandidate,
     CompanyDiscoveryRepository,
     CompanyFilter,
+    CompanyGeoResult,
     CompanyPage,
     CompanyRepository,
+    MatchedRadius,
+    OpportunityGeoResult,
     OpportunityNearby,
     OpportunityRepository,
     SearchProfileRepository,
@@ -266,10 +276,18 @@ class FakeOpportunityRepository:
 
     Nothing here is user-scoped, and that is the contract rather than an omission:
     a posting is a shared fact (§21).
+
+    `companies` is the store `search_geo` falls back to when a posting has no
+    coordinates of its own (§9, §31). It is late-bound rather than a constructor
+    argument because the company repository is built *with* this one — the API
+    harness wires the pair together after both exist — and `None` means "no
+    fallback source", which is the honest answer for the resolver tests that
+    never set it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, companies: "FakeCompanyRepository | None" = None) -> None:
         self.opportunities: dict[OpportunityId, Opportunity] = {}
+        self._companies = companies
 
     async def get(self, opportunity_id: OpportunityId) -> Opportunity | None:
         stored = self.opportunities.get(opportunity_id)
@@ -311,6 +329,150 @@ class FakeOpportunityRepository:
                 nearby.append(OpportunityNearby(posting.model_copy(deep=True), meters))
         nearby.sort(key=lambda found: (found.distance_meters, found.opportunity.id))
         return tuple(nearby[:limit])
+
+    async def search_geo(
+            self, query: GeoSearchQuery) -> tuple[OpportunityGeoResult, ...]:
+        """The typed Phase 7 query, mirroring `SqlAlchemyOpportunityRepository`.
+
+        Every branch here has a twin in the SQL: the per-radius `own point OR
+        (unresolved AND employer site)` union, the country fallback through the
+        nearest site, the explicit remote policy, and the
+        RESOLVED/COMPANY_FALLBACK/UNRESOLVED status a null distance would
+        otherwise hide (§12). A fake that took a shortcut on any of them would let
+        a service test pass against behaviour PostGIS does not have.
+        """
+        found: list[OpportunityGeoResult] = []
+        for posting in self.opportunities.values():
+            matched = self._match_opportunity(posting, query)
+            if matched is not None:
+                found.append(matched)
+        # The SQL's `ORDER BY`, built least-significant key first so the stable
+        # sort composes: id, then discovered_at DESC, then — with centres — the
+        # result distance NULLS LAST.
+        found.sort(key=lambda result: str(result.opportunity.id))
+        found.sort(key=lambda result: result.opportunity.discovered_at, reverse=True)
+        if query.radii:
+            found.sort(key=lambda result: (
+                result.distance_meters is None,
+                result.distance_meters if result.distance_meters is not None else 0.0))
+        return tuple(found[query.offset:query.offset + query.limit])
+
+    def _match_opportunity(self, posting: Opportunity,
+                           query: GeoSearchQuery) -> OpportunityGeoResult | None:
+        own_point = posting.location.point if posting.location else None
+        own_country = posting.location.country if posting.location else None
+        is_remote = posting.is_remote
+
+        site = self._fallback_site(posting.company_id, query)
+        site_point = site.location.point if site is not None else None
+        site_country = site.location.country if site is not None else None
+
+        own_matches = [
+            own_point is not None
+            and _meters_between(radius.center, own_point) <= radius.radius.meters
+            for radius in query.radii]
+        site_matches = [
+            site_point is not None
+            and _meters_between(radius.center, site_point) <= radius.radius.meters
+            for radius in query.radii]
+        # Per radius: the posting's own point, or — only when it has none — its
+        # employer's nearest site. The SQL is `opp_match OR (~resolved AND site)`.
+        radius_hits = [own or (own_point is None and site_hit)
+                       for own, site_hit in zip(own_matches, site_matches, strict=True)]
+
+        geographic = any(radius_hits)
+        if query.countries:
+            geographic = geographic or own_country in query.countries or (
+                own_country is None and site_country in query.countries)
+
+        if query.remote_policy is RemotePolicy.REMOTE_ONLY:
+            if not is_remote:
+                return None
+        elif query.remote_policy is RemotePolicy.INCLUDE_REMOTE:
+            if not (geographic or is_remote):
+                return None
+        elif not geographic or is_remote:      # EXCLUDE_REMOTE: geographic, not remote
+            return None
+
+        if query.remote_countries and is_remote \
+                and own_country not in query.remote_countries:
+            return None
+        if query.opportunity_types \
+                and posting.opportunity_type not in query.opportunity_types:
+            return None
+        if query.workplace_modes \
+                and posting.workplace_mode not in query.workplace_modes:
+            return None
+        if query.bounds is not None:
+            inside = (own_point is not None and query.bounds.contains(own_point)) or (
+                own_point is None and site_point is not None
+                and query.bounds.contains(site_point))
+            if not inside:
+                return None
+
+        has_own_point = own_point is not None
+        fallback = not has_own_point and site is not None and site_point is not None
+        company_location = (site.model_copy(deep=True)
+                            if fallback and site is not None else None)
+        opportunity = posting.model_copy(deep=True)
+        result_location = (company_location.location if company_location is not None
+                           else opportunity.location)
+
+        distance: float | None = None
+        if query.radii:
+            if own_point is not None:
+                distance = min(_meters_between(radius.center, own_point)
+                               for radius in query.radii)
+            elif site_point is not None:
+                distance = min(_meters_between(radius.center, site_point)
+                               for radius in query.radii)
+        # The distance and the matched radii report the point that was actually
+        # used, so a fallback row's `matched_radii` names the site's branch.
+        selected = own_matches if has_own_point else site_matches
+        matched_radii = tuple(MatchedRadius(index, query.radii[index].label)
+                              for index, hit in enumerate(selected) if hit)
+
+        return OpportunityGeoResult(
+            opportunity=opportunity,
+            location=result_location,
+            distance_meters=distance,
+            status=(GeoStatus.REMOTE if is_remote else
+                    GeoStatus.RESOLVED if has_own_point else
+                    GeoStatus.COMPANY_FALLBACK if fallback else
+                    GeoStatus.UNRESOLVED),
+            remote_scope=remote_scope_of(opportunity.workplace_mode,
+                                         opportunity.location),
+            matched_radii=matched_radii,
+            company_location=company_location)
+
+    def _fallback_site(self, company_id: CompanyId | None,
+                       query: GeoSearchQuery) -> CompanyLocation | None:
+        """The employer site that stands in for a posting with no point of its own.
+
+        Mirrors the correlated `nearest_site` subquery: the closest site to a
+        search centre when the query has radii, otherwise the headquarters, ties
+        broken by id. Chosen among *all* the employer's sites, exactly like the
+        subquery — the radius predicate is then applied to whichever site this
+        returns, not used to select it.
+        """
+        if company_id is None or self._companies is None:
+            return None
+        company = self._companies.companies.get(company_id)
+        if company is None or not company.locations:
+            return None
+        if query.radii:
+            return min(company.locations,
+                       key=lambda site: self._site_rank(site, query))
+        return min(company.locations,
+                   key=lambda site: (not site.is_headquarters, str(site.id)))
+
+    def _site_rank(self, site: CompanyLocation,
+                   query: GeoSearchQuery) -> tuple[bool, float, str]:
+        point = site.location.point
+        if point is None:
+            return (True, 0.0, str(site.id))      # NULL distance sorts last
+        nearest = min(_meters_between(radius.center, point) for radius in query.radii)
+        return (False, nearest, str(site.id))
 
     async def list_unlinked(self, *,
                             limit: int = DEFAULT_LIMIT) -> tuple[Opportunity, ...]:
@@ -366,6 +528,66 @@ class FakeCompanyRepository:
                         <= radius_meters
                         for site in company.locations)]
         return tuple(company.model_copy(deep=True) for company in found[:limit])
+
+    async def search_geo(self, query: GeoSearchQuery) -> tuple[CompanyGeoResult, ...]:
+        """Each employer once, at its closest matching site — the SQL's `row_number`.
+
+        REMOTE_ONLY returns nothing, exactly as the real query does: an employer is
+        a place, and "remote only" is a question about postings, not companies.
+        """
+        if query.remote_policy is RemotePolicy.REMOTE_ONLY:
+            return ()
+        found: list[CompanyGeoResult] = []
+        for company in self._ordered():
+            best = self._best_site(company, query)
+            if best is None:
+                continue
+            site, distance, hits = best
+            found.append(CompanyGeoResult(
+                company=company.model_copy(deep=True),
+                location=site.model_copy(deep=True),
+                distance_meters=distance,
+                status=(GeoStatus.RESOLVED if site.location.point is not None
+                        else GeoStatus.UNRESOLVED),
+                matched_radii=tuple(MatchedRadius(index, query.radii[index].label)
+                                    for index, hit in enumerate(hits) if hit)))
+        # `_ordered()` already sorts by name then id; this stable distance sort
+        # keeps that order among equal distances — the SQL's `distance NULLS LAST,
+        # name, id`.
+        if query.radii:
+            found.sort(key=lambda result: (
+                result.distance_meters is None,
+                result.distance_meters if result.distance_meters is not None else 0.0))
+        return tuple(found[query.offset:query.offset + query.limit])
+
+    def _best_site(
+            self, company: Company, query: GeoSearchQuery
+    ) -> tuple[CompanyLocation, float | None, list[bool]] | None:
+        candidates: list[tuple[CompanyLocation, float | None, list[bool]]] = []
+        for site in company.locations:
+            point = site.location.point
+            hits = [point is not None
+                    and _meters_between(radius.center, point) <= radius.radius.meters
+                    for radius in query.radii]
+            matched = any(hits) or (
+                bool(query.countries) and site.location.country in query.countries)
+            if not matched:
+                continue
+            if query.bounds is not None and (
+                    point is None or not query.bounds.contains(point)):
+                continue
+            distance = (min(_meters_between(radius.center, point)
+                            for radius in query.radii)
+                        if query.radii and point is not None else None)
+            candidates.append((site, distance, hits))
+        if not candidates:
+            return None
+        if query.radii:
+            return min(candidates, key=lambda item: (
+                item[1] is None, item[1] if item[1] is not None else 0.0,
+                str(item[0].id)))
+        return min(candidates,
+                   key=lambda item: (not item[0].is_headquarters, str(item[0].id)))
 
     async def find_candidates(
             self, *, name_forms: Sequence[str] = (), domain: str | None = None,

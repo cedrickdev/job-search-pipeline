@@ -13,9 +13,11 @@ document is exactly what `scripts/dump_openapi.py` hands the frontend's type
 generator. A route added without a test fails the first assertion in this module,
 which is the point of pinning a count that a normal change has no reason to touch.
 
-The counts moved once, at Phase 6: the three company operations are published beside
-the twelve Phase 4 defines, and they are held to the same four rules — under the
-prefix, authenticated, safe where they read, and carrying no credential field.
+The counts moved once at Phase 6 — the three company operations — and again at
+Phase 7, which adds the three geo reads: postings near a place, employers near a
+place, and one saved search run as a geo query. All six are held to the same four
+rules the Phase 4 twelve are — under the prefix, authenticated, safe where they read,
+and carrying no credential field.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -23,7 +25,7 @@ from datetime import timedelta
 import pytest
 
 from backend.app.api import API_V2_PREFIX
-from backend.app.domain.identifiers import CompanyId
+from backend.app.domain.identifiers import CompanyId, SearchProfileId
 from backend.app.services.authentication import SESSION_TOUCH_INTERVAL
 from tests.v2_api import (
     PLACEHOLDER_ID,
@@ -32,17 +34,20 @@ from tests.v2_api import (
     operations,
     schema_property_names,
 )
-from tests.v2_builders import a_company
+from tests.v2_builders import a_company, a_search_profile
 
-# The whole V2 surface as of Phase 6, spelled out. Written as a literal on purpose:
+# The whole V2 surface as of Phase 7, spelled out. Written as a literal on purpose:
 # a test that derived it from the application would agree with any change.
 V2_OPERATIONS = (
     ("DELETE", "/api/v2/me/search-profiles/{search_profile_id}"),
     ("GET", "/api/v2/auth/session"),
     ("GET", "/api/v2/companies"),
     ("GET", "/api/v2/companies/{company_id}"),
+    ("GET", "/api/v2/geo/companies"),
+    ("GET", "/api/v2/geo/opportunities"),
     ("GET", "/api/v2/me/profile"),
     ("GET", "/api/v2/me/search-profiles"),
+    ("GET", "/api/v2/me/search-profiles/{search_profile_id}/opportunities"),
     ("GET", "/api/v2/onboarding"),
     ("POST", "/api/v2/auth/login"),
     ("POST", "/api/v2/auth/logout"),
@@ -74,8 +79,21 @@ V1_OPERATIONS = 29
 V1_PATHS = 28
 
 
+def _get_with_scope(path: str) -> str:
+    """A callable URL for one GET in the twice-over sweep.
+
+    The two open geo lists refuse a query with no scope — a full-table scan is not a
+    search (§14) — so the sweep gives them the smallest valid one. Every other GET,
+    including the saved-search geo read whose scope comes from the profile, is
+    callable exactly as its template concretes.
+    """
+    if path.endswith(("/geo/opportunities", "/geo/companies")):
+        return f"{path}?country=CH"
+    return path
+
+
 @pytest.mark.asyncio
-async def test_the_v2_surface_is_exactly_the_fifteen_operations_phases_4_and_6_define(
+async def test_the_v2_surface_is_exactly_the_eighteen_operations_phases_4_6_and_7_define(
         tmp_path):
     """The inventory, and every path scoped under the one prefix.
 
@@ -88,17 +106,18 @@ async def test_the_v2_surface_is_exactly_the_fifteen_operations_phases_4_and_6_d
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 12
+        assert len({path for _, path in published}) == 15
 
 
 @pytest.mark.asyncio
 async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path):
     """The inventory half of "no GET mutates state".
 
-    Six `GET`s, all of them reports. `POST /onboarding/complete` exists precisely so
+    Nine `GET`s, all of them reports. `POST /onboarding/complete` exists precisely so
     that the screen displaying progress does not have to be the thing that records
     it, and `POST /company-discovery/run` is the same split for the directory: reading
-    it is safe, filling it is a write an operator triggers.
+    it is safe, filling it is a write an operator triggers. The three Phase 7 reads
+    join the reports — a map is a view, and viewing it writes nothing.
     """
     async with api_harness(tmp_path) as api:
         published = operations(api.app, under=API_V2_PREFIX)
@@ -107,8 +126,11 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/auth/session",
             "/api/v2/companies",
             "/api/v2/companies/{company_id}",
+            "/api/v2/geo/companies",
+            "/api/v2/geo/opportunities",
             "/api/v2/me/profile",
             "/api/v2/me/search-profiles",
+            "/api/v2/me/search-profiles/{search_profile_id}/opportunities",
             "/api/v2/onboarding"}
         assert not [method for method, _ in published
                     if method in {"HEAD", "OPTIONS", "TRACE", "PATCH"}]
@@ -125,14 +147,20 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
 
     The company stored under `PLACEHOLDER_ID` is what makes the sweep meaningful for
     the detail route: without it that `GET` would 404 before reaching the service, and
-    a handler that wrote on the way to a 200 would never be exercised.
+    a handler that wrote on the way to a 200 would never be exercised. The saved search
+    stored under the same id does the same job for the geo read on
+    `/me/search-profiles/{id}/opportunities` — it has to resolve to a profile this
+    account owns, or the sweep would exercise the 404 rather than the 200 path.
     """
     async with api_harness(tmp_path) as api:
         await api.sign_in()
         await api.finish_onboarding()
+        user_id = next(iter(api.users.users))
         await api.companies.upsert(a_company(id=CompanyId(PLACEHOLDER_ID),
                                              locations=()))
-        reads = [concrete(path) for method, path in operations(
+        await api.searches.upsert(a_search_profile(
+            id=SearchProfileId(PLACEHOLDER_ID), user_id=user_id))
+        reads = [_get_with_scope(concrete(path)) for method, path in operations(
             api.app, under=API_V2_PREFIX) if method == "GET"]
         before = deepcopy((api.users.users, api.sessions.sessions,
                            api.profiles.profiles, api.searches.searches,
@@ -179,19 +207,24 @@ async def test_the_one_write_a_get_performs_is_last_seen_at_and_it_cannot_extend
 @pytest.mark.asyncio
 async def test_every_operation_but_register_and_login_refuses_an_anonymous_caller(
         tmp_path):
-    """401 from all thirteen, with no body sent and nothing created.
+    """401 from all sixteen, with no body sent and nothing created.
 
     No payload is needed because FastAPI resolves the session dependency before it
     validates a body, so the refusal happens before the request is read — which is
     also why an unauthenticated write cannot be used to probe the validation rules.
     Sweeping the *published* inventory rather than a hand-written list is what makes
     this catch a future route that forgot the dependency.
+
+    The geo reads are in the sweep, and their 401 is the point Phase 7 has to make:
+    an anonymous caller is refused before the query is even parsed, so a missing
+    cookie short-circuits a malformed radius rather than leaking which queries are
+    well formed.
     """
     async with api_harness(tmp_path) as api:
         protected = [(method, path) for method, path in operations(
             api.app, under=API_V2_PREFIX) if (method, path) not in PUBLIC_OPERATIONS]
 
-        assert len(protected) == 13
+        assert len(protected) == 16
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

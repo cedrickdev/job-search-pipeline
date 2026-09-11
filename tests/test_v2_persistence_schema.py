@@ -53,8 +53,15 @@ TABLES = Base.metadata.tables
 # ambiguous seed unlinked rather than guessing, and §24's explicit merge must not
 # delete the provenance that revealed the duplication. A record that can exist
 # without its parent is not owned by it.
+#
+# `geocoding_cache` is shared for a reason worth stating rather than assuming: "what
+# are the coordinates of Rue de la Gare 5, Lausanne" has one answer for everybody,
+# and a per-user cache would ask a rate-limited public geocoder once per user. Phase
+# 7 §33 is what keeps that safe — the enrichment pass geocodes `opportunities` and
+# `company_locations` only, so no candidate's private address is ever normalized
+# into a key in this table.
 SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
-                 "opportunities", "opportunity_source_records")
+                 "geocoding_cache", "opportunities", "opportunity_source_records")
 
 # Rows one user owns, named by the `user_id` Phase 4's authorization filter reads.
 USER_OWNED_TABLES = ("candidate_profiles", "match_evaluations", "search_profiles",
@@ -98,7 +105,7 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_seventeen_v2_tables():
+def test_the_metadata_holds_exactly_the_eighteen_v2_tables():
     """A tripwire on the shape of the schema itself.
 
     `models.py` is the only place a V2 table may be declared, so the three
@@ -108,7 +115,7 @@ def test_the_metadata_holds_exactly_the_seventeen_v2_tables():
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
         PARENT_OWNED_TABLES) | {"users"}
-    assert len(TABLES) == 17
+    assert len(TABLES) == 18
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
@@ -296,6 +303,10 @@ def test_free_text_columns_are_text_not_varchar():
     the value is not one; and every `ProvenanceKey` column, where 40 is the width
     `backend.app.domain.company` states — a 200-character value in one of those is
     a bug upstream, and the column says so rather than storing it.
+
+    `geocoding_cache.country_hint` is `String(2)` like the other ISO columns but is
+    NOT NULL with `''` for "no hint", because two NULLs are distinct in a unique
+    constraint and the unhinted question is the common one.
     """
     sized = {(table, column.name) for table, column in _columns()
              if _python_type(column) is str
@@ -312,6 +323,8 @@ def test_free_text_columns_are_text_not_varchar():
                      ("company_career_sites", "source_key"),
                      ("company_discovery_records", "provider_key"),
                      ("company_locations", "location_country"),
+                     ("geocoding_cache", "country_hint"),
+                     ("geocoding_cache", "provider"),
                      ("opportunities", "location_country"),
                      ("search_areas", "country"),
                      ("user_sessions", "token_digest"),

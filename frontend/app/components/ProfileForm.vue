@@ -24,7 +24,7 @@
 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { CandidateProfile, CandidateProfileDraft, LanguageLevel } from '~/types/v2'
+import type { CandidateProfile, CandidateProfileDraft, LanguageLevel, Location } from '~/types/v2'
 import { errorMessage, fieldErrors } from '~/utils/v2-errors'
 
 const LEVELS: LanguageLevel[] = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'NATIVE']
@@ -75,12 +75,19 @@ function removeLanguage(index: number) {
 
 function submit() {
   const saved = props.profile?.profile
-  const location = city.value === '' && country.value === ''
+  const base = saved?.base_location
+  // A user-typed location is `SOURCE_PROVIDED` at `UNKNOWN` precision — the honest
+  // provenance for an address nobody geocoded (§7). An edited saved location keeps
+  // whatever provenance it already had, along with the point the form never shows,
+  // so a radius search still resolves against it (Phase 8 re-geocodes on demand).
+  const location: Location | null = city.value === '' && country.value === ''
     ? null
     : {
-        ...saved?.base_location,
+        ...base,
         city: city.value === '' ? null : city.value,
         country: country.value === '' ? null : country.value.toUpperCase(),
+        provenance: base?.provenance ?? 'SOURCE_PROVIDED',
+        precision: base?.precision ?? 'UNKNOWN',
       }
   emit('submit', {
     // Everything this form does not render, kept as it was saved.

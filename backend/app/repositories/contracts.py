@@ -32,15 +32,17 @@ from typing import NamedTuple, Protocol, runtime_checkable
 from pydantic import SecretStr
 
 from backend.app.domain.candidate import CandidateProfile
-from backend.app.domain.common import GeoPoint
+from backend.app.domain.common import GeoPoint, Location
 from backend.app.domain.company import (
     AtsPlatform,
     CareerSite,
     Company,
     CompanyAlias,
     CompanyDiscoveryRecord,
+    CompanyLocation,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.geo import GeoSearchQuery, GeoStatus, RemoteScope
 from backend.app.domain.identifiers import (
     CandidateProfileId,
     CompanyId,
@@ -71,6 +73,35 @@ class OpportunityNearby(NamedTuple):
 
     opportunity: Opportunity
     distance_meters: float
+
+
+class MatchedRadius(NamedTuple):
+    """One radius branch that admitted a geographic result."""
+
+    radius_index: int
+    label: str | None
+
+
+class OpportunityGeoResult(NamedTuple):
+    """One posting in a geo page, including why and where it matched."""
+
+    opportunity: Opportunity
+    location: Location | None
+    distance_meters: float | None
+    status: GeoStatus
+    remote_scope: RemoteScope | None
+    matched_radii: tuple[MatchedRadius, ...] = ()
+    company_location: CompanyLocation | None = None
+
+
+class CompanyGeoResult(NamedTuple):
+    """One employer in a geo page, represented by its best matching site."""
+
+    company: Company
+    location: CompanyLocation
+    distance_meters: float | None
+    status: GeoStatus
+    matched_radii: tuple[MatchedRadius, ...] = ()
 
 
 class CompanyCandidate(NamedTuple):
@@ -146,6 +177,10 @@ class CompanyRepository(Protocol):
         The Phase 6 spontaneous-application question ("who is nearby") in its
         minimal form. Phase 7 builds the explorer on top of it.
         """
+        ...
+
+    async def search_geo(self, query: GeoSearchQuery) -> tuple[CompanyGeoResult, ...]:
+        """Companies matching a bounded geographic query, once per employer."""
         ...
 
     async def find_candidates(
@@ -289,6 +324,11 @@ class OpportunityRepository(Protocol):
     async def list_near(self, center: GeoPoint, radius_meters: float, *,
                         limit: int = DEFAULT_LIMIT) -> tuple[OpportunityNearby, ...]:
         """Postings within `radius_meters` of `center`, closest first."""
+        ...
+
+    async def search_geo(
+            self, query: GeoSearchQuery) -> tuple[OpportunityGeoResult, ...]:
+        """Postings admitted by one typed geographic/remote query."""
         ...
 
     async def list_unlinked(self, *,

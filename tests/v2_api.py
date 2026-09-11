@@ -61,6 +61,7 @@ from backend.app.api.dependencies import (
     authentication_service,
     company_directory_service,
     company_discovery_service,
+    geo_search_service,
     now,
     onboarding_service,
     session_factory,
@@ -74,6 +75,7 @@ from backend.app.services.company_discovery import (
     CompanyDiscoveryService,
     CompanyResolutionService,
 )
+from backend.app.services.geo_search import GeoSearchService
 from backend.app.services.onboarding import OnboardingService
 from server.app import create_app
 from tests.v2_fakes import (
@@ -299,6 +301,11 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     searches = FakeSearchProfileRepository()
     postings = FakeOpportunityRepository()
     companies = FakeCompanyRepository(postings)
+    # The geo fallback join is cross-store: a posting with no point of its own is
+    # placed at its employer's site, so `search_geo` has to reach the company
+    # repository. The pair is built together and wired here, once both exist —
+    # `FakeOpportunityRepository` late-binds it for exactly this reason.
+    postings._companies = companies
     career_sites = FakeCareerSiteRepository()
     discoveries = FakeCompanyDiscoveryRepository()
     providers = CompanyProviderRegistry()
@@ -319,6 +326,8 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
         profiles, searches, users)
     app.dependency_overrides[company_directory_service] = lambda: directory
     app.dependency_overrides[company_discovery_service] = lambda: discovery
+    app.dependency_overrides[geo_search_service] = lambda: GeoSearchService(
+        postings, companies, searches)
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:

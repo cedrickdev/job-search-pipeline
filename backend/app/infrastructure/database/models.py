@@ -51,7 +51,15 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql.elements import TextClause
 
 from backend.app.domain.candidate import WorkAuthorizationStatus
-from backend.app.domain.common import GeoPoint, LanguageLevel, SalaryPeriod, Weekday
+from backend.app.domain.common import (
+    GeocodingConfidence,
+    GeoPoint,
+    LanguageLevel,
+    LocationPrecision,
+    LocationProvenance,
+    SalaryPeriod,
+    Weekday,
+)
 from backend.app.domain.company import (
     AtsPlatform,
     CareerSiteKind,
@@ -60,6 +68,7 @@ from backend.app.domain.company import (
     DetectionStatus,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.geo import GeocodingOutcome
 from backend.app.domain.matching import MatchDimension
 from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
 from backend.app.domain.search import SearchAreaKind
@@ -126,6 +135,29 @@ def _unit_interval(column: str) -> CheckConstraint:
 def _code_format(column: str, pattern: str) -> CheckConstraint:
     """An ISO code column constrained to the shape the domain validates."""
     return CheckConstraint(f"{column} ~ '{pattern}'", name=f"{column}_format")
+
+
+def _location_provenance_coherent() -> CheckConstraint:
+    """`Location._the_provenance_describes_coordinates_that_exist`, as a CHECK.
+
+    Three clauses, one per rule the domain validator states. A precision without
+    coordinates would claim an accuracy for nothing; a `GEOCODED` row with no
+    point is a resolution that did not resolve; and geocoding metadata on a row
+    the geocoder never touched would misreport who is responsible for the value —
+    which matters here specifically, because §7 lets that metadata *veto* a later
+    write.
+
+    Restated on each of the three tables that embed `LocationColumnsMixin`
+    (a mixin cannot carry `__table_args__`), which is why it is a function.
+    """
+    return CheckConstraint(
+        "(location_precision = 'UNKNOWN' OR location_point IS NOT NULL)"
+        " AND (location_provenance <> 'GEOCODED'"
+        "      OR (location_point IS NOT NULL AND location_geocoder IS NOT NULL))"
+        " AND (location_provenance = 'GEOCODED'"
+        "      OR (location_confidence IS NULL AND location_geocoder IS NULL"
+        "          AND location_geocoded_at IS NULL))",
+        name="location_provenance_coherent")
 
 
 def _text_array_elements_present(column: str) -> CheckConstraint:
@@ -215,6 +247,18 @@ class LocationColumnsMixin:
     Every component is nullable because discovery is incremental: a posting that
     says only "Lausanne" stores `location_city` and nothing else, and the
     geocoding pass of Phase 7 fills `location_point` later.
+
+    Phase 7 added the five `location_provenance`/`location_precision`/… columns.
+    They describe the *coordinates*, not the place, which is why they sit outside
+    `_LOCATION_COMPONENTS`: a row with a provenance and no components still
+    locates nothing. Their job is to make the enrichment pass re-runnable — it can
+    read that a point came from the employer itself and leave it alone (§7, §39) —
+    and to stop a city centroid being drawn as a street address (§32).
+
+    The two defaults say what an un-geocoded row means: the source provided
+    whatever is there, and nothing claims a precision. They are server-side so
+    that revision 0005 can backfill the existing rows with the same statement that
+    adds the column, and so a row written by psql is as honest as one written here.
     """
 
     location_country: Mapped[str | None] = mapped_column(String(2))
@@ -223,6 +267,19 @@ class LocationColumnsMixin:
     location_postal_code: Mapped[str | None]
     location_point: Mapped[GeoPoint | None]
     location_raw: Mapped[str | None]
+
+    location_provenance: Mapped[LocationProvenance] = mapped_column(
+        enum_column(LocationProvenance, "location_provenance"),
+        default=LocationProvenance.SOURCE_PROVIDED,
+        server_default=text(f"'{LocationProvenance.SOURCE_PROVIDED.value}'"))
+    location_precision: Mapped[LocationPrecision] = mapped_column(
+        enum_column(LocationPrecision, "location_precision"),
+        default=LocationPrecision.UNKNOWN,
+        server_default=text(f"'{LocationPrecision.UNKNOWN.value}'"))
+    location_confidence: Mapped[GeocodingConfidence | None] = mapped_column(
+        enum_column(GeocodingConfidence, "location_confidence"))
+    location_geocoder: Mapped[str | None]
+    location_geocoded_at: Mapped[datetime | None]
 
 
 # A SHA-256 rendered as lower-case hex is always 64 characters, so the column is
@@ -372,6 +429,7 @@ class CandidateProfileRow(LocationColumnsMixin, TimestampedMixin, Base):
     __tablename__ = "candidate_profiles"
     __table_args__ = (
         _code_format("location_country", "^[A-Z]{2}$"),
+        _location_provenance_coherent(),
         CheckConstraint(
             "availability_earliest_start <= availability_latest_end",
             name="availability_window_ordered"),
@@ -956,11 +1014,16 @@ class CompanyLocationRow(LocationColumnsMixin, TimestampedMixin, Base):
             " OR ".join(f"{column} IS NOT NULL" for column in _LOCATION_COMPONENTS),
             name="location_not_empty"),
         _code_format("location_country", "^[A-Z]{2}$"),
+        _location_provenance_coherent(),
         Index("ix_company_locations_company_id", "company_id"),
         # GiST is what makes `ST_DWithin` an index lookup instead of a scan of
         # every site in the country.
         Index("ix_company_locations_location_point", "location_point",
               postgresql_using="gist"),
+        # §13's whole-country branch, which is not a spatial predicate and which
+        # GiST therefore does not serve: `location_country = 'CH'`, against the
+        # canonical code rather than a substring of a display string.
+        Index("ix_company_locations_location_country", "location_country"),
         # `Company._locations_belong_here` allows at most one headquarters. A
         # partial unique index says the same thing to the database, and costs
         # nothing on the rows that are not headquarters.
@@ -1020,12 +1083,15 @@ class OpportunityRow(LocationColumnsMixin, TimestampedMixin, Base):
         _code_format("location_country", "^[A-Z]{2}$"),
         _code_format("posting_language", "^[a-z]{2}$"),
         _code_format("salary_currency", "^[A-Z]{3}$"),
+        _location_provenance_coherent(),
         Index("ix_opportunities_company_id", "company_id"),
         # The feed is "what is new", so this is the ordering every list query
         # uses. PostgreSQL does not index a foreign key or a sort column for you.
         Index("ix_opportunities_discovered_at", "discovered_at"),
         Index("ix_opportunities_location_point", "location_point",
               postgresql_using="gist"),
+        # §13's whole-country branch — see `ix_company_locations_location_country`.
+        Index("ix_opportunities_location_country", "location_country"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -1207,6 +1273,99 @@ class MatchDimensionScoreRow(TimestampedMixin, Base):
 
     evaluation: Mapped["MatchEvaluationRow"] = relationship(
         back_populates="dimensions", lazy="raise")
+
+
+# `GeocodingResult._the_payload_matches_the_outcome`, as a CHECK. The reason it is
+# worth restating in the database is the reason the validator exists: an adapter is
+# written against one example response, and `AMBIGUOUS` with a single candidate is
+# the bug that would quietly retire §6's prohibition on turning the first hit into
+# truth. `'{}'::jsonb` is "no place" and `'[]'::jsonb` is "no alternatives", the
+# same absent-means-empty convention `ats_evidence` uses.
+_GEOCODING_PAYLOAD_MATCHES_OUTCOME: Final[str] = (
+    f"(outcome = '{GeocodingOutcome.MATCHED.value}' AND place <> '{{}}'::jsonb"
+    " AND alternatives = '[]'::jsonb)"
+    f" OR (outcome = '{GeocodingOutcome.AMBIGUOUS.value}' AND place = '{{}}'::jsonb"
+    " AND jsonb_array_length(alternatives) >= 2)"
+    f" OR (outcome IN ('{GeocodingOutcome.NOT_FOUND.value}',"
+    f" '{GeocodingOutcome.FAILED.value}')"
+    " AND place = '{}'::jsonb AND alternatives = '[]'::jsonb)"
+)
+
+
+class GeocodingCacheRow(TimestampedMixin, Base):
+    """One provider's answer to one normalized question (Phase 7 §23).
+
+    A table rather than an in-process dictionary because the enrichment pass is a
+    CLI invocation (§22) — the process exits, and a cache that died with it would
+    let a nightly run ask a rate-limited public geocoder the same thousand
+    questions every night. Idempotence by construction is the point: the primary
+    key is `geocoding_cache_entry_id`, uuid5 over exactly the three columns the
+    unique constraint covers, so re-asking updates the row rather than adding one.
+
+    **The key is provider-aware and country-aware.** Two geocoders answer the same
+    string differently, so caching one under the other's name would attribute
+    provenance to the wrong service; and "Neuchâtel" resolves differently
+    depending on the hint that accompanied it. `country_hint` is NOT NULL with `''`
+    meaning "no hint", rather than nullable, for a reason worth stating: in
+    PostgreSQL two NULLs are distinct in a unique constraint, so a nullable column
+    here would let the unhinted question — the common one — be stored twice with
+    nothing to stop it.
+
+    **A failure is not an answer.** `expires_at` is NULL for `MATCHED`,
+    `AMBIGUOUS` and `NOT_FOUND`: those are what the provider knows, and re-asking
+    tomorrow gives the same reply. It is set for `FAILED`, so a timeout or a 502
+    is remembered only long enough to stop a retry storm — caching one provider
+    outage forever would turn it into a permanently unresolvable address.
+
+    **No user data reaches this table.** It is shared and unscoped, so §33 applies
+    with full force: the enrichment service geocodes `opportunities` and
+    `company_locations` and nothing else. A candidate's home address is private,
+    and normalizing it into a shared cache key would be precisely the leak §33
+    names — which is why "geocode a candidate profile" is not an operation this
+    phase offers.
+
+    `place` and `alternatives` hold `GeocodedPlace` documents rather than flattened
+    columns. Nothing queries the cache geographically — it is read by key and only
+    by key — and a `GeocodedPlace` has nowhere to put a credential by
+    construction, so the JSONB carries no provider blob (§6).
+    """
+
+    __tablename__ = "geocoding_cache"
+    __table_args__ = (
+        UniqueConstraint("provider", "country_hint", "normalized_query"),
+        _code_format("country_hint", "^([A-Z]{2})?$"),
+        _code_format("provider", "^[a-z][a-z0-9_]*$"),
+        CheckConstraint(_GEOCODING_PAYLOAD_MATCHES_OUTCOME,
+                        name="payload_matches_outcome"),
+        # Only a failure may expire, and it must: the two halves of §23's rule,
+        # stated so a provider outage cannot be recorded as permanent.
+        CheckConstraint(
+            f"(outcome = '{GeocodingOutcome.FAILED.value}')"
+            " = (expires_at IS NOT NULL)",
+            name="only_a_failure_expires"),
+        CheckConstraint("normalized_query <> ''", name="normalized_query_present"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(_PROVENANCE_KEY_LENGTH))
+    country_hint: Mapped[str] = mapped_column(String(2), server_default=text("''"))
+    normalized_query: Mapped[str]
+    outcome: Mapped[GeocodingOutcome] = mapped_column(
+        enum_column(GeocodingOutcome, "geocoding_outcome"))
+    place: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
+    alternatives: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    # Composed by the adapter from a fixed vocabulary, never a forwarded provider
+    # message and never a formatted exception: a URL in an exception carries its
+    # query string, and a query string carries the API key
+    # (`backend/app/discovery/failures.py`).
+    detail: Mapped[str | None]
+    # When the provider was actually asked. `created_at` is when the row was
+    # written, which stops being the same thing the first time an entry is
+    # refreshed in place.
+    checked_at: Mapped[datetime]
+    expires_at: Mapped[datetime | None]
 
 
 

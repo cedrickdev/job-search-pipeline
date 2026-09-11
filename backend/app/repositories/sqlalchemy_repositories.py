@@ -22,10 +22,13 @@ from sqlalchemy import (
     CursorResult,
     Result,
     Select,
+    and_,
+    case,
     delete,
     exists,
     false,
     func,
+    null,
     or_,
     select,
     update,
@@ -43,6 +46,12 @@ from backend.app.domain.company import (
     CompanyDiscoveryRecord,
     normalize_company_name,
 )
+from backend.app.domain.geo import (
+    GeoSearchQuery,
+    GeoStatus,
+    RemotePolicy,
+    remote_scope_of,
+)
 from backend.app.domain.identifiers import (
     CandidateProfileId,
     CompanyId,
@@ -53,7 +62,7 @@ from backend.app.domain.identifiers import (
     UserSessionId,
 )
 from backend.app.domain.matching import MatchEvaluation
-from backend.app.domain.opportunity import Opportunity
+from backend.app.domain.opportunity import Opportunity, WorkplaceMode
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.infrastructure.database.mappers import (
@@ -63,6 +72,7 @@ from backend.app.infrastructure.database.mappers import (
     career_site_to_row,
     company_alias_to_domain,
     company_alias_to_row,
+    company_location_to_domain,
     company_to_domain,
     company_to_row,
     discovery_record_to_domain,
@@ -92,12 +102,19 @@ from backend.app.infrastructure.database.models import (
     UserRow,
     UserSessionRow,
 )
-from backend.app.infrastructure.database.types import distance_meters, within_radius
+from backend.app.infrastructure.database.types import (
+    distance_meters,
+    within_bounds,
+    within_radius,
+)
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
     CompanyCandidate,
     CompanyFilter,
+    CompanyGeoResult,
     CompanyPage,
+    MatchedRadius,
+    OpportunityGeoResult,
     OpportunityNearby,
 )
 
@@ -148,6 +165,28 @@ def _rows_affected(result: Result[Any]) -> int:
     return cast("CursorResult[Any]", result).rowcount
 
 
+def _nearest_distance(column: Any, query: GeoSearchQuery) -> ColumnElement[float | None]:
+    """Smallest PostGIS distance to any query centre, or SQL NULL without one."""
+    distances = [distance_meters(column, radius.center) for radius in query.radii]
+    if not distances:
+        return cast("ColumnElement[float | None]", null())
+    if len(distances) == 1:
+        return cast("ColumnElement[float | None]", distances[0])
+    return cast("ColumnElement[float | None]", func.least(*distances))
+
+
+def _matched_radius_columns(column: Any, query: GeoSearchQuery) -> list[Any]:
+    """SQL booleans for each radius, selected beside each result row."""
+    return [within_radius(column, radius.center, radius.radius.meters)
+            for radius in query.radii]
+
+
+def _matched_radii(values: Sequence[bool | None],
+                   query: GeoSearchQuery) -> tuple[MatchedRadius, ...]:
+    return tuple(MatchedRadius(index, query.radii[index].label)
+                 for index, matched in enumerate(values) if matched is True)
+
+
 class SqlAlchemyCompanyRepository:
     """`CompanyRepository` over an `AsyncSession`."""
 
@@ -192,6 +231,66 @@ class SqlAlchemyCompanyRepository:
             .order_by(CompanyRow.name, CompanyRow.id)
             .limit(limit))
         return tuple(company_to_domain(row) for row in result.scalars())
+
+    async def search_geo(self, query: GeoSearchQuery) -> tuple[CompanyGeoResult, ...]:
+        """Return each employer once, at its closest matching physical site."""
+        if query.remote_policy is RemotePolicy.REMOTE_ONLY:
+            return ()
+        radius_matches = _matched_radius_columns(
+            CompanyLocationRow.location_point, query)
+        geographic: list[ColumnElement[bool]] = list(radius_matches)
+        if query.countries:
+            geographic.append(
+                CompanyLocationRow.location_country.in_(query.countries))
+        predicates: list[ColumnElement[bool]] = [or_(*geographic)]
+        if query.bounds is not None:
+            predicates.append(
+                within_bounds(CompanyLocationRow.location_point, query.bounds))
+
+        distance = _nearest_distance(CompanyLocationRow.location_point, query)
+        # Rank a company's sites by proximity when the query has centres,
+        # otherwise by headquarters: `distance` is SQL NULL without radii, and an
+        # OVER (ORDER BY NULL) is rejected as a non-integer constant ordering.
+        site_order: list[Any] = ([distance.asc().nulls_last()] if query.radii
+                                 else [CompanyLocationRow.is_headquarters.desc()])
+        rank = func.row_number().over(
+            partition_by=CompanyLocationRow.company_id,
+            order_by=(*site_order, CompanyLocationRow.id),
+        ).label("site_rank")
+        sites = (select(
+            CompanyLocationRow.id.label("site_id"),
+            CompanyLocationRow.company_id.label("company_id"),
+            distance.label("distance_meters"),
+            *[match.label(f"radius_{index}")
+              for index, match in enumerate(radius_matches)],
+            rank,
+        ).where(*predicates).subquery())
+        statement = (select(CompanyRow, CompanyLocationRow,
+                            sites.c.distance_meters,
+                            *[sites.c[f"radius_{index}"]
+                              for index in range(len(radius_matches))])
+                     .options(selectinload(CompanyRow.locations))
+                     .join(sites, sites.c.company_id == CompanyRow.id)
+                     .join(CompanyLocationRow,
+                           CompanyLocationRow.id == sites.c.site_id)
+                     .where(sites.c.site_rank == 1))
+        ordering: list[Any] = []
+        if query.radii:
+            ordering.append(sites.c.distance_meters.asc().nulls_last())
+        ordering.extend((CompanyRow.name, CompanyRow.id))
+        result = await self._session.execute(
+            statement.order_by(*ordering).limit(query.limit).offset(query.offset))
+        found: list[CompanyGeoResult] = []
+        for values in result.all():
+            company_row, site_row, meters, *matches = values
+            found.append(CompanyGeoResult(
+                company=company_to_domain(company_row),
+                location=company_location_to_domain(site_row),
+                distance_meters=None if meters is None else float(meters),
+                status=(GeoStatus.RESOLVED if site_row.location_point is not None
+                        else GeoStatus.UNRESOLVED),
+                matched_radii=_matched_radii(matches, query)))
+        return tuple(found)
 
     async def _aliases_for(
             self,
@@ -484,6 +583,126 @@ class SqlAlchemyOpportunityRepository:
             .limit(limit))
         return tuple(OpportunityNearby(opportunity_to_domain(row), float(meters))
                      for row, meters in result.all())
+
+    async def search_geo(
+            self, query: GeoSearchQuery) -> tuple[OpportunityGeoResult, ...]:
+        """Run the typed Phase 7 query, leaving distance arithmetic to PostGIS."""
+        opportunity_radius_matches = _matched_radius_columns(
+            OpportunityRow.location_point, query)
+        fallback_radius_matches = _matched_radius_columns(
+            CompanyLocationRow.location_point, query)
+        resolved_point = OpportunityRow.location_point.is_not(None)
+        radius_predicates = [
+            or_(opportunity_match,
+                and_(~resolved_point, fallback_match))
+            for opportunity_match, fallback_match in zip(
+                opportunity_radius_matches, fallback_radius_matches, strict=True)
+        ]
+        geographic_predicates: list[ColumnElement[bool]] = list(radius_predicates)
+        if query.countries:
+            geographic_predicates.append(or_(
+                OpportunityRow.location_country.in_(query.countries),
+                and_(OpportunityRow.location_country.is_(None),
+                     CompanyLocationRow.location_country.in_(query.countries))))
+        remote = OpportunityRow.workplace_mode == WorkplaceMode.REMOTE
+        predicates: list[ColumnElement[bool]] = []
+        if query.remote_policy is RemotePolicy.REMOTE_ONLY:
+            predicates.append(remote)
+        elif query.remote_policy is RemotePolicy.INCLUDE_REMOTE:
+            predicates.append(or_(*geographic_predicates, remote))
+        else:
+            predicates.extend((or_(*geographic_predicates), ~remote))
+
+        if query.remote_countries:
+            predicates.append(or_(~remote,
+                                  OpportunityRow.location_country.in_(
+                                      query.remote_countries)))
+        if query.opportunity_types:
+            predicates.append(
+                OpportunityRow.opportunity_type.in_(query.opportunity_types))
+        if query.workplace_modes:
+            predicates.append(
+                OpportunityRow.workplace_mode.in_(query.workplace_modes))
+        if query.bounds is not None:
+            predicates.append(or_(
+                within_bounds(OpportunityRow.location_point, query.bounds),
+                and_(~resolved_point,
+                     within_bounds(CompanyLocationRow.location_point,
+                                   query.bounds))))
+
+        opportunity_distance = _nearest_distance(
+            OpportunityRow.location_point, query)
+        fallback_distance = _nearest_distance(
+            CompanyLocationRow.location_point, query)
+        distance = case(
+            (resolved_point, opportunity_distance),
+            else_=fallback_distance,
+        ) if query.radii else opportunity_distance
+        selected_matches = [
+            case((resolved_point, opportunity_match), else_=fallback_match)
+            .label(f"radius_{index}")
+            for index, (opportunity_match, fallback_match) in enumerate(zip(
+                opportunity_radius_matches, fallback_radius_matches, strict=True))
+        ]
+        ordering: list[Any] = []
+        if query.radii:
+            ordering.append(distance.asc().nulls_last())
+        ordering.extend((OpportunityRow.discovered_at.desc(), OpportunityRow.id))
+        # Which of a company's sites stands in for a posting with no coordinates:
+        # the closest to a search centre when the query has radii, otherwise the
+        # headquarters. Ordering by `_nearest_distance` unconditionally would emit
+        # `ORDER BY NULL` — a syntax error — on a country- or remote-only search.
+        site_order: list[Any] = []
+        if query.radii:
+            site_order.append(
+                _nearest_distance(CompanyLocationRow.location_point, query)
+                .asc().nulls_last())
+        else:
+            site_order.append(CompanyLocationRow.is_headquarters.desc())
+        site_order.append(CompanyLocationRow.id)
+        nearest_site = (
+            select(CompanyLocationRow.id)
+            .where(CompanyLocationRow.company_id == OpportunityRow.company_id)
+            .order_by(*site_order)
+            .limit(1).correlate(OpportunityRow).scalar_subquery())
+        result = await self._session.execute(
+            select(OpportunityRow, CompanyLocationRow,
+                   distance.label("distance_meters"), *selected_matches)
+            .options(selectinload(OpportunityRow.source))
+            .outerjoin(
+                CompanyLocationRow,
+                and_(CompanyLocationRow.company_id == OpportunityRow.company_id,
+                     CompanyLocationRow.id == nearest_site))
+            .where(*predicates)
+            .order_by(*ordering)
+            .limit(query.limit).offset(query.offset))
+        found: list[OpportunityGeoResult] = []
+        for values in result.all():
+            row, company_location_row, meters, *matches = values
+            opportunity = opportunity_to_domain(row)
+            matched = _matched_radii(matches, query)
+            is_remote = opportunity.is_remote
+            has_own_point = (opportunity.location is not None
+                             and opportunity.location.point is not None)
+            fallback = (not has_own_point and company_location_row is not None
+                        and company_location_row.location_point is not None)
+            company_location = (company_location_to_domain(company_location_row)
+                                if fallback else None)
+            result_location = (company_location.location if company_location is not None
+                               else opportunity.location)
+            found.append(OpportunityGeoResult(
+                opportunity=opportunity,
+                location=result_location,
+                distance_meters=None if meters is None else float(meters),
+                status=(GeoStatus.REMOTE if is_remote else
+                        GeoStatus.RESOLVED if has_own_point else
+                        GeoStatus.COMPANY_FALLBACK if fallback else
+                        GeoStatus.UNRESOLVED),
+                remote_scope=remote_scope_of(opportunity.workplace_mode,
+                                             opportunity.location),
+                matched_radii=matched,
+                company_location=company_location))
+        return tuple(found)
 
     async def list_unlinked(self, *,
                             limit: int = DEFAULT_LIMIT) -> tuple[Opportunity, ...]:

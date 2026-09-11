@@ -272,6 +272,12 @@ Target data model:
 
 Queries should use spatial indexes and database-side distance predicates.
 
+Implemented in Phase 7. See [Geo Opportunity Explorer](./GEO_SEARCH.md) — the
+typed geo query, the explicit remote policy, `GeoStatus` (so "we cannot tell
+where this is" is a value, not a false 0 km), the provider-neutral geocoder port,
+the bounded enrichment pass and its provider-aware cache. Distance is the
+database's answer (`ST_DWithin` / `ST_Distance`), never computed in Python.
+
 ## 12. Frontend
 
 The V2 frontend target is **Nuxt 4 + Vue 3 + TypeScript**.

@@ -668,6 +668,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/geo/companies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search Companies
+         * @description Employers with a site in scope, each once, at their nearest match.
+         *
+         *     A `remote=only` search is valid but empty by construction — an employer is a
+         *     place, and "remote only" is a question about postings — so the route answers 200
+         *     with no companies rather than inventing one.
+         */
+        get: operations["search_companies_api_v2_geo_companies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/geo/opportunities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search Opportunities
+         * @description Postings admitted by one geographic/remote query, closest first.
+         *
+         *     The window echoed in the body is the one the query validated, so a client pages
+         *     against the same `limit`/`offset` it sent (§17). A posting with no point of its
+         *     own is placed at its employer's nearest site and flagged `COMPANY_FALLBACK`, so a
+         *     map never silently drops it or draws the weaker pin like a geocoded one (§12).
+         */
+        get: operations["search_opportunities_api_v2_geo_opportunities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/me/profile": {
         parameters: {
             query?: never;
@@ -741,6 +790,31 @@ export interface paths {
          *     so is more useful than pretending the second call did something.
          */
         delete: operations["delete_search_profile_api_v2_me_search_profiles__search_profile_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/search-profiles/{search_profile_id}/opportunities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search Saved Profile
+         * @description Run one of this account's saved searches as a geo query.
+         *
+         *     The scope is the profile's saved areas; the only query parameters are the optional
+         *     map `bounds` Phase 8 sends when the user pans, and the page window. A profile that
+         *     is not this account's is the same 404 as one that does not exist — the service
+         *     loads it scoped by the session user and never says which of the two it was.
+         */
+        get: operations["search_saved_profile_api_v2_me_search_profiles__search_profile_id__opportunities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1144,6 +1218,38 @@ export interface components {
             provider_key: string | null;
         };
         /**
+         * CompanyGeoItemResponse
+         * @description One employer on the map, at its nearest matching site.
+         *
+         *     The `CompanyResponse` is the same object `GET /companies` returns, so a client
+         *     holds one company shape. Beside it is the *site* that matched — its coordinates
+         *     and whether it is the headquarters — with the distance and the status the row
+         *     was admitted with.
+         */
+        CompanyGeoItemResponse: {
+            company: components["schemas"]["CompanyResponse"];
+            /** Distance Meters */
+            distance_meters: number | null;
+            /** Is Headquarters */
+            is_headquarters: boolean;
+            location: components["schemas"]["GeoLocationResponse"];
+            /** Matched Radii */
+            matched_radii: components["schemas"]["MatchedRadiusResponse"][];
+            status: components["schemas"]["GeoStatus"];
+        };
+        /**
+         * CompanyGeoResponse
+         * @description One geo page of employers, each once, with the window it came from.
+         */
+        CompanyGeoResponse: {
+            /** Companies */
+            companies: components["schemas"]["CompanyGeoItemResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /**
          * CompanyIdentityStatus
          * @description How much we trust that this row is one real employer (§1).
          *
@@ -1321,6 +1427,35 @@ export interface components {
             source_url: string | null;
         };
         /**
+         * GeoLocationResponse
+         * @description A place, its coordinates, and where those coordinates came from (§7).
+         *
+         *     Unlike `CompanyLocationResponse`, this one carries a `point`: Phase 7 is where
+         *     coordinates enter the API. The five provenance fields travel with it so a
+         *     client can tell a geocoded centroid from a source-provided address and draw
+         *     them differently (§32) — a bare pair of floats would overstate what is known.
+         */
+        GeoLocationResponse: {
+            /** City */
+            city: string | null;
+            confidence: components["schemas"]["GeocodingConfidence"] | null;
+            /** Country */
+            country: string | null;
+            /** Geocoded At */
+            geocoded_at: string | null;
+            /** Geocoder */
+            geocoder: string | null;
+            point: components["schemas"]["GeoPointResponse"] | null;
+            /** Postal Code */
+            postal_code: string | null;
+            precision: components["schemas"]["LocationPrecision"];
+            provenance: components["schemas"]["LocationProvenance"];
+            /** Raw */
+            raw: string | null;
+            /** Region */
+            region: string | null;
+        };
+        /**
          * GeoPoint
          * @description WGS84 coordinates.
          *
@@ -1334,6 +1469,49 @@ export interface components {
             /** Longitude */
             longitude: number;
         };
+        /**
+         * GeoPointResponse
+         * @description WGS84 coordinates, as two floats.
+         */
+        GeoPointResponse: {
+            /** Latitude */
+            latitude: number;
+            /** Longitude */
+            longitude: number;
+        };
+        /**
+         * GeoStatus
+         * @description Why a result has the distance it has — or has none (Phase 7 §12).
+         *
+         *     The member that earns the enum is `UNRESOLVED`. Without it, a caller reading
+         *     `distance_km = null` cannot tell "this posting is remote, distance does not
+         *     apply" from "we do not know where this posting is" from "it is outside the
+         *     radius" — and the third is not even in the list, because a row outside the
+         *     radius is not returned at all. §12 requires those to be distinguishable, and a
+         *     nullable float cannot do it.
+         *
+         *     `COMPANY_FALLBACK` is the other one that has to be visible. A posting with no
+         *     coordinates of its own, placed at its employer's office (§9, §31), is a
+         *     weaker claim than one that geocoded its own address; a UI that draws both as
+         *     the same pin is overstating what is known, and an operator debugging "why is
+         *     this job on the map at all" needs the answer in the payload rather than in the
+         *     query plan.
+         * @enum {string}
+         */
+        GeoStatus: "RESOLVED" | "COMPANY_FALLBACK" | "REMOTE" | "UNRESOLVED";
+        /**
+         * GeocodingConfidence
+         * @description How sure the geocoder was, on a scale small enough to mean something.
+         *
+         *     Three levels rather than a float: providers report confidence on scales that
+         *     do not compare (Nominatim's `importance` is a popularity measure, not a
+         *     probability), so a number here would imply an accuracy the input does not
+         *     have. Three buckets are enough for the one decision that reads them — §7 and
+         *     §39's "do not let a weaker answer replace a stronger one" — and `rank` is what
+         *     makes that comparison explicit.
+         * @enum {string}
+         */
+        GeocodingConfidence: "HIGH" | "MEDIUM" | "LOW";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1387,20 +1565,64 @@ export interface components {
          *     parsed, and a geocoding pass later fills `city`/`country`/`point`. Keeping
          *     `raw` is what allows that pass to be re-run and audited instead of guessed
          *     once and forgotten.
+         *
+         *     Phase 7 added the five fields after `raw`, and they describe the *coordinates*
+         *     rather than the place: where the point came from, how precisely it locates
+         *     anything, how sure the geocoder was, which geocoder it was and when. Together
+         *     they are what makes the enrichment pass of §21 safe to re-run — it can see
+         *     that a point is already better than anything it could produce and skip it —
+         *     and what stops a city centroid being drawn as a street address (§32).
+         *
+         *     Nothing here is required, because a `Location` that came off a job board has
+         *     no provenance to state beyond "the source said so", which is the default.
          */
         Location: {
             /** City */
             city?: string | null;
+            confidence?: components["schemas"]["GeocodingConfidence"] | null;
             /** Country */
             country?: string | null;
+            /** Geocoded At */
+            geocoded_at?: string | null;
+            /** Geocoder */
+            geocoder?: string | null;
             point?: components["schemas"]["GeoPoint"] | null;
             /** Postal Code */
             postal_code?: string | null;
+            /** @default UNKNOWN */
+            precision: components["schemas"]["LocationPrecision"];
+            /** @default SOURCE_PROVIDED */
+            provenance: components["schemas"]["LocationProvenance"];
             /** Raw */
             raw?: string | null;
             /** Region */
             region?: string | null;
         };
+        /**
+         * LocationPrecision
+         * @description How precisely the coordinates locate the thing (Phase 7 §32).
+         *
+         *     A city centroid and a building entrance are both a latitude and a longitude,
+         *     and displaying the first as if it were the second is the specific mistake §32
+         *     names. Carrying the precision is what lets a UI draw a disc instead of a pin,
+         *     and what lets a distance be reported as approximate.
+         *
+         *     `UNKNOWN` is the honest answer when there are no coordinates at all, and is
+         *     the only value permitted in that case.
+         * @enum {string}
+         */
+        LocationPrecision: "EXACT_ADDRESS" | "POSTAL_CODE" | "CITY" | "REGION" | "COUNTRY" | "UNKNOWN";
+        /**
+         * LocationProvenance
+         * @description Where a location's coordinates came from (Phase 7 §7).
+         *
+         *     The distinction has teeth: §7 forbids overwriting source-provided coordinates
+         *     with lower-confidence geocoder output, and a column that only stored a point
+         *     could not tell the two apart. `MANUAL` is a human correction and outranks
+         *     both — nothing automated may replace it.
+         * @enum {string}
+         */
+        LocationProvenance: "SOURCE_PROVIDED" | "GEOCODED" | "MANUAL";
         /** LoginRequest */
         LoginRequest: {
             /**
@@ -1413,6 +1635,16 @@ export interface components {
              * Format: password
              */
             password: string;
+        };
+        /**
+         * MatchedRadiusResponse
+         * @description Which radius branch admitted a result, by its index and its label.
+         */
+        MatchedRadiusResponse: {
+            /** Label */
+            label: string | null;
+            /** Radius Index */
+            radius_index: number;
         };
         /** NotesBody */
         NotesBody: {
@@ -1439,6 +1671,68 @@ export interface components {
             may_complete: boolean;
             /** Search Profiles */
             search_profiles: number;
+        };
+        /**
+         * OpportunityGeoItemResponse
+         * @description One posting on the map: enough to place a pin and render a list card.
+         *
+         *     A summary rather than the whole `Opportunity` — no salary, description or
+         *     source snapshot — because this is the explorer, not a posting-detail endpoint.
+         *     `location` is where the pin goes, `status` says how sure that is (§12), and
+         *     `distance_meters` is the database's answer, `null` for an unresolved or remote
+         *     row so a missing distance is never read as zero. `remote_scope` says how far a
+         *     remote posting reaches (§10).
+         */
+        OpportunityGeoItemResponse: {
+            /** Application Url */
+            application_url: string | null;
+            /** Company Id */
+            company_id: string | null;
+            /** Company Name */
+            company_name: string;
+            contract_type: components["schemas"]["ContractType"] | null;
+            /**
+             * Discovered At
+             * Format: date-time
+             */
+            discovered_at: string;
+            /** Distance Meters */
+            distance_meters: number | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            location: components["schemas"]["GeoLocationResponse"] | null;
+            /** Matched Radii */
+            matched_radii: components["schemas"]["MatchedRadiusResponse"][];
+            opportunity_type: components["schemas"]["OpportunityType"] | null;
+            /** Posted At */
+            posted_at: string | null;
+            /** Posting Language */
+            posting_language: string | null;
+            remote_scope: components["schemas"]["RemoteScope"] | null;
+            status: components["schemas"]["GeoStatus"];
+            /** Title */
+            title: string;
+            workplace_mode: components["schemas"]["WorkplaceMode"] | null;
+        };
+        /**
+         * OpportunityGeoResponse
+         * @description One geo page of postings, with the window it came from.
+         *
+         *     No `total`, deliberately: the geo query is a windowed scan over a join, and a
+         *     faithful count would be a second query as costly as the first. `limit` and
+         *     `offset` are echoed so a client can page — the same contract the query
+         *     validates (§17).
+         */
+        OpportunityGeoResponse: {
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Opportunities */
+            opportunities: components["schemas"]["OpportunityGeoItemResponse"][];
         };
         /**
          * OpportunityLinkResponse
@@ -1561,6 +1855,37 @@ export interface components {
             /** Label */
             label?: string | null;
         };
+        /**
+         * RemoteScope
+         * @description How far a remote posting actually reaches (Phase 7 §10, §11).
+         *
+         *     Derived from the posting rather than stored, by `remote_scope_of` below, so it
+         *     cannot drift from the workplace mode and location beside it.
+         *
+         *     `HYBRID` is a member of this enum and *not* a kind of remote: a hybrid role
+         *     keeps a geographic anchor, is judged by distance like any on-site role, and
+         *     §11 forbids treating it as fully remote. It is listed here because "how far
+         *     does this reach" is the same question, and the answer for hybrid is "as far as
+         *     a commute".
+         *
+         *     The three genuinely remote members are ordered from the strongest claim to the
+         *     weakest, and the derivation is deliberately reluctant to reach
+         *     `REMOTE_ANYWHERE`: a posting that names a country or a region while saying
+         *     "remote" has told us something, and §10 forbids reading bare "Remote" as
+         *     worldwide eligibility.
+         * @enum {string}
+         */
+        RemoteScope: "REMOTE_ANYWHERE" | "REMOTE_COUNTRY_RESTRICTED" | "REMOTE_REGION_RESTRICTED" | "HYBRID";
+        /**
+         * RemoteSelection
+         * @description The `remote` query parameter — the short spelling of `RemotePolicy`.
+         *
+         *     Three lowercase words a URL can carry, mapped to the domain policy in one
+         *     place. `exclude` is the default because a geographic search that silently
+         *     included remote roles would answer a question the caller did not ask (§10).
+         * @enum {string}
+         */
+        RemoteSelection: "exclude" | "include" | "only";
         /**
          * SearchProfileDraft
          * @description A saved search as submitted: no id, no owner, no timestamps.
@@ -3021,6 +3346,84 @@ export interface operations {
             };
         };
     };
+    search_companies_api_v2_geo_companies_get: {
+        parameters: {
+            query?: {
+                radius?: string[];
+                country?: string[];
+                bounds?: string | null;
+                remote?: components["schemas"]["RemoteSelection"];
+                remote_country?: string[];
+                opportunity_type?: components["schemas"]["OpportunityType"][];
+                workplace_mode?: components["schemas"]["WorkplaceMode"][];
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyGeoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_opportunities_api_v2_geo_opportunities_get: {
+        parameters: {
+            query?: {
+                radius?: string[];
+                country?: string[];
+                bounds?: string | null;
+                remote?: components["schemas"]["RemoteSelection"];
+                remote_country?: string[];
+                opportunity_type?: components["schemas"]["OpportunityType"][];
+                workplace_mode?: components["schemas"]["WorkplaceMode"][];
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpportunityGeoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_profile_api_v2_me_profile_get: {
         parameters: {
             query?: never;
@@ -3191,6 +3594,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_saved_profile_api_v2_me_search_profiles__search_profile_id__opportunities_get: {
+        parameters: {
+            query?: {
+                bounds?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                search_profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpportunityGeoResponse"];
+                };
             };
             /** @description Validation Error */
             422: {

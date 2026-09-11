@@ -71,6 +71,7 @@ from backend.app.services.company_discovery import (
     CompanyDiscoveryService,
     CompanyResolutionService,
 )
+from backend.app.services.geo_search import GeoSearchService
 from backend.app.services.onboarding import OnboardingService
 from country_packs.registry import CountryPackRegistry
 
@@ -198,6 +199,21 @@ def company_directory_service(
                                    SqlAlchemyCompanyDiscoveryRepository(session))
 
 
+def geo_search_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> GeoSearchService:
+    """The read side of the geo explorer: three repositories, no clock.
+
+    Composed here like every other service so the request layer wires the
+    repositories over PostGIS and the route depends on one geo boundary rather than
+    three. The saved-search read needs the profile repository too, so all three are
+    handed in — the service never reaches for a session of its own.
+    """
+    return GeoSearchService(SqlAlchemyOpportunityRepository(session),
+                            SqlAlchemyCompanyRepository(session),
+                            SqlAlchemySearchProfileRepository(session))
+
+
 def company_discovery_service(
         session: Annotated[AsyncSession, Depends(database_session)],
         packs: Annotated[CountryPackRegistry, Depends(country_packs)],
@@ -294,3 +310,4 @@ Onboarding = Annotated[OnboardingService, Depends(onboarding_service)]
 Companies = Annotated[CompanyDirectoryService, Depends(company_directory_service)]
 CompanyDiscovery = Annotated[CompanyDiscoveryService,
                              Depends(company_discovery_service)]
+GeoSearch = Annotated[GeoSearchService, Depends(geo_search_service)]

@@ -14,7 +14,8 @@ This directory is the source of truth for the V2 product and implementation plan
 8. [V2 Authentication](./AUTHENTICATION.md) — accounts, server-side sessions, the two cookies, CSRF and the onboarding gate, built in Phase 4
 9. [Country Packs and Source Plugins](./COUNTRY_PACKS.md) — the pack contract, the source contract, capabilities, health, the Swiss reference pack, built in Phase 5
 10. [Company Discovery](./COMPANY_DISCOVERY.md) — companies as first-class discovery targets, identity resolution, ATS detection, career pages, spontaneous applications, built in Phase 6
-11. [V1 Baseline](./V1_BASELINE.md) — what V1 is and what its checks report, measured in Phase 0
+11. [Geo Opportunity Explorer](./GEO_SEARCH.md) — the geo search query, remote policy, the provider-neutral geocoder, the enrichment pass and its cache, built in Phase 7
+12. [V1 Baseline](./V1_BASELINE.md) — what V1 is and what its checks report, measured in Phase 0
 
 ## Product principle
 

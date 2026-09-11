@@ -23,6 +23,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from backend.app.domain.company import normalize_company_name
 from backend.app.infrastructure.database import models  # imported: registers tables
@@ -52,12 +53,12 @@ V2_TABLES = frozenset({
     "candidate_profiles", "candidate_languages", "candidate_work_authorizations",
     "candidate_availability_slots", "search_profiles", "search_areas",
     "opportunities", "opportunity_source_records", "match_evaluations",
-    "match_dimension_scores",
+    "match_dimension_scores", "geocoding_cache",
 })
 
 # The revision `alembic upgrade head` is expected to stop at. A revision added
 # without updating this line is a revision nobody decided to ship.
-HEAD_REVISION = "0004"
+HEAD_REVISION = "0005"
 
 # Every `geography(Point,4326)` column, by the table that holds it. One radius
 # query has to run against any of them, so they are declared identically and
@@ -360,3 +361,208 @@ def test_downgrading_0004_keeps_every_company_it_extended(schema_engine):
                             "company_discovery_records"}
     assert not columns & {"normalized_name", "normalized_domain", "identity_status",
                           "ats_platform", "spontaneous_support"}
+
+
+# The revision Phase 7 upgrades *from*, and the one it must be reversible to. A
+# database at 0004 is a Phase 6 database: it holds employers with an identity and
+# postings with a `location_point` nothing has ever filled.
+PRE_PHASE_7_REVISION = "0004"
+
+# The three tables that embed `LocationColumnsMixin`, and therefore gain the
+# provenance group in revision 0005. `candidate_profiles` is in the list and is
+# the one worth naming: a profile's home coordinates are private (§33), and the
+# columns exist so a *manual* correction can be told from an imported one — not so
+# an automated pass can geocode a candidate's address.
+PHASE_7_LOCATED_TABLES = ("candidate_profiles", "company_locations", "opportunities")
+
+PHASE_7_PROVENANCE_COLUMNS = frozenset({
+    "location_provenance", "location_precision", "location_confidence",
+    "location_geocoder", "location_geocoded_at",
+})
+
+# One Phase 6 posting with a location and no coordinates — the state §12 says must
+# survive — inserted before the upgrade so the backfill has something to run over.
+_PHASE_7_SEED_OPPORTUNITY = {
+    "id": "44444444-4444-4444-4444-444444444444",
+    "company_name": "Logitech Europe S.A.",
+    "title": "Ingénieur logiciel",
+    "location_city": "Lausanne",
+    "location_country": "CH",
+}
+
+
+def _an_unlocated_posting_at(connection, revision):
+    """Roll back to `revision` and insert a posting that knows only a city name."""
+    command.downgrade(alembic_config(connection), revision)
+    connection.execute(
+        text("INSERT INTO opportunities (id, company_name, title, location_city,"
+             " location_country, discovered_at) VALUES (:id, :company_name, :title,"
+             " :location_city, :location_country, now())"),
+        _PHASE_7_SEED_OPPORTUNITY)
+
+
+@pytest.mark.parametrize("table", PHASE_7_LOCATED_TABLES)
+def test_revision_0005_gives_every_located_table_the_provenance_group(schema_engine,
+                                                                     table):
+    """The five columns land on all three tables, or the mixin has drifted.
+
+    Parametrized rather than looped so a failure names the table. The two enum
+    columns are NOT NULL — an existing row's coordinates came from the source by
+    definition, and there is no fourth state to leave NULL for.
+    """
+    reset_schema(schema_engine)
+    with schema_engine.connect() as connection:
+        columns = {column["name"]: column
+                   for column in inspect(connection).get_columns(table)}
+    assert PHASE_7_PROVENANCE_COLUMNS <= set(columns)
+    assert columns["location_provenance"]["nullable"] is False
+    assert columns["location_precision"]["nullable"] is False
+    for name in ("location_confidence", "location_geocoder", "location_geocoded_at"):
+        assert columns[name]["nullable"] is True
+
+
+def test_revision_0005_defaults_an_existing_posting_to_source_provided(schema_engine):
+    """A Phase 6 posting becomes a Phase 7 one without a data migration (§24).
+
+    The whole point of the two server defaults: every row already in the table
+    means "the source provided whatever is there, and nothing claims a precision",
+    so `ADD COLUMN … NOT NULL DEFAULT` is the backfill. Nothing about the posting
+    changes — the city it knew and the coordinates it did not have both survive,
+    which is the §12 state the geo search has to keep returning.
+    """
+    reset_schema(schema_engine)
+    with schema_engine.begin() as connection:
+        _an_unlocated_posting_at(connection, PRE_PHASE_7_REVISION)
+    with schema_engine.begin() as connection:
+        command.upgrade(alembic_config(connection), "head")
+    with schema_engine.connect() as connection:
+        row = connection.execute(text(
+            "SELECT location_city, location_point, location_provenance,"
+            " location_precision, location_confidence, location_geocoder,"
+            " location_geocoded_at FROM opportunities")).one()
+    assert row[0] == "Lausanne"
+    assert row[1] is None
+    assert row[2] == "SOURCE_PROVIDED"
+    assert row[3] == "UNKNOWN"
+    assert row[4:] == (None, None, None)
+
+
+def test_revision_0005_refuses_geocoding_metadata_without_a_point(schema_engine):
+    """`location_provenance_coherent`, exercised where it matters most.
+
+    §7 lets a strong provenance *veto* a later write, so a row claiming to be
+    geocoded with no coordinates would be permanently unimprovable and invisible
+    to every radius query at the same time. The CHECK is what stops a write that
+    did not go through the mapper from creating one.
+    """
+    reset_schema(schema_engine)
+    with schema_engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO opportunities (id, company_name, title,"
+                 " location_city, location_country, discovered_at)"
+                 " VALUES (:id, :company_name, :title, :location_city,"
+                 " :location_country, now())"),
+            _PHASE_7_SEED_OPPORTUNITY)
+    with pytest.raises(IntegrityError) as refused:
+        with schema_engine.begin() as connection:
+            connection.execute(text(
+                "UPDATE opportunities SET location_provenance = 'GEOCODED',"
+                " location_geocoder = 'nominatim'"))
+    assert "location_provenance_coherent" in str(refused.value)
+
+
+def test_revision_0005_indexes_the_country_branch(schema_engine):
+    """§13's whole-country predicate has a btree, and it is not a GiST one.
+
+    A radius query and a country query are different questions: `ST_DWithin` needs
+    GiST and `location_country = 'CH'` cannot use it at all. Asserted from the live
+    catalogue, because an index declared only in `models.py` would still look right
+    there.
+    """
+    reset_schema(schema_engine)
+    expected = {"ix_opportunities_location_country",
+                "ix_company_locations_location_country"}
+    with schema_engine.connect() as connection:
+        definitions = {row[0]: row[1] for row in connection.execute(
+            text("SELECT indexname, indexdef FROM pg_indexes "
+                 "WHERE indexname = ANY(:names)"), {"names": sorted(expected)})}
+    assert set(definitions) == expected
+    for definition in definitions.values():
+        assert "USING btree" in definition
+
+
+def test_revision_0005_lets_only_a_failed_geocoding_expire(schema_engine):
+    """§23's cache rule, as the database enforces it.
+
+    Two halves, and the equivalence states both: a `FAILED` row must expire,
+    because a timeout is the absence of an answer and caching one permanently
+    turns a provider outage into a permanently unresolvable address; and a row
+    that *did* answer must not, because re-asking tomorrow gives the same reply
+    and an expiry would quietly restore the repeated call the cache exists to
+    prevent.
+    """
+    reset_schema(schema_engine)
+    entry = {"id": "55555555-5555-5555-5555-555555555555", "provider": "nominatim",
+             "country_hint": "CH", "normalized_query": "lausanne"}
+    with pytest.raises(IntegrityError) as matched_with_expiry:
+        with schema_engine.begin() as connection:
+            connection.execute(
+                text("INSERT INTO geocoding_cache (id, provider, country_hint,"
+                     " normalized_query, outcome, checked_at, expires_at)"
+                     " VALUES (:id, :provider, :country_hint, :normalized_query,"
+                     " 'NOT_FOUND', now(), now())"), entry)
+    assert "only_a_failure_expires" in str(matched_with_expiry.value)
+    with pytest.raises(IntegrityError) as failure_without_expiry:
+        with schema_engine.begin() as connection:
+            connection.execute(
+                text("INSERT INTO geocoding_cache (id, provider, country_hint,"
+                     " normalized_query, outcome, checked_at)"
+                     " VALUES (:id, :provider, :country_hint, :normalized_query,"
+                     " 'FAILED', now())"), entry)
+    assert "only_a_failure_expires" in str(failure_without_expiry.value)
+
+
+def test_revision_0005_refuses_an_ambiguous_result_with_one_candidate(schema_engine):
+    """§6's prohibition, restated where a hand-written INSERT would still reach.
+
+    `AMBIGUOUS` means several equally plausible places, and one candidate is
+    `MATCHED`. The CHECK exists because an adapter written against a single
+    example response is exactly the code that would store the other thing.
+    """
+    reset_schema(schema_engine)
+    with pytest.raises(IntegrityError) as refused:
+        with schema_engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO geocoding_cache (id, provider, country_hint,"
+                " normalized_query, outcome, alternatives, checked_at) VALUES"
+                " ('66666666-6666-6666-6666-666666666666', 'nominatim', 'CH',"
+                " 'lausanne', 'AMBIGUOUS', '[{\"city\": \"Lausanne\"}]'::jsonb,"
+                " now())"))
+    assert "payload_matches_outcome" in str(refused.value)
+
+
+def test_downgrading_0005_keeps_the_coordinates_it_annotated(schema_engine):
+    """Reversibility, with the data that makes it mean something.
+
+    The provenance is lost — that is what the columns held — but the posting and
+    the location components survive. An additive revision that destroyed the rows
+    it extended would not be a downgrade.
+    """
+    reset_schema(schema_engine)
+    with schema_engine.begin() as connection:
+        _an_unlocated_posting_at(connection, PRE_PHASE_7_REVISION)
+    with schema_engine.begin() as connection:
+        command.upgrade(alembic_config(connection), "head")
+    with schema_engine.begin() as connection:
+        command.downgrade(alembic_config(connection), PRE_PHASE_7_REVISION)
+    with schema_engine.connect() as connection:
+        row = connection.execute(text(
+            "SELECT company_name, title, location_city, location_country"
+            " FROM opportunities")).one()
+        remaining = set(inspect(connection).get_table_names())
+        columns = {column["name"]
+                   for column in inspect(connection).get_columns("opportunities")}
+    assert row == ("Logitech Europe S.A.", "Ingénieur logiciel", "Lausanne", "CH")
+    assert "geocoding_cache" not in remaining
+    assert not columns & PHASE_7_PROVENANCE_COLUMNS
+    assert "location_point" in columns

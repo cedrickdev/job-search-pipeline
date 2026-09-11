@@ -40,6 +40,7 @@ CompanyAliasId = NewType("CompanyAliasId", UUID)
 CareerSiteId = NewType("CareerSiteId", UUID)
 CompanyDiscoveryRecordId = NewType("CompanyDiscoveryRecordId", UUID)
 OpportunityId = NewType("OpportunityId", UUID)
+GeocodingCacheEntryId = NewType("GeocodingCacheEntryId", UUID)
 MatchEvaluationId = NewType("MatchEvaluationId", UUID)
 ApplicationDecisionId = NewType("ApplicationDecisionId", UUID)
 
@@ -163,6 +164,34 @@ def discovered_opportunity_id(source_key: str, external_key: str) -> Opportunity
     """
     return OpportunityId(
         uuid5(SURROGATE_KEY_NAMESPACE, f"opportunity:{source_key}:{external_key}"))
+
+
+def geocoding_cache_entry_id(provider: str, country: str,
+                             normalized_query: str) -> GeocodingCacheEntryId:
+    """The id of one provider's answer about one normalized query.
+
+    Derived, because the cache's whole purpose is that asking twice costs one
+    call: a random key would let two enrichment runs store two rows for the same
+    question and then disagree about which is current. The upsert that writes it
+    is idempotent by construction, which is what Phase 7 §23 asks for.
+
+    All three parts are in the key. The provider, because two geocoders answer
+    the same question differently and caching one under the other's name would
+    attribute provenance to the wrong service. The country, because "Neuchâtel"
+    is a different place depending on the hint that accompanied it. And the
+    *normalized* query rather than the raw one, so `"  Lausanne "` and
+    `"lausanne"` are one entry — normalization is
+    `backend.app.domain.geo.normalize_geocoding_query`, applied by the caller for
+    the same reason `company_alias_id` does not normalize: this module knows
+    about UUIDs and must not grow a dependency on rules it would then have to
+    keep in step.
+
+    An unhinted query passes the empty string for `country`, which is a distinct
+    key from any two-letter code and therefore a distinct cached answer.
+    """
+    return GeocodingCacheEntryId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"geocoding_cache:{provider}:{country}:{normalized_query}"))
 
 
 def new_match_evaluation_id() -> MatchEvaluationId:

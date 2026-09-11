@@ -18,6 +18,7 @@ The modules, in dependency order:
 - `company` — employers and their physical sites;
 - `candidate` — profile, evidence and claims;
 - `search` — saved searches and geographic areas;
+- `geo` — geographic search, geocoding and remote semantics;
 - `matching` — multidimensional compatibility scoring;
 - `eligibility` — binary gates, kept apart from scoring on purpose;
 - `policy` — the user's standing rules about applying;

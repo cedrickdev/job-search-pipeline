@@ -26,9 +26,20 @@ confident — is exactly what a company page should show, and the untyped bag be
 stays on this side of the boundary. `CompanyDiscoveryRecordResponse` therefore has no
 field for it, which is a stronger guarantee than a filter somebody has to remember.
 """
-from datetime import datetime
+from datetime import date, datetime
+from enum import StrEnum
+from typing import Self, cast
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    PrivateAttr,
+    SecretStr,
+    ValidationError,
+    model_validator,
+)
 
 from backend.app.companies.contracts import (
     MAX_COMPANIES_PER_PROVIDER,
@@ -43,8 +54,17 @@ from backend.app.discovery.contracts import (
     SourceHealth,
     SourceHealthStatus,
 )
-from backend.app.domain.base import CountryCode
+from backend.app.domain.base import CountryCode, LanguageCode
 from backend.app.domain.candidate import CandidateProfile
+from backend.app.domain.common import (
+    GeoBounds,
+    GeocodingConfidence,
+    GeoDistance,
+    GeoPoint,
+    Location,
+    LocationPrecision,
+    LocationProvenance,
+)
 from backend.app.domain.company import (
     AtsPlatform,
     CareerSite,
@@ -61,15 +81,32 @@ from backend.app.domain.company import (
     SpontaneousApplicationChannel,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.geo import (
+    DEFAULT_GEO_LIMIT,
+    MAX_GEO_LIMIT,
+    GeoSearchQuery,
+    GeoStatus,
+    RadiusFilter,
+    RemotePolicy,
+    RemoteScope,
+)
 from backend.app.domain.identifiers import (
     CandidateProfileId,
     CompanyId,
+    OpportunityId,
     SearchProfileId,
     UserId,
 )
+from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserStatus
-from backend.app.repositories.contracts import DEFAULT_LIMIT, CompanyPage
+from backend.app.repositories.contracts import (
+    DEFAULT_LIMIT,
+    CompanyGeoResult,
+    CompanyPage,
+    MatchedRadius,
+    OpportunityGeoResult,
+)
 from backend.app.services.company_directory import CompanyDetail
 from backend.app.services.company_discovery import (
     CompanyDiscoveryOutcome,
@@ -641,3 +678,314 @@ class CompanyDiscoveryRunResponse(ApiModel):
             warnings=tuple(CompanyDiscoveryWarningResponse.of(warning)
                            for warning in report.warnings),
             links=OpportunityLinkResponse.of(outcome.links))
+
+
+# --- Phase 7: the geo explorer -----------------------------------------------
+#
+# The first endpoints to expose an `Opportunity` and the first to expose a
+# coordinate. Both facts shape the models below: the opportunity item is a *map
+# summary*, not the whole posting (there is no posting-detail endpoint yet, and
+# inventing its shape here would fix it prematurely), and the location model
+# carries the provenance of its point rather than a bare latitude/longitude,
+# because §32 forbids drawing a city centroid as if it were a street address.
+
+
+class GeoPointResponse(ApiModel):
+    """WGS84 coordinates, as two floats."""
+
+    latitude: float
+    longitude: float
+
+    @classmethod
+    def of(cls, point: GeoPoint) -> "GeoPointResponse":
+        return cls(latitude=point.latitude, longitude=point.longitude)
+
+
+class GeoLocationResponse(ApiModel):
+    """A place, its coordinates, and where those coordinates came from (§7).
+
+    Unlike `CompanyLocationResponse`, this one carries a `point`: Phase 7 is where
+    coordinates enter the API. The five provenance fields travel with it so a
+    client can tell a geocoded centroid from a source-provided address and draw
+    them differently (§32) — a bare pair of floats would overstate what is known.
+    """
+
+    city: str | None
+    region: str | None
+    postal_code: str | None
+    country: str | None
+    raw: str | None
+    point: GeoPointResponse | None
+    provenance: LocationProvenance
+    precision: LocationPrecision
+    confidence: GeocodingConfidence | None
+    geocoder: str | None
+    geocoded_at: datetime | None
+
+    @classmethod
+    def of(cls, location: Location) -> "GeoLocationResponse":
+        return cls(
+            city=location.city, region=location.region,
+            postal_code=location.postal_code, country=location.country,
+            raw=location.raw,
+            point=None if location.point is None
+            else GeoPointResponse.of(location.point),
+            provenance=location.provenance, precision=location.precision,
+            confidence=location.confidence, geocoder=location.geocoder,
+            geocoded_at=location.geocoded_at)
+
+
+class MatchedRadiusResponse(ApiModel):
+    """Which radius branch admitted a result, by its index and its label."""
+
+    radius_index: int
+    label: str | None
+
+    @classmethod
+    def of(cls, matched: MatchedRadius) -> "MatchedRadiusResponse":
+        return cls(radius_index=matched.radius_index, label=matched.label)
+
+
+class OpportunityGeoItemResponse(ApiModel):
+    """One posting on the map: enough to place a pin and render a list card.
+
+    A summary rather than the whole `Opportunity` — no salary, description or
+    source snapshot — because this is the explorer, not a posting-detail endpoint.
+    `location` is where the pin goes, `status` says how sure that is (§12), and
+    `distance_meters` is the database's answer, `null` for an unresolved or remote
+    row so a missing distance is never read as zero. `remote_scope` says how far a
+    remote posting reaches (§10).
+    """
+
+    id: OpportunityId
+    title: str
+    company_name: str
+    company_id: CompanyId | None
+    opportunity_type: OpportunityType | None
+    contract_type: ContractType | None
+    workplace_mode: WorkplaceMode | None
+    posting_language: LanguageCode | None
+    posted_at: date | None
+    discovered_at: datetime
+    application_url: str | None
+    location: GeoLocationResponse | None
+    distance_meters: float | None
+    status: GeoStatus
+    remote_scope: RemoteScope | None
+    matched_radii: tuple[MatchedRadiusResponse, ...]
+
+    @classmethod
+    def of(cls, result: OpportunityGeoResult) -> "OpportunityGeoItemResponse":
+        posting = result.opportunity
+        return cls(
+            id=posting.id, title=posting.title, company_name=posting.company_name,
+            company_id=posting.company_id,
+            opportunity_type=posting.opportunity_type,
+            contract_type=posting.contract_type,
+            workplace_mode=posting.workplace_mode,
+            posting_language=posting.posting_language, posted_at=posting.posted_at,
+            discovered_at=posting.discovered_at,
+            application_url=posting.application_url,
+            location=None if result.location is None
+            else GeoLocationResponse.of(result.location),
+            distance_meters=result.distance_meters, status=result.status,
+            remote_scope=result.remote_scope,
+            matched_radii=tuple(MatchedRadiusResponse.of(radius)
+                                for radius in result.matched_radii))
+
+
+class OpportunityGeoResponse(ApiModel):
+    """One geo page of postings, with the window it came from.
+
+    No `total`, deliberately: the geo query is a windowed scan over a join, and a
+    faithful count would be a second query as costly as the first. `limit` and
+    `offset` are echoed so a client can page — the same contract the query
+    validates (§17).
+    """
+
+    opportunities: tuple[OpportunityGeoItemResponse, ...]
+    limit: int
+    offset: int
+
+    @classmethod
+    def of(cls, results: tuple[OpportunityGeoResult, ...], *, limit: int,
+           offset: int) -> "OpportunityGeoResponse":
+        return cls(opportunities=tuple(OpportunityGeoItemResponse.of(result)
+                                       for result in results),
+                   limit=limit, offset=offset)
+
+
+class CompanyGeoItemResponse(ApiModel):
+    """One employer on the map, at its nearest matching site.
+
+    The `CompanyResponse` is the same object `GET /companies` returns, so a client
+    holds one company shape. Beside it is the *site* that matched — its coordinates
+    and whether it is the headquarters — with the distance and the status the row
+    was admitted with.
+    """
+
+    company: CompanyResponse
+    location: GeoLocationResponse
+    is_headquarters: bool
+    distance_meters: float | None
+    status: GeoStatus
+    matched_radii: tuple[MatchedRadiusResponse, ...]
+
+    @classmethod
+    def of(cls, result: CompanyGeoResult) -> "CompanyGeoItemResponse":
+        return cls(
+            company=CompanyResponse.of(result.company),
+            location=GeoLocationResponse.of(result.location.location),
+            is_headquarters=result.location.is_headquarters,
+            distance_meters=result.distance_meters, status=result.status,
+            matched_radii=tuple(MatchedRadiusResponse.of(radius)
+                                for radius in result.matched_radii))
+
+
+class CompanyGeoResponse(ApiModel):
+    """One geo page of employers, each once, with the window it came from."""
+
+    companies: tuple[CompanyGeoItemResponse, ...]
+    limit: int
+    offset: int
+
+    @classmethod
+    def of(cls, results: tuple[CompanyGeoResult, ...], *, limit: int,
+           offset: int) -> "CompanyGeoResponse":
+        return cls(companies=tuple(CompanyGeoItemResponse.of(result)
+                                   for result in results),
+                   limit=limit, offset=offset)
+
+
+class RemoteSelection(StrEnum):
+    """The `remote` query parameter — the short spelling of `RemotePolicy`.
+
+    Three lowercase words a URL can carry, mapped to the domain policy in one
+    place. `exclude` is the default because a geographic search that silently
+    included remote roles would answer a question the caller did not ask (§10).
+    """
+
+    EXCLUDE = "exclude"
+    INCLUDE = "include"
+    ONLY = "only"
+
+    def to_policy(self) -> RemotePolicy:
+        return _REMOTE_POLICY_BY_SELECTION[self]
+
+
+_REMOTE_POLICY_BY_SELECTION: dict[RemoteSelection, RemotePolicy] = {
+    RemoteSelection.EXCLUDE: RemotePolicy.EXCLUDE_REMOTE,
+    RemoteSelection.INCLUDE: RemotePolicy.INCLUDE_REMOTE,
+    RemoteSelection.ONLY: RemotePolicy.REMOTE_ONLY,
+}
+
+
+def _parse_radius(raw: str) -> RadiusFilter:
+    """One `radius=lat,lng,km[,label]` value as a `RadiusFilter`.
+
+    Positional and comma-separated because a query string cannot nest: three
+    numbers and an optional label. A malformed value raises a `ValueError` that
+    names the format without echoing the value — the redacted 422 must not become a
+    way to reflect input back into a log (§Security).
+    """
+    parts = [part.strip() for part in raw.split(",")]
+    if len(parts) not in (3, 4):
+        raise ValueError("a radius is 'lat,lng,km' with an optional fourth ',label'")
+    try:
+        latitude, longitude, kilometers = (float(parts[0]), float(parts[1]),
+                                           float(parts[2]))
+    except ValueError:
+        raise ValueError("a radius needs three numbers: 'lat,lng,km'") from None
+    label = parts[3] if len(parts) == 4 and parts[3] else None
+    return RadiusFilter(center=GeoPoint(latitude=latitude, longitude=longitude),
+                        radius=GeoDistance.from_kilometers(kilometers), label=label)
+
+
+def _parse_bounds(raw: str) -> GeoBounds:
+    """A `bounds=north,south,east,west` value as a `GeoBounds`."""
+    parts = [part.strip() for part in raw.split(",")]
+    if len(parts) != 4:
+        raise ValueError("bounds is four numbers: 'north,south,east,west'")
+    try:
+        north, south, east, west = (float(parts[0]), float(parts[1]),
+                                    float(parts[2]), float(parts[3]))
+    except ValueError:
+        raise ValueError("bounds needs four numbers: 'north,south,east,west'") from None
+    return GeoBounds(north=north, south=south, east=east, west=west)
+
+
+class GeoSearchParams(ApiModel):
+    """The `/geo/opportunities` and `/geo/companies` query string, as one model.
+
+    A model rather than a dozen `Query(...)` parameters, so the whole query is
+    validated in one place and the contradictions the domain forbids — a
+    `REMOTE_ONLY` search beside a radius, a search with no scope at all — surface as
+    a 422 where the request was parsed rather than as an empty page (§14). The
+    domain `GeoSearchQuery` is built once, in the validator, and read through
+    `query`; a route never re-derives it.
+
+    Every list parameter is repeatable: `?radius=…&radius=…&country=CH`.
+    """
+
+    radius: list[str] = []
+    country: list[CountryCode] = []
+    bounds: str | None = None
+    remote: RemoteSelection = RemoteSelection.EXCLUDE
+    remote_country: list[CountryCode] = []
+    opportunity_type: list[OpportunityType] = []
+    workplace_mode: list[WorkplaceMode] = []
+    limit: int = Field(default=DEFAULT_GEO_LIMIT, ge=1, le=MAX_GEO_LIMIT)
+    offset: int = Field(default=0, ge=0)
+
+    _query: GeoSearchQuery | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def _build_query(self) -> Self:
+        radii = tuple(_parse_radius(value) for value in self.radius)
+        bounds = None if self.bounds is None else _parse_bounds(self.bounds)
+        try:
+            query = GeoSearchQuery(
+                radii=radii, countries=tuple(self.country), bounds=bounds,
+                remote_policy=self.remote.to_policy(),
+                remote_countries=tuple(self.remote_country),
+                opportunity_types=tuple(self.opportunity_type),
+                workplace_modes=tuple(self.workplace_mode),
+                limit=self.limit, offset=self.offset)
+        except ValidationError as exc:
+            # The domain refused the combination. Surface its own sentence as the
+            # 422 message rather than pydantic's multi-error dump for GeoSearchQuery.
+            message = exc.errors()[0]["msg"]
+            raise ValueError(message.removeprefix("Value error, ")) from exc
+        self._query = query
+        return self
+
+    @property
+    def query(self) -> GeoSearchQuery:
+        """The validated domain query. Always set — `_build_query` ran on init."""
+        return cast(GeoSearchQuery, self._query)
+
+
+class GeoSavedSearchParams(ApiModel):
+    """The query string for the saved-search geo route: a viewport and a page.
+
+    The *scope* comes from the saved profile's areas, so this carries no radius or
+    country — only the optional map `bounds` Phase 8 sends when the user pans, and
+    the page window. `bounds` is parsed exactly as on `GeoSearchParams`, so a
+    malformed viewport is the same redacted 422.
+    """
+
+    bounds: str | None = None
+    limit: int = Field(default=DEFAULT_GEO_LIMIT, ge=1, le=MAX_GEO_LIMIT)
+    offset: int = Field(default=0, ge=0)
+
+    _bounds: GeoBounds | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def _parse_the_viewport(self) -> Self:
+        self._bounds = None if self.bounds is None else _parse_bounds(self.bounds)
+        return self
+
+    @property
+    def bounds_box(self) -> GeoBounds | None:
+        """The parsed viewport, or `None` when the caller sent no `bounds`."""
+        return self._bounds

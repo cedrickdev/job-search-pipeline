@@ -70,9 +70,10 @@ export function job(template: JobTemplate, jobId: number): string {
 // (docs/AUTHENTICATION.md). One merged table would hide that split behind an
 // alphabetical list.
 //
-// Twelve paths, fifteen operations: `/me/profile` has a GET and a PUT,
+// Fifteen paths, eighteen operations: `/me/profile` has a GET and a PUT,
 // `/me/search-profiles` a GET and a POST, and `{search_profile_id}` a PUT and a
-// DELETE. The `satisfies` clause is the same compile-time guard.
+// DELETE; the three geo paths added in Phase 8 are GET-only reads that still need a
+// session but never a CSRF token. The `satisfies` clause is the same compile-time guard.
 export const V2_ENDPOINTS = {
   login: '/api/v2/auth/login',
   logout: '/api/v2/auth/logout',
@@ -86,6 +87,9 @@ export const V2_ENDPOINTS = {
   companies: '/api/v2/companies',
   company: '/api/v2/companies/{company_id}',
   companyDiscoveryRun: '/api/v2/company-discovery/run',
+  geoOpportunities: '/api/v2/geo/opportunities',
+  geoCompanies: '/api/v2/geo/companies',
+  searchProfileOpportunities: '/api/v2/me/search-profiles/{search_profile_id}/opportunities',
 } as const satisfies Record<string, keyof paths>
 
 /**
@@ -110,4 +114,18 @@ export function searchProfile(searchProfileId: string): string {
  */
 export function company(companyId: string): string {
   return V2_ENDPOINTS.company.replace('{company_id}', companyId)
+}
+
+/**
+ * Resolve the saved-search opportunities template — the geo read scoped to one saved
+ * search (Phase 8).
+ *
+ * Like `searchProfile` above, the owner is not in the path: `/me/...` is the
+ * authorization model, so the account comes from the session cookie and there is no
+ * user id here for a caller to change. Asking for another account's saved search by id
+ * is a 404, not another account's opportunities
+ * (docs/AUTHENTICATION.md §Authorization, docs/GEO_SEARCH.md §Sharing).
+ */
+export function searchProfileOpportunities(searchProfileId: string): string {
+  return V2_ENDPOINTS.searchProfileOpportunities.replace('{search_profile_id}', searchProfileId)
 }

@@ -383,7 +383,8 @@ tests run against a real PostgreSQL/PostGIS.
 ## Not in Phase 7
 
 The interactive map frontend (Phase 8) — this phase ships the API and the data,
-not the MapLibre view. Routing, isochrones or travel-time queries. Reverse
+not the MapLibre view; the view was built in Phase 8, see [Interactive Map
+Explorer](./MAP_EXPLORER.md). Routing, isochrones or travel-time queries. Reverse
 geocoding. A live geocoder in the default test suite. Any provider beyond
 Nominatim. Work-authorization eligibility — whether a candidate may legally take a
 remote role is Phase 9's question, and Phase 7 only decides whether the posting is

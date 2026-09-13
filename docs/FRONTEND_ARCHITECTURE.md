@@ -68,6 +68,8 @@ Use MapLibre GL JS behind a Nuxt component/composable boundary.
 
 The backend owns geographic filtering via PostGIS.
 
+Built in Phase 8 — see [Interactive Map Explorer](./MAP_EXPLORER.md) and the section below. The boundary is a single component: `components/map/OpportunityMap.vue` is the only file that imports `maplibre-gl`, and it does so dynamically inside `onMounted` so `nuxt generate` never evaluates WebGL code.
+
 ## Realtime
 
 Use SSE first for LLM/chat/run progress because the V1 already follows this pattern.
@@ -115,3 +117,14 @@ Three rules in it are contracts rather than preferences, and [Company Discovery]
 - **The cache keys carry no account.** A company is a shared fact, so `companies:list:…` keys on the filters only and there is no per-user variant to invalidate. The nav link is session-gated because the pages are guarded, not because the data is private.
 
 The suite grew again: **294** Vitest specs across 27 files in `frontend/tests/nuxt/` and **25** Playwright flows in `frontend/tests/e2e/`, still with every `/api/**` request stubbed in the browser and every test asserting that nothing went unstubbed. The four new browser flows exist for what only a browser can show: that the directory is reachable from the nav, that `has_opportunities=false` survives a real round trip, that the discovery pass leaves with its CSRF header and **no request body**, and that the guard sends an anonymous visitor to `/login`.
+
+## Map explorer (added in Phase 8)
+
+One page — `map.vue`, the geo explorer at `/map` — plus a seven-component `components/map/` folder, two composables (`useGeoExplorer.ts` for the three reads, `useMapViewport.ts` for the URL ⇄ camera), the `mapExplorer` store, and three pure utilities (`map-projection.ts`, `geo-format.ts`, `geo-circle.ts`). [Interactive Map Explorer](./MAP_EXPLORER.md) is the full statement; the contracts that are contracts rather than preferences:
+
+- **One component owns WebGL.** `OpportunityMap.vue` is the only file that touches `maplibre-gl`, imported dynamically inside `onMounted` and wrapped in `<ClientOnly>`, so `nuxt generate` (Node, no WebGL) never evaluates it. The map is built once and updated through `source.setData(...)`; it is never rebuilt on new data, and its instance is a plain `let`, never a reactive `ref`.
+- **The client draws; it does not decide.** No coordinate is synthesised — an unplaceable role is a list row with no pin, never a marker at `0,0` — and no membership in a radius or country is re-computed client-side; PostGIS already answered (§34). No match score appears anywhere on the surface (§42).
+- **One selection, and a pan is not a query.** The map and the list read the same `mapExplorer.selectedId`, so they cannot disagree; panning updates the URL and arms "Search this area" but never fetches, so the result set is stable while it is read.
+- **The style URL is config, never a committed key.** `runtimeConfig.public.mapStyleUrl` (`NUXT_PUBLIC_MAP_STYLE_URL`) names the one deployment-specific value; `mapAttribution` is appended to the style's own credit, never a replacement.
+
+The suite grew again: **393** Vitest specs across 41 files in `frontend/tests/nuxt/` and **34** Playwright flows in `frontend/tests/e2e/`, still with every `/api/**` request stubbed in the browser and every test asserting that nothing went unstubbed. The unit suite mocks `maplibre-gl` because happy-dom has no WebGL; the nine new browser flows run a **real** MapLibre map against a stubbed offline style — the map style and its glyph ranges are intercepted alongside `/api/**`, so nothing reaches a tile or font server — to prove what only a browser can: that the map boots into a WebGL context without falling to the error state, that the mode toggle and a `?profile` link pick the right read, that Apply re-queries while a pan does not, that clustering does not error, and that the guard sends an anonymous visitor to `/login`.

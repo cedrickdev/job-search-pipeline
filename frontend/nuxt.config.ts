@@ -66,6 +66,22 @@ export default defineNuxtConfig({
     },
   },
 
+  // Phase 8 map explorer. The base map style is the one deployment-specific piece of
+  // the map, and it must never be a committed API key: MapLibre renders whatever style
+  // URL it is handed, and this is the only place that names one. It is overridable per
+  // deployment through NUXT_PUBLIC_MAP_STYLE_URL — baked at `nuxt generate` time, since
+  // the app is static and FastAPI serves it, so there is no server reading env at
+  // runtime (docs/MAP_EXPLORER.md §Configuration). The default is MapLibre's keyless
+  // demo style so `npm run dev` needs no environment; a real deployment points this at
+  // its own. `mapAttribution`, when set, is appended to whatever the style already
+  // declares — never a replacement, so a provider's required credit cannot be dropped.
+  runtimeConfig: {
+    public: {
+      mapStyleUrl: 'https://demotiles.maplibre.org/style.json',
+      mapAttribution: '',
+    },
+  },
+
   typescript: {
     strict: true,
     typeCheck: false,

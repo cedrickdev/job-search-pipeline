@@ -38,6 +38,7 @@ const LINKS = [
 /** The V2 screens, which only exist for a signed-in visitor. */
 const V2_LINKS = [
   { to: '/companies', label: 'Companies', exact: false },
+  { to: '/map', label: 'Map', exact: false },
 ]
 
 const colorMode = useColorMode()

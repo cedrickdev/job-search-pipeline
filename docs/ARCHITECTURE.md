@@ -278,6 +278,11 @@ where this is" is a value, not a false 0 km), the provider-neutral geocoder port
 the bounded enrichment pass and its provider-aware cache. Distance is the
 database's answer (`ST_DWithin` / `ST_Distance`), never computed in Python.
 
+The interactive frontend over this API was built in Phase 8 — see [Interactive
+Map Explorer](./MAP_EXPLORER.md). The client draws only what the server placed:
+no coordinate is synthesised, no membership is re-decided, and no match score is
+shown (§42).
+
 ## 12. Frontend
 
 The V2 frontend target is **Nuxt 4 + Vue 3 + TypeScript**.
@@ -324,6 +329,11 @@ Suggested routes:
 - `/profile`
 - `/settings`
 - `/billing`
+
+These are targets; the routes built so far are `/`, `/jobs`, `/analytics`,
+`/settings`, `/login`, `/register`, `/onboarding`, `/profile`, `/companies`
+(Phase 6) and `/map` (Phase 8 — the geo explorer lives at `/map`, not under
+`/opportunities`, until the opportunities surface itself is built).
 
 Suggested structure:
 

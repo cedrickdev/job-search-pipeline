@@ -15,8 +15,13 @@ import type {
   Company,
   CompanyDetail,
   CompanyDiscoveryRun,
+  CompanyGeoItem,
+  CompanyGeoResponse,
   CompanyList,
+  GeoLocation,
   OnboardingState,
+  OpportunityGeoItem,
+  OpportunityGeoResponse,
   SearchProfile,
   SearchProfileDraft,
   SessionWindow,
@@ -27,6 +32,7 @@ const USER_ID = '11111111-1111-4111-8111-111111111111'
 const PROFILE_ID = '22222222-2222-4222-8222-222222222222'
 const SEARCH_ID = '33333333-3333-4333-8333-333333333333'
 const COMPANY_ID = '44444444-4444-4444-8444-444444444444'
+const OPPORTUNITY_ID = '55555555-5555-4555-8555-555555555555'
 
 export function account(overrides: Partial<Account> = {}): Account {
   return {
@@ -202,4 +208,75 @@ export function discoveryRun(
     links: { examined: 0, linked: 0, ambiguous: 0, unresolved: 0 },
     ...overrides,
   }
+}
+
+// --- Geo (Phase 7 reads, Phase 8 map) ------------------------------------------------
+//
+// A located row by default: an exact address with a point. The cases the map is strict
+// about — a company fallback, a pure-remote role, an unresolved one — are spelled by
+// overriding `status`/`location`, because those are exactly the shapes the projection
+// (app/utils/map-projection.ts) must treat differently.
+
+/** A geocoded location with a point. Pass `point: null` for an unplaceable one. */
+export function geoLocation(overrides: Partial<GeoLocation> = {}): GeoLocation {
+  return {
+    point: { latitude: 46.5197, longitude: 6.6323 },
+    precision: 'EXACT_ADDRESS',
+    provenance: 'GEOCODED',
+    confidence: 'HIGH',
+    city: 'Lausanne',
+    region: null,
+    postal_code: null,
+    country: 'CH',
+    raw: null,
+    geocoded_at: '2026-01-02T10:00:00Z',
+    geocoder: 'nominatim',
+    ...overrides,
+  }
+}
+
+export function opportunityGeoItem(overrides: Partial<OpportunityGeoItem> = {}): OpportunityGeoItem {
+  return {
+    id: OPPORTUNITY_ID,
+    title: 'Backend Engineer',
+    company_name: 'Logitech',
+    company_id: COMPANY_ID,
+    application_url: 'https://boards.greenhouse.invalid/logitech/backend',
+    contract_type: 'PERMANENT',
+    opportunity_type: 'FULL_TIME',
+    workplace_mode: 'ON_SITE',
+    remote_scope: null,
+    status: 'RESOLVED',
+    location: geoLocation(),
+    distance_meters: 1500,
+    matched_radii: [],
+    posted_at: '2026-01-01T08:00:00Z',
+    discovered_at: '2026-01-02T09:00:00Z',
+    posting_language: 'en',
+    ...overrides,
+  }
+}
+
+export function opportunityGeoResponse(
+  opportunities: OpportunityGeoItem[] = [opportunityGeoItem()],
+  overrides: Partial<OpportunityGeoResponse> = {}): OpportunityGeoResponse {
+  return { opportunities, limit: 50, offset: 0, ...overrides }
+}
+
+export function companyGeoItem(overrides: Partial<CompanyGeoItem> = {}): CompanyGeoItem {
+  return {
+    company: company(),
+    location: geoLocation({ precision: 'CITY' }),
+    status: 'RESOLVED',
+    is_headquarters: true,
+    distance_meters: 3200,
+    matched_radii: [],
+    ...overrides,
+  }
+}
+
+export function companyGeoResponse(
+  companies: CompanyGeoItem[] = [companyGeoItem()],
+  overrides: Partial<CompanyGeoResponse> = {}): CompanyGeoResponse {
+  return { companies, limit: 50, offset: 0, ...overrides }
 }

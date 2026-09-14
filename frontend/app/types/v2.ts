@@ -73,6 +73,61 @@ export type LanguageLevel = LanguageProficiency['level']
 /** One geographic area of a saved search: a country, a radius, or remote-only. */
 export type SearchArea = SearchProfileDraft['areas'][number]
 
+// --- Phase 8: geo explorer (docs/GEO_SEARCH.md, docs/MAP_EXPLORER.md) ---------
+//
+// The Phase 7 API answers three geo reads. Every type below is an alias into the
+// generated document, for the same reason the company types are: a field renamed on
+// the backend fails `nuxt typecheck` here after `npm run gen:api`, so the map is
+// never coding against a shape the API no longer returns.
+
+/** One page of opportunities placed in space: `{ opportunities, limit, offset }`. No `total`. */
+export type OpportunityGeoResponse = Schemas['OpportunityGeoResponse']
+
+/** One opportunity as the geo read returns it: its `location` (and `point`) may be null. */
+export type OpportunityGeoItem = Schemas['OpportunityGeoItemResponse']
+
+/** One page of employers placed in space: `{ companies, limit, offset }`. No `total`. */
+export type CompanyGeoResponse = Schemas['CompanyGeoResponse']
+
+/** One employer with its located office. Here `location` is non-null, but `point` may be. */
+export type CompanyGeoItem = Schemas['CompanyGeoItemResponse']
+
+/** A resolved place: its `point`, its precision, its provenance. `point` may be null. */
+export type GeoLocation = Schemas['GeoLocationResponse']
+
+/** A coordinate. `{ latitude, longitude }` — the order the API uses, not GeoJSON's. */
+export type GeoPoint = Schemas['GeoPointResponse']
+
+/** `RESOLVED | COMPANY_FALLBACK | REMOTE | UNRESOLVED` — "I cannot place this" is a value. */
+export type GeoStatus = Schemas['GeoStatus']
+
+/** How far a remote role reaches. `HYBRID` is here on purpose — it is judged by distance. */
+export type RemoteScope = Schemas['RemoteScope']
+
+/** What the `remote` query param accepts: `exclude | include | only` (lower-case, on the wire). */
+export type RemoteSelection = Schemas['RemoteSelection']
+
+/** A closed set of employment types the `opportunity_type` filter accepts. */
+export type OpportunityType = Schemas['OpportunityType']
+
+/** `ON_SITE | HYBRID | REMOTE` — the `workplace_mode` filter, distinct from remote scope. */
+export type WorkplaceMode = Schemas['WorkplaceMode']
+
+/** The contract shape of an opportunity, when the source stated one. */
+export type ContractType = Schemas['ContractType']
+
+/** Which configured radius an item fell inside, so one marker can name the circle it matched. */
+export type MatchedRadius = Schemas['MatchedRadiusResponse']
+
+/** How precisely a place is known — drives whether a pin claims an address or a city. */
+export type LocationPrecision = Schemas['LocationPrecision']
+
+/** Where a place came from: the source, the geocoder, or a human. */
+export type LocationProvenance = Schemas['LocationProvenance']
+
+/** The geocoder's own confidence in a match, when it reported one. */
+export type GeocodingConfidence = Schemas['GeocodingConfidence']
+
 /**
  * Every `error` slug `/api/v2` can answer with, as one union.
  *

@@ -42,9 +42,11 @@ from backend.app.domain.company import (
     CompanyLocation,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.documents import CandidateDocument, CandidateDocumentType
 from backend.app.domain.eligibility import EligibilityResult
 from backend.app.domain.geo import GeoSearchQuery, GeoStatus, RemoteScope
 from backend.app.domain.identifiers import (
+    CandidateDocumentId,
     CandidateProfileId,
     CompanyId,
     EligibilityResultId,
@@ -550,11 +552,11 @@ class CandidateProfileRepository(Protocol):
         ...
 
     async def upsert(self, profile: CandidateProfile) -> CandidateProfile:
-        """Write the profile and reconcile its languages, permits and slots.
+        """Write the profile and reconcile every child collection.
 
-        Raises `ValueError` if the profile carries evidence or claims: there is
-        nowhere to put them until Phase 10, and writing the profile without them
-        would silently break the claim-to-evidence link on the way back out.
+        Since Phase 10 that includes the evidence store and the claims that rest on
+        it: a claim and the evidence it cites are written in the one call, so the
+        claim-to-evidence link the aggregate guarantees survives the round trip.
         """
         ...
 
@@ -593,6 +595,58 @@ class SearchProfileRepository(Protocol):
         run will want; it is a parameter rather than a separate method so the
         index on `(user_id, is_active)` serves one query shape.
         """
+        ...
+
+
+@runtime_checkable
+class CandidateDocumentRepository(Protocol):
+    """Candidate documents — user-owned, so `user_id` comes first everywhere.
+
+    A document is the aggregate: it carries its whole version history, and an
+    upsert writes the parent and reconciles the versions in one call. Regeneration
+    is an upsert of the same document with one more version, keyed on the
+    `(candidate_profile_id, opportunity_id, document_type)` triple its id derives
+    from — the reason `get_for_pair` exists beside `get`.
+    """
+
+    async def get(self, user_id: UserId,
+                  document_id: CandidateDocumentId) -> CandidateDocument | None:
+        """The document, or `None` — including when it belongs to somebody else.
+
+        Not found and not yours are indistinguishable, as in
+        `MatchEvaluationRepository.get`: a caller that could tell them apart could
+        enumerate another user's rows by id.
+        """
+        ...
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId,
+                           document_type: CandidateDocumentType
+                           ) -> CandidateDocument | None:
+        """This profile's document of one type for one posting, if it exists.
+
+        The lookup a regeneration does before appending a version: it finds the
+        document to add to rather than deriving the id and hoping the upsert
+        reconciles, so the service can read `next_version_number()` from what is
+        actually stored.
+        """
+        ...
+
+    async def upsert(self, document: CandidateDocument) -> CandidateDocument:
+        """Write the document and reconcile its versions.
+
+        The owner comes from `document.user_id`, so there is no signature in which
+        the row's owner and the caller's intent can disagree. Appending a version
+        updates the parent and inserts one child; nothing already stored is
+        rewritten, which is what makes the audit trail the aggregate's own history.
+        """
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[CandidateDocument, ...]:
+        """This user's documents, most recently updated first."""
         ...
 
 

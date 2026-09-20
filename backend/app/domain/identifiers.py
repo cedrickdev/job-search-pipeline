@@ -44,6 +44,8 @@ GeocodingCacheEntryId = NewType("GeocodingCacheEntryId", UUID)
 MatchEvaluationId = NewType("MatchEvaluationId", UUID)
 EligibilityResultId = NewType("EligibilityResultId", UUID)
 ApplicationDecisionId = NewType("ApplicationDecisionId", UUID)
+CandidateDocumentId = NewType("CandidateDocumentId", UUID)
+DocumentVersionId = NewType("DocumentVersionId", UUID)
 
 
 def new_user_id() -> UserId:
@@ -236,3 +238,41 @@ def eligibility_result_id(candidate_profile_id: CandidateProfileId,
 
 def new_application_decision_id() -> ApplicationDecisionId:
     return ApplicationDecisionId(uuid4())
+
+
+def candidate_document_id(candidate_profile_id: CandidateProfileId,
+                          opportunity_id: OpportunityId,
+                          document_type: str) -> CandidateDocumentId:
+    """The id of the document a candidate keeps for one posting, of one type.
+
+    Derived rather than random, for the reason `match_evaluation_id` is: a
+    `candidate_documents` row is keyed on `(candidate_profile_id, opportunity_id,
+    document_type)`, so regenerating a résumé for a posting must reuse the same
+    document — accruing a new *version* under it — rather than leaving a second,
+    orphaned document behind. `document_type` is the `CandidateDocumentType`
+    value, so a résumé and a cover letter for the same posting are two documents,
+    which is exactly what they are.
+
+    `new_candidate_document_id` is not offered: a document is always about a
+    (profile, opportunity, type) triple, and a random one would be a document with
+    no way to be found again.
+    """
+    return CandidateDocumentId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"candidate_document:{candidate_profile_id}:{opportunity_id}"
+              f":{document_type}"))
+
+
+def document_version_id(document_id: CandidateDocumentId,
+                        version: int) -> DocumentVersionId:
+    """The id of one version of one document.
+
+    Keyed by `(document_id, version)` — the pair the unique constraint covers — so
+    a retried write of version 3 after a failed flush lands on the same row rather
+    than inserting a fourth. The version number is the document's own monotonic
+    counter, assigned by the service that appends it; this only turns that pair
+    into a stable key.
+    """
+    return DocumentVersionId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"document_version:{document_id}:{version}"))

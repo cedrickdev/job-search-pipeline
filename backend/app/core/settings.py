@@ -186,6 +186,13 @@ AUTH_SESSION_HOURS_VARIABLE: Final[str] = "JOBSEARCH_AUTH_SESSION_HOURS"
 AUTH_MAX_FAILED_LOGINS_VARIABLE: Final[str] = "JOBSEARCH_AUTH_MAX_FAILED_LOGINS"
 AUTH_LOCKOUT_MINUTES_VARIABLE: Final[str] = "JOBSEARCH_AUTH_LOCKOUT_MINUTES"
 
+# Where rendered document PDFs are written. A directory under the working tree by
+# default, so a fresh checkout produces artifacts without configuration; a
+# deployment overrides it to a mounted volume, and a future object-store adapter
+# would read a URL from its own variable instead.
+DOCUMENT_ARTIFACT_ROOT_VARIABLE: Final[str] = "JOBSEARCH_DOCUMENT_ARTIFACT_ROOT"
+DEFAULT_DOCUMENT_ARTIFACT_ROOT: Final[str] = "var/document_artifacts"
+
 _TRUE_WORDS: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 
@@ -339,6 +346,27 @@ class AuthSettings(BaseModel):
         "local http" to do it.
         """
         return cls(cookie_secure=False)
+
+
+class DocumentSettings(BaseModel):
+    """Where rendered document artifacts live.
+
+    Frozen and closed like every settings model. Only the artifact root today —
+    the store is a directory of PDFs (`LocalDocumentArtifactStore`), and the path
+    is the one thing a deployment tunes. An object-store adapter would grow its own
+    fields here rather than overloading this one.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    artifact_root: str = DEFAULT_DOCUMENT_ARTIFACT_ROOT
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
+        """Read the artifact root from the environment, or use the default path."""
+        source = environ if env is None else env
+        value = source.get(DOCUMENT_ARTIFACT_ROOT_VARIABLE, "").strip()
+        return cls(artifact_root=value or DEFAULT_DOCUMENT_ARTIFACT_ROOT)
 
 
 

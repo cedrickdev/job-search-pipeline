@@ -50,7 +50,12 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql.elements import TextClause
 
-from backend.app.domain.candidate import WorkAuthorizationStatus
+from backend.app.domain.candidate import (
+    ClaimType,
+    EvidenceKind,
+    EvidenceProvenance,
+    WorkAuthorizationStatus,
+)
 from backend.app.domain.common import (
     GeocodingConfidence,
     GeoPoint,
@@ -67,6 +72,10 @@ from backend.app.domain.company import (
     CompanySeedKind,
     DetectionStatus,
     SpontaneousApplicationSupport,
+)
+from backend.app.domain.documents import (
+    CandidateDocumentType,
+    DocumentStatus,
 )
 from backend.app.domain.eligibility import (
     DeterminationSource,
@@ -420,10 +429,13 @@ class CandidateProfileRow(LocationColumnsMixin, TimestampedMixin, Base):
     double-submitted onboarding collides on the primary key instead of producing
     two profiles; a second profile would be an explicit act with a fresh id.
 
-    `evidence` and `claims` are absent, and their absence is enforced rather than
-    tolerated: the evidence store is Phase 10's, and
-    `SqlAlchemyCandidateProfileRepository` refuses a profile carrying either
-    instead of silently dropping records a claim depends on.
+    `evidence` and `claims` are child tables since Phase 10: the evidence store
+    the truth guard rests on. Each `candidate_claims` row cites the evidence it
+    rests on as a `TEXT[]` of evidence ids rather than a link table — the citation
+    is read and written whole with the claim, never joined across, and
+    `CandidateProfile._claims_rest_on_held_evidence` re-checks on the way back out
+    that every cited id is one this profile holds, so a dangling citation surfaces
+    as a loud construction error rather than a silent orphan.
 
     Availability is flattened into five columns plus a child table for the weekly
     slots, and all five are nullable: an all-NULL group with no slots reads back as
@@ -480,6 +492,14 @@ class CandidateProfileRow(LocationColumnsMixin, TimestampedMixin, Base):
         back_populates="profile", cascade="all, delete-orphan",
         passive_deletes=True, lazy="raise",
         order_by="CandidateAvailabilitySlotRow.ordinal")
+    evidence: Mapped[list["CandidateEvidenceRow"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="CandidateEvidenceRow.ordinal")
+    claims: Mapped[list["CandidateClaimRow"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="CandidateClaimRow.ordinal")
 
 
 # The domain's collections are tuples, and tuple order is information the candidate
@@ -534,9 +554,12 @@ class CandidateWorkAuthorizationRow(TimestampedMixin, Base):
     *ineligible* rather than a poor schedule fit. It is a legal fact a Country Pack
     supplies in Phase 5; this table only carries it.
 
-    `evidence_ids` from the domain object is not stored. Phase 10 owns the evidence
-    table, and a column holding ids with no table to point at would be a foreign key
-    that cannot be declared.
+    `evidence_ids` is a `TEXT[]` of the evidence records that attest the permit
+    (Phase 10 gave the store a home). It is not a foreign-key array — PostgreSQL
+    has none — but the ids all belong to the same profile's `candidate_evidence`,
+    and `CandidateProfile._claims_rest_on_held_evidence` re-checks that on read, so
+    a citation the profile does not hold fails loudly rather than dangling. Empty is
+    the honest default: a status can be recorded before its permit document is.
     """
 
     __tablename__ = "candidate_work_authorizations"
@@ -545,6 +568,7 @@ class CandidateWorkAuthorizationRow(TimestampedMixin, Base):
         _code_format("country", "^[A-Z]{2}$"),
         CheckConstraint("permit_hours_cap > 0 AND permit_hours_cap <= 168",
                         name="permit_hours_cap_range"),
+        _text_array_elements_present("evidence_ids"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -557,6 +581,8 @@ class CandidateWorkAuthorizationRow(TimestampedMixin, Base):
     permit_label: Mapped[str | None]
     valid_until: Mapped[date | None]
     permit_hours_cap: Mapped[float | None]
+    evidence_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
 
     profile: Mapped["CandidateProfileRow"] = relationship(
         back_populates="work_authorizations", lazy="raise")
@@ -593,6 +619,88 @@ class CandidateAvailabilitySlotRow(TimestampedMixin, Base):
 
     profile: Mapped["CandidateProfileRow"] = relationship(
         back_populates="availability_slots", lazy="raise")
+
+
+class CandidateEvidenceRow(TimestampedMixin, Base):
+    """One record attesting something about the candidate (Phase 10).
+
+    The V2 form of a V1 base-library bullet, and the store the truth guard rests
+    on: every claim and every generated document line cites the id of a row here.
+    `reference_key` keeps the V1 bullet id ("acme-checkout"), so importing the base
+    CV loses no link back to the YAML.
+
+    No `user_id` column: an evidence record is owned by exactly the profile it
+    hangs from, and `CandidateProfile` refuses to aggregate another user's records,
+    so the owner is the profile's owner and a second copy on the row could only
+    disagree. `source_document` is a label (a path, a URL), never file bytes — the
+    domain describes where proof lives, it does not carry it.
+    """
+
+    __tablename__ = "candidate_evidence"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "ordinal"),
+        CheckConstraint("issued_on <= valid_until", name="validity_window_ordered"),
+        Index("ix_candidate_evidence_profile_id", "profile_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey(_PROFILE_FK, ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(SmallInteger, doc=_ORDINAL_DOC)
+    kind: Mapped[EvidenceKind] = mapped_column(
+        enum_column(EvidenceKind, "evidence_kind"))
+    provenance: Mapped[EvidenceProvenance] = mapped_column(
+        enum_column(EvidenceProvenance, "evidence_provenance"))
+    reference_key: Mapped[str | None]
+    summary: Mapped[str]
+    detail: Mapped[str | None]
+    issued_on: Mapped[date | None]
+    valid_until: Mapped[date | None]
+    source_document: Mapped[str | None]
+    recorded_at: Mapped[datetime]
+
+    profile: Mapped["CandidateProfileRow"] = relationship(
+        back_populates="evidence", lazy="raise")
+
+
+class CandidateClaimRow(TimestampedMixin, Base):
+    """Something the platform will say on the candidate's behalf, and its backing.
+
+    `evidence_ids` is a `TEXT[]` and is CHECK-constrained to at least one element,
+    which is `CandidateClaim.evidence_ids`' `min_length=1` made physical: an
+    unsupported claim cannot reach the table any more than it can be constructed.
+    The ids point into the same profile's `candidate_evidence`; that they are held
+    is re-checked by `CandidateProfile` on read rather than by a foreign key, for
+    the reason the column comment on `candidate_work_authorizations.evidence_ids`
+    gives.
+
+    No `user_id` column, for the same reason `candidate_evidence` has none.
+    """
+
+    __tablename__ = "candidate_claims"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "ordinal"),
+        _text_array_elements_present("evidence_ids"),
+        # `CandidateClaim.evidence_ids` — `Field(min_length=1)` — as a CHECK, so a
+        # claim resting on nothing cannot be written even outside the model.
+        CheckConstraint("array_length(evidence_ids, 1) >= 1",
+                        name="evidence_ids_present"),
+        Index("ix_candidate_claims_profile_id", "profile_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey(_PROFILE_FK, ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(SmallInteger, doc=_ORDINAL_DOC)
+    claim_type: Mapped[ClaimType] = mapped_column(
+        enum_column(ClaimType, "claim_type"))
+    label: Mapped[str]
+    detail: Mapped[str | None]
+    evidence_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
+
+    profile: Mapped["CandidateProfileRow"] = relationship(
+        back_populates="claims", lazy="raise")
 
 
 
@@ -1469,10 +1577,13 @@ class EligibilityCheckRow(TimestampedMixin, Base):
     is therefore what makes re-evaluating a pair update the rows already there, and a
     gate that a re-run no longer emits is deleted by the `delete-orphan` cascade.
 
-    `evidence_ids` from the domain object is not stored, exactly as on
-    `candidate_work_authorizations`: Phase 10 owns the evidence table, and a column
-    of ids pointing at a table that does not exist would be a foreign key that
-    cannot be declared.
+    `evidence_ids` is a `TEXT[]` of the candidate evidence a gate rested on, stored
+    since Phase 10 gave the evidence store a home. Not a foreign-key array —
+    PostgreSQL has none — and unlike a claim's citation it is not re-checked against
+    a held set here, because an eligibility check belongs to a verdict, not to the
+    profile whose evidence it names; it is provenance for why the gate closed the
+    way it did. Empty is the default: a deterministic gate often rests on a permit
+    field rather than on a discrete evidence record.
     """
 
     __tablename__ = "eligibility_checks"
@@ -1486,6 +1597,7 @@ class EligibilityCheckRow(TimestampedMixin, Base):
                         name="llm_extraction_is_incomplete"),
         CheckConstraint(_ELIGIBILITY_PACK_BLOCKS_ONLY_WHEN_VERIFIED,
                         name="pack_rule_blocks_only_when_verified"),
+        _text_array_elements_present("evidence_ids"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -1509,9 +1621,137 @@ class EligibilityCheckRow(TimestampedMixin, Base):
     detail: Mapped[str | None]
     reasons: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    evidence_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
 
     result: Mapped["EligibilityResultRow"] = relationship(
         back_populates="checks", lazy="raise")
+
+
+# `DocumentVersion._status_agrees_with_verdict_and_artifact`, as CHECK expressions.
+# The status is a summary of the guard's verdict and of whether a PDF was rendered,
+# and a row where the three disagree would let a rejected version be served as
+# usable — exactly the silent failure the guard exists to prevent. Each clause is
+# the implication the domain validator states, in the `NOT antecedent OR
+# consequent` form a CHECK (which fails only on FALSE) reads as written. `guard_ok`
+# is the extracted boolean the mapper writes from `guard_report.ok`, because a
+# CHECK cannot reach inside a JSONB document and stay legible.
+_DOCUMENT_VERSION_VERDICT_AGREES: Final[str] = (
+    "(status NOT IN ('VALIDATED', 'RENDERED') OR guard_ok IS TRUE)"
+    " AND (status <> 'REJECTED' OR guard_ok IS FALSE)"
+)
+# A RENDERED version references its artifact; no other status carries one. Written
+# against `artifact_storage_key` as the presence witness, the column the artifact
+# group cannot be missing when it exists.
+_DOCUMENT_VERSION_ARTIFACT_MATCHES_STATUS: Final[str] = (
+    "(status = 'RENDERED') = (artifact_storage_key IS NOT NULL)"
+)
+
+
+class CandidateDocumentRow(TimestampedMixin, Base):
+    """A document a candidate keeps for one posting, across its versions (Phase 10).
+
+    User-owned and scoped to a `(candidate_profile_id, opportunity_id,
+    document_type)` triple — the triple `candidate_document_id` derives from — so
+    regenerating a résumé for a posting reuses this row and appends a *version*
+    rather than leaving a second, orphaned document behind. `UNIQUE` on that triple
+    is what makes the regeneration an upsert.
+
+    `user_id` is carried alongside `candidate_profile_id` for the authorization
+    reason every user-owned table states: each scoped read is `WHERE user_id = ?`,
+    one indexed predicate rather than a join a policy could forget. All three
+    foreign keys cascade from their parents, so a deleted account, profile or
+    posting leaves no document behind.
+    """
+
+    __tablename__ = "candidate_documents"
+    __table_args__ = (
+        # Named explicitly: the convention would derive
+        # `uq_candidate_documents_candidate_profile_id_opportunity_id_document_type`
+        # at 72 characters, which PostgreSQL silently truncates to 63 — a name a
+        # migration then cannot address. The short name is a pure function of the
+        # columns just as the generated one is, only within the limit.
+        UniqueConstraint("candidate_profile_id", "opportunity_id", "document_type",
+                         name="uq_candidate_documents_profile_opportunity_type"),
+        Index("ix_candidate_documents_user_id_updated_at", "user_id", "updated_at"),
+        Index("ix_candidate_documents_opportunity_id", "opportunity_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    candidate_profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    opportunity_id: Mapped[UUID] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"))
+    document_type: Mapped[CandidateDocumentType] = mapped_column(
+        enum_column(CandidateDocumentType, "candidate_document_type"))
+
+    versions: Mapped[list["DocumentVersionRow"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="DocumentVersionRow.version")
+
+
+class DocumentVersionRow(TimestampedMixin, Base):
+    """One attempt at a document: content, the guard's verdict, and its artifact.
+
+    `content` and `guard_report` are JSONB documents validated back through the
+    domain on read, the same trade `match_evaluations.reasons` makes: they are read
+    and written whole and never queried into, so a child table per bullet would buy
+    nothing. `guard_ok` is the one field lifted out of `guard_report`, because the
+    three status/verdict CHECKs must be able to read the verdict without reaching
+    inside a JSONB document.
+
+    The artifact reference is flattened into five nullable columns, present exactly
+    when `status = 'RENDERED'` (`ck_document_versions_artifact_matches_status`). The
+    bytes themselves live in a `DocumentArtifactStore`, not here — the table carries
+    the locator, for the reason `CandidateEvidence.source_document` is a label.
+
+    `created_at` from `TimestampedMixin` is the row-write instant; the domain's own
+    `DocumentVersion.created_at` is written into it by the mapper and preserved
+    across the in-place status transitions a version goes through (DRAFT →
+    VALIDATED → RENDERED), so it keeps meaning "when this attempt was made".
+    """
+
+    __tablename__ = "document_versions"
+    __table_args__ = (
+        UniqueConstraint("document_id", "version"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint("artifact_byte_size >= 0", name="artifact_byte_size_non_negative"),
+        CheckConstraint("artifact_page_count >= 1", name="artifact_page_count_positive"),
+        _code_format("language", "^[a-z]{2}$"),
+        CheckConstraint(_DOCUMENT_VERSION_VERDICT_AGREES,
+                        name="status_agrees_with_verdict"),
+        CheckConstraint(_DOCUMENT_VERSION_ARTIFACT_MATCHES_STATUS,
+                        name="artifact_matches_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("candidate_documents.id", ondelete="CASCADE"))
+    version: Mapped[int] = mapped_column(SmallInteger)
+    status: Mapped[DocumentStatus] = mapped_column(
+        enum_column(DocumentStatus, "document_status"))
+    language: Mapped[str] = mapped_column(String(2))
+    content: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
+    guard_report: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # Lifted out of `guard_report` so the status CHECKs can read the verdict
+    # without a JSONB path expression. NULL when the version has not been guarded
+    # yet (a DRAFT); the mapper keeps it in step with `guard_report.ok`.
+    guard_ok: Mapped[bool | None]
+    generator_key: Mapped[str | None]
+    created_at: Mapped[datetime]
+
+    artifact_storage_key: Mapped[str | None]
+    artifact_media_type: Mapped[str | None]
+    artifact_byte_size: Mapped[int | None]
+    artifact_page_count: Mapped[int | None] = mapped_column(SmallInteger)
+    artifact_rendered_at: Mapped[datetime | None]
+
+    document: Mapped["CandidateDocumentRow"] = relationship(
+        back_populates="versions", lazy="raise")
 
 
 

@@ -55,7 +55,14 @@ from backend.app.discovery.contracts import (
     SourceHealthStatus,
 )
 from backend.app.domain.base import CountryCode, LanguageCode
-from backend.app.domain.candidate import CandidateProfile
+from backend.app.domain.candidate import (
+    CandidateClaim,
+    CandidateEvidence,
+    CandidateProfile,
+    ClaimType,
+    EvidenceKind,
+    EvidenceProvenance,
+)
 from backend.app.domain.common import (
     GeoBounds,
     GeocodingConfidence,
@@ -83,6 +90,15 @@ from backend.app.domain.company import (
     SpontaneousApplicationChannel,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.documents import (
+    CandidateDocument,
+    CandidateDocumentType,
+    DocumentArtifactRef,
+    DocumentContent,
+    DocumentGuardReport,
+    DocumentStatus,
+    DocumentVersion,
+)
 from backend.app.domain.eligibility import (
     DeterminationSource,
     EligibilityCheck,
@@ -101,8 +117,12 @@ from backend.app.domain.geo import (
     RemoteScope,
 )
 from backend.app.domain.identifiers import (
+    CandidateDocumentId,
     CandidateProfileId,
+    ClaimId,
     CompanyId,
+    DocumentVersionId,
+    EvidenceId,
     OpportunityId,
     SearchProfileId,
     UserId,
@@ -1241,3 +1261,218 @@ class EvaluateMatchRequest(ApiModel):
     """
 
     opportunity_id: OpportunityId
+
+
+# --- Phase 10: candidate evidence, claims and generated documents -----------
+
+class AddEvidenceRequest(ApiModel):
+    """One evidence record as submitted: what it attests and where it came from.
+
+    No `id`, no `user_id`, no `recorded_at` — the service supplies the id and the
+    owner from the session and stamps the instant, so there is no field for a body
+    to file evidence under another account (docs/ENGINEERING_STANDARDS.md §Security).
+    `provenance` names a real source of candidate-supplied facts; there is no
+    `LLM_GENERATED` member to choose, because a generated sentence is never evidence.
+    """
+
+    kind: EvidenceKind
+    provenance: EvidenceProvenance
+    summary: str = Field(min_length=1)
+    reference_key: str | None = Field(default=None, min_length=1)
+    detail: str | None = Field(default=None, min_length=1)
+    issued_on: date | None = None
+    valid_until: date | None = None
+    source_document: str | None = Field(default=None, min_length=1)
+
+
+class AddClaimRequest(ApiModel):
+    """One claim as submitted, citing evidence the profile already holds.
+
+    `evidence_ids` must name at least one record — a claim resting on nothing is
+    unconstructible (§the truth guarantee) — and every id must be one the account's
+    profile holds, or the service refuses it with a 422 rather than a 500.
+    """
+
+    claim_type: ClaimType
+    label: str = Field(min_length=1)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1)
+    detail: str | None = Field(default=None, min_length=1)
+
+
+class CandidateEvidenceResponse(ApiModel):
+    """One stored evidence record, echoed back with the id it was filed under.
+
+    That id is what a later claim, or a generated document line, cites. The
+    `source_document` is a label (a path or a URL), never the file's bytes — the
+    domain describes where proof lives, it does not carry it.
+    """
+
+    id: EvidenceId
+    kind: EvidenceKind
+    provenance: EvidenceProvenance
+    summary: str
+    reference_key: str | None
+    detail: str | None
+    issued_on: date | None
+    valid_until: date | None
+    source_document: str | None
+    recorded_at: datetime
+
+    @classmethod
+    def of(cls, evidence: CandidateEvidence) -> "CandidateEvidenceResponse":
+        return cls(
+            id=evidence.id, kind=evidence.kind, provenance=evidence.provenance,
+            summary=evidence.summary, reference_key=evidence.reference_key,
+            detail=evidence.detail, issued_on=evidence.issued_on,
+            valid_until=evidence.valid_until,
+            source_document=evidence.source_document,
+            recorded_at=evidence.recorded_at)
+
+
+class CandidateClaimResponse(ApiModel):
+    """One stored claim and the evidence ids it rests on.
+
+    `evidence_ids` is never empty: the aggregate refuses a claim that cites nothing,
+    so a client can rely on every claim here pointing at real evidence it can look
+    up in the same profile.
+    """
+
+    id: ClaimId
+    claim_type: ClaimType
+    label: str
+    detail: str | None
+    evidence_ids: tuple[EvidenceId, ...]
+
+    @classmethod
+    def of(cls, claim: CandidateClaim) -> "CandidateClaimResponse":
+        return cls(id=claim.id, claim_type=claim.claim_type, label=claim.label,
+                   detail=claim.detail, evidence_ids=claim.evidence_ids)
+
+
+class CandidateEvidenceListResponse(ApiModel):
+    """The account's whole attested record: its evidence and its claims.
+
+    Wrapped rather than two bare arrays for the reason every list response here is:
+    a top-level object can grow a field, a top-level array cannot. The two travel
+    together because a profile page shows the claims and lets a reader trace each to
+    the evidence behind it.
+    """
+
+    evidence: tuple[CandidateEvidenceResponse, ...]
+    claims: tuple[CandidateClaimResponse, ...]
+
+    @classmethod
+    def of(cls, profile: CandidateProfile) -> "CandidateEvidenceListResponse":
+        return cls(
+            evidence=tuple(CandidateEvidenceResponse.of(item)
+                           for item in profile.evidence),
+            claims=tuple(CandidateClaimResponse.of(claim)
+                         for claim in profile.claims))
+
+
+class GenerateDocumentRequest(ApiModel):
+    """Ask for a document to be generated for a posting, for this account's profile.
+
+    The opportunity and the document type are in the path; the body carries only an
+    optional `language` override. Left unset, the service writes the document in the
+    posting's own language, falling back to the candidate's first declared one — it
+    never guesses a language the candidate did not state. There is no profile or
+    owner field, for the same reason `EvaluateMatchRequest` has none.
+    """
+
+    language: LanguageCode | None = None
+
+
+class DocumentArtifactResponse(ApiModel):
+    """Where a rendered PDF lives, as much of it as a download UI needs.
+
+    The opaque `storage_key` is deliberately absent: a client downloads through the
+    document id, and a storage locator in a response body is an internal path a UI
+    has no use for and an attacker might. `byte_size` and `page_count` let a list
+    show "2 pages, 48 KB" without fetching the file.
+    """
+
+    media_type: str
+    byte_size: int
+    page_count: int | None
+    rendered_at: datetime
+
+    @classmethod
+    def of(cls, artifact: DocumentArtifactRef) -> "DocumentArtifactResponse":
+        return cls(media_type=artifact.media_type, byte_size=artifact.byte_size,
+                   page_count=artifact.page_count, rendered_at=artifact.rendered_at)
+
+
+class DocumentVersionResponse(ApiModel):
+    """One attempt at a document: its content, the guard's verdict, and its artifact.
+
+    `content` is the structured document (a discriminated union told apart by
+    `kind`), never a blob — the same shape the guard checked, so a UI renders the
+    exact thing that was validated. `guard_report` is present once the guard has
+    run and carries every violation of a rejected attempt, because an auditable
+    refusal is the point (§45). `artifact` is present only for a RENDERED version.
+    """
+
+    id: DocumentVersionId
+    version: int
+    status: DocumentStatus
+    language: str
+    content: DocumentContent
+    guard_report: DocumentGuardReport | None
+    artifact: DocumentArtifactResponse | None
+    generator_key: str | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, version: DocumentVersion) -> "DocumentVersionResponse":
+        return cls(
+            id=version.id, version=version.version, status=version.status,
+            language=version.language, content=version.content,
+            guard_report=version.guard_report,
+            artifact=None if version.artifact is None
+            else DocumentArtifactResponse.of(version.artifact),
+            generator_key=version.generator_key, created_at=version.created_at)
+
+
+class CandidateDocumentResponse(ApiModel):
+    """A candidate's document for one posting, with its whole version history.
+
+    The versions travel newest-last, their numbers strictly increasing, so a client
+    reads the history in order and takes the last usable one as "the document".
+    `latest_usable_version` names the number of the newest version fit to be shown
+    as the candidate's — `null` when every attempt is a draft or was rejected, which
+    a UI renders as "not generated yet" rather than showing an unchecked draft.
+    """
+
+    id: CandidateDocumentId
+    candidate_profile_id: CandidateProfileId
+    opportunity_id: OpportunityId
+    document_type: CandidateDocumentType
+    versions: tuple[DocumentVersionResponse, ...]
+    latest_usable_version: int | None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, document: CandidateDocument) -> "CandidateDocumentResponse":
+        usable = document.latest_usable()
+        return cls(
+            id=document.id, candidate_profile_id=document.candidate_profile_id,
+            opportunity_id=document.opportunity_id,
+            document_type=document.document_type,
+            versions=tuple(DocumentVersionResponse.of(version)
+                           for version in document.versions),
+            latest_usable_version=None if usable is None else usable.version,
+            created_at=document.created_at, updated_at=document.updated_at)
+
+
+class CandidateDocumentListResponse(ApiModel):
+    """This account's documents, most recently updated first, wrapped."""
+
+    documents: tuple[CandidateDocumentResponse, ...]
+
+    @classmethod
+    def of(cls, documents: "tuple[CandidateDocument, ...]"
+           ) -> "CandidateDocumentListResponse":
+        return cls(documents=tuple(CandidateDocumentResponse.of(document)
+                                   for document in documents))

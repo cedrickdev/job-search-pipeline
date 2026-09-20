@@ -23,9 +23,9 @@ authenticated session, and there is no field to override
 """
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Self
+from typing import Annotated
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from backend.app.domain.base import DomainModel, LanguageCode, NonEmptyStr
 from backend.app.domain.candidate import (
@@ -88,22 +88,6 @@ class CandidateProfileDraft(DomainModel):
     languages: tuple[LanguageProficiency, ...] = ()
     work_authorizations: tuple[WorkAuthorization, ...] = ()
     availability: Availability | None = None
-
-    @model_validator(mode="after")
-    def _no_evidence_may_be_cited_yet(self) -> Self:
-        """Refuse `evidence_ids` on a permit, with a sentence that says why.
-
-        The evidence store is Phase 10. Without this check the aggregate would
-        still refuse the profile — `_claims_rest_on_held_evidence` fails on a
-        citation the profile does not hold — but the error would name an invariant
-        the client cannot see, and this one names the reason.
-        """
-        if any(authorization.evidence_ids
-               for authorization in self.work_authorizations):
-            raise ValueError(
-                "work authorization evidence arrives with the evidence store; "
-                "submit the permit without evidence_ids")
-        return self
 
 
 class SearchProfileDraft(DomainModel):
@@ -173,14 +157,23 @@ class OnboardingService:
 
     async def save_profile(self, user_id: UserId, draft: CandidateProfileDraft, *,
                            now: datetime) -> CandidateProfile:
-        """Create or replace the account's profile.
+        """Create or replace the account's profile, keeping its evidence and claims.
 
         The id is derived from the account, so this is idempotent by construction:
         a double-submitted form updates one profile rather than creating a second
-        (`default_candidate_profile_id`). `evidence` and `claims` are left empty —
-        they have no storage until Phase 10, and the repository refuses a profile
-        that carries them rather than dropping them.
+        (`default_candidate_profile_id`).
+
+        The draft carries the profile's *identity and preferences* — name, headline,
+        location, languages, work authorizations, availability — and nothing else.
+        The candidate's *attested record* (`evidence` and `claims`, added through
+        `CandidateEvidenceService` since Phase 10) is carried over from the stored
+        profile untouched: saving the form re-states who the candidate is, not what
+        they have on file, and a form that dropped the evidence store would erase a
+        résumé's foundation on every edit. A permit in the draft may therefore cite
+        evidence a previous session recorded — the aggregate checks that citation
+        against the evidence carried over here.
         """
+        existing = await self._profiles.get_default(user_id)
         return await self._profiles.upsert(CandidateProfile(
             id=default_candidate_profile_id(user_id),
             user_id=user_id,
@@ -190,6 +183,8 @@ class OnboardingService:
             languages=draft.languages,
             work_authorizations=draft.work_authorizations,
             availability=draft.availability,
+            evidence=existing.evidence if existing is not None else (),
+            claims=existing.claims if existing is not None else (),
             updated_at=now))
 
     async def searches(self, user_id: UserId, *,

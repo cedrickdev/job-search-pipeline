@@ -27,11 +27,16 @@ import insert a second child row for the same parent
 from typing import Any, Protocol
 from uuid import UUID, uuid5
 
-from pydantic import SecretStr
+from pydantic import SecretStr, TypeAdapter
 
 from backend.app.domain.candidate import (
     Availability,
+    CandidateClaim,
+    CandidateEvidence,
     CandidateProfile,
+    ClaimType,
+    EvidenceKind,
+    EvidenceProvenance,
     WeeklyAvailabilitySlot,
     WorkAuthorization,
     WorkAuthorizationStatus,
@@ -58,6 +63,15 @@ from backend.app.domain.company import (
     Evidence,
     SpontaneousApplicationChannel,
 )
+from backend.app.domain.documents import (
+    CandidateDocument,
+    CandidateDocumentType,
+    DocumentArtifactRef,
+    DocumentContent,
+    DocumentGuardReport,
+    DocumentStatus,
+    DocumentVersion,
+)
 from backend.app.domain.eligibility import (
     DeterminationSource,
     EligibilityCheck,
@@ -68,13 +82,17 @@ from backend.app.domain.eligibility import (
 )
 from backend.app.domain.identifiers import (
     SURROGATE_KEY_NAMESPACE,
+    CandidateDocumentId,
     CandidateProfileId,
     CareerSiteId,
+    ClaimId,
     CompanyAliasId,
     CompanyDiscoveryRecordId,
     CompanyId,
     CompanyLocationId,
+    DocumentVersionId,
     EligibilityResultId,
+    EvidenceId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
@@ -100,6 +118,9 @@ from backend.app.domain.search import (
 from backend.app.domain.user import User, UserSession, UserStatus
 from backend.app.infrastructure.database.models import (
     CandidateAvailabilitySlotRow,
+    CandidateClaimRow,
+    CandidateDocumentRow,
+    CandidateEvidenceRow,
     CandidateLanguageRow,
     CandidateProfileRow,
     CandidateWorkAuthorizationRow,
@@ -108,6 +129,7 @@ from backend.app.infrastructure.database.models import (
     CompanyDiscoveryRecordRow,
     CompanyLocationRow,
     CompanyRow,
+    DocumentVersionRow,
     EligibilityCheckRow,
     EligibilityResultRow,
     LocationColumnsMixin,
@@ -753,11 +775,11 @@ def eligibility_check_to_row(
         row: EligibilityCheckRow | None = None) -> EligibilityCheckRow:
     """One `EligibilityCheck` onto its row, keyed by position within the result.
 
-    `evidence_ids` is deliberately dropped: there is no evidence table until Phase
-    10, the same reason `_work_authorization_to_row` omits it. Every other field is
-    a plain projection, and the three `ck_eligibility_checks_*` constraints police
-    the combinations the domain validator does — so a caller cannot write a refusal
-    with no reason, an LLM-decided verdict or a pack-blocked one that is not
+    `evidence_ids` is stored as a `TEXT[]` since Phase 10 gave the evidence store a
+    home — the provenance of the candidate records a gate rested on. Every other
+    field is a plain projection, and the three `ck_eligibility_checks_*` constraints
+    police the combinations the domain validator does — so a caller cannot write a
+    refusal with no reason, an LLM-decided verdict or a pack-blocked one that is not
     verified, whether or not the value came through the model.
     """
     target = (EligibilityCheckRow(id=eligibility_check_row_id(result_id, ordinal))
@@ -770,14 +792,14 @@ def eligibility_check_to_row(
     target.authority = check.authority
     target.detail = check.detail
     target.reasons = reasons_to_json(check.reasons)
+    target.evidence_ids = [str(evidence_id) for evidence_id in check.evidence_ids]
     return target
 
 
 def eligibility_check_to_domain(row: EligibilityCheckRow) -> EligibilityCheck:
     """A row as an `EligibilityCheck`, re-validated through the domain.
 
-    `evidence_ids` is left at its default — empty — the truthful reading of a
-    schema with nowhere to store it. Re-validating re-applies
+    `evidence_ids` is read back from the `TEXT[]` column. Re-validating re-applies
     `_verdict_is_accountable`, so a row that reached the table past the CHECKs (a
     hand-built one in a test) still fails here rather than producing a check the
     engine could never have built.
@@ -788,7 +810,8 @@ def eligibility_check_to_domain(row: EligibilityCheckRow) -> EligibilityCheck:
         determined_by=DeterminationSource(row.determined_by),
         authority=RuleAuthority(row.authority),
         detail=row.detail,
-        reasons=reasons_from_json(row.reasons))
+        reasons=reasons_from_json(row.reasons),
+        evidence_ids=_evidence_ids_from_strings(row.evidence_ids))
 
 
 def eligibility_result_to_row(result: EligibilityResult,
@@ -948,6 +971,8 @@ def _work_authorization_to_row(
     target.permit_label = authorization.permit_label
     target.valid_until = authorization.valid_until
     target.permit_hours_cap = authorization.permit_hours_cap
+    target.evidence_ids = [str(evidence_id)
+                           for evidence_id in authorization.evidence_ids]
     return target
 
 
@@ -962,6 +987,52 @@ def _availability_slot_to_row(
     target.weekday = slot.weekday
     target.start_hour = slot.start_hour
     target.end_hour = slot.end_hour
+    return target
+
+
+def _evidence_to_row(evidence: CandidateEvidence, profile_id: CandidateProfileId,
+                     ordinal: int, row: CandidateEvidenceRow | None = None
+                     ) -> CandidateEvidenceRow:
+    """One `CandidateEvidence` onto its row.
+
+    Keyed by the evidence's own id, which the domain carries — no surrogate is
+    derived, unlike the language and slot rows, because an `EvidenceId` is a real
+    identity a claim points at. `user_id` is not written: the record's owner is the
+    profile's owner, and `CandidateProfile` refuses any other, so a column here
+    could only disagree.
+    """
+    target = CandidateEvidenceRow(id=evidence.id) if row is None else row
+    target.profile_id = profile_id
+    target.ordinal = ordinal
+    target.kind = evidence.kind
+    target.provenance = evidence.provenance
+    target.reference_key = evidence.reference_key
+    target.summary = evidence.summary
+    target.detail = evidence.detail
+    target.issued_on = evidence.issued_on
+    target.valid_until = evidence.valid_until
+    target.source_document = evidence.source_document
+    target.recorded_at = evidence.recorded_at
+    return target
+
+
+def _claim_to_row(claim: CandidateClaim, profile_id: CandidateProfileId,
+                  ordinal: int, row: CandidateClaimRow | None = None
+                  ) -> CandidateClaimRow:
+    """One `CandidateClaim` onto its row, its citations as a `TEXT[]` of ids.
+
+    Keyed by the claim's own `ClaimId`. The evidence ids are stored as strings, the
+    form the `TEXT[]` column and psycopg both take; `candidate_profile_to_domain`
+    turns them back into `EvidenceId`, and `CandidateProfile` re-checks the profile
+    holds each one.
+    """
+    target = CandidateClaimRow(id=claim.id) if row is None else row
+    target.profile_id = profile_id
+    target.ordinal = ordinal
+    target.claim_type = claim.claim_type
+    target.label = claim.label
+    target.detail = claim.detail
+    target.evidence_ids = [str(evidence_id) for evidence_id in claim.evidence_ids]
     return target
 
 
@@ -1012,24 +1083,18 @@ def _read_availability(row: CandidateProfileRow) -> Availability | None:
 def candidate_profile_to_row(profile: CandidateProfile,
                              row: CandidateProfileRow | None = None
                              ) -> CandidateProfileRow:
-    """A `CandidateProfile` and its three child collections onto rows.
+    """A `CandidateProfile` and its five child collections onto rows.
 
-    Raises `ValueError` when the profile carries evidence or claims. Phase 10 owns
-    the evidence store, and there is no column for either here; writing the profile
-    and dropping them would break `_claims_rest_on_held_evidence` on the way back
-    out — a claim would return citing evidence the profile no longer holds. The
-    check lives in the mapper rather than in the repository because the mapper is
-    the layer every path goes through.
+    Evidence and claims are child tables since Phase 10, so a profile carrying
+    either is written whole — the gate that once refused them is gone. The claim's
+    `evidence_ids` travel as a `TEXT[]` on `candidate_claims`, and because the whole
+    profile is reconciled in one call, a claim and the evidence it cites are always
+    written together; `_claims_rest_on_held_evidence` re-checks the link on read.
 
     `updated_at` is written from the domain object and `created_at` is left to the
     server default, for the reason `user_session_to_row` gives: the domain models
     the field it actually has.
     """
-    if profile.evidence or profile.claims:
-        raise ValueError(
-            "candidate evidence and claims have no V2 persistence yet (Phase 10); "
-            f"profile {profile.id} carries {len(profile.evidence)} evidence records "
-            f"and {len(profile.claims)} claims")
     target = CandidateProfileRow(id=profile.id) if row is None else row
     target.user_id = profile.user_id
     target.display_name = profile.display_name
@@ -1060,18 +1125,30 @@ def candidate_profile_to_row(profile: CandidateProfile,
                                   slots.get((slot.weekday, slot.start_hour)))
         for ordinal, slot in enumerate(
             () if availability is None else availability.weekly_slots)]
+    evidence = {child.id: child for child in (row.evidence if row else [])}
+    target.evidence = [
+        _evidence_to_row(item, profile_id, ordinal, evidence.get(item.id))
+        for ordinal, item in enumerate(profile.evidence)]
+    claims = {child.id: child for child in (row.claims if row else [])}
+    target.claims = [
+        _claim_to_row(claim, profile_id, ordinal, claims.get(claim.id))
+        for ordinal, claim in enumerate(profile.claims)]
     return target
 
 
 def candidate_profile_to_domain(row: CandidateProfileRow) -> CandidateProfile:
     """A row and its children as a `CandidateProfile`.
 
-    `evidence` and `claims` are left at their defaults — empty — which is the
-    truthful reading of a schema that has nowhere to store them.
+    Re-validating through the aggregate re-applies every invariant, including
+    `_claims_rest_on_held_evidence`: a stored claim citing an id no evidence row
+    carries fails here with a sentence rather than producing a profile the guard
+    would then trust. The `TEXT[]` citation columns hold strings, so each is turned
+    back into an `EvidenceId` (a `UUID`) on the way out.
     """
+    user_id = UserId(row.user_id)
     return CandidateProfile(
         id=CandidateProfileId(row.id),
-        user_id=UserId(row.user_id),
+        user_id=user_id,
         display_name=row.display_name,
         headline=row.headline,
         base_location=_read_location(row),
@@ -1084,10 +1161,47 @@ def candidate_profile_to_domain(row: CandidateProfileRow) -> CandidateProfile:
                               status=WorkAuthorizationStatus(child.status),
                               permit_label=child.permit_label,
                               valid_until=child.valid_until,
-                              permit_hours_cap=child.permit_hours_cap)
+                              permit_hours_cap=child.permit_hours_cap,
+                              evidence_ids=_evidence_ids_from_strings(
+                                  child.evidence_ids))
             for child in row.work_authorizations),
         availability=_read_availability(row),
+        evidence=tuple(_evidence_to_domain(child, user_id) for child in row.evidence),
+        claims=tuple(_claim_to_domain(child, user_id) for child in row.claims),
         updated_at=row.updated_at)
+
+
+def _evidence_ids_from_strings(values: list[str]) -> tuple[EvidenceId, ...]:
+    """A stored `TEXT[]` of citation strings back into typed `EvidenceId`s."""
+    return tuple(EvidenceId(UUID(value)) for value in values)
+
+
+def _evidence_to_domain(row: CandidateEvidenceRow, user_id: UserId
+                        ) -> CandidateEvidence:
+    """One evidence row as a `CandidateEvidence`, its owner taken from the profile."""
+    return CandidateEvidence(
+        id=EvidenceId(row.id),
+        user_id=user_id,
+        kind=EvidenceKind(row.kind),
+        provenance=EvidenceProvenance(row.provenance),
+        reference_key=row.reference_key,
+        summary=row.summary,
+        detail=row.detail,
+        issued_on=row.issued_on,
+        valid_until=row.valid_until,
+        source_document=row.source_document,
+        recorded_at=row.recorded_at)
+
+
+def _claim_to_domain(row: CandidateClaimRow, user_id: UserId) -> CandidateClaim:
+    """One claim row as a `CandidateClaim`, its owner taken from the profile."""
+    return CandidateClaim(
+        id=ClaimId(row.id),
+        user_id=user_id,
+        claim_type=ClaimType(row.claim_type),
+        label=row.label,
+        detail=row.detail,
+        evidence_ids=_evidence_ids_from_strings(row.evidence_ids))
 
 
 def _area_to_row(area: SearchArea, search_profile_id: SearchProfileId, ordinal: int,
@@ -1203,6 +1317,123 @@ def search_profile_to_domain(row: SearchProfileRow) -> SearchProfile:
         posting_languages=tuple(row.posting_languages),
         workload=_read_workload(row),
         source_keys=tuple(row.source_keys),
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+# `DocumentContent` is a discriminated union, so a plain `model_validate` would not
+# know which member a stored dict is. A `TypeAdapter` over the annotated union reads
+# the `kind` discriminator and validates into the right shape, the same way the
+# field does inside `DocumentVersion`.
+_DOCUMENT_CONTENT_ADAPTER: TypeAdapter[DocumentContent] = TypeAdapter(DocumentContent)
+
+
+def _document_version_to_row(version: DocumentVersion,
+                             document_id: CandidateDocumentId,
+                             row: DocumentVersionRow | None = None
+                             ) -> DocumentVersionRow:
+    """One `DocumentVersion` onto its row.
+
+    Content and the guard report are stored as JSONB documents (`mode="json"` turns
+    the evidence-id UUIDs into strings psycopg will take), and `guard_ok` is lifted
+    out of the report so the status CHECKs can read the verdict without a JSONB path
+    expression. The artifact ref is flattened into the five `artifact_*` columns,
+    all NULL until the version is rendered.
+    """
+    target = DocumentVersionRow(id=version.id) if row is None else row
+    target.document_id = document_id
+    target.version = version.version
+    target.status = version.status
+    target.language = version.language
+    target.content = version.content.model_dump(mode="json")
+    report = version.guard_report
+    target.guard_report = None if report is None else report.model_dump(mode="json")
+    target.guard_ok = None if report is None else report.ok
+    target.generator_key = version.generator_key
+    target.created_at = version.created_at
+    artifact = version.artifact
+    target.artifact_storage_key = None if artifact is None else artifact.storage_key
+    target.artifact_media_type = None if artifact is None else artifact.media_type
+    target.artifact_byte_size = None if artifact is None else artifact.byte_size
+    target.artifact_page_count = None if artifact is None else artifact.page_count
+    target.artifact_rendered_at = None if artifact is None else artifact.rendered_at
+    return target
+
+
+def _document_version_to_domain(row: DocumentVersionRow) -> DocumentVersion:
+    """One version row back into a `DocumentVersion`, re-validated through the domain.
+
+    `_status_agrees_with_verdict_and_artifact` runs again here, so a row whose
+    status, verdict and artifact were made to disagree by hand fails with a sentence
+    rather than serving a rejected version as usable.
+    """
+    report = (None if row.guard_report is None
+              else DocumentGuardReport.model_validate(row.guard_report))
+    artifact = None
+    if row.artifact_storage_key is not None:
+        # The artifact columns are written and cleared as one group, gated by the
+        # `(status = 'RENDERED') = (artifact_storage_key IS NOT NULL)` constraint, so
+        # a row with a storage key always carries its `rendered_at`. Asserting it
+        # keeps the invariant legible rather than coercing a `None` into a bad ref.
+        assert row.artifact_rendered_at is not None, (
+            "a rendered version row must carry artifact_rendered_at")
+        artifact = DocumentArtifactRef(
+            storage_key=row.artifact_storage_key,
+            media_type=row.artifact_media_type or "application/pdf",
+            byte_size=row.artifact_byte_size or 0,
+            page_count=row.artifact_page_count,
+            rendered_at=row.artifact_rendered_at)
+    return DocumentVersion(
+        id=DocumentVersionId(row.id),
+        version=row.version,
+        status=DocumentStatus(row.status),
+        language=row.language,
+        content=_DOCUMENT_CONTENT_ADAPTER.validate_python(row.content),
+        guard_report=report,
+        artifact=artifact,
+        generator_key=row.generator_key,
+        created_at=row.created_at)
+
+
+def candidate_document_to_row(document: CandidateDocument,
+                              row: CandidateDocumentRow | None = None
+                              ) -> CandidateDocumentRow:
+    """A `CandidateDocument` and its versions onto rows.
+
+    The versions hang from the row being written and are matched by their version
+    number, so appending a version updates the parent and inserts one child rather
+    than rewriting the history. `updated_at` is written from the domain object;
+    `created_at` is left to the server default, as elsewhere.
+    """
+    target = CandidateDocumentRow(id=document.id) if row is None else row
+    target.user_id = document.user_id
+    target.candidate_profile_id = document.candidate_profile_id
+    target.opportunity_id = document.opportunity_id
+    target.document_type = document.document_type
+    target.updated_at = document.updated_at
+    document_id = CandidateDocumentId(target.id)
+    existing = {child.version: child for child in (row.versions if row else [])}
+    target.versions = [
+        _document_version_to_row(version, document_id, existing.get(version.version))
+        for version in document.versions]
+    return target
+
+
+def candidate_document_to_domain(row: CandidateDocumentRow) -> CandidateDocument:
+    """A document row and its versions as a `CandidateDocument`.
+
+    Re-validating through the aggregate re-applies `_versions_are_ordered_and_typed`
+    — strictly increasing numbers, unique ids, every version's content matching the
+    document's declared type — so a hand-built row that violated any of them fails
+    here rather than producing a document a surface would misrender.
+    """
+    return CandidateDocument(
+        id=CandidateDocumentId(row.id),
+        user_id=UserId(row.user_id),
+        candidate_profile_id=CandidateProfileId(row.candidate_profile_id),
+        opportunity_id=OpportunityId(row.opportunity_id),
+        document_type=CandidateDocumentType(row.document_type),
+        versions=tuple(_document_version_to_domain(child) for child in row.versions),
         created_at=row.created_at,
         updated_at=row.updated_at)
 

@@ -46,6 +46,7 @@ from backend.app.domain.company import (
     CompanyDiscoveryRecord,
     normalize_company_name,
 )
+from backend.app.domain.documents import CandidateDocument, CandidateDocumentType
 from backend.app.domain.eligibility import EligibilityResult
 from backend.app.domain.geo import (
     GeoSearchQuery,
@@ -54,6 +55,7 @@ from backend.app.domain.geo import (
     remote_scope_of,
 )
 from backend.app.domain.identifiers import (
+    CandidateDocumentId,
     CandidateProfileId,
     CompanyId,
     EligibilityResultId,
@@ -68,6 +70,8 @@ from backend.app.domain.opportunity import Opportunity, WorkplaceMode
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.infrastructure.database.mappers import (
+    candidate_document_to_domain,
+    candidate_document_to_row,
     candidate_profile_to_domain,
     candidate_profile_to_row,
     career_site_to_domain,
@@ -93,6 +97,7 @@ from backend.app.infrastructure.database.mappers import (
     user_to_row,
 )
 from backend.app.infrastructure.database.models import (
+    CandidateDocumentRow,
     CandidateProfileRow,
     CompanyAliasRow,
     CompanyCareerSiteRow,
@@ -125,6 +130,7 @@ from backend.app.repositories.contracts import (
 
 if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
     from backend.app.repositories.contracts import (
+        CandidateDocumentRepository,
         CandidateProfileRepository,
         CareerSiteRepository,
         CompanyDiscoveryRepository,
@@ -142,7 +148,7 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
             "OpportunityRepository", "MatchEvaluationRepository",
             "EligibilityResultRepository", "UserRepository",
             "SessionRepository", "CandidateProfileRepository",
-            "SearchProfileRepository"]:
+            "SearchProfileRepository", "CandidateDocumentRepository"]:
         """Structural conformance, enforced by `mypy backend`.
 
         The `Protocol`s in `contracts` are satisfied by shape, so nothing would
@@ -159,7 +165,8 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
                 SqlAlchemyUserRepository(session),
                 SqlAlchemySessionRepository(session),
                 SqlAlchemyCandidateProfileRepository(session),
-                SqlAlchemySearchProfileRepository(session))
+                SqlAlchemySearchProfileRepository(session),
+                SqlAlchemyCandidateDocumentRepository(session))
 
 
 def _rows_affected(result: Result[Any]) -> int:
@@ -985,10 +992,11 @@ class SqlAlchemyCandidateProfileRepository:
     and an upsert cannot take one over: the load misses, the insert runs, and the
     primary key rejects it.
 
-    All three child collections are eager-loaded on every read, because they are
+    All five child collections are eager-loaded on every read, because they are
     `lazy="raise"` and `candidate_profile_to_row` needs them to reconcile an
     existing row — an upsert that had not loaded them would raise on the first
-    child rather than write a profile with none.
+    child rather than write a profile with none. Since Phase 10 that includes the
+    evidence and claims the truth guard rests on.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -998,7 +1006,9 @@ class SqlAlchemyCandidateProfileRepository:
         return select(CandidateProfileRow).options(
             selectinload(CandidateProfileRow.languages),
             selectinload(CandidateProfileRow.work_authorizations),
-            selectinload(CandidateProfileRow.availability_slots))
+            selectinload(CandidateProfileRow.availability_slots),
+            selectinload(CandidateProfileRow.evidence),
+            selectinload(CandidateProfileRow.claims))
 
     async def _row(self, user_id: UserId,
                    profile_id: CandidateProfileId) -> CandidateProfileRow | None:
@@ -1087,6 +1097,77 @@ class SqlAlchemySearchProfileRepository:
             .order_by(SearchProfileRow.created_at.desc(), SearchProfileRow.id)
             .limit(limit))
         return tuple(search_profile_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyCandidateDocumentRepository:
+    """`CandidateDocumentRepository` over an `AsyncSession`, `user_id` on every read.
+
+    Another user's document reads as absent and an upsert cannot take one over: the
+    load misses on the `user_id` predicate, the insert runs, and the primary key
+    rejects it. The versions are eager-loaded on every read because they are
+    `lazy="raise"` and `candidate_document_to_row` needs the stored ones to
+    reconcile an append — a write that had not loaded them would raise on the first
+    version rather than add one.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    def _base_select(self) -> Select[tuple[CandidateDocumentRow]]:
+        return select(CandidateDocumentRow).options(
+            selectinload(CandidateDocumentRow.versions))
+
+    async def _row(self, user_id: UserId,
+                   document_id: CandidateDocumentId) -> CandidateDocumentRow | None:
+        result = await self._session.execute(
+            self._base_select().where(CandidateDocumentRow.id == document_id,
+                                      CandidateDocumentRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def _row_for_pair(
+            self, user_id: UserId, candidate_profile_id: CandidateProfileId,
+            opportunity_id: OpportunityId, document_type: CandidateDocumentType
+    ) -> CandidateDocumentRow | None:
+        result = await self._session.execute(
+            self._base_select().where(
+                CandidateDocumentRow.user_id == user_id,
+                CandidateDocumentRow.candidate_profile_id == candidate_profile_id,
+                CandidateDocumentRow.opportunity_id == opportunity_id,
+                CandidateDocumentRow.document_type == document_type))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  document_id: CandidateDocumentId) -> CandidateDocument | None:
+        row = await self._row(user_id, document_id)
+        return None if row is None else candidate_document_to_domain(row)
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId,
+                           document_type: CandidateDocumentType
+                           ) -> CandidateDocument | None:
+        row = await self._row_for_pair(user_id, candidate_profile_id,
+                                       opportunity_id, document_type)
+        return None if row is None else candidate_document_to_domain(row)
+
+    async def upsert(self, document: CandidateDocument) -> CandidateDocument:
+        existing = await self._row_for_pair(
+            document.user_id, document.candidate_profile_id, document.opportunity_id,
+            document.document_type)
+        row = candidate_document_to_row(document, existing)
+        self._session.add(row)
+        await self._session.flush()
+        return candidate_document_to_domain(row)
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[CandidateDocument, ...]:
+        result = await self._session.execute(
+            self._base_select()
+            .where(CandidateDocumentRow.user_id == user_id)
+            .order_by(CandidateDocumentRow.updated_at.desc(), CandidateDocumentRow.id)
+            .limit(limit))
+        return tuple(candidate_document_to_domain(row) for row in result.scalars())
 
 
 

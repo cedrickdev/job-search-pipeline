@@ -23,12 +23,23 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   // Replaced below by a message carrying the deadline; kept for the case where the
   // body arrives without one.
   account_locked: 'Too many failed sign-in attempts. Try again later.',
+  // The artifact store could not return the bytes of a version it says is rendered —
+  // an infrastructure fault (a 500), not something the user did or can fix.
+  artifact_unavailable: 'This document could not be retrieved right now. Try again in a moment.',
   candidate_profile_not_found: 'No profile has been saved for this account yet.',
+  // A generated line cited an evidence id the profile does not hold. The candidate
+  // never types ids, so this is a stale form rather than a mistake to correct inline.
+  claim_cites_unknown_evidence: 'That claim refers to evidence that is no longer on file. Reload and try again.',
   company_not_found: 'That company is not in the directory.',
   conflict: 'That change conflicts with something already saved. Reload and retry.',
   csrf_failed: 'This request could not be verified. Reload the page and try again.',
   database_unavailable: 'The service is temporarily unavailable. Try again in a moment.',
+  document_not_found: 'That document does not exist.',
+  document_not_rendered: 'This document has no finished version to download yet. Generate one first.',
   email_already_registered: 'An account already exists for that email address.',
+  // The honest refusal: the profile carries too little evidence to build a truthful
+  // document, and the answer is to add evidence, never to invent content.
+  insufficient_evidence: 'There is not enough evidence on your profile to build this document yet. Add evidence first.',
   invalid_credentials: 'That email address and password do not match an account.',
   not_authenticated: 'Your session has ended. Sign in again to continue.',
   onboarding_incomplete: 'Save a profile and at least one active search first.',

@@ -19,15 +19,21 @@ Two rules from the phase order shape every choice here:
   a hard language floor are gates, and they live in `backend.app.eligibility`.
   Nothing in this module can lower `overall` on their account.
 
-Today three dimensions are evaluable — LANGUAGE_FIT, LOCATION_FIT and
-SCHEDULE_FIT — because those are the fields the model actually populates. SKILLS,
-EXPERIENCE and EDUCATION have no structured data behind them yet (Phase 10), so
-the engine omits them and the shortfall shows up as low evidence coverage rather
-than as invented scores.
+Phase 10 makes SKILLS_FIT evaluable — but only when *both* sides carry structured
+data: the candidate has `SKILL` claims and the posting has `skill_requirements`.
+Absent either, skills stays UNKNOWN and is omitted, exactly as before, because a
+posting we never parsed skills from is not a posting that wants no skills, and a
+candidate with no recorded skills is not a candidate with a skills score of zero.
+The matcher reads the candidate's structured `SKILL` claims (§63), never any
+generated document text — a résumé is downstream of matching, not an input to it.
+LANGUAGE_FIT, LOCATION_FIT and SCHEDULE_FIT are unchanged. EXPERIENCE and
+EDUCATION remain unscored: no structured requirement exists to compare against
+yet, and the shortfall shows up as lower evidence coverage rather than as invented
+scores.
 """
 from datetime import datetime
 
-from backend.app.domain.candidate import CandidateProfile
+from backend.app.domain.candidate import CandidateProfile, ClaimType
 from backend.app.domain.common import LanguageLevel, Reason, ReasonImpact, WorkloadRange
 from backend.app.domain.identifiers import match_evaluation_id
 from backend.app.domain.matching import (
@@ -38,6 +44,7 @@ from backend.app.domain.matching import (
     MatchProfile,
 )
 from backend.app.domain.opportunity import Opportunity
+from backend.app.matching.skills import normalize_skill
 from country_packs.contracts import CountryPack
 
 # Stamped onto every evaluation's `evaluator_key`, joined with the profile version
@@ -67,6 +74,8 @@ def evaluate_match(profile: CandidateProfile, opportunity: Opportunity, *,
     """
     dimensions = [
         dimension for dimension in (
+            _skills_fit(profile, opportunity,
+                        match_profile.weight_for(MatchDimension.SKILLS_FIT)),
             _language_fit(profile, opportunity,
                           match_profile.weight_for(MatchDimension.LANGUAGE_FIT)),
             _location_fit(profile, opportunity,
@@ -102,6 +111,61 @@ def evaluate_match(profile: CandidateProfile, opportunity: Opportunity, *,
         evaluator_key=f"{MATCH_ENGINE_KEY}+{match_profile.version}",
         evaluated_at=now,
     )
+
+
+def _skills_fit(profile: CandidateProfile, opportunity: Opportunity,
+                weight: float) -> DimensionScore | None:
+    """The fraction of the posting's skills the candidate can evidence.
+
+    Evaluated only when both sides are structured: `None` (UNKNOWN, omitted from
+    the mean) when the posting lists no `skill_requirements` or the candidate holds
+    no `SKILL` claims, because either absence is missing data, not a zero. The
+    candidate's claimed skills are read from `CandidateClaim`, never from a
+    generated document (§63): matching consumes evidence, and a tailored résumé is
+    a product *of* the match, so letting it feed back in would be circular.
+
+    Comparison is through the deterministic `normalize_skill` ontology, so a
+    posting asking for "Node.js" is met by a candidate claiming "node", and `java`
+    never satisfies `javascript`. Required skills count double the nice-to-haves,
+    matching `SkillRequirement`'s own distinction and `_language_fit`'s treatment
+    of required versus optional languages. A met requirement is a full 1.0 for that
+    skill; an unmet one is 0.0 — a skill is either evidenced or it is not, and there
+    is no honest partial credit for "nearly has it".
+    """
+    requirements = opportunity.skill_requirements
+    if not requirements:
+        return None
+    claimed = {
+        normalized.canonical
+        for claim in profile.claims if claim.claim_type is ClaimType.SKILL
+        if (normalized := normalize_skill(claim.label)) is not None
+    }
+    if not claimed:
+        return None
+    weighted: list[tuple[float, float]] = []
+    reasons: list[Reason] = []
+    for requirement in requirements:
+        importance = 1.0 if requirement.required else 0.5
+        normalized = normalize_skill(requirement.skill)
+        skill_label = requirement.skill
+        met = normalized is not None and normalized.canonical in claimed
+        weighted.append((1.0 if met else 0.0, importance))
+        if met:
+            reasons.append(Reason(
+                code="SKILL_MATCHED",
+                detail=f"candidate evidences {skill_label}",
+                impact=ReasonImpact.POSITIVE))
+        else:
+            reasons.append(Reason(
+                code="SKILL_MISSING",
+                detail=f"the posting asks for {skill_label}, which the candidate "
+                       f"does not claim",
+                impact=ReasonImpact.NEGATIVE if requirement.required
+                else ReasonImpact.NEUTRAL))
+    total = sum(importance for _, importance in weighted)
+    score = sum(fit * importance for fit, importance in weighted) / total
+    return DimensionScore(dimension=MatchDimension.SKILLS_FIT, score=score,
+                          weight=weight, reasons=tuple(reasons))
 
 
 def _language_fit(profile: CandidateProfile, opportunity: Opportunity,

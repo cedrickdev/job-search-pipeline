@@ -18,9 +18,22 @@ from uuid import UUID
 
 from backend.app.domain.candidate import (
     Availability,
+    CandidateEvidence,
     CandidateProfile,
+    EvidenceKind,
+    EvidenceProvenance,
     WorkAuthorization,
     WorkAuthorizationStatus,
+)
+from backend.app.domain.documents import (
+    CandidateDocument,
+    CandidateDocumentType,
+    DocumentArtifactRef,
+    DocumentGuardReport,
+    DocumentStatus,
+    DocumentVersion,
+    EvidenceBackedText,
+    ResumeDocument,
 )
 from backend.app.domain.common import (
     GeoPoint,
@@ -45,14 +58,18 @@ from backend.app.domain.eligibility import (
 from backend.app.domain.identifiers import (
     ApplicationDecisionId,
     ApplicationPolicyId,
+    CandidateDocumentId,
     CandidateProfileId,
     CompanyId,
     CompanyLocationId,
     EligibilityResultId,
+    EvidenceId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
     UserId,
+    candidate_document_id,
+    document_version_id,
 )
 from backend.app.domain.matching import DimensionScore, MatchDimension, MatchEvaluation
 from backend.app.domain.opportunity import (
@@ -82,6 +99,8 @@ POLICY = ApplicationPolicyId(UUID("00000000-0000-4000-8000-000000000051"))
 DECISION = ApplicationDecisionId(UUID("00000000-0000-4000-8000-000000000061"))
 SEARCH_PROFILE = SearchProfileId(UUID("00000000-0000-4000-8000-000000000071"))
 OTHER_SEARCH_PROFILE = SearchProfileId(UUID("00000000-0000-4000-8000-000000000072"))
+EVIDENCE = EvidenceId(UUID("00000000-0000-4000-8000-000000000081"))
+DOCUMENT = CandidateDocumentId(UUID("00000000-0000-4000-8000-000000000091"))
 
 # Somewhere real, so a distance a test asserts on can be checked against a map.
 LAUSANNE = GeoPoint(latitude=46.5197, longitude=6.6323)
@@ -246,6 +265,85 @@ def a_company(*locations, **overrides):
     }
     fields.update(overrides)
     return Company(**fields)
+
+
+def an_evidence_record(**overrides):
+    """One `CandidateEvidence` owned by `USER`, a plain CV bullet by default.
+
+    Enough to back a claim or a résumé line: a test that needs a diploma or a
+    permit document passes `kind=` and `provenance=`, and one that needs another
+    owner passes `user_id=OTHER_USER`.
+    """
+    fields = {
+        "id": EVIDENCE,
+        "user_id": USER,
+        "kind": EvidenceKind.CV_BULLET,
+        "provenance": EvidenceProvenance.MANUAL_USER_INPUT,
+        "summary": "Led the checkout rewrite that cut latency by 30%",
+        "recorded_at": NOW,
+    }
+    fields.update(overrides)
+    return CandidateEvidence(**fields)
+
+
+def a_resume_content(*, evidence_id=EVIDENCE, **overrides):
+    """Minimal `ResumeDocument` content whose one summary line cites `evidence_id`.
+
+    A résumé with a single evidence-backed summary — enough for a version to be
+    valid and to render — leaving the heavier composition to the generator the
+    document tests exercise directly.
+    """
+    fields = {
+        "full_name": "Fixture Candidate",
+        "headline": "Backend engineer",
+        "summary": EvidenceBackedText(
+            text="Led the checkout rewrite that cut latency by 30%",
+            evidence_ids=(evidence_id,)),
+    }
+    fields.update(overrides)
+    return ResumeDocument(**fields)
+
+
+def a_rendered_document(*, storage_key, content=None, user_id=USER,
+                        candidate_profile_id=PROFILE, opportunity_id=OPPORTUNITY,
+                        document_type=CandidateDocumentType.RESUME,
+                        id=None, **overrides):
+    """A `CandidateDocument` with one RENDERED version pointing at `storage_key`.
+
+    The version carries a passing guard report and an artifact reference, which is
+    what a download needs. `storage_key` must be a key the caller has actually
+    written bytes under in the artifact store, or the download will raise
+    `ArtifactNotFound` — the builder describes the locator, it does not create the
+    file. The id defaults to the derived `candidate_document_id`, so a test that
+    seeds under a placeholder passes `id=` explicitly.
+    """
+    resolved_id = id if id is not None else candidate_document_id(
+        candidate_profile_id, opportunity_id, document_type.value)
+    content = content if content is not None else a_resume_content()
+    version = DocumentVersion(
+        id=document_version_id(resolved_id, 1),
+        version=1,
+        status=DocumentStatus.RENDERED,
+        language="fr",
+        content=content,
+        guard_report=DocumentGuardReport(ok=True),
+        artifact=DocumentArtifactRef(
+            storage_key=storage_key, media_type="application/pdf",
+            byte_size=1024, page_count=1, rendered_at=NOW),
+        generator_key="deterministic-reference/1",
+        created_at=NOW)
+    fields = {
+        "id": resolved_id,
+        "user_id": user_id,
+        "candidate_profile_id": candidate_profile_id,
+        "opportunity_id": opportunity_id,
+        "document_type": document_type,
+        "versions": (version,),
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return CandidateDocument(**fields)
 
 
 def a_search_profile(*areas, **overrides):

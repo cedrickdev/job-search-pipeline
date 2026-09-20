@@ -10,6 +10,11 @@
 // one into a request cannot reach anything.
 import type {
   Account,
+  CandidateClaim,
+  CandidateDocument,
+  CandidateDocumentList,
+  CandidateEvidence,
+  CandidateEvidenceList,
   CandidateProfile,
   CandidateProfileDraft,
   Company,
@@ -18,6 +23,8 @@ import type {
   CompanyGeoItem,
   CompanyGeoResponse,
   CompanyList,
+  DocumentArtifact,
+  DocumentVersion,
   GeoLocation,
   OnboardingState,
   OpportunityGeoItem,
@@ -33,6 +40,10 @@ const PROFILE_ID = '22222222-2222-4222-8222-222222222222'
 const SEARCH_ID = '33333333-3333-4333-8333-333333333333'
 const COMPANY_ID = '44444444-4444-4444-8444-444444444444'
 const OPPORTUNITY_ID = '55555555-5555-4555-8555-555555555555'
+const EVIDENCE_ID = '66666666-6666-4666-8666-666666666666'
+const CLAIM_ID = '77777777-7777-4777-8777-777777777777'
+const DOCUMENT_ID = '88888888-8888-4888-8888-888888888888'
+const VERSION_ID = '99999999-9999-4999-8999-999999999999'
 
 export function account(overrides: Partial<Account> = {}): Account {
   return {
@@ -279,4 +290,121 @@ export function companyGeoResponse(
   companies: CompanyGeoItem[] = [companyGeoItem()],
   overrides: Partial<CompanyGeoResponse> = {}): CompanyGeoResponse {
   return { companies, limit: 50, offset: 0, ...overrides }
+}
+
+// --- Phase 10: candidate evidence and generated documents ----------------------------
+//
+// The default evidence is a CV summary — the one record the reference generator turns
+// into a résumé summary line — and the default claim is the EXPERIENCE claim that cites
+// it. The document fixtures build on those: a résumé whose one bullet quotes the same
+// evidence, rendered to a one-page PDF. Every value is invented; no real personal data.
+
+/** One attested fact. The default is a CV summary, the atom a summary line rests on. */
+export function evidence(overrides: Partial<CandidateEvidence> = {}): CandidateEvidence {
+  return {
+    id: EVIDENCE_ID,
+    kind: 'CV_SUMMARY',
+    provenance: 'BASE_CV',
+    summary: 'Backend engineer with 8 years of experience',
+    reference_key: null,
+    detail: null,
+    issued_on: null,
+    valid_until: null,
+    source_document: null,
+    recorded_at: '2026-01-02T09:40:00Z',
+    ...overrides,
+  }
+}
+
+/** One claim, citing evidence the profile already holds. `evidence_ids` is never empty. */
+export function claim(overrides: Partial<CandidateClaim> = {}): CandidateClaim {
+  return {
+    id: CLAIM_ID,
+    claim_type: 'EXPERIENCE',
+    label: 'Senior Backend Engineer',
+    detail: 'Acme, 2018–2026',
+    evidence_ids: [EVIDENCE_ID],
+    ...overrides,
+  }
+}
+
+/** The whole attested record `GET /me/evidence` answers with. */
+export function evidenceList(
+  overrides: Partial<CandidateEvidenceList> = {}): CandidateEvidenceList {
+  return { evidence: [evidence()], claims: [claim()], ...overrides }
+}
+
+/** Where a rendered PDF lives, as a download UI reads it. No bytes, no storage key. */
+export function documentArtifact(
+  overrides: Partial<DocumentArtifact> = {}): DocumentArtifact {
+  return {
+    media_type: 'application/pdf',
+    byte_size: 48_000,
+    page_count: 1,
+    rendered_at: '2026-01-02T10:05:00Z',
+    ...overrides,
+  }
+}
+
+/**
+ * One version. The default is a RENDERED résumé that cleared the guard, with its
+ * artifact — the shape a download and a "latest usable" both need. A rejected or draft
+ * attempt is written by overriding `status`, `guard_report` and `artifact: null`.
+ */
+export function documentVersion(overrides: Partial<DocumentVersion> = {}): DocumentVersion {
+  return {
+    id: VERSION_ID,
+    version: 1,
+    status: 'RENDERED',
+    language: 'en',
+    content: {
+      kind: 'RESUME',
+      full_name: 'Test Candidate',
+      headline: 'Backend engineer',
+      summary: {
+        text: 'Backend engineer with 8 years of experience',
+        evidence_ids: [EVIDENCE_ID],
+      },
+      experience: [{
+        heading: 'Senior Backend Engineer',
+        subheading: 'Acme, 2018–2026',
+        evidence_ids: [EVIDENCE_ID],
+        bullets: [{
+          text: 'Rebuilt the checkout flow, cutting latency 30%',
+          evidence_ids: [EVIDENCE_ID],
+        }],
+      }],
+      education: [],
+      skill_groups: [],
+      languages: [],
+    },
+    guard_report: { ok: true, violations: [] },
+    artifact: documentArtifact(),
+    generator_key: 'deterministic-reference/1',
+    created_at: '2026-01-02T10:05:00Z',
+    ...overrides,
+  }
+}
+
+/** A candidate's document for one posting, with its version history. */
+export function candidateDocument(
+  overrides: Partial<CandidateDocument> = {}): CandidateDocument {
+  return {
+    id: DOCUMENT_ID,
+    candidate_profile_id: PROFILE_ID,
+    opportunity_id: OPPORTUNITY_ID,
+    document_type: 'RESUME',
+    versions: [documentVersion()],
+    latest_usable_version: 1,
+    created_at: '2026-01-02T10:05:00Z',
+    updated_at: '2026-01-02T10:05:00Z',
+    ...overrides,
+  }
+}
+
+/** This account's documents, most recently updated first, wrapped. */
+export function documentList(
+  documents: CandidateDocument[] = [candidateDocument()],
+  overrides: Partial<CandidateDocumentList> = {}): CandidateDocumentList {
+  return { documents, ...overrides }
 }

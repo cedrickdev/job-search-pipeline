@@ -668,6 +668,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Documents
+         * @description This account's documents, most recently updated first.
+         */
+        get: operations["list_documents_api_v2_documents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Document
+         * @description One document with its whole version history.
+         *
+         *     404 for "no such document" and "not yours" alike: the service raises one error
+         *     for both, so a caller cannot enumerate another account's documents by id.
+         */
+        get: operations["read_document_api_v2_documents__document_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/documents/{document_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Document
+         * @description Stream the newest rendered PDF of a document.
+         *
+         *     A binary response, not JSON: the bytes are read from the artifact store and
+         *     returned with the stored media type and a `Content-Disposition` naming the
+         *     file. 404 when the document is not this account's; 409
+         *     (`document_not_rendered`) when it exists but no version has cleared the guard
+         *     and been rendered yet — the resource is real, the state is temporary.
+         */
+        get: operations["download_document_api_v2_documents__document_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/geo/companies": {
         parameters: {
             query?: never;
@@ -766,6 +835,63 @@ export interface paths {
          *     them differently.
          */
         post: operations["evaluate_match_api_v2_matches_evaluate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/claims": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Claim
+         * @description Assert one claim, citing evidence the profile already holds.
+         *
+         *     422 when a cited id names no evidence record on the profile: the service
+         *     refuses it rather than writing a claim that rests on nothing, and the error
+         *     names the ids that were not found so a client fixes the citation.
+         */
+        post: operations["add_claim_api_v2_me_claims_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Evidence
+         * @description The account's whole attested record: its evidence and its claims.
+         *
+         *     Read through the document service's profile view so one dependency answers the
+         *     profile-backed reads. 404 when onboarding has not saved a profile — the same
+         *     state `GET /me/profile` reports, so a client sends the user to onboarding.
+         */
+        get: operations["list_evidence_api_v2_me_evidence_get"];
+        put?: never;
+        /**
+         * Add Evidence
+         * @description Record one attested fact on the account's profile.
+         *
+         *     201, because it creates a resource: the response carries the id the record was
+         *     filed under, which a later claim or a generated document line cites. 404 when
+         *     onboarding has not saved a profile yet — evidence hangs off a profile, and
+         *     there is nothing to hang it on.
+         */
+        post: operations["add_evidence_api_v2_me_evidence_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -919,6 +1045,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/opportunities/{opportunity_id}/cover-letter": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate Cover Letter
+         * @description Generate a cover letter for a posting, from this account's evidence.
+         *
+         *     The persuasive counterpart to the résumé, versioned the same way and subject to
+         *     the same guard: every body paragraph cites the candidate evidence it draws on.
+         *     Same error codes as the résumé endpoint.
+         */
+        post: operations["generate_cover_letter_api_v2_opportunities__opportunity_id__cover_letter_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/opportunities/{opportunity_id}/match": {
         parameters: {
             query?: never;
@@ -939,6 +1089,32 @@ export interface paths {
         get: operations["read_match_api_v2_opportunities__opportunity_id__match_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/opportunities/{opportunity_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate Resume
+         * @description Generate an ATS résumé for a posting, from this account's evidence.
+         *
+         *     Appends a version to the résumé document for the `(profile, opportunity,
+         *     RESUME)` triple, returning the whole document so a client sees the new attempt
+         *     in its history. 404 when the account has no profile or no such posting; 409
+         *     (`insufficient_evidence`) when the profile carries too little evidence to build
+         *     a truthful résumé — the honest answer is to say so, not to invent content.
+         */
+        post: operations["generate_resume_api_v2_opportunities__opportunity_id__resume_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -974,6 +1150,49 @@ export interface components {
             /** Onboarding Completed At */
             onboarding_completed_at: string | null;
             status: components["schemas"]["UserStatus"];
+        };
+        /**
+         * AddClaimRequest
+         * @description One claim as submitted, citing evidence the profile already holds.
+         *
+         *     `evidence_ids` must name at least one record — a claim resting on nothing is
+         *     unconstructible (§the truth guarantee) — and every id must be one the account's
+         *     profile holds, or the service refuses it with a 422 rather than a 500.
+         */
+        AddClaimRequest: {
+            claim_type: components["schemas"]["ClaimType"];
+            /** Detail */
+            detail?: string | null;
+            /** Evidence Ids */
+            evidence_ids: string[];
+            /** Label */
+            label: string;
+        };
+        /**
+         * AddEvidenceRequest
+         * @description One evidence record as submitted: what it attests and where it came from.
+         *
+         *     No `id`, no `user_id`, no `recorded_at` — the service supplies the id and the
+         *     owner from the session and stamps the instant, so there is no field for a body
+         *     to file evidence under another account (docs/ENGINEERING_STANDARDS.md §Security).
+         *     `provenance` names a real source of candidate-supplied facts; there is no
+         *     `LLM_GENERATED` member to choose, because a generated sentence is never evidence.
+         */
+        AddEvidenceRequest: {
+            /** Detail */
+            detail?: string | null;
+            /** Issued On */
+            issued_on?: string | null;
+            kind: components["schemas"]["EvidenceKind"];
+            provenance: components["schemas"]["EvidenceProvenance"];
+            /** Reference Key */
+            reference_key?: string | null;
+            /** Source Document */
+            source_document?: string | null;
+            /** Summary */
+            summary: string;
+            /** Valid Until */
+            valid_until?: string | null;
         };
         /** AppliedBody */
         AppliedBody: {
@@ -1081,6 +1300,139 @@ export interface components {
             file: string;
         };
         /**
+         * CandidateClaimResponse
+         * @description One stored claim and the evidence ids it rests on.
+         *
+         *     `evidence_ids` is never empty: the aggregate refuses a claim that cites nothing,
+         *     so a client can rely on every claim here pointing at real evidence it can look
+         *     up in the same profile.
+         */
+        CandidateClaimResponse: {
+            claim_type: components["schemas"]["ClaimType"];
+            /** Detail */
+            detail: string | null;
+            /** Evidence Ids */
+            evidence_ids: string[];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Label */
+            label: string;
+        };
+        /**
+         * CandidateDocumentListResponse
+         * @description This account's documents, most recently updated first, wrapped.
+         */
+        CandidateDocumentListResponse: {
+            /** Documents */
+            documents: components["schemas"]["CandidateDocumentResponse"][];
+        };
+        /**
+         * CandidateDocumentResponse
+         * @description A candidate's document for one posting, with its whole version history.
+         *
+         *     The versions travel newest-last, their numbers strictly increasing, so a client
+         *     reads the history in order and takes the last usable one as "the document".
+         *     `latest_usable_version` names the number of the newest version fit to be shown
+         *     as the candidate's — `null` when every attempt is a draft or was rejected, which
+         *     a UI renders as "not generated yet" rather than showing an unchecked draft.
+         */
+        CandidateDocumentResponse: {
+            /**
+             * Candidate Profile Id
+             * Format: uuid
+             */
+            candidate_profile_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            document_type: components["schemas"]["CandidateDocumentType"];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Latest Usable Version */
+            latest_usable_version: number | null;
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Versions */
+            versions: components["schemas"]["DocumentVersionResponse"][];
+        };
+        /**
+         * CandidateDocumentType
+         * @description The kinds of document Phase 10 produces.
+         *
+         *     A résumé and a cover letter for the same posting are two documents, not two
+         *     faces of one, because they have independent version histories: a candidate
+         *     may regenerate the letter after an interview without touching the résumé. The
+         *     value is part of a `candidate_document_id`, so the split is also what keeps
+         *     their rows distinct.
+         * @enum {string}
+         */
+        CandidateDocumentType: "RESUME" | "COVER_LETTER";
+        /**
+         * CandidateEvidenceListResponse
+         * @description The account's whole attested record: its evidence and its claims.
+         *
+         *     Wrapped rather than two bare arrays for the reason every list response here is:
+         *     a top-level object can grow a field, a top-level array cannot. The two travel
+         *     together because a profile page shows the claims and lets a reader trace each to
+         *     the evidence behind it.
+         */
+        CandidateEvidenceListResponse: {
+            /** Claims */
+            claims: components["schemas"]["CandidateClaimResponse"][];
+            /** Evidence */
+            evidence: components["schemas"]["CandidateEvidenceResponse"][];
+        };
+        /**
+         * CandidateEvidenceResponse
+         * @description One stored evidence record, echoed back with the id it was filed under.
+         *
+         *     That id is what a later claim, or a generated document line, cites. The
+         *     `source_document` is a label (a path or a URL), never the file's bytes — the
+         *     domain describes where proof lives, it does not carry it.
+         */
+        CandidateEvidenceResponse: {
+            /** Detail */
+            detail: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Issued On */
+            issued_on: string | null;
+            kind: components["schemas"]["EvidenceKind"];
+            provenance: components["schemas"]["EvidenceProvenance"];
+            /**
+             * Recorded At
+             * Format: date-time
+             */
+            recorded_at: string;
+            /** Reference Key */
+            reference_key: string | null;
+            /** Source Document */
+            source_document: string | null;
+            /** Summary */
+            summary: string;
+            /** Valid Until */
+            valid_until: string | null;
+        };
+        /**
          * CandidateProfileDraft
          * @description A candidate profile as submitted: no id, no owner, no timestamps.
          *
@@ -1185,6 +1537,12 @@ export interface components {
              */
             scope_id: number;
         };
+        /**
+         * ClaimType
+         * @description The kind of assertion a claim makes.
+         * @enum {string}
+         */
+        ClaimType: "SKILL" | "EXPERIENCE" | "EDUCATION" | "CERTIFICATION" | "LANGUAGE" | "AVAILABILITY" | "WORK_AUTHORIZATION" | "ACHIEVEMENT";
         /**
          * CompanyAliasResponse
          * @description A name an employer is also known by, and who called it that.
@@ -1514,6 +1872,35 @@ export interface components {
             label?: string | null;
         };
         /**
+         * CoverLetterDocument
+         * @description The structured cover letter (§33).
+         *
+         *     The persuasive counterpart to the résumé, and the looser surface: its body is
+         *     prose. So the same invariant is applied where it bites — every `body`
+         *     paragraph is an `EvidenceBackedText` and must cite the candidate evidence it
+         *     draws on, and the guard checks its numbers and skill-terms just as it does the
+         *     résumé's. `recipient`, `greeting`, `closing` and `signature` are the letter's
+         *     frame: the recipient and greeting name the *employer* (a fact about the
+         *     opportunity, not the candidate), and the signature is the candidate's own name.
+         */
+        CoverLetterDocument: {
+            /** Body */
+            body: components["schemas"]["EvidenceBackedText"][];
+            /** Closing */
+            closing?: string | null;
+            /** Greeting */
+            greeting?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "COVER_LETTER";
+            /** Recipient */
+            recipient?: string | null;
+            /** Signature */
+            signature: string;
+        };
+        /**
          * DetectedAtsResponse
          * @description Which platform an employer publishes on, and how sure that is.
          *
@@ -1573,6 +1960,132 @@ export interface components {
             /** Weight */
             weight: number;
         };
+        /**
+         * DocumentArtifactResponse
+         * @description Where a rendered PDF lives, as much of it as a download UI needs.
+         *
+         *     The opaque `storage_key` is deliberately absent: a client downloads through the
+         *     document id, and a storage locator in a response body is an internal path a UI
+         *     has no use for and an attacker might. `byte_size` and `page_count` let a list
+         *     show "2 pages, 48 KB" without fetching the file.
+         */
+        DocumentArtifactResponse: {
+            /** Byte Size */
+            byte_size: number;
+            /** Media Type */
+            media_type: string;
+            /** Page Count */
+            page_count: number | null;
+            /**
+             * Rendered At
+             * Format: date-time
+             */
+            rendered_at: string;
+        };
+        /**
+         * DocumentGuardReport
+         * @description The guard's verdict on one version.
+         *
+         *     `ok` is not free to disagree with `violations`: a report that claimed to pass
+         *     while carrying a violation would be the exact silent-failure the guard exists
+         *     to prevent, so the validator ties them together. An empty, `ok=True` report is
+         *     a version that cleared every gate.
+         */
+        DocumentGuardReport: {
+            /** Ok */
+            ok: boolean;
+            /**
+             * Violations
+             * @default []
+             */
+            violations: components["schemas"]["DocumentGuardViolation"][];
+        };
+        /**
+         * DocumentGuardViolation
+         * @description One reason a version failed the `CandidateEvidenceGuard`.
+         *
+         *     `evidence_ids` names the records the offending text *should* have rested on
+         *     (empty when the problem is that it cited nothing), and `offending_text` quotes
+         *     the fragment that tripped the rule, so a reviewer sees the sentence rather than
+         *     a section number. Kept as a value: it is a finding, not an entity.
+         */
+        DocumentGuardViolation: {
+            code: components["schemas"]["DocumentViolationCode"];
+            /** Detail */
+            detail: string;
+            /**
+             * Evidence Ids
+             * @default []
+             */
+            evidence_ids: string[];
+            /** Offending Text */
+            offending_text?: string | null;
+        };
+        /**
+         * DocumentStatus
+         * @description Where one `DocumentVersion` sits in its lifecycle (§7).
+         *
+         *     The path is deliberately one-way through the guard: a version is `DRAFT` when
+         *     a generator has proposed content, `VALIDATING` while the guard runs, and then
+         *     either `VALIDATED` (cleared the guard) or `REJECTED` (a fabrication was
+         *     caught). Only a `VALIDATED` version may be `RENDERED` to a PDF, and only a
+         *     rendered or validated one may be `ARCHIVED` when a newer version supersedes
+         *     it. A `REJECTED` version is kept, not discarded — the whole point of the guard
+         *     is auditable, so the rejected attempt and *why* it was rejected are part of the
+         *     record (§45).
+         * @enum {string}
+         */
+        DocumentStatus: "DRAFT" | "VALIDATING" | "VALIDATED" | "REJECTED" | "RENDERED" | "ARCHIVED";
+        /**
+         * DocumentVersionResponse
+         * @description One attempt at a document: its content, the guard's verdict, and its artifact.
+         *
+         *     `content` is the structured document (a discriminated union told apart by
+         *     `kind`), never a blob — the same shape the guard checked, so a UI renders the
+         *     exact thing that was validated. `guard_report` is present once the guard has
+         *     run and carries every violation of a rejected attempt, because an auditable
+         *     refusal is the point (§45). `artifact` is present only for a RENDERED version.
+         */
+        DocumentVersionResponse: {
+            artifact: components["schemas"]["DocumentArtifactResponse"] | null;
+            /** Content */
+            content: components["schemas"]["ResumeDocument"] | components["schemas"]["CoverLetterDocument"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Generator Key */
+            generator_key: string | null;
+            guard_report: components["schemas"]["DocumentGuardReport"] | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Language */
+            language: string;
+            status: components["schemas"]["DocumentStatus"];
+            /** Version */
+            version: number;
+        };
+        /**
+         * DocumentViolationCode
+         * @description Why the guard refused a version (§12-16).
+         *
+         *     These are the V2 form of V1's `truth_violations` categories
+         *     (`pipeline/tailor_io.py`), named so a surface and an analytics query group on a
+         *     code rather than parse prose. Every one describes a way generated content
+         *     would state something the candidate's evidence does not support.
+         *
+         *     There is deliberately no `MISSING_CITATION`: an uncited line is not something
+         *     the guard has to *catch*, because `EvidenceBackedText` and `ResumeEntry` cannot
+         *     be constructed without at least one evidence id (`Field(min_length=1)`). The
+         *     guard's job is the harder question the type cannot answer — whether the cited
+         *     evidence *exists* (`UNKNOWN_EVIDENCE`) and whether the *words* are supported.
+         * @enum {string}
+         */
+        DocumentViolationCode: "UNKNOWN_EVIDENCE" | "INVENTED_NUMBER" | "UNSUPPORTED_SKILL" | "INVENTED_TERM" | "ALTERED_IDENTITY";
         /**
          * EligibilityCheckResponse
          * @description One gate, evaluated — with who decided it and on what authority.
@@ -1669,6 +2182,54 @@ export interface components {
             opportunity_id: string;
         };
         /**
+         * EvidenceBackedText
+         * @description A sentence the platform is willing to write, and what it rests on.
+         *
+         *     This is the atom of the truth guarantee: any line that makes a claim about the
+         *     candidate — a summary sentence, an experience bullet, a cover-letter paragraph
+         *     — is one of these, and it cannot exist without at least one `EvidenceId`. The
+         *     guard then checks that the *words* are supported too (no invented number, no
+         *     skill absent from the cited evidence), but the citation itself is a
+         *     type-level invariant, mirroring `CandidateClaim.evidence_ids`.
+         */
+        EvidenceBackedText: {
+            /** Evidence Ids */
+            evidence_ids: string[];
+            /** Text */
+            text: string;
+        };
+        /**
+         * EvidenceKind
+         * @description What sort of record backs a claim.
+         *
+         *     `SELF_DECLARATION` is the weakest member and is not a loophole: a candidate
+         *     stating a fact about themselves is a legitimate, *attributed* source. What the
+         *     platform may never do is manufacture evidence — no member of this enum means
+         *     "an LLM inferred it", and Phase 10's extraction pipeline must attach the
+         *     document it read, not its own conclusion.
+         * @enum {string}
+         */
+        EvidenceKind: "CV_BULLET" | "CV_SUMMARY" | "EMPLOYMENT_RECORD" | "DIPLOMA" | "CERTIFICATE" | "LANGUAGE_ASSESSMENT" | "PORTFOLIO_ITEM" | "REFERENCE" | "PERMIT_DOCUMENT" | "SELF_DECLARATION";
+        /**
+         * EvidenceProvenance
+         * @description Where an evidence record was ingested from (Phase 10 §3).
+         *
+         *     Orthogonal to `EvidenceKind`: the kind says *what sort of record* backs a
+         *     fact, and the provenance says *which pipeline put it in the store*. The two
+         *     together are what make an accepted document auditable (§45) — a résumé bullet
+         *     can say not only "this rests on an employment record" but "that record was
+         *     imported from the operator's base CV" versus "the candidate typed it in".
+         *
+         *     Every member names a real source of *candidate-supplied* facts. There is,
+         *     pointedly, no `LLM_GENERATED` member: a generated sentence is never evidence
+         *     (§3), so a document pipeline that wanted to promote its own output into the
+         *     store would find no provenance to file it under. `SYSTEM_DERIVED` is the one
+         *     machine origin, and it is deterministic derivation from other stored facts —
+         *     a language proficiency turned into a `LANGUAGE` claim — never generation.
+         * @enum {string}
+         */
+        EvidenceProvenance: "CANDIDATE_PROFILE" | "BASE_CV" | "MANUAL_USER_INPUT" | "IMPORTED_CV" | "PROJECT" | "EMPLOYMENT_RECORD" | "EDUCATION_RECORD" | "SYSTEM_DERIVED";
+        /**
          * EvidenceResponse
          * @description Why the backend believes one thing about a company.
          *
@@ -1686,6 +2247,20 @@ export interface components {
             observed_at: string | null;
             /** Source Url */
             source_url: string | null;
+        };
+        /**
+         * GenerateDocumentRequest
+         * @description Ask for a document to be generated for a posting, for this account's profile.
+         *
+         *     The opportunity and the document type are in the path; the body carries only an
+         *     optional `language` override. Left unset, the service writes the document in the
+         *     posting's own language, falling back to the candidate's first declared one — it
+         *     never guesses a language the candidate did not state. There is no profile or
+         *     owner field, for the same reason `EvaluateMatchRequest` has none.
+         */
+        GenerateDocumentRequest: {
+            /** Language */
+            language?: string | null;
         };
         /**
          * GeoLocationResponse
@@ -2226,6 +2801,93 @@ export interface components {
          * @enum {string}
          */
         RemoteSelection: "exclude" | "include" | "only";
+        /**
+         * ResumeDocument
+         * @description The structured, ATS-oriented résumé (§28-32).
+         *
+         *     `full_name` is identity, not a claim — it is the candidate's own
+         *     `CandidateProfile.display_name`, and rewriting it would be altering identity,
+         *     which the guard forbids (`ALTERED_IDENTITY`). `headline` is likewise carried
+         *     from the profile. Everything that asserts a *fact* — the summary, every
+         *     experience bullet, every skill — is evidence-backed. `languages` renders the
+         *     profile's `LanguageProficiency` lines, which are facts the profile already
+         *     holds rather than anything the generator composed.
+         *
+         *     The structure is intentionally flat and label-driven: an ATS parser
+         *     (§28) reads plain sections, so the renderer emits headings and bullet lists,
+         *     never multi-column tables or text boxes.
+         */
+        ResumeDocument: {
+            /**
+             * Education
+             * @default []
+             */
+            education: components["schemas"]["ResumeEntry"][];
+            /**
+             * Experience
+             * @default []
+             */
+            experience: components["schemas"]["ResumeEntry"][];
+            /** Full Name */
+            full_name: string;
+            /** Headline */
+            headline?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "RESUME";
+            /**
+             * Languages
+             * @default []
+             */
+            languages: string[];
+            /**
+             * Skill Groups
+             * @default []
+             */
+            skill_groups: components["schemas"]["ResumeSkillGroup"][];
+            summary?: components["schemas"]["EvidenceBackedText"] | null;
+        };
+        /**
+         * ResumeEntry
+         * @description One experience, education or project block.
+         *
+         *     `heading` and `subheading` are the block's factual frame ("Software Engineer —
+         *     Acme", "2021–2024, Lausanne"). Those are facts too, so the entry as a whole
+         *     cites the employment or education evidence it summarizes; each bullet then
+         *     cites its own evidence on top. A block with no bullets is allowed — an
+         *     education line is often just its heading — but a block that cites no evidence
+         *     is not, because then its heading would be an unsupported fact.
+         */
+        ResumeEntry: {
+            /**
+             * Bullets
+             * @default []
+             */
+            bullets: components["schemas"]["EvidenceBackedText"][];
+            /** Evidence Ids */
+            evidence_ids: string[];
+            /** Heading */
+            heading: string;
+            /** Subheading */
+            subheading?: string | null;
+        };
+        /**
+         * ResumeSkillGroup
+         * @description A labelled cluster of skills on the résumé.
+         *
+         *     Each entry in `skills` must be backed by a candidate `SKILL` claim — the guard
+         *     checks it against the normalized skill ontology, so "Node" and "Node.js" are
+         *     one skill and an unclaimed one is a `UNSUPPORTED_SKILL` violation. The group
+         *     `name` ("Languages", "Cloud") is presentation and carries no claim.
+         */
+        ResumeSkillGroup: {
+            /** Name */
+            name?: string | null;
+            /** Skills */
+            skills: string[];
+        };
         /**
          * RuleAuthority
          * @description How much a rule behind a check is entitled to close a gate.
@@ -3712,6 +4374,88 @@ export interface operations {
             };
         };
     };
+    list_documents_api_v2_documents_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateDocumentListResponse"];
+                };
+            };
+        };
+    };
+    read_document_api_v2_documents__document_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateDocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_document_api_v2_documents__document_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     search_companies_api_v2_geo_companies_get: {
         parameters: {
             query?: {
@@ -3830,6 +4574,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AssessmentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_claim_api_v2_me_claims_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateClaimResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_evidence_api_v2_me_evidence_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateEvidenceListResponse"];
+                };
+            };
+        };
+    };
+    add_evidence_api_v2_me_evidence_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddEvidenceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateEvidenceResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4100,6 +4930,41 @@ export interface operations {
             };
         };
     };
+    generate_cover_letter_api_v2_opportunities__opportunity_id__cover_letter_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateDocumentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateDocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_match_api_v2_opportunities__opportunity_id__match_get: {
         parameters: {
             query?: never;
@@ -4118,6 +4983,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AssessmentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_resume_api_v2_opportunities__opportunity_id__resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateDocumentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateDocumentResponse"];
                 };
             };
             /** @description Validation Error */

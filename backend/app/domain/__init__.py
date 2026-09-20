@@ -17,6 +17,7 @@ The modules, in dependency order:
 - `opportunity` — the central abstraction and its source record;
 - `company` — employers and their physical sites;
 - `candidate` — profile, evidence and claims;
+- `documents` — the ATS résumé and cover letter, their versions and truth guard;
 - `search` — saved searches and geographic areas;
 - `geo` — geographic search, geocoding and remote semantics;
 - `matching` — multidimensional compatibility scoring;

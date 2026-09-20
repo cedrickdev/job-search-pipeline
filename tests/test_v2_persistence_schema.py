@@ -64,19 +64,32 @@ SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
                  "geocoding_cache", "opportunities", "opportunity_source_records")
 
 # Rows one user owns, named by the `user_id` Phase 4's authorization filter reads.
-USER_OWNED_TABLES = ("candidate_profiles", "eligibility_results",
-                     "match_evaluations", "search_profiles", "user_sessions")
+# `candidate_documents` (Phase 10) carries `user_id` denormalized beside its
+# `candidate_profile_id` for the same reason every user-owned table does: each
+# scoped read is `WHERE user_id = :current_user`.
+USER_OWNED_TABLES = ("candidate_documents", "candidate_profiles",
+                     "eligibility_results", "match_evaluations", "search_profiles",
+                     "user_sessions")
 
 # Rows owned through a parent instead of directly: a language belongs to a profile,
 # an area to a search profile, a dimension score to an evaluation. They carry no
 # `user_id` on purpose — a second copy of the owner is a second thing that can be
 # wrong — so each one is listed with the parent it cascades from.
+#
+# `candidate_evidence` and `candidate_claims` (Phase 10) are the candidate's own,
+# reached only through the profile that holds them — `CandidateProfile` refuses
+# another user's records, so the owner is the profile's owner and a `user_id`
+# column would be that second, forgettable copy. `document_versions` reaches its
+# owner through the `candidate_documents` row, which carries the `user_id`.
 PARENT_OWNED_TABLES = {
     "candidate_availability_slots": "candidate_profiles",
+    "candidate_claims": "candidate_profiles",
+    "candidate_evidence": "candidate_profiles",
     "candidate_languages": "candidate_profiles",
     "candidate_work_authorizations": "candidate_profiles",
     "company_aliases": "companies",
     "company_career_sites": "companies",
+    "document_versions": "candidate_documents",
     "eligibility_checks": "eligibility_results",
     "match_dimension_scores": "match_evaluations",
     "search_areas": "search_profiles",
@@ -106,7 +119,7 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_twenty_v2_tables():
+def test_the_metadata_holds_exactly_the_twenty_four_v2_tables():
     """A tripwire on the shape of the schema itself.
 
     `models.py` is the only place a V2 table may be declared, so the three
@@ -116,7 +129,7 @@ def test_the_metadata_holds_exactly_the_twenty_v2_tables():
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
         PARENT_OWNED_TABLES) | {"users"}
-    assert len(TABLES) == 20
+    assert len(TABLES) == 24
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
@@ -317,6 +330,7 @@ def test_free_text_columns_are_text_not_varchar():
                      ("candidate_languages", "language"),
                      ("candidate_profiles", "location_country"),
                      ("candidate_work_authorizations", "country"),
+                     ("document_versions", "language"),
                      ("companies", "country"),
                      ("companies", "ats_detected_by"),
                      ("companies", "spontaneous_observed_by"),
@@ -354,18 +368,33 @@ def test_every_geography_column_is_a_wgs84_point():
         assert column.type.get_col_spec() == "geography(Point,4326)", table
 
 
+# The one JSONB payload that is legitimately absent rather than empty.
+# `document_versions.guard_report` is NULL until the guard has run: a DRAFT or
+# VALIDATING version has been proposed but not yet judged, and `'{}'::jsonb` is not
+# a valid `DocumentGuardReport` (the model requires `ok`), so an empty default
+# would be a payload no reader could parse. "Not judged yet" and "judged, verdict
+# empty" are genuinely different states here, unlike the reason lists where an
+# empty array is the honest default — so this column is allowed to be nullable with
+# no server default, and the mapper writes NULL for a version that carries none.
+_NULLABLE_JSONB = {("document_versions", "guard_report")}
+
+
 def test_json_payloads_are_jsonb_with_an_empty_server_default():
-    """JSONB, and never NULL.
+    """JSONB, and never NULL — except the guard verdict, which may be unrun.
 
     `raw` and the reason lists are read with `->>` and may be indexed later, which
     rules out `JSON` (text re-parsed on every read). The server-side `'{}'::jsonb`
     means a row written by a migration or by psql is as valid as one written by
-    SQLAlchemy — a NULL payload would make every reader check for it.
+    SQLAlchemy — a NULL payload would make every reader check for it. The lone
+    exception is `_NULLABLE_JSONB`, where NULL is a meaningful "not yet judged".
     """
     payloads = [(table, column) for table, column in _columns()
                 if isinstance(column.type, JSONB)]
     assert len(payloads) >= 4
     for table, column in payloads:
+        if (table, column.name) in _NULLABLE_JSONB:
+            assert column.nullable is True, f"{table}.{column.name}"
+            continue
         assert column.nullable is False, f"{table}.{column.name}"
         assert column.server_default is not None, f"{table}.{column.name}"
 

@@ -11,7 +11,7 @@
 // implemented — every V2 write in the app inherits them from here, and a test per
 // call site would only re-test `fetch`.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, CSRF_HEADER, apiDelete, apiGet, apiPost, apiPut, csrfToken } from '~/utils/api-client'
+import { ApiError, CSRF_HEADER, apiDelete, apiDownload, apiGet, apiPost, apiPut, csrfToken } from '~/utils/api-client'
 import { stubFetch } from '../support/http'
 
 /**
@@ -181,5 +181,50 @@ describe('api client · sessions and CSRF (Phase 4)', () => {
     for (const call of http.calls) {
       expect(call.init?.credentials).toBe('same-origin')
     }
+  })
+})
+
+describe('api client · binary download (Phase 10)', () => {
+  beforeEach(() => vi.restoreAllMocks())
+
+  it('returns the bytes as a Blob and the filename from Content-Disposition', async () => {
+    const pdf = new Blob([new Uint8Array([1, 2, 3])], { type: 'application/pdf' })
+    stubFetch([{
+      match: '/download',
+      respond: () => new Response(pdf, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': 'attachment; filename="doc-42.pdf"',
+        },
+      }),
+    }])
+
+    const file = await apiDownload('/api/v2/documents/42/download')
+    expect(file.filename).toBe('doc-42.pdf')
+    expect(file.blob.type).toBe('application/pdf')
+    expect(await file.blob.arrayBuffer()).toEqual(await pdf.arrayBuffer())
+  })
+
+  it('leaves the filename null when the response names none', async () => {
+    stubFetch([{
+      match: '/download',
+      respond: () => new Response(new Blob(['x']), { status: 200 }),
+    }])
+    const file = await apiDownload('/api/v2/documents/42/download')
+    expect(file.filename).toBeNull()
+  })
+
+  // A refusal is still JSON, so the binary path throws the same ApiError as the
+  // JSON helpers — a caller branches on `code` here exactly as elsewhere.
+  it('throws an ApiError carrying the V2 code on a non-2xx answer', async () => {
+    stubFetch([{
+      match: '/download',
+      status: 409,
+      json: { error: 'document_not_rendered', detail: 'no rendered version' },
+    }])
+    const error = await apiDownload('/api/v2/documents/42/download').catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).code).toBe('document_not_rendered')
   })
 })

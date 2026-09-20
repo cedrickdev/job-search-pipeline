@@ -58,6 +58,132 @@
         "title": "AccountResponse",
         "type": "object"
       },
+      "AddClaimRequest": {
+        "additionalProperties": false,
+        "description": "One claim as submitted, citing evidence the profile already holds.\n\n`evidence_ids` must name at least one record — a claim resting on nothing is\nunconstructible (§the truth guarantee) — and every id must be one the account's\nprofile holds, or the service refuses it with a 422 rather than a 500.",
+        "properties": {
+          "claim_type": {
+            "$ref": "#/components/schemas/ClaimType"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "evidence_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "label": {
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_type",
+          "label",
+          "evidence_ids"
+        ],
+        "title": "AddClaimRequest",
+        "type": "object"
+      },
+      "AddEvidenceRequest": {
+        "additionalProperties": false,
+        "description": "One evidence record as submitted: what it attests and where it came from.\n\nNo `id`, no `user_id`, no `recorded_at` — the service supplies the id and the\nowner from the session and stamps the instant, so there is no field for a body\nto file evidence under another account (docs/ENGINEERING_STANDARDS.md §Security).\n`provenance` names a real source of candidate-supplied facts; there is no\n`LLM_GENERATED` member to choose, because a generated sentence is never evidence.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "issued_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issued On"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EvidenceKind"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/EvidenceProvenance"
+          },
+          "reference_key": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Key"
+          },
+          "source_document": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Document"
+          },
+          "summary": {
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          }
+        },
+        "required": [
+          "kind",
+          "provenance",
+          "summary"
+        ],
+        "title": "AddEvidenceRequest",
+        "type": "object"
+      },
       "AppliedBody": {
         "properties": {
           "channel": {
@@ -303,6 +429,266 @@
         "title": "Body_post_transcribe_api_transcribe_post",
         "type": "object"
       },
+      "CandidateClaimResponse": {
+        "additionalProperties": false,
+        "description": "One stored claim and the evidence ids it rests on.\n\n`evidence_ids` is never empty: the aggregate refuses a claim that cites nothing,\nso a client can rely on every claim here pointing at real evidence it can look\nup in the same profile.",
+        "properties": {
+          "claim_type": {
+            "$ref": "#/components/schemas/ClaimType"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "evidence_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "claim_type",
+          "label",
+          "detail",
+          "evidence_ids"
+        ],
+        "title": "CandidateClaimResponse",
+        "type": "object"
+      },
+      "CandidateDocumentListResponse": {
+        "additionalProperties": false,
+        "description": "This account's documents, most recently updated first, wrapped.",
+        "properties": {
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateDocumentResponse"
+            },
+            "title": "Documents",
+            "type": "array"
+          }
+        },
+        "required": [
+          "documents"
+        ],
+        "title": "CandidateDocumentListResponse",
+        "type": "object"
+      },
+      "CandidateDocumentResponse": {
+        "additionalProperties": false,
+        "description": "A candidate's document for one posting, with its whole version history.\n\nThe versions travel newest-last, their numbers strictly increasing, so a client\nreads the history in order and takes the last usable one as \"the document\".\n`latest_usable_version` names the number of the newest version fit to be shown\nas the candidate's — `null` when every attempt is a draft or was rejected, which\na UI renders as \"not generated yet\" rather than showing an unchecked draft.",
+        "properties": {
+          "candidate_profile_id": {
+            "format": "uuid",
+            "title": "Candidate Profile Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "document_type": {
+            "$ref": "#/components/schemas/CandidateDocumentType"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "latest_usable_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Usable Version"
+          },
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentVersionResponse"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "candidate_profile_id",
+          "opportunity_id",
+          "document_type",
+          "versions",
+          "latest_usable_version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CandidateDocumentResponse",
+        "type": "object"
+      },
+      "CandidateDocumentType": {
+        "description": "The kinds of document Phase 10 produces.\n\nA résumé and a cover letter for the same posting are two documents, not two\nfaces of one, because they have independent version histories: a candidate\nmay regenerate the letter after an interview without touching the résumé. The\nvalue is part of a `candidate_document_id`, so the split is also what keeps\ntheir rows distinct.",
+        "enum": [
+          "RESUME",
+          "COVER_LETTER"
+        ],
+        "title": "CandidateDocumentType",
+        "type": "string"
+      },
+      "CandidateEvidenceListResponse": {
+        "additionalProperties": false,
+        "description": "The account's whole attested record: its evidence and its claims.\n\nWrapped rather than two bare arrays for the reason every list response here is:\na top-level object can grow a field, a top-level array cannot. The two travel\ntogether because a profile page shows the claims and lets a reader trace each to\nthe evidence behind it.",
+        "properties": {
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateClaimResponse"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateEvidenceResponse"
+            },
+            "title": "Evidence",
+            "type": "array"
+          }
+        },
+        "required": [
+          "evidence",
+          "claims"
+        ],
+        "title": "CandidateEvidenceListResponse",
+        "type": "object"
+      },
+      "CandidateEvidenceResponse": {
+        "additionalProperties": false,
+        "description": "One stored evidence record, echoed back with the id it was filed under.\n\nThat id is what a later claim, or a generated document line, cites. The\n`source_document` is a label (a path or a URL), never the file's bytes — the\ndomain describes where proof lives, it does not carry it.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "issued_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issued On"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EvidenceKind"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/EvidenceProvenance"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "title": "Recorded At",
+            "type": "string"
+          },
+          "reference_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Key"
+          },
+          "source_document": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Document"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "provenance",
+          "summary",
+          "reference_key",
+          "detail",
+          "issued_on",
+          "valid_until",
+          "source_document",
+          "recorded_at"
+        ],
+        "title": "CandidateEvidenceResponse",
+        "type": "object"
+      },
       "CandidateProfileDraft": {
         "additionalProperties": false,
         "description": "A candidate profile as submitted: no id, no owner, no timestamps.\n\nEvery field is the domain's own value object, so the validation a request body\ngets is exactly the validation the aggregate enforces — the language code\npattern, the availability window ordering, the permit hour cap. Nothing is\nre-specified here that `CandidateProfile` already specifies.",
@@ -487,6 +873,21 @@
         ],
         "title": "ChatBody",
         "type": "object"
+      },
+      "ClaimType": {
+        "description": "The kind of assertion a claim makes.",
+        "enum": [
+          "SKILL",
+          "EXPERIENCE",
+          "EDUCATION",
+          "CERTIFICATION",
+          "LANGUAGE",
+          "AVAILABILITY",
+          "WORK_AUTHORIZATION",
+          "ACHIEVEMENT"
+        ],
+        "title": "ClaimType",
+        "type": "string"
       },
       "CompanyAliasResponse": {
         "additionalProperties": false,
@@ -1171,6 +1572,69 @@
         "title": "CountrySearchArea",
         "type": "object"
       },
+      "CoverLetterDocument": {
+        "additionalProperties": false,
+        "description": "The structured cover letter (§33).\n\nThe persuasive counterpart to the résumé, and the looser surface: its body is\nprose. So the same invariant is applied where it bites — every `body`\nparagraph is an `EvidenceBackedText` and must cite the candidate evidence it\ndraws on, and the guard checks its numbers and skill-terms just as it does the\nrésumé's. `recipient`, `greeting`, `closing` and `signature` are the letter's\nframe: the recipient and greeting name the *employer* (a fact about the\nopportunity, not the candidate), and the signature is the candidate's own name.",
+        "properties": {
+          "body": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceBackedText"
+            },
+            "minItems": 1,
+            "title": "Body",
+            "type": "array"
+          },
+          "closing": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closing"
+          },
+          "greeting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Greeting"
+          },
+          "kind": {
+            "const": "COVER_LETTER",
+            "default": "COVER_LETTER",
+            "title": "Kind",
+            "type": "string"
+          },
+          "recipient": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient"
+          },
+          "signature": {
+            "title": "Signature",
+            "type": "string"
+          }
+        },
+        "required": [
+          "body",
+          "signature"
+        ],
+        "title": "CoverLetterDocument",
+        "type": "object"
+      },
       "DetectedAtsResponse": {
         "additionalProperties": false,
         "description": "Which platform an employer publishes on, and how sure that is.\n\n`status` is the whole point (§10): `CONFIRMED` came from the platform's own\naddress space, `LIKELY` from configuration a human typed. A client that showed\nthe two the same way would be inventing certainty the backend refused to claim.",
@@ -1272,6 +1736,220 @@
         ],
         "title": "DimensionScoreResponse",
         "type": "object"
+      },
+      "DocumentArtifactResponse": {
+        "additionalProperties": false,
+        "description": "Where a rendered PDF lives, as much of it as a download UI needs.\n\nThe opaque `storage_key` is deliberately absent: a client downloads through the\ndocument id, and a storage locator in a response body is an internal path a UI\nhas no use for and an attacker might. `byte_size` and `page_count` let a list\nshow \"2 pages, 48 KB\" without fetching the file.",
+        "properties": {
+          "byte_size": {
+            "title": "Byte Size",
+            "type": "integer"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "page_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "rendered_at": {
+            "format": "date-time",
+            "title": "Rendered At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "media_type",
+          "byte_size",
+          "page_count",
+          "rendered_at"
+        ],
+        "title": "DocumentArtifactResponse",
+        "type": "object"
+      },
+      "DocumentGuardReport": {
+        "additionalProperties": false,
+        "description": "The guard's verdict on one version.\n\n`ok` is not free to disagree with `violations`: a report that claimed to pass\nwhile carrying a violation would be the exact silent-failure the guard exists\nto prevent, so the validator ties them together. An empty, `ok=True` report is\na version that cleared every gate.",
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "violations": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DocumentGuardViolation"
+            },
+            "title": "Violations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "DocumentGuardReport",
+        "type": "object"
+      },
+      "DocumentGuardViolation": {
+        "additionalProperties": false,
+        "description": "One reason a version failed the `CandidateEvidenceGuard`.\n\n`evidence_ids` names the records the offending text *should* have rested on\n(empty when the problem is that it cited nothing), and `offending_text` quotes\nthe fragment that tripped the rule, so a reviewer sees the sentence rather than\na section number. Kept as a value: it is a finding, not an entity.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/DocumentViolationCode"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "offending_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offending Text"
+          }
+        },
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "DocumentGuardViolation",
+        "type": "object"
+      },
+      "DocumentStatus": {
+        "description": "Where one `DocumentVersion` sits in its lifecycle (§7).\n\nThe path is deliberately one-way through the guard: a version is `DRAFT` when\na generator has proposed content, `VALIDATING` while the guard runs, and then\neither `VALIDATED` (cleared the guard) or `REJECTED` (a fabrication was\ncaught). Only a `VALIDATED` version may be `RENDERED` to a PDF, and only a\nrendered or validated one may be `ARCHIVED` when a newer version supersedes\nit. A `REJECTED` version is kept, not discarded — the whole point of the guard\nis auditable, so the rejected attempt and *why* it was rejected are part of the\nrecord (§45).",
+        "enum": [
+          "DRAFT",
+          "VALIDATING",
+          "VALIDATED",
+          "REJECTED",
+          "RENDERED",
+          "ARCHIVED"
+        ],
+        "title": "DocumentStatus",
+        "type": "string"
+      },
+      "DocumentVersionResponse": {
+        "additionalProperties": false,
+        "description": "One attempt at a document: its content, the guard's verdict, and its artifact.\n\n`content` is the structured document (a discriminated union told apart by\n`kind`), never a blob — the same shape the guard checked, so a UI renders the\nexact thing that was validated. `guard_report` is present once the guard has\nrun and carries every violation of a rejected attempt, because an auditable\nrefusal is the point (§45). `artifact` is present only for a RENDERED version.",
+        "properties": {
+          "artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentArtifactResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "content": {
+            "discriminator": {
+              "mapping": {
+                "COVER_LETTER": "#/components/schemas/CoverLetterDocument",
+                "RESUME": "#/components/schemas/ResumeDocument"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ResumeDocument"
+              },
+              {
+                "$ref": "#/components/schemas/CoverLetterDocument"
+              }
+            ],
+            "title": "Content"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "generator_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generator Key"
+          },
+          "guard_report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentGuardReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DocumentStatus"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "status",
+          "language",
+          "content",
+          "guard_report",
+          "artifact",
+          "generator_key",
+          "created_at"
+        ],
+        "title": "DocumentVersionResponse",
+        "type": "object"
+      },
+      "DocumentViolationCode": {
+        "description": "Why the guard refused a version (§12-16).\n\nThese are the V2 form of V1's `truth_violations` categories\n(`pipeline/tailor_io.py`), named so a surface and an analytics query group on a\ncode rather than parse prose. Every one describes a way generated content\nwould state something the candidate's evidence does not support.\n\nThere is deliberately no `MISSING_CITATION`: an uncited line is not something\nthe guard has to *catch*, because `EvidenceBackedText` and `ResumeEntry` cannot\nbe constructed without at least one evidence id (`Field(min_length=1)`). The\nguard's job is the harder question the type cannot answer — whether the cited\nevidence *exists* (`UNKNOWN_EVIDENCE`) and whether the *words* are supported.",
+        "enum": [
+          "UNKNOWN_EVIDENCE",
+          "INVENTED_NUMBER",
+          "UNSUPPORTED_SKILL",
+          "INVENTED_TERM",
+          "ALTERED_IDENTITY"
+        ],
+        "title": "DocumentViolationCode",
+        "type": "string"
       },
       "EligibilityCheckResponse": {
         "additionalProperties": false,
@@ -1407,6 +2085,63 @@
         "title": "EvaluateMatchRequest",
         "type": "object"
       },
+      "EvidenceBackedText": {
+        "additionalProperties": false,
+        "description": "A sentence the platform is willing to write, and what it rests on.\n\nThis is the atom of the truth guarantee: any line that makes a claim about the\ncandidate — a summary sentence, an experience bullet, a cover-letter paragraph\n— is one of these, and it cannot exist without at least one `EvidenceId`. The\nguard then checks that the *words* are supported too (no invented number, no\nskill absent from the cited evidence), but the citation itself is a\ntype-level invariant, mirroring `CandidateClaim.evidence_ids`.",
+        "properties": {
+          "evidence_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "evidence_ids"
+        ],
+        "title": "EvidenceBackedText",
+        "type": "object"
+      },
+      "EvidenceKind": {
+        "description": "What sort of record backs a claim.\n\n`SELF_DECLARATION` is the weakest member and is not a loophole: a candidate\nstating a fact about themselves is a legitimate, *attributed* source. What the\nplatform may never do is manufacture evidence — no member of this enum means\n\"an LLM inferred it\", and Phase 10's extraction pipeline must attach the\ndocument it read, not its own conclusion.",
+        "enum": [
+          "CV_BULLET",
+          "CV_SUMMARY",
+          "EMPLOYMENT_RECORD",
+          "DIPLOMA",
+          "CERTIFICATE",
+          "LANGUAGE_ASSESSMENT",
+          "PORTFOLIO_ITEM",
+          "REFERENCE",
+          "PERMIT_DOCUMENT",
+          "SELF_DECLARATION"
+        ],
+        "title": "EvidenceKind",
+        "type": "string"
+      },
+      "EvidenceProvenance": {
+        "description": "Where an evidence record was ingested from (Phase 10 §3).\n\nOrthogonal to `EvidenceKind`: the kind says *what sort of record* backs a\nfact, and the provenance says *which pipeline put it in the store*. The two\ntogether are what make an accepted document auditable (§45) — a résumé bullet\ncan say not only \"this rests on an employment record\" but \"that record was\nimported from the operator's base CV\" versus \"the candidate typed it in\".\n\nEvery member names a real source of *candidate-supplied* facts. There is,\npointedly, no `LLM_GENERATED` member: a generated sentence is never evidence\n(§3), so a document pipeline that wanted to promote its own output into the\nstore would find no provenance to file it under. `SYSTEM_DERIVED` is the one\nmachine origin, and it is deterministic derivation from other stored facts —\na language proficiency turned into a `LANGUAGE` claim — never generation.",
+        "enum": [
+          "CANDIDATE_PROFILE",
+          "BASE_CV",
+          "MANUAL_USER_INPUT",
+          "IMPORTED_CV",
+          "PROJECT",
+          "EMPLOYMENT_RECORD",
+          "EDUCATION_RECORD",
+          "SYSTEM_DERIVED"
+        ],
+        "title": "EvidenceProvenance",
+        "type": "string"
+      },
       "EvidenceResponse": {
         "additionalProperties": false,
         "description": "Why the backend believes one thing about a company.\n\nCarried out to the client because §10 and §12 both rest on it: \"this employer is\non Greenhouse\" and \"this employer takes spontaneous applications\" are only worth\nshowing next to what they were concluded from. A code the UI can branch on, a\nsentence a human can read, and — when there is one — the URL that said so.",
@@ -1450,6 +2185,26 @@
           "observed_at"
         ],
         "title": "EvidenceResponse",
+        "type": "object"
+      },
+      "GenerateDocumentRequest": {
+        "additionalProperties": false,
+        "description": "Ask for a document to be generated for a posting, for this account's profile.\n\nThe opportunity and the document type are in the path; the body carries only an\noptional `language` override. Left unset, the service writes the document in the\nposting's own language, falling back to the candidate's first declared one — it\nnever guesses a language the candidate did not state. There is no profile or\nowner field, for the same reason `EvaluateMatchRequest` has none.",
+        "properties": {
+          "language": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          }
+        },
+        "title": "GenerateDocumentRequest",
         "type": "object"
       },
       "GeoLocationResponse": {
@@ -2608,6 +3363,154 @@
         ],
         "title": "RemoteSelection",
         "type": "string"
+      },
+      "ResumeDocument": {
+        "additionalProperties": false,
+        "description": "The structured, ATS-oriented résumé (§28-32).\n\n`full_name` is identity, not a claim — it is the candidate's own\n`CandidateProfile.display_name`, and rewriting it would be altering identity,\nwhich the guard forbids (`ALTERED_IDENTITY`). `headline` is likewise carried\nfrom the profile. Everything that asserts a *fact* — the summary, every\nexperience bullet, every skill — is evidence-backed. `languages` renders the\nprofile's `LanguageProficiency` lines, which are facts the profile already\nholds rather than anything the generator composed.\n\nThe structure is intentionally flat and label-driven: an ATS parser\n(§28) reads plain sections, so the renderer emits headings and bullet lists,\nnever multi-column tables or text boxes.",
+        "properties": {
+          "education": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ResumeEntry"
+            },
+            "title": "Education",
+            "type": "array"
+          },
+          "experience": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ResumeEntry"
+            },
+            "title": "Experience",
+            "type": "array"
+          },
+          "full_name": {
+            "title": "Full Name",
+            "type": "string"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline"
+          },
+          "kind": {
+            "const": "RESUME",
+            "default": "RESUME",
+            "title": "Kind",
+            "type": "string"
+          },
+          "languages": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Languages",
+            "type": "array"
+          },
+          "skill_groups": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ResumeSkillGroup"
+            },
+            "title": "Skill Groups",
+            "type": "array"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceBackedText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "full_name"
+        ],
+        "title": "ResumeDocument",
+        "type": "object"
+      },
+      "ResumeEntry": {
+        "additionalProperties": false,
+        "description": "One experience, education or project block.\n\n`heading` and `subheading` are the block's factual frame (\"Software Engineer —\nAcme\", \"2021–2024, Lausanne\"). Those are facts too, so the entry as a whole\ncites the employment or education evidence it summarizes; each bullet then\ncites its own evidence on top. A block with no bullets is allowed — an\neducation line is often just its heading — but a block that cites no evidence\nis not, because then its heading would be an unsupported fact.",
+        "properties": {
+          "bullets": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EvidenceBackedText"
+            },
+            "title": "Bullets",
+            "type": "array"
+          },
+          "evidence_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "heading": {
+            "title": "Heading",
+            "type": "string"
+          },
+          "subheading": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subheading"
+          }
+        },
+        "required": [
+          "heading",
+          "evidence_ids"
+        ],
+        "title": "ResumeEntry",
+        "type": "object"
+      },
+      "ResumeSkillGroup": {
+        "additionalProperties": false,
+        "description": "A labelled cluster of skills on the résumé.\n\nEach entry in `skills` must be backed by a candidate `SKILL` claim — the guard\nchecks it against the normalized skill ontology, so \"Node\" and \"Node.js\" are\none skill and an unclaimed one is a `UNSUPPORTED_SKILL` violation. The group\n`name` (\"Languages\", \"Cloud\") is presentation and carries no claim.",
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Skills",
+            "type": "array"
+          }
+        },
+        "required": [
+          "skills"
+        ],
+        "title": "ResumeSkillGroup",
+        "type": "object"
       },
       "RuleAuthority": {
         "description": "How much a rule behind a check is entitled to close a gate.\n\nThe distinction has legal teeth. A Country Pack's permit table, its minimum\nworking age and its language thresholds are *operator-maintained\nconfiguration*, not law this repository asserts — docs/COUNTRY_PACKS.md\n§Eligibility and the `PermitRule` docstring say so in the same words. A wrong\nnumber in a YAML file must never become an automatic \"you may not apply\".\n\nSo authority is carried on the check and enforced by the domain: only a\n`VERIFIED` rule may produce `INELIGIBLE`. Anything less can inform, can lower\na match score elsewhere, and can raise `REVIEW_REQUIRED` so a human looks —\nbut it cannot refuse on its own. The four levels, weakest last:\n\n- `VERIFIED` — reviewed against the actual legal source and signed off; the\n  only authority permitted to block.\n- `SOURCE_DECLARED` — the opportunity or employer stated the requirement\n  itself (e.g. a posting that says \"EU work permit required\"). Strong, but a\n  posting is not the law and can be wrong, so it informs and reviews.\n- `OPERATOR_CONFIG` — a value an operator maintains in a Country Pack. The\n  default for pack-supplied rules, and deliberately not blocking.\n- `UNKNOWN` — no provenance stated; treated as the weakest.",
@@ -4844,6 +5747,114 @@
         ]
       }
     },
+    "/api/v2/documents": {
+      "get": {
+        "description": "This account's documents, most recently updated first.",
+        "operationId": "list_documents_api_v2_documents_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateDocumentListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Documents",
+        "tags": [
+          "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/documents/{document_id}": {
+      "get": {
+        "description": "One document with its whole version history.\n\n404 for \"no such document\" and \"not yours\" alike: the service raises one error\nfor both, so a caller cannot enumerate another account's documents by id.",
+        "operationId": "read_document_api_v2_documents__document_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateDocumentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Document",
+        "tags": [
+          "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/documents/{document_id}/download": {
+      "get": {
+        "description": "Stream the newest rendered PDF of a document.\n\nA binary response, not JSON: the bytes are read from the artifact store and\nreturned with the stored media type and a `Content-Disposition` naming the\nfile. 404 when the document is not this account's; 409\n(`document_not_rendered`) when it exists but no version has cleared the guard\nand been rendered yet — the resource is real, the state is temporary.",
+        "operationId": "download_document_api_v2_documents__document_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Document",
+        "tags": [
+          "v2-documents"
+        ]
+      }
+    },
     "/api/v2/geo/companies": {
       "get": {
         "description": "Employers with a site in scope, each once, at their nearest match.\n\nA `remote=only` search is valid but empty by construction — an employer is a\nplace, and \"remote only\" is a question about postings — so the route answers 200\nwith no companies rather than inventing one.",
@@ -5203,6 +6214,110 @@
         "summary": "Evaluate Match",
         "tags": [
           "v2-matches"
+        ]
+      }
+    },
+    "/api/v2/me/claims": {
+      "post": {
+        "description": "Assert one claim, citing evidence the profile already holds.\n\n422 when a cited id names no evidence record on the profile: the service\nrefuses it rather than writing a claim that rests on nothing, and the error\nnames the ids that were not found so a client fixes the citation.",
+        "operationId": "add_claim_api_v2_me_claims_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateClaimResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Claim",
+        "tags": [
+          "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/me/evidence": {
+      "get": {
+        "description": "The account's whole attested record: its evidence and its claims.\n\nRead through the document service's profile view so one dependency answers the\nprofile-backed reads. 404 when onboarding has not saved a profile — the same\nstate `GET /me/profile` reports, so a client sends the user to onboarding.",
+        "operationId": "list_evidence_api_v2_me_evidence_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateEvidenceListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Evidence",
+        "tags": [
+          "v2-documents"
+        ]
+      },
+      "post": {
+        "description": "Record one attested fact on the account's profile.\n\n201, because it creates a resource: the response carries the id the record was\nfiled under, which a later claim or a generated document line cites. 404 when\nonboarding has not saved a profile yet — evidence hangs off a profile, and\nthere is nothing to hang it on.",
+        "operationId": "add_evidence_api_v2_me_evidence_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddEvidenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateEvidenceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Evidence",
+        "tags": [
+          "v2-documents"
         ]
       }
     },
@@ -5568,6 +6683,60 @@
         ]
       }
     },
+    "/api/v2/opportunities/{opportunity_id}/cover-letter": {
+      "post": {
+        "description": "Generate a cover letter for a posting, from this account's evidence.\n\nThe persuasive counterpart to the résumé, versioned the same way and subject to\nthe same guard: every body paragraph cites the candidate evidence it draws on.\nSame error codes as the résumé endpoint.",
+        "operationId": "generate_cover_letter_api_v2_opportunities__opportunity_id__cover_letter_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateDocumentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateDocumentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Cover Letter",
+        "tags": [
+          "v2-documents"
+        ]
+      }
+    },
     "/api/v2/opportunities/{opportunity_id}/match": {
       "get": {
         "description": "The stored assessment for one pair, or 404 if it has not been evaluated.\n\nA pure read — it never runs an engine. The 404 covers \"not evaluated yet\", \"no\nprofile yet\" and \"not this account's posting-run\" without distinguishing them:\nthe service answers `None` for all three, so a caller cannot learn that another\nuser has assessed a posting by asking about it (§Security: ids must not be\nenumerable).",
@@ -5609,6 +6778,60 @@
         "summary": "Read Match",
         "tags": [
           "v2-matches"
+        ]
+      }
+    },
+    "/api/v2/opportunities/{opportunity_id}/resume": {
+      "post": {
+        "description": "Generate an ATS résumé for a posting, from this account's evidence.\n\nAppends a version to the résumé document for the `(profile, opportunity,\nRESUME)` triple, returning the whole document so a client sees the new attempt\nin its history. 404 when the account has no profile or no such posting; 409\n(`insufficient_evidence`) when the profile carries too little evidence to build\na truthful résumé — the honest answer is to say so, not to invent content.",
+        "operationId": "generate_resume_api_v2_opportunities__opportunity_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateDocumentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateDocumentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Resume",
+        "tags": [
+          "v2-documents"
         ]
       }
     }

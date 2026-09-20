@@ -15,10 +15,13 @@ which is the point of pinning a count that a normal change has no reason to touc
 
 The counts moved once at Phase 6 — the three company operations — again at
 Phase 7, which adds the three geo reads: postings near a place, employers near a
-place, and one saved search run as a geo query, and again at Phase 9, which adds
-the three assessment routes: evaluate a pair, read one pair, list a user's pairs.
-All nine are held to the same four rules the Phase 4 twelve are — under the prefix,
-authenticated, safe where they read, and carrying no credential field.
+place, and one saved search run as a geo query, again at Phase 9, which adds the
+three assessment routes: evaluate a pair, read one pair, list a user's pairs, and
+again at Phase 10, which adds eight: the two evidence writes and the evidence read
+under `/me`, the two document generators keyed by posting, and the list, read and
+download of a generated document. All of them are held to the same four rules the
+Phase 4 twelve are — under the prefix, authenticated, safe where they read, and
+carrying no credential field.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -26,11 +29,14 @@ from datetime import timedelta
 import pytest
 
 from backend.app.api import API_V2_PREFIX
+from backend.app.documents import LocalDocumentArtifactStore
 from backend.app.domain.identifiers import (
+    CandidateDocumentId,
     CompanyId,
     OpportunityId,
     SearchProfileId,
     default_candidate_profile_id,
+    document_version_id,
     eligibility_result_id,
 )
 from backend.app.services.authentication import SESSION_TOUCH_INTERVAL
@@ -43,21 +49,26 @@ from tests.v2_api import (
 )
 from tests.v2_builders import (
     a_company,
+    a_rendered_document,
     a_search_profile,
     an_eligibility_result,
     an_opportunity,
 )
 
-# The whole V2 surface as of Phase 7, spelled out. Written as a literal on purpose:
+# The whole V2 surface as of Phase 10, spelled out. Written as a literal on purpose:
 # a test that derived it from the application would agree with any change.
 V2_OPERATIONS = (
     ("DELETE", "/api/v2/me/search-profiles/{search_profile_id}"),
     ("GET", "/api/v2/auth/session"),
     ("GET", "/api/v2/companies"),
     ("GET", "/api/v2/companies/{company_id}"),
+    ("GET", "/api/v2/documents"),
+    ("GET", "/api/v2/documents/{document_id}"),
+    ("GET", "/api/v2/documents/{document_id}/download"),
     ("GET", "/api/v2/geo/companies"),
     ("GET", "/api/v2/geo/opportunities"),
     ("GET", "/api/v2/matches"),
+    ("GET", "/api/v2/me/evidence"),
     ("GET", "/api/v2/me/profile"),
     ("GET", "/api/v2/me/search-profiles"),
     ("GET", "/api/v2/me/search-profiles/{search_profile_id}/opportunities"),
@@ -68,8 +79,12 @@ V2_OPERATIONS = (
     ("POST", "/api/v2/auth/register"),
     ("POST", "/api/v2/company-discovery/run"),
     ("POST", "/api/v2/matches/evaluate"),
+    ("POST", "/api/v2/me/claims"),
+    ("POST", "/api/v2/me/evidence"),
     ("POST", "/api/v2/me/search-profiles"),
     ("POST", "/api/v2/onboarding/complete"),
+    ("POST", "/api/v2/opportunities/{opportunity_id}/cover-letter"),
+    ("POST", "/api/v2/opportunities/{opportunity_id}/resume"),
     ("PUT", "/api/v2/me/profile"),
     ("PUT", "/api/v2/me/search-profiles/{search_profile_id}"),
 )
@@ -108,7 +123,7 @@ def _get_with_scope(path: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_and_9_define(
+async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_define(
         tmp_path):
     """The inventory, and every path scoped under the one prefix.
 
@@ -121,21 +136,23 @@ async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_and_9_defin
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 18
+        assert len({path for _, path in published}) == 25
 
 
 @pytest.mark.asyncio
 async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path):
     """The inventory half of "no GET mutates state".
 
-    Eleven `GET`s, all of them reports. `POST /onboarding/complete` exists precisely
+    Fifteen `GET`s, all of them reports. `POST /onboarding/complete` exists precisely
     so that the screen displaying progress does not have to be the thing that records
     it, and `POST /company-discovery/run` is the same split for the directory: reading
     it is safe, filling it is a write an operator triggers. The three Phase 7 reads
     join the reports — a map is a view, and viewing it writes nothing — and so do the
-    two Phase 9 assessment reads: `GET /matches` and `GET /opportunities/{id}/match`
-    read stored verdicts, while `POST /matches/evaluate` is the write that produces
-    them.
+    two Phase 9 assessment reads. Phase 10 adds four more reads: the evidence store
+    (`GET /me/evidence`), the document list and one document (`GET /documents`,
+    `GET /documents/{id}`), and the PDF download — a stream is still a read, and the
+    two document generators (`POST .../resume`, `POST .../cover-letter`) are the
+    writes that produce what it streams.
     """
     async with api_harness(tmp_path) as api:
         published = operations(api.app, under=API_V2_PREFIX)
@@ -144,9 +161,13 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/auth/session",
             "/api/v2/companies",
             "/api/v2/companies/{company_id}",
+            "/api/v2/documents",
+            "/api/v2/documents/{document_id}",
+            "/api/v2/documents/{document_id}/download",
             "/api/v2/geo/companies",
             "/api/v2/geo/opportunities",
             "/api/v2/matches",
+            "/api/v2/me/evidence",
             "/api/v2/me/profile",
             "/api/v2/me/search-profiles",
             "/api/v2/me/search-profiles/{search_profile_id}/opportunities",
@@ -191,13 +212,27 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
             id=eligibility_result_id(profile_id, posting_id),
             user_id=user_id, candidate_profile_id=profile_id,
             opportunity_id=posting_id))
+        # `GET /documents/{id}` and its `/download` read a stored document, so the
+        # sweep only exercises their 200 path when one exists under the placeholder
+        # id. A RENDERED version is seeded, and its PDF is written under the same
+        # storage key the harness's artifact store uses, so the download streams
+        # real bytes rather than raising `ArtifactNotFound` on the way to a 500.
+        document_id = CandidateDocumentId(PLACEHOLDER_ID)
+        store = LocalDocumentArtifactStore(tmp_path / "document_artifacts")
+        storage_key = store.key_for(document_id,
+                                    document_version_id(document_id, 1))
+        store.put(storage_key, b"%PDF-1.7\n%stub\n")
+        await api.documents.upsert(a_rendered_document(
+            id=document_id, user_id=user_id, candidate_profile_id=profile_id,
+            opportunity_id=posting_id, storage_key=storage_key))
         reads = [_get_with_scope(concrete(path)) for method, path in operations(
             api.app, under=API_V2_PREFIX) if method == "GET"]
         before = deepcopy((api.users.users, api.sessions.sessions,
                            api.profiles.profiles, api.searches.searches,
                            api.companies.companies, api.career_sites.sites,
                            api.discoveries.records, api.postings.opportunities,
-                           api.matches.evaluations, api.eligibilities.results))
+                           api.matches.evaluations, api.eligibilities.results,
+                           api.documents.documents))
 
         for path in reads:
             for _ in range(2):
@@ -208,7 +243,7 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                 api.searches.searches, api.companies.companies,
                 api.career_sites.sites, api.discoveries.records,
                 api.postings.opportunities, api.matches.evaluations,
-                api.eligibilities.results) == before
+                api.eligibilities.results, api.documents.documents) == before
 
 
 @pytest.mark.asyncio
@@ -240,7 +275,7 @@ async def test_the_one_write_a_get_performs_is_last_seen_at_and_it_cannot_extend
 @pytest.mark.asyncio
 async def test_every_operation_but_register_and_login_refuses_an_anonymous_caller(
         tmp_path):
-    """401 from all nineteen, with no body sent and nothing created.
+    """401 from all twenty-seven, with no body sent and nothing created.
 
     No payload is needed because FastAPI resolves the session dependency before it
     validates a body, so the refusal happens before the request is read — which is
@@ -257,7 +292,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
         protected = [(method, path) for method, path in operations(
             api.app, under=API_V2_PREFIX) if (method, path) not in PUBLIC_OPERATIONS]
 
-        assert len(protected) == 19
+        assert len(protected) == 27
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

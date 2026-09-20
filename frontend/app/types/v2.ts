@@ -128,6 +128,63 @@ export type LocationProvenance = Schemas['LocationProvenance']
 /** The geocoder's own confidence in a match, when it reported one. */
 export type GeocodingConfidence = Schemas['GeocodingConfidence']
 
+// --- Phase 10: candidate evidence and ATS documents --------------------------
+//
+// The write side of the truth guarantee (the evidence store) and the read side of
+// what rests on it (the generated résumé and cover letter). Every type is an alias
+// into the generated document, like the company and geo types above: a field the
+// backend renames fails `nuxt typecheck` here after `npm run gen:api`, so the UI is
+// never coding against a shape the API no longer returns
+// (docs/CANDIDATE_EVIDENCE.md, docs/ATS_DOCUMENTS.md).
+
+/** One attested fact on the candidate's profile: what it says and where it came from. */
+export type CandidateEvidence = Schemas['CandidateEvidenceResponse']
+
+/** One claim the platform may state, and the evidence ids it rests on (never empty). */
+export type CandidateClaim = Schemas['CandidateClaimResponse']
+
+/** The whole attested record: `{ evidence, claims }`, both echoed with their ids. */
+export type CandidateEvidenceList = Schemas['CandidateEvidenceListResponse']
+
+/** One evidence record as submitted: no id, no owner, no `recorded_at`. */
+export type AddEvidenceRequest = Schemas['AddEvidenceRequest']
+
+/** One claim as submitted: its type, label and the evidence ids it cites. */
+export type AddClaimRequest = Schemas['AddClaimRequest']
+
+/** What sort of record backs a fact — `CV_BULLET`, `DIPLOMA`, `PERMIT_DOCUMENT`, … */
+export type EvidenceKind = Schemas['EvidenceKind']
+
+/** Which pipeline filed an evidence record — never an `LLM_GENERATED`, by design. */
+export type EvidenceProvenance = Schemas['EvidenceProvenance']
+
+/** The kind of assertion a claim makes — `SKILL`, `EXPERIENCE`, `EDUCATION`, … */
+export type ClaimType = Schemas['ClaimType']
+
+/** A candidate document across its versions — one per posting, of one type. */
+export type CandidateDocument = Schemas['CandidateDocumentResponse']
+
+/** This account's documents, most recently updated first. */
+export type CandidateDocumentList = Schemas['CandidateDocumentListResponse']
+
+/** One attempt at a document: its content, the guard's verdict, and — if rendered — its artifact. */
+export type DocumentVersion = Schemas['DocumentVersionResponse']
+
+/** Where a rendered PDF lives, as a download needs it: media type, size, pages. No bytes, no key. */
+export type DocumentArtifact = Schemas['DocumentArtifactResponse']
+
+/** The one document generators take: an optional `language` override; the type is in the path. */
+export type GenerateDocumentRequest = Schemas['GenerateDocumentRequest']
+
+/** `RESUME | COVER_LETTER` — the two documents Phase 10 produces. */
+export type CandidateDocumentType = Schemas['CandidateDocumentType']
+
+/** Where a version sits in its lifecycle — `DRAFT | VALIDATING | VALIDATED | REJECTED | RENDERED | ARCHIVED`. */
+export type DocumentStatus = Schemas['DocumentStatus']
+
+/** Why the guard refused a version — `UNKNOWN_EVIDENCE`, `INVENTED_NUMBER`, `ALTERED_IDENTITY`, … */
+export type DocumentViolationCode = Schemas['DocumentViolationCode']
+
 /**
  * Every `error` slug `/api/v2` can answer with, as one union.
  *
@@ -140,12 +197,17 @@ export type GeocodingConfidence = Schemas['GeocodingConfidence']
 export type V2ErrorCode =
   | 'account_disabled'
   | 'account_locked'
+  | 'artifact_unavailable'
   | 'candidate_profile_not_found'
+  | 'claim_cites_unknown_evidence'
   | 'company_not_found'
   | 'conflict'
   | 'csrf_failed'
   | 'database_unavailable'
+  | 'document_not_found'
+  | 'document_not_rendered'
   | 'email_already_registered'
+  | 'insufficient_evidence'
   | 'invalid_credentials'
   | 'not_authenticated'
   | 'onboarding_incomplete'

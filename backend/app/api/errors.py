@@ -29,6 +29,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 
 from backend.app.api import API_V2_PREFIX
+from backend.app.documents import ArtifactNotFound
+from backend.app.documents.generator import InsufficientEvidence
 from backend.app.services.assessment import (
     CandidateProfileNotFound,
     OpportunityNotFound,
@@ -39,6 +41,11 @@ from backend.app.services.authentication import (
     EmailAlreadyRegistered,
     InvalidCredentials,
 )
+from backend.app.services.documents import (
+    DocumentArtifactMissing,
+    DocumentNotFound,
+)
+from backend.app.services.evidence import ClaimCitesUnknownEvidence
 from backend.app.services.onboarding import OnboardingIncomplete, SearchProfileNotFound
 
 # What a client is told when the database cannot be reached. Deliberately not
@@ -183,6 +190,51 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         # it, unlike a user-owned assessment read.
         return _json(status.HTTP_404_NOT_FOUND, "opportunity_not_found",
                      "no opportunity is stored under that id")
+
+    @app.exception_handler(DocumentNotFound)
+    async def _document_missing(request: Request,
+                                exc: DocumentNotFound) -> JSONResponse:
+        # 404 for "no such document" and "not yours" alike — the service raises one
+        # exception for both so a caller cannot enumerate other users' document ids.
+        return _json(status.HTTP_404_NOT_FOUND, "document_not_found",
+                     "no such document")
+
+    @app.exception_handler(DocumentArtifactMissing)
+    async def _document_not_rendered(request: Request,
+                                     exc: DocumentArtifactMissing) -> JSONResponse:
+        # 409, not 404: the document is real and this account's, but no version has
+        # cleared the guard and been rendered, so there is nothing to download yet.
+        return _json(status.HTTP_409_CONFLICT, "document_not_rendered",
+                     "this document has no rendered version to download yet")
+
+    @app.exception_handler(ArtifactNotFound)
+    async def _artifact_gone(request: Request,
+                             exc: ArtifactNotFound) -> JSONResponse:
+        # The row references an artifact the store no longer holds. A server-side
+        # fault, not a client error — 500 rather than a 404 that would tell the
+        # caller to regenerate over what is really a storage problem. The key is
+        # not echoed: it is an internal locator.
+        return _json(status.HTTP_500_INTERNAL_SERVER_ERROR, "artifact_unavailable",
+                     "the stored document artifact could not be read")
+
+    @app.exception_handler(InsufficientEvidence)
+    async def _insufficient_evidence(request: Request,
+                                     exc: InsufficientEvidence) -> JSONResponse:
+        # 409, and the sentence is the generator's own: a candidate with no evidence
+        # on file cannot have a document built from evidence, and the honest reply is
+        # to say so rather than invent content or fail opaquely. `str(exc)` is safe —
+        # `InsufficientEvidence.detail` is a fixed explanation, never user input.
+        return _json(status.HTTP_409_CONFLICT, "insufficient_evidence", str(exc))
+
+    @app.exception_handler(ClaimCitesUnknownEvidence)
+    async def _claim_unknown_evidence(request: Request,
+                                      exc: ClaimCitesUnknownEvidence) -> JSONResponse:
+        # 422: the claim is well-formed but cites evidence the profile does not hold.
+        # The offending ids are named so a client fixes the citation; they are the
+        # client's own ids, not a secret.
+        return _json(UNPROCESSABLE_CONTENT, "claim_cites_unknown_evidence",
+                     "the claim cites evidence that is not on your profile",
+                     evidence_ids=[str(eid) for eid in exc.evidence_ids])
 
     @app.exception_handler(IntegrityError)
     async def _integrity(request: Request, exc: IntegrityError) -> JSONResponse:

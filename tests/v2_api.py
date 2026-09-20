@@ -62,6 +62,8 @@ from backend.app.api.dependencies import (
     authentication_service,
     company_directory_service,
     company_discovery_service,
+    document_service,
+    evidence_service,
     geo_search_service,
     now,
     onboarding_service,
@@ -70,6 +72,11 @@ from backend.app.api.dependencies import (
 from backend.app.companies.orchestrator import CompanyDiscoveryOrchestrator
 from backend.app.companies.registry import CompanyProviderRegistry
 from backend.app.core.settings import AuthSettings
+from backend.app.documents import (
+    DeterministicDocumentGenerator,
+    LocalDocumentArtifactStore,
+)
+from backend.app.documents.guard import CandidateEvidenceGuard
 from backend.app.services.assessment import AssessmentService
 from backend.app.services.authentication import AuthenticationService
 from backend.app.services.company_directory import CompanyDirectoryService
@@ -77,11 +84,14 @@ from backend.app.services.company_discovery import (
     CompanyDiscoveryService,
     CompanyResolutionService,
 )
+from backend.app.services.documents import DocumentService
+from backend.app.services.evidence import CandidateEvidenceService
 from backend.app.services.geo_search import GeoSearchService
 from backend.app.services.onboarding import OnboardingService
 from backend.app.discovery.bootstrap import build_country_packs
 from server.app import create_app
 from tests.v2_fakes import (
+    FakeCandidateDocumentRepository,
     FakeCandidateProfileRepository,
     FakeCareerSiteRepository,
     FakeCompanyDiscoveryRepository,
@@ -205,6 +215,7 @@ class Harness:
     discoveries: FakeCompanyDiscoveryRepository
     matches: FakeMatchEvaluationRepository
     eligibilities: FakeEligibilityResultRepository
+    documents: FakeCandidateDocumentRepository
     providers: CompanyProviderRegistry
 
     def url(self, path: str) -> str:
@@ -317,6 +328,7 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     discoveries = FakeCompanyDiscoveryRepository()
     matches = FakeMatchEvaluationRepository()
     eligibilities = FakeEligibilityResultRepository()
+    documents = FakeCandidateDocumentRepository()
     providers = CompanyProviderRegistry()
     directory = CompanyDirectoryService(companies, career_sites, discoveries)
     # The assessment service reads the real country packs — the CH pack is what the
@@ -344,6 +356,16 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     app.dependency_overrides[geo_search_service] = lambda: GeoSearchService(
         postings, companies, searches)
     app.dependency_overrides[assessment_service] = lambda: assessment
+    app.dependency_overrides[evidence_service] = lambda: CandidateEvidenceService(
+        profiles)
+    # The real document workflow over the fakes: the deterministic reference
+    # generator and the pure guard are the production defaults, and the artifact
+    # store writes under `tmp_path` so a rendered PDF has somewhere to land and a
+    # download reads real bytes rather than a stub.
+    app.dependency_overrides[document_service] = lambda: DocumentService(
+        profiles, postings, documents, DeterministicDocumentGenerator(),
+        CandidateEvidenceGuard(),
+        LocalDocumentArtifactStore(tmp_path / "document_artifacts"))
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:
@@ -352,7 +374,7 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
                       searches=searches, postings=postings, companies=companies,
                       career_sites=career_sites, discoveries=discoveries,
                       matches=matches, eligibilities=eligibilities,
-                      providers=providers)
+                      documents=documents, providers=providers)
 
 
 def operations(app: FastAPI, *, under: str) -> tuple[tuple[str, str], ...]:

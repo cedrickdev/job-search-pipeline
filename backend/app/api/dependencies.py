@@ -33,6 +33,7 @@ built its own service would take that property away.
 """
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Final
 
 from fastapi import Depends, Request
@@ -44,14 +45,20 @@ from backend.app.companies.bootstrap import build_company_discovery
 from backend.app.companies.providers.manual_seed import (
     PROVIDER_KEY as MANUAL_SEED_PROVIDER,
 )
-from backend.app.core.settings import AuthSettings, DatabaseSettings
+from backend.app.core.settings import AuthSettings, DatabaseSettings, DocumentSettings
 from backend.app.discovery.bootstrap import build_country_packs
+from backend.app.documents import (
+    DeterministicDocumentGenerator,
+    LocalDocumentArtifactStore,
+)
+from backend.app.documents.guard import CandidateEvidenceGuard
 from backend.app.infrastructure.database.engine import (
     create_async_database_engine,
     create_session_factory,
     session_scope,
 )
 from backend.app.repositories.sqlalchemy_repositories import (
+    SqlAlchemyCandidateDocumentRepository,
     SqlAlchemyCandidateProfileRepository,
     SqlAlchemyCareerSiteRepository,
     SqlAlchemyCompanyDiscoveryRepository,
@@ -74,6 +81,8 @@ from backend.app.services.company_discovery import (
     CompanyDiscoveryService,
     CompanyResolutionService,
 )
+from backend.app.services.documents import DocumentService
+from backend.app.services.evidence import CandidateEvidenceService
 from backend.app.services.geo_search import GeoSearchService
 from backend.app.services.onboarding import OnboardingService
 from country_packs.registry import CountryPackRegistry
@@ -91,6 +100,7 @@ SAFE_METHODS: Final[frozenset[str]] = frozenset({"GET", "HEAD", "OPTIONS"})
 # an engine.
 AUTH_SETTINGS_ATTRIBUTE: Final[str] = "v2_auth_settings"
 DATABASE_SETTINGS_ATTRIBUTE: Final[str] = "v2_database_settings"
+DOCUMENT_SETTINGS_ATTRIBUTE: Final[str] = "v2_document_settings"
 SESSION_FACTORY_ATTRIBUTE: Final[str] = "v2_session_factory"
 ENGINE_ATTRIBUTE: Final[str] = "v2_engine"
 COUNTRY_PACKS_ATTRIBUTE: Final[str] = "v2_country_packs"
@@ -217,6 +227,59 @@ def geo_search_service(
                             SqlAlchemySearchProfileRepository(session))
 
 
+def document_settings(request: Request) -> DocumentSettings:
+    """Where rendered document artifacts live, resolved once and cached.
+
+    Cached on `app.state` like the auth and database settings, and for the same
+    reason: re-reading the environment per request would let a variable change
+    under a running process and split one deployment's artifacts across two roots.
+    """
+    settings = getattr(request.app.state, DOCUMENT_SETTINGS_ATTRIBUTE, None)
+    if isinstance(settings, DocumentSettings):
+        return settings
+    resolved = DocumentSettings.from_env()
+    setattr(request.app.state, DOCUMENT_SETTINGS_ATTRIBUTE, resolved)
+    return resolved
+
+
+def evidence_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> CandidateEvidenceService:
+    """The write side of the candidate evidence store: one repository, no clock.
+
+    The clock is handed to the methods that write, not the constructor, so a single
+    request's timestamps agree — the same convention `onboarding_service` follows.
+    """
+    return CandidateEvidenceService(SqlAlchemyCandidateProfileRepository(session))
+
+
+def document_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        settings: Annotated[DocumentSettings, Depends(document_settings)],
+) -> DocumentService:
+    """The generate-guard-render-store-version workflow, composed for this request.
+
+    Three repositories (the profile it builds from, the posting it targets, the
+    documents it versions), the deterministic reference generator, the pure evidence
+    guard, and the local artifact store rooted at the configured path. The generator
+    and the guard are cheap, stateless value objects built per request rather than
+    cached — the store resolves its root once here. No clock in the constructor; the
+    route hands `now` to `generate`, so a version's timestamps agree.
+
+    The reference generator is the Phase 10 default: it selects and reorders the
+    candidate's own evidence and passes the guard by construction. A model-backed
+    generator (Phase 11) would be swapped in here without the route or the service
+    changing (docs/LLM_PROVIDER_ARCHITECTURE.md §3).
+    """
+    return DocumentService(
+        SqlAlchemyCandidateProfileRepository(session),
+        SqlAlchemyOpportunityRepository(session),
+        SqlAlchemyCandidateDocumentRepository(session),
+        DeterministicDocumentGenerator(),
+        CandidateEvidenceGuard(),
+        LocalDocumentArtifactStore(Path(settings.artifact_root)))
+
+
 def assessment_service(
         session: Annotated[AsyncSession, Depends(database_session)],
         packs: Annotated[CountryPackRegistry, Depends(country_packs)],
@@ -336,3 +399,5 @@ CompanyDiscovery = Annotated[CompanyDiscoveryService,
                              Depends(company_discovery_service)]
 GeoSearch = Annotated[GeoSearchService, Depends(geo_search_service)]
 Assessment = Annotated[AssessmentService, Depends(assessment_service)]
+Evidence = Annotated[CandidateEvidenceService, Depends(evidence_service)]
+Documents = Annotated[DocumentService, Depends(document_service)]

@@ -65,6 +65,12 @@ dev = [
     "ruff==0.14.6",
     "mypy==1.19.0",
     "types-PyYAML==6.0.12.20250915",  # yaml is read by 7 pipeline modules
+    # Phase 10 proves the generated résumé PDF is ATS-readable by extracting its
+    # text and asserting the candidate's facts survive the render (§28). WeasyPrint
+    # writes the PDF; pypdf reads it back. Pure-Python, so the extraction test runs
+    # anywhere the render test does, and pinned like the other quality tools so the
+    # assertion is reproducible across CI and dev.
+    "pypdf==6.4.0",
 ]
 
 [tool.pytest.ini_options]

@@ -17,6 +17,9 @@ from pydantic import ValidationError
 
 from backend.app.domain.candidate import (
     Availability,
+    CandidateEvidence,
+    EvidenceKind,
+    EvidenceProvenance,
     WeeklyAvailabilitySlot,
     Weekday,
     WorkAuthorization,
@@ -125,19 +128,56 @@ async def test_save_profile_keeps_every_value_object_the_draft_carried() -> None
     assert saved.work_authorizations[0].permit_hours_cap == 15.0
     assert saved.availability is not None
     assert saved.availability.weekly_slots[0].weekday is Weekday.SATURDAY
-    # Left empty rather than defaulted to something: they have no storage yet.
+    # A first save carries no attested record: onboarding writes identity and
+    # preferences, and evidence is added afterwards through its own service.
     assert saved.evidence == ()
     assert saved.claims == ()
 
 
-def test_a_profile_draft_may_not_cite_evidence_yet() -> None:
-    """Phase 10 owns the evidence store; the refusal names the reason."""
-    with pytest.raises(ValidationError) as refusal:
-        profile_draft(work_authorizations=(WorkAuthorization(
-            country="CH", status=WorkAuthorizationStatus.STUDENT_PERMIT_WITH_WORK_RIGHTS,
-            evidence_ids=(EvidenceId(new_user_id()),)),))
+@pytest.mark.asyncio
+async def test_save_profile_keeps_the_attested_record_a_form_never_carries() -> None:
+    """A profile re-save must not erase evidence the candidate added since Phase 10.
 
-    assert "evidence store" in str(refusal.value)
+    The draft carries identity and preferences, never the evidence store, so the
+    service reads the stored profile and carries its `evidence` and `claims` across
+    the write. Without that, editing the headline would wipe a résumé's foundation.
+    """
+    service, profiles, _, _ = build_service()
+    user = account()
+    await service.save_profile(user.id, profile_draft(), now=NOW)
+    stored = profiles.profiles[default_candidate_profile_id(user.id)]
+    evidence = CandidateEvidence(
+        id=EvidenceId(new_user_id()), user_id=user.id, kind=EvidenceKind.CV_BULLET,
+        provenance=EvidenceProvenance.MANUAL_USER_INPUT,
+        summary="Led the checkout rewrite", recorded_at=NOW)
+    profiles.profiles[stored.id] = stored.model_copy(update={"evidence": (evidence,)})
+
+    resaved = await service.save_profile(
+        user.id, profile_draft(display_name="Candidate II"), now=LATER)
+
+    assert resaved.display_name == "Candidate II"
+    assert resaved.evidence == (evidence,)
+
+
+@pytest.mark.asyncio
+async def test_saving_a_profile_that_cites_evidence_it_does_not_hold_is_refused() -> None:
+    """A permit may cite evidence, but only evidence the profile already holds.
+
+    Since Phase 10 the draft no longer refuses a citation outright — the evidence
+    store exists — so the check moved to where it belongs: the aggregate, at save
+    time. A citation the carried-over evidence does not cover is a construction
+    error, which is what keeps a fabricated authorization unstorable.
+    """
+    service, _, _, _ = build_service()
+    user = account()
+    draft = profile_draft(work_authorizations=(WorkAuthorization(
+        country="CH", status=WorkAuthorizationStatus.STUDENT_PERMIT_WITH_WORK_RIGHTS,
+        evidence_ids=(EvidenceId(new_user_id()),)),))
+
+    with pytest.raises(ValidationError) as refusal:
+        await service.save_profile(user.id, draft, now=NOW)
+
+    assert "evidence absent from the profile" in str(refusal.value)
 
 
 def test_a_search_draft_must_bound_its_geography() -> None:

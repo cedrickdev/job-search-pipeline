@@ -431,4 +431,26 @@ class LanguageRequirement(DomainModel):
                    for p in proficiencies)
 
 
+class SkillRequirement(DomainModel):
+    """A skill an opportunity asks for (Phase 10 §26).
+
+    A demand on the candidate, and deliberately not the same shape as a candidate
+    `SKILL` claim: conflating "the posting wants Kafka" with "the candidate has
+    Kafka" is the exact confusion Phase 10 §16 forbids, and it is how a requirement
+    printed in a vacancy would become evidence the candidate never supplied. The
+    matcher reads these against the candidate's own `SKILL` claims (§25, §63) and
+    never the other way round.
+
+    `skill` is a free string, not an enum: the deterministic skill ontology
+    (`backend.app.matching.skill_ontology`) keeps an unrecognised token verbatim
+    rather than snapping it to the nearest known skill, so the requirement carries
+    whatever the posting stated and normalization happens at comparison time.
+    `required=False` is a nice-to-have — it shapes the score but, like a language
+    nice-to-have, must never become a gate.
+    """
+
+    skill: NonEmptyStr
+    required: bool = True
+
+
 

@@ -34,6 +34,10 @@ from pydantic import SecretStr
 from backend.app.core.tokens import digests_match
 from backend.app.domain.candidate import CandidateProfile
 from backend.app.domain.common import GeoPoint
+from backend.app.domain.documents import (
+    CandidateDocument,
+    CandidateDocumentType,
+)
 from backend.app.domain.company import (
     AtsPlatform,
     CareerSite,
@@ -51,6 +55,7 @@ from backend.app.domain.geo import (
 )
 from backend.app.domain.eligibility import EligibilityResult
 from backend.app.domain.identifiers import (
+    CandidateDocumentId,
     CandidateProfileId,
     CareerSiteId,
     CompanyAliasId,
@@ -69,6 +74,7 @@ from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
+    CandidateDocumentRepository,
     CandidateProfileRepository,
     CareerSiteRepository,
     CompanyCandidate,
@@ -99,7 +105,8 @@ def _implements_contracts() -> tuple[
         UserRepository, SessionRepository, CandidateProfileRepository,
         SearchProfileRepository, CompanyRepository, CareerSiteRepository,
         CompanyDiscoveryRepository, OpportunityRepository,
-        MatchEvaluationRepository, EligibilityResultRepository]:
+        MatchEvaluationRepository, EligibilityResultRepository,
+        CandidateDocumentRepository]:
     """Structural conformance, the same guard `sqlalchemy_repositories` carries.
 
     A fake whose signature drifted from the `Protocol` would still run — Python
@@ -112,7 +119,8 @@ def _implements_contracts() -> tuple[
             FakeCandidateProfileRepository(), FakeSearchProfileRepository(),
             FakeCompanyRepository(), FakeCareerSiteRepository(),
             FakeCompanyDiscoveryRepository(), FakeOpportunityRepository(),
-            FakeMatchEvaluationRepository(), FakeEligibilityResultRepository())
+            FakeMatchEvaluationRepository(), FakeEligibilityResultRepository(),
+            FakeCandidateDocumentRepository())
 
 
 def _meters_between(one: GeoPoint, other: GeoPoint) -> float:
@@ -202,11 +210,13 @@ class FakeSessionRepository:
 
 
 class FakeCandidateProfileRepository:
-    """Profiles, with the Phase 10 refusal the real repository performs.
+    """Profiles, with the whole aggregate — evidence and claims included.
 
-    The refusal is reproduced rather than skipped because `OnboardingService`
-    relies on it: `save_profile` leaves `evidence` and `claims` empty, and a fake
-    that accepted them would let a future change start dropping them silently.
+    Since Phase 10 the store keeps every child collection the real repository
+    reconciles, evidence and claims among them, so a service that saves a profile
+    with evidence and reads it back finds it. The deep copy on the way in and out
+    is what makes that honest: a caller cannot mutate the store by holding the
+    tuple it saved, exactly as it cannot through SQLAlchemy rows.
     """
 
     def __init__(self) -> None:
@@ -223,9 +233,6 @@ class FakeCandidateProfileRepository:
         return next(iter(await self.list_for_user(user_id)), None)
 
     async def upsert(self, profile: CandidateProfile) -> CandidateProfile:
-        if profile.evidence or profile.claims:
-            raise ValueError(
-                "candidate evidence and claims have no V2 persistence yet (Phase 10)")
         stored = profile.model_copy(deep=True)
         self.profiles[stored.id] = stored
         return stored
@@ -830,4 +837,55 @@ class FakeEligibilityResultRepository:
         # determined_at DESC, id`.
         mine.sort(key=lambda result: str(result.id))
         mine.sort(key=lambda result: result.determined_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeCandidateDocumentRepository:
+    """Candidate documents, keyed by id and scoped by owner on every read.
+
+    User-owned, so a `get` for another account's document reads as absent — the
+    cross-user isolation the document tests rely on lives here as well as in the
+    SQL. The upsert reconciles on the `(candidate_profile_id, opportunity_id,
+    document_type)` triple like the real one, so regenerating a document replaces
+    it in place — carrying one more version — rather than adding a second row for
+    the same posting and type.
+    """
+
+    def __init__(self) -> None:
+        self.documents: dict[CandidateDocumentId, CandidateDocument] = {}
+
+    async def get(self, user_id: UserId,
+                  document_id: CandidateDocumentId) -> CandidateDocument | None:
+        found = self.documents.get(document_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId,
+                           document_type: CandidateDocumentType
+                           ) -> CandidateDocument | None:
+        return next((document.model_copy(deep=True)
+                     for document in self.documents.values()
+                     if document.user_id == user_id
+                     and document.candidate_profile_id == candidate_profile_id
+                     and document.opportunity_id == opportunity_id
+                     and document.document_type is document_type), None)
+
+    async def upsert(self, document: CandidateDocument) -> CandidateDocument:
+        stored = document.model_copy(deep=True)
+        self.documents[stored.id] = stored
+        return stored
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT
+                            ) -> tuple[CandidateDocument, ...]:
+        mine = [document.model_copy(deep=True)
+                for document in self.documents.values()
+                if document.user_id == user_id]
+        # Most recently updated first, ties broken by id — the real `ORDER BY
+        # updated_at DESC, id`.
+        mine.sort(key=lambda document: str(document.id))
+        mine.sort(key=lambda document: document.updated_at, reverse=True)
         return tuple(mine[:limit])

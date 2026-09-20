@@ -17,7 +17,9 @@ This directory is the source of truth for the V2 product and implementation plan
 11. [Geo Opportunity Explorer](./GEO_SEARCH.md) — the geo search query, remote policy, the provider-neutral geocoder, the enrichment pass and its cache, built in Phase 7
 12. [Interactive Map Explorer](./MAP_EXPLORER.md) — the MapLibre map and list over the geo API, the one-selection store, the pan-is-not-a-query rule, sharable URLs and the offline test map, built in Phase 8
 13. [Matching and Eligibility](./MATCHING_ELIGIBILITY.md) — the two deterministic engines, the score-versus-verdict separation, evidence coverage, the legal-safety rule and the assessment API, built in Phase 9
-14. [V1 Baseline](./V1_BASELINE.md) — what V1 is and what its checks report, measured in Phase 0
+14. [Candidate Evidence Store](./CANDIDATE_EVIDENCE.md) — the attested-facts substrate a document is built from, the citation invariant, the evidence/claim API and screen, built in Phase 10
+15. [ATS Documents](./ATS_DOCUMENTS.md) — the résumé/cover-letter generator, the evidence guard's four gates, WeasyPrint rendering, the version lifecycle and the document API, built in Phase 10
+16. [V1 Baseline](./V1_BASELINE.md) — what V1 is and what its checks report, measured in Phase 0
 
 ## Product principle
 

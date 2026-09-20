@@ -87,7 +87,14 @@ Normalized professional opportunity.
 Source-specific representation and provenance.
 
 ### MatchEvaluation
-Multidimensional scoring result.
+Multidimensional scoring result. Built in Phase 9 alongside `EligibilityResult`;
+the two are separate records on separate axes. See [Matching and
+Eligibility](./MATCHING_ELIGIBILITY.md).
+
+### EligibilityResult
+The gate verdict for a candidate/opportunity pair (ELIGIBLE / INCOMPLETE /
+REVIEW_REQUIRED / INELIGIBLE), aggregated from typed `EligibilityCheck`s. Never a
+score, and never derived from the match. Built in Phase 9.
 
 ### Application
 Lifecycle record for a candidate pursuing an opportunity.
@@ -282,6 +289,20 @@ The interactive frontend over this API was built in Phase 8 — see [Interactive
 Map Explorer](./MAP_EXPLORER.md). The client draws only what the server placed:
 no coordinate is synthesised, no membership is re-decided, and no match score is
 shown (§42).
+
+## 11b. Matching and eligibility
+
+Built in Phase 9. See [Matching and Eligibility](./MATCHING_ELIGIBILITY.md). Two
+deterministic engines (no LLM, no embeddings) live in `backend/app/matching/` and
+`backend/app/eligibility/`, orchestrated by `services/assessment.py`. The one rule
+that shapes everything: **the match score and the eligibility verdict are two
+independent axes, and neither may change the other.** A dimension with no
+supporting data is omitted (not scored zero); coverage is a separate axis from the
+score; and — the legal-safety invariant — operator-maintained Country Pack rules
+can only ever raise `REVIEW_REQUIRED`, never refuse, so a wrong number in a YAML
+file cannot become an automatic "you may not apply". Location proximity is a match
+preference read from Phase 7's results, never a recomputed distance and never a
+gate.
 
 ## 12. Frontend
 

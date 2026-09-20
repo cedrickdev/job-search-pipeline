@@ -22,9 +22,17 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, StatementError
 
 from backend.app.domain.common import Location, Reason, ReasonImpact
+from backend.app.domain.eligibility import (
+    DeterminationSource,
+    EligibilityCheck,
+    EligibilityRequirement,
+    EligibilityStatus,
+    RuleAuthority,
+)
 from backend.app.domain.identifiers import (
     CandidateProfileId,
     CompanyLocationId,
+    EligibilityResultId,
     EvidenceId,
     MatchEvaluationId,
     OpportunityId,
@@ -37,6 +45,8 @@ from backend.app.infrastructure.database.engine import (
 from backend.app.infrastructure.database.models import (
     CandidateProfileRow,
     CompanyLocationRow,
+    EligibilityCheckRow,
+    EligibilityResultRow,
     MatchDimensionScoreRow,
     MatchEvaluationRow,
     OpportunityRow,
@@ -45,12 +55,14 @@ from backend.app.infrastructure.database.models import (
 )
 from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyCompanyRepository,
+    SqlAlchemyEligibilityResultRepository,
     SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
 )
 from tests.v2_builders import (
     COMPANY,
     COMPANY_LOCATION,
+    ELIGIBILITY,
     EVALUATION,
     GENEVA,
     LATER,
@@ -60,9 +72,11 @@ from tests.v2_builders import (
     OTHER_USER,
     PROFILE,
     USER,
+    a_check,
     a_company,
     a_company_location,
     a_source_record,
+    an_eligibility_result,
     an_evaluation,
     an_opportunity,
 )
@@ -79,6 +93,8 @@ SECOND_LOCATION = CompanyLocationId(UUID("00000000-0000-4000-8000-000000000036")
 SECOND_PROFILE = CandidateProfileId(UUID("00000000-0000-4000-8000-000000000013"))
 SECOND_EVALUATION = MatchEvaluationId(UUID("00000000-0000-4000-8000-000000000042"))
 FOREIGN_EVALUATION = MatchEvaluationId(UUID("00000000-0000-4000-8000-000000000043"))
+SECOND_ELIGIBILITY = EligibilityResultId(UUID("00000000-0000-4000-8000-000000000046"))
+FOREIGN_ELIGIBILITY = EligibilityResultId(UUID("00000000-0000-4000-8000-000000000047"))
 EVIDENCE = EvidenceId(UUID("00000000-0000-4000-8000-000000000071"))
 
 async def _count(session, model) -> int:
@@ -390,6 +406,114 @@ async def test_a_users_list_holds_only_their_own_evaluations(
     assert [row.id for row in await evaluations.list_for_user(OTHER_USER)] == [
         FOREIGN_EVALUATION]
     assert len(await evaluations.list_for_user(USER, limit=1)) == 1
+
+
+@pytest.fixture
+def eligibility_results(db_session):
+    return SqlAlchemyEligibilityResultRepository(db_session)
+
+
+async def test_an_eligibility_result_and_its_checks_survive_the_round_trip(
+        evaluation_prerequisites, eligibility_results):
+    """The whole verdict, read back by id and by the pair it covers.
+
+    The second gate is a REVIEW_REQUIRED pack rule — the §59 case — so its
+    authority, detail and the reason a non-ELIGIBLE gate must carry are all on the
+    path this asserts. `get_for_pair` is the lookup the assessment service uses to
+    find a prior verdict before re-running one.
+    """
+    verdict = an_eligibility_result(
+        a_check(),
+        EligibilityCheck(
+            requirement=EligibilityRequirement.PERMIT_HOURS_CAP,
+            status=EligibilityStatus.REVIEW_REQUIRED,
+            determined_by=DeterminationSource.COUNTRY_PACK_RULE,
+            authority=RuleAuthority.OPERATOR_CONFIG,
+            detail="Swiss student permit caps paid work at 15h/week.",
+            reasons=(Reason(code="PERMIT_HOURS_CAP_REVIEW", detail="unverified cap",
+                            impact=ReasonImpact.NEGATIVE),)))
+    assert await eligibility_results.upsert(verdict) == verdict
+    assert await eligibility_results.get(USER, ELIGIBILITY) == verdict
+    assert await eligibility_results.get_for_pair(USER, PROFILE, OPPORTUNITY) == verdict
+
+
+async def test_another_users_eligibility_result_is_reported_as_absent(
+        evaluation_prerequisites, eligibility_results):
+    """Not found and not yours are indistinguishable, the same as for evaluations.
+
+    A caller able to tell them apart could enumerate another user's verdicts by id
+    — the cross-user leak docs/ENGINEERING_STANDARDS.md §Security forbids — and
+    whether someone may apply is exactly the kind of row that must not leak.
+    """
+    await eligibility_results.upsert(an_eligibility_result())
+    assert await eligibility_results.get(USER, ELIGIBILITY) is not None
+    assert await eligibility_results.get(OTHER_USER, ELIGIBILITY) is None
+    assert await eligibility_results.get_for_pair(
+        OTHER_USER, PROFILE, OPPORTUNITY) is None
+
+
+async def test_re_evaluating_a_pair_updates_the_check_rows(
+        db_session, evaluation_prerequisites, eligibility_results):
+    """Two gates re-evaluated as one must not become three rows.
+
+    The child key is `(result, ordinal)`, so re-evaluating the same pair lands on
+    the same rows and a gate no longer produced is deleted rather than left behind
+    as a stale check under a verdict that no longer rests on it.
+    """
+    await eligibility_results.upsert(an_eligibility_result(
+        a_check(),
+        a_check(requirement=EligibilityRequirement.LANGUAGE_MINIMUM,
+                status=EligibilityStatus.INELIGIBLE)))
+    assert await _count(db_session, EligibilityCheckRow) == 2
+
+    stored = await eligibility_results.upsert(an_eligibility_result(a_check()))
+    assert [check.requirement for check in stored.checks] == [
+        EligibilityRequirement.WORK_AUTHORIZATION]
+    assert await _count(db_session, EligibilityCheckRow) == 1
+    assert await _count(db_session, EligibilityResultRow) == 1
+
+
+async def test_a_users_list_holds_only_their_own_eligibility_results(
+        evaluation_prerequisites, eligibility_results):
+    """The authorization filter and the newest-first order, on the second axis.
+
+    Two users get a verdict on the same posting — what a shared `opportunities`
+    table guarantees — so `list_for_user` takes the owner as its first argument
+    rather than reading it from ambient state, exactly as the evaluation list does.
+    """
+    mine = an_eligibility_result()
+    newer = an_eligibility_result(id=SECOND_ELIGIBILITY,
+                                  candidate_profile_id=SECOND_PROFILE,
+                                  determined_at=LATER)
+    theirs = an_eligibility_result(id=FOREIGN_ELIGIBILITY, user_id=OTHER_USER,
+                                   candidate_profile_id=OTHER_PROFILE)
+    for verdict in (mine, newer, theirs):
+        await eligibility_results.upsert(verdict)
+
+    assert [row.id for row in await eligibility_results.list_for_user(USER)] == [
+        SECOND_ELIGIBILITY, ELIGIBILITY]
+    assert [row.id for row in await eligibility_results.list_for_user(OTHER_USER)] == [
+        FOREIGN_ELIGIBILITY]
+    assert len(await eligibility_results.list_for_user(USER, limit=1)) == 1
+
+
+async def test_the_stored_verdict_carries_a_denormalized_status_column(
+        db_session, evaluation_prerequisites, eligibility_results):
+    """The column a list ranks by holds the derived verdict, not a per-check status.
+
+    `EligibilityResult.status` is worst-of the checks and is a property, not a
+    field; the repository persists a denormalized copy so a list can filter and rank
+    without loading every check. This reads the column straight from the table to
+    prove the copy is the aggregate the domain computed — a passing gate beside an
+    ineligible one still stores INELIGIBLE.
+    """
+    await eligibility_results.upsert(an_eligibility_result(
+        a_check(status=EligibilityStatus.ELIGIBLE),
+        a_check(requirement=EligibilityRequirement.LANGUAGE_MINIMUM,
+                status=EligibilityStatus.INELIGIBLE)))
+    stored = await db_session.execute(select(EligibilityResultRow.status).where(
+        EligibilityResultRow.id == ELIGIBILITY))
+    assert stored.scalar_one() == EligibilityStatus.INELIGIBLE
 
 
 @pytest_asyncio.fixture

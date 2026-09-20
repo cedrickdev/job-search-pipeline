@@ -42,10 +42,12 @@ from backend.app.domain.company import (
     CompanyLocation,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.eligibility import EligibilityResult
 from backend.app.domain.geo import GeoSearchQuery, GeoStatus, RemoteScope
 from backend.app.domain.identifiers import (
     CandidateProfileId,
     CompanyId,
+    EligibilityResultId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
@@ -392,6 +394,50 @@ class MatchEvaluationRepository(Protocol):
     async def list_for_user(self, user_id: UserId, *,
                             limit: int = DEFAULT_LIMIT) -> tuple[MatchEvaluation, ...]:
         """This user's evaluations, most recently evaluated first."""
+        ...
+
+
+@runtime_checkable
+class EligibilityResultRepository(Protocol):
+    """Eligibility verdicts — user-owned, and kept apart from matching on purpose.
+
+    A verdict is a *separate* record from a match score, never a field of one: the
+    two axes answer different questions ("may this application happen?" versus "how
+    well does it fit?"), a re-run of one must not disturb the other, and a list must
+    be able to filter by eligibility without loading a single dimension score. So
+    this is its own contract, mirroring `MatchEvaluationRepository` method for
+    method, and `user_id` is a parameter here for the same reason it is there.
+    """
+
+    async def get(self, user_id: UserId,
+                  result_id: EligibilityResultId) -> EligibilityResult | None:
+        """The verdict, or `None` — including when it belongs to somebody else.
+
+        Not found and not yours are indistinguishable, as in
+        `MatchEvaluationRepository.get`: a caller that could tell them apart could
+        enumerate another user's rows by id.
+        """
+        ...
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId) -> EligibilityResult | None:
+        """This profile's verdict on this posting, if it has been evaluated."""
+        ...
+
+    async def upsert(self, result: EligibilityResult) -> EligibilityResult:
+        """Write the verdict and reconcile its checks.
+
+        The owner comes from `result.user_id`, so there is no signature in which
+        the row's owner and the caller's intent can disagree. The denormalized
+        `status` column is written from the domain's derived aggregate, never a
+        second field a caller could set out of step with the checks.
+        """
+        ...
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[EligibilityResult, ...]:
+        """This user's verdicts, most recently determined first."""
         ...
 
 

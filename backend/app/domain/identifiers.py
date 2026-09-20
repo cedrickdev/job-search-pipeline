@@ -42,6 +42,7 @@ CompanyDiscoveryRecordId = NewType("CompanyDiscoveryRecordId", UUID)
 OpportunityId = NewType("OpportunityId", UUID)
 GeocodingCacheEntryId = NewType("GeocodingCacheEntryId", UUID)
 MatchEvaluationId = NewType("MatchEvaluationId", UUID)
+EligibilityResultId = NewType("EligibilityResultId", UUID)
 ApplicationDecisionId = NewType("ApplicationDecisionId", UUID)
 
 
@@ -196,6 +197,41 @@ def geocoding_cache_entry_id(provider: str, country: str,
 
 def new_match_evaluation_id() -> MatchEvaluationId:
     return MatchEvaluationId(uuid4())
+
+
+def match_evaluation_id(candidate_profile_id: CandidateProfileId,
+                        opportunity_id: OpportunityId) -> MatchEvaluationId:
+    """The id of the match verdict for one (profile, opportunity) pair.
+
+    Derived rather than random, and for the same reason as its eligibility twin
+    `eligibility_result_id`: `match_evaluations` keys its upsert on
+    `(candidate_profile_id, opportunity_id)`, so re-scoring a pair must replace the
+    previous evaluation instead of accumulating a row per run. A deterministic
+    engine that meets the same pair twice therefore writes the same key, and a
+    retried write after a failed flush is idempotent by construction rather than by
+    the unique constraint catching it. `new_match_evaluation_id` stays for a caller
+    that genuinely wants a fresh, unrelated evaluation.
+    """
+    return MatchEvaluationId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"match_evaluation:{candidate_profile_id}:{opportunity_id}"))
+
+
+def eligibility_result_id(candidate_profile_id: CandidateProfileId,
+                          opportunity_id: OpportunityId) -> EligibilityResultId:
+    """The id of the eligibility verdict for one (profile, opportunity) pair.
+
+    Derived rather than random, for the same reason `match_evaluations` keys its
+    upsert on `(candidate_profile_id, opportunity_id)`: re-evaluating a pair must
+    replace the previous verdict, not accumulate a new row every run. A permit
+    that changes or a pack that is corrected produces a fresh evaluation under the
+    same id, so the latest answer is always the one at that key. The per-check
+    rows underneath it are keyed off this id in the mapper, so a re-evaluation
+    that drops a gate drops its row too.
+    """
+    return EligibilityResultId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"eligibility_result:{candidate_profile_id}:{opportunity_id}"))
 
 
 def new_application_decision_id() -> ApplicationDecisionId:

@@ -49,17 +49,21 @@ from backend.app.domain.geo import (
     RemotePolicy,
     remote_scope_of,
 )
+from backend.app.domain.eligibility import EligibilityResult
 from backend.app.domain.identifiers import (
     CandidateProfileId,
     CareerSiteId,
     CompanyAliasId,
     CompanyDiscoveryRecordId,
     CompanyId,
+    EligibilityResultId,
+    MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
     UserId,
     UserSessionId,
 )
+from backend.app.domain.matching import MatchEvaluation
 from backend.app.domain.opportunity import Opportunity
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserSession, normalize_email
@@ -73,7 +77,9 @@ from backend.app.repositories.contracts import (
     CompanyGeoResult,
     CompanyPage,
     CompanyRepository,
+    EligibilityResultRepository,
     MatchedRadius,
+    MatchEvaluationRepository,
     OpportunityGeoResult,
     OpportunityNearby,
     OpportunityRepository,
@@ -92,7 +98,8 @@ EARTH_RADIUS_METERS = 6_371_008.8
 def _implements_contracts() -> tuple[
         UserRepository, SessionRepository, CandidateProfileRepository,
         SearchProfileRepository, CompanyRepository, CareerSiteRepository,
-        CompanyDiscoveryRepository, OpportunityRepository]:
+        CompanyDiscoveryRepository, OpportunityRepository,
+        MatchEvaluationRepository, EligibilityResultRepository]:
     """Structural conformance, the same guard `sqlalchemy_repositories` carries.
 
     A fake whose signature drifted from the `Protocol` would still run — Python
@@ -104,7 +111,8 @@ def _implements_contracts() -> tuple[
     return (FakeUserRepository(), FakeSessionRepository(),
             FakeCandidateProfileRepository(), FakeSearchProfileRepository(),
             FakeCompanyRepository(), FakeCareerSiteRepository(),
-            FakeCompanyDiscoveryRepository(), FakeOpportunityRepository())
+            FakeCompanyDiscoveryRepository(), FakeOpportunityRepository(),
+            FakeMatchEvaluationRepository(), FakeEligibilityResultRepository())
 
 
 def _meters_between(one: GeoPoint, other: GeoPoint) -> float:
@@ -732,3 +740,94 @@ class FakeCompanyDiscoveryRepository:
         # real `ORDER BY`, which a single reversed sort would get backwards.
         mine.sort(key=lambda record: record.discovered_at, reverse=True)
         return tuple(record.model_copy(deep=True) for record in mine[:limit])
+
+
+class FakeMatchEvaluationRepository:
+    """Match verdicts, keyed by id and scoped by owner on every read.
+
+    User-owned, so a `get` that belongs to another account reads as absent — the
+    cross-user isolation the assessment tests rely on is enforced here, not just in
+    the SQL. The upsert reconciles on the `(profile, opportunity)` pair like the
+    real one, so re-scoring a pair replaces its evaluation rather than adding a row.
+    """
+
+    def __init__(self) -> None:
+        self.evaluations: dict[MatchEvaluationId, MatchEvaluation] = {}
+
+    async def get(self, user_id: UserId,
+                  evaluation_id: MatchEvaluationId) -> MatchEvaluation | None:
+        found = self.evaluations.get(evaluation_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId) -> MatchEvaluation | None:
+        return next((evaluation.model_copy(deep=True)
+                     for evaluation in self.evaluations.values()
+                     if evaluation.user_id == user_id
+                     and evaluation.candidate_profile_id == candidate_profile_id
+                     and evaluation.opportunity_id == opportunity_id), None)
+
+    async def upsert(self, evaluation: MatchEvaluation) -> MatchEvaluation:
+        stored = evaluation.model_copy(deep=True)
+        self.evaluations[stored.id] = stored
+        return stored
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT
+                            ) -> tuple[MatchEvaluation, ...]:
+        mine = [evaluation.model_copy(deep=True)
+                for evaluation in self.evaluations.values()
+                if evaluation.user_id == user_id]
+        # Most recently evaluated first, ties broken by id — the real `ORDER BY
+        # evaluated_at DESC, id`.
+        mine.sort(key=lambda evaluation: str(evaluation.id))
+        mine.sort(key=lambda evaluation: evaluation.evaluated_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeEligibilityResultRepository:
+    """Eligibility verdicts, the twin of the match fake and scoped the same way.
+
+    The denormalized `status` column is not modelled — it is a storage concern the
+    domain derives on read, and `EligibilityResult.status` is a property either way,
+    so a fake that stored the aggregate would be inventing a field the object does
+    not have. Ownership and pair reconciliation match the match fake exactly.
+    """
+
+    def __init__(self) -> None:
+        self.results: dict[EligibilityResultId, EligibilityResult] = {}
+
+    async def get(self, user_id: UserId,
+                  result_id: EligibilityResultId) -> EligibilityResult | None:
+        found = self.results.get(result_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId) -> EligibilityResult | None:
+        return next((result.model_copy(deep=True)
+                     for result in self.results.values()
+                     if result.user_id == user_id
+                     and result.candidate_profile_id == candidate_profile_id
+                     and result.opportunity_id == opportunity_id), None)
+
+    async def upsert(self, result: EligibilityResult) -> EligibilityResult:
+        stored = result.model_copy(deep=True)
+        self.results[stored.id] = stored
+        return stored
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT
+                            ) -> tuple[EligibilityResult, ...]:
+        mine = [result.model_copy(deep=True) for result in self.results.values()
+                if result.user_id == user_id]
+        # Most recently determined first, ties broken by id — the real `ORDER BY
+        # determined_at DESC, id`.
+        mine.sort(key=lambda result: str(result.id))
+        mine.sort(key=lambda result: result.determined_at, reverse=True)
+        return tuple(mine[:limit])

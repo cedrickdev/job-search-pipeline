@@ -58,6 +58,14 @@ from backend.app.domain.company import (
     Evidence,
     SpontaneousApplicationChannel,
 )
+from backend.app.domain.eligibility import (
+    DeterminationSource,
+    EligibilityCheck,
+    EligibilityRequirement,
+    EligibilityResult,
+    EligibilityStatus,
+    RuleAuthority,
+)
 from backend.app.domain.identifiers import (
     SURROGATE_KEY_NAMESPACE,
     CandidateProfileId,
@@ -66,6 +74,7 @@ from backend.app.domain.identifiers import (
     CompanyDiscoveryRecordId,
     CompanyId,
     CompanyLocationId,
+    EligibilityResultId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
@@ -99,6 +108,8 @@ from backend.app.infrastructure.database.models import (
     CompanyDiscoveryRecordRow,
     CompanyLocationRow,
     CompanyRow,
+    EligibilityCheckRow,
+    EligibilityResultRow,
     LocationColumnsMixin,
     MatchDimensionScoreRow,
     MatchEvaluationRow,
@@ -135,6 +146,20 @@ def dimension_score_row_id(evaluation_id: MatchEvaluationId,
     """
     return uuid5(SURROGATE_KEY_NAMESPACE,
                  f"match_dimension_score:{evaluation_id}:{dimension.value}")
+
+
+def eligibility_check_row_id(result_id: EligibilityResultId, ordinal: int) -> UUID:
+    """The stable key of one check of one eligibility result.
+
+    Keyed by `(result_id, ordinal)` — the pair the unique constraint covers — for
+    the reason `search_area_row_id` is keyed by position: a requirement can repeat
+    (two required languages are two `LANGUAGE_MINIMUM` gates), so the requirement
+    cannot identify a row and its ordinal is what is left. Re-evaluating a pair
+    therefore updates the existing rows in place, and a gate the re-run no longer
+    emits is deleted rather than duplicated.
+    """
+    return uuid5(SURROGATE_KEY_NAMESPACE,
+                 f"eligibility_check:{result_id}:{ordinal}")
 
 
 def candidate_language_row_id(profile_id: CandidateProfileId, language: str) -> UUID:
@@ -721,6 +746,97 @@ def match_evaluation_to_domain(row: MatchEvaluationRow) -> MatchEvaluation:
         reasons=reasons_from_json(row.reasons),
         evaluator_key=row.evaluator_key,
         evaluated_at=row.evaluated_at)
+
+
+def eligibility_check_to_row(
+        check: EligibilityCheck, result_id: EligibilityResultId, ordinal: int,
+        row: EligibilityCheckRow | None = None) -> EligibilityCheckRow:
+    """One `EligibilityCheck` onto its row, keyed by position within the result.
+
+    `evidence_ids` is deliberately dropped: there is no evidence table until Phase
+    10, the same reason `_work_authorization_to_row` omits it. Every other field is
+    a plain projection, and the three `ck_eligibility_checks_*` constraints police
+    the combinations the domain validator does — so a caller cannot write a refusal
+    with no reason, an LLM-decided verdict or a pack-blocked one that is not
+    verified, whether or not the value came through the model.
+    """
+    target = (EligibilityCheckRow(id=eligibility_check_row_id(result_id, ordinal))
+              if row is None else row)
+    target.result_id = result_id
+    target.ordinal = ordinal
+    target.requirement = check.requirement
+    target.status = check.status
+    target.determined_by = check.determined_by
+    target.authority = check.authority
+    target.detail = check.detail
+    target.reasons = reasons_to_json(check.reasons)
+    return target
+
+
+def eligibility_check_to_domain(row: EligibilityCheckRow) -> EligibilityCheck:
+    """A row as an `EligibilityCheck`, re-validated through the domain.
+
+    `evidence_ids` is left at its default — empty — the truthful reading of a
+    schema with nowhere to store it. Re-validating re-applies
+    `_verdict_is_accountable`, so a row that reached the table past the CHECKs (a
+    hand-built one in a test) still fails here rather than producing a check the
+    engine could never have built.
+    """
+    return EligibilityCheck(
+        requirement=EligibilityRequirement(row.requirement),
+        status=EligibilityStatus(row.status),
+        determined_by=DeterminationSource(row.determined_by),
+        authority=RuleAuthority(row.authority),
+        detail=row.detail,
+        reasons=reasons_from_json(row.reasons))
+
+
+def eligibility_result_to_row(result: EligibilityResult,
+                              row: EligibilityResultRow | None = None
+                              ) -> EligibilityResultRow:
+    """An `EligibilityResult` and its checks onto rows.
+
+    `status` is written from the domain's *derived* property, never a second field:
+    the denormalized column exists so a list can rank and filter without loading
+    every check, and the property is the one source of truth it copies. Existing
+    children are matched by `ordinal` — the natural key, because a requirement can
+    repeat — so re-evaluating a pair updates the rows already there and a gate the
+    re-run dropped is deleted by the cascade.
+    """
+    target = EligibilityResultRow(id=result.id) if row is None else row
+    target.user_id = result.user_id
+    target.candidate_profile_id = result.candidate_profile_id
+    target.opportunity_id = result.opportunity_id
+    target.status = result.status
+    target.policy_version = result.policy_version
+    target.determined_at = result.determined_at
+    # As in `match_evaluation_to_row`: the children hang from the row being written
+    # — the one found by (candidate_profile_id, opportunity_id) — not necessarily
+    # from `result.id`, so the id used to key them is the row's.
+    result_id = EligibilityResultId(target.id)
+    existing = ({} if row is None
+                else {child.ordinal: child for child in row.checks})
+    target.checks = [
+        eligibility_check_to_row(check, result_id, ordinal, existing.get(ordinal))
+        for ordinal, check in enumerate(result.checks)]
+    return target
+
+
+def eligibility_result_to_domain(row: EligibilityResultRow) -> EligibilityResult:
+    """A row and its loaded checks as an `EligibilityResult`.
+
+    `status` is *not* passed: it is a derived property, and the domain recomputes it
+    from the checks. The stored column is a denormalized copy for querying, never an
+    input the reconstruction could disagree with.
+    """
+    return EligibilityResult(
+        id=EligibilityResultId(row.id),
+        user_id=UserId(row.user_id),
+        candidate_profile_id=CandidateProfileId(row.candidate_profile_id),
+        opportunity_id=OpportunityId(row.opportunity_id),
+        checks=tuple(eligibility_check_to_domain(child) for child in row.checks),
+        policy_version=row.policy_version,
+        determined_at=row.determined_at)
 
 
 # Phase 4: identity, the candidate profile onboarding fills in, and saved searches.

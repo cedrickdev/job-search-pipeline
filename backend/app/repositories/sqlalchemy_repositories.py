@@ -46,6 +46,7 @@ from backend.app.domain.company import (
     CompanyDiscoveryRecord,
     normalize_company_name,
 )
+from backend.app.domain.eligibility import EligibilityResult
 from backend.app.domain.geo import (
     GeoSearchQuery,
     GeoStatus,
@@ -55,6 +56,7 @@ from backend.app.domain.geo import (
 from backend.app.domain.identifiers import (
     CandidateProfileId,
     CompanyId,
+    EligibilityResultId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
@@ -77,6 +79,8 @@ from backend.app.infrastructure.database.mappers import (
     company_to_row,
     discovery_record_to_domain,
     discovery_record_to_row,
+    eligibility_result_to_domain,
+    eligibility_result_to_row,
     match_evaluation_to_domain,
     match_evaluation_to_row,
     opportunity_to_domain,
@@ -95,6 +99,7 @@ from backend.app.infrastructure.database.models import (
     CompanyDiscoveryRecordRow,
     CompanyLocationRow,
     CompanyRow,
+    EligibilityResultRow,
     MatchEvaluationRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
@@ -124,6 +129,7 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
         CareerSiteRepository,
         CompanyDiscoveryRepository,
         CompanyRepository,
+        EligibilityResultRepository,
         MatchEvaluationRepository,
         OpportunityRepository,
         SearchProfileRepository,
@@ -133,7 +139,8 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
 
     def _implements_contracts(session: AsyncSession) -> tuple[
             "CompanyRepository", "CareerSiteRepository", "CompanyDiscoveryRepository",
-            "OpportunityRepository", "MatchEvaluationRepository", "UserRepository",
+            "OpportunityRepository", "MatchEvaluationRepository",
+            "EligibilityResultRepository", "UserRepository",
             "SessionRepository", "CandidateProfileRepository",
             "SearchProfileRepository"]:
         """Structural conformance, enforced by `mypy backend`.
@@ -148,6 +155,7 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
                 SqlAlchemyCompanyDiscoveryRepository(session),
                 SqlAlchemyOpportunityRepository(session),
                 SqlAlchemyMatchEvaluationRepository(session),
+                SqlAlchemyEligibilityResultRepository(session),
                 SqlAlchemyUserRepository(session),
                 SqlAlchemySessionRepository(session),
                 SqlAlchemyCandidateProfileRepository(session),
@@ -794,6 +802,73 @@ class SqlAlchemyMatchEvaluationRepository:
             .order_by(MatchEvaluationRow.evaluated_at.desc(), MatchEvaluationRow.id)
             .limit(limit))
         return tuple(match_evaluation_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyEligibilityResultRepository:
+    """`EligibilityResultRepository` over an `AsyncSession`.
+
+    The shape is deliberately the twin of `SqlAlchemyMatchEvaluationRepository`:
+    the two axes are stored side by side and read the same way, and a reader
+    comparing the two files should find nothing surprising in either. Every
+    statement carries `user_id`, so another user's verdict reads as absent and an
+    upsert cannot take one over — the load misses, the insert runs, and
+    `uq_eligibility_results_candidate_profile_id_opportunity_id` rejects it.
+
+    The checks are eager-loaded on every read because they are `lazy="raise"` and
+    `eligibility_result_to_row` needs the stored ones to reconcile an upsert; a
+    write that had not loaded them would raise on the first check rather than
+    replace the set.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    def _base_select(self) -> Select[tuple[EligibilityResultRow]]:
+        return select(EligibilityResultRow).options(
+            selectinload(EligibilityResultRow.checks))
+
+    async def _row_for_pair(
+            self, user_id: UserId, candidate_profile_id: CandidateProfileId,
+            opportunity_id: OpportunityId) -> EligibilityResultRow | None:
+        result = await self._session.execute(
+            self._base_select().where(
+                EligibilityResultRow.user_id == user_id,
+                EligibilityResultRow.candidate_profile_id == candidate_profile_id,
+                EligibilityResultRow.opportunity_id == opportunity_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  result_id: EligibilityResultId) -> EligibilityResult | None:
+        result = await self._session.execute(
+            self._base_select().where(EligibilityResultRow.id == result_id,
+                                      EligibilityResultRow.user_id == user_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else eligibility_result_to_domain(row)
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId) -> EligibilityResult | None:
+        row = await self._row_for_pair(user_id, candidate_profile_id, opportunity_id)
+        return None if row is None else eligibility_result_to_domain(row)
+
+    async def upsert(self, result: EligibilityResult) -> EligibilityResult:
+        existing = await self._row_for_pair(result.user_id,
+                                            result.candidate_profile_id,
+                                            result.opportunity_id)
+        row = eligibility_result_to_row(result, existing)
+        self._session.add(row)
+        await self._session.flush()
+        return eligibility_result_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[EligibilityResult, ...]:
+        result = await self._session.execute(
+            self._base_select()
+            .where(EligibilityResultRow.user_id == user_id)
+            .order_by(EligibilityResultRow.determined_at.desc(),
+                      EligibilityResultRow.id)
+            .limit(limit))
+        return tuple(eligibility_result_to_domain(row) for row in result.scalars())
 
 
 class SqlAlchemyUserRepository:

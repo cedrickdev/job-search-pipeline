@@ -64,6 +64,8 @@ from backend.app.domain.common import (
     Location,
     LocationPrecision,
     LocationProvenance,
+    Reason,
+    ReasonImpact,
 )
 from backend.app.domain.company import (
     AtsPlatform,
@@ -81,6 +83,14 @@ from backend.app.domain.company import (
     SpontaneousApplicationChannel,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.eligibility import (
+    DeterminationSource,
+    EligibilityCheck,
+    EligibilityRequirement,
+    EligibilityResult,
+    EligibilityStatus,
+    RuleAuthority,
+)
 from backend.app.domain.geo import (
     DEFAULT_GEO_LIMIT,
     MAX_GEO_LIMIT,
@@ -97,7 +107,20 @@ from backend.app.domain.identifiers import (
     SearchProfileId,
     UserId,
 )
-from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
+from backend.app.domain.matching import (
+    DEFAULT_MATCH_PROFILE,
+    DimensionScore,
+    MatchClassification,
+    MatchDimension,
+    MatchEvaluation,
+    to_percent,
+)
+from backend.app.domain.opportunity import (
+    ContractType,
+    Opportunity,
+    OpportunityType,
+    WorkplaceMode,
+)
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserStatus
 from backend.app.repositories.contracts import (
@@ -107,6 +130,7 @@ from backend.app.repositories.contracts import (
     MatchedRadius,
     OpportunityGeoResult,
 )
+from backend.app.services.assessment import Assessment
 from backend.app.services.company_directory import CompanyDetail
 from backend.app.services.company_discovery import (
     CompanyDiscoveryOutcome,
@@ -989,3 +1013,231 @@ class GeoSavedSearchParams(ApiModel):
     def bounds_box(self) -> GeoBounds | None:
         """The parsed viewport, or `None` when the caller sent no `bounds`."""
         return self._bounds
+
+
+# --- Phase 9: matching and eligibility ---------------------------------------
+#
+# The first endpoints to carry both a score and a verdict, and the models below
+# keep the two apart on the wire exactly as the domain keeps them apart in memory.
+# Two conventions run through all of them:
+#
+# - **A percentage never travels without passing through `to_percent`.** Each score
+#   is emitted on both scales: the canonical `0.0–1.0` a client may want to compare,
+#   and the half-up `0–100` integer a UI shows. Rounding lives in one function, so
+#   two surfaces cannot disagree about whether 0.715 is 71% or 72%.
+# - **A classification is served, never re-derived.** The band ("EXCELLENT", …) is
+#   computed here through the same `MatchProfile.classify` the engine used, so a
+#   client never re-implements a `score > 0.85` threshold that would drift.
+
+
+class ReasonResponse(ApiModel):
+    """One typed reason behind a score or a verdict.
+
+    A `code` a client branches on, a `detail` a human reads, and the `impact` that
+    says whether it helped or hurt. Never a serialized exception and never a secret:
+    the reasons the engines emit are drawn from a closed vocabulary
+    (docs/MATCHING_ELIGIBILITY.md §Reasons), so this model cannot carry a stack
+    trace or an environment value into a UI.
+    """
+
+    code: str
+    detail: str | None
+    impact: ReasonImpact
+
+    @classmethod
+    def of(cls, reason: Reason) -> "ReasonResponse":
+        return cls(code=reason.code, detail=reason.detail, impact=reason.impact)
+
+
+class DimensionScoreResponse(ApiModel):
+    """One axis of a match, on both scales, with the reasons behind it.
+
+    `score_percent` is the axis rendered for a UI; `score` and `weight` are the
+    canonical values an audit or a re-weighting would want. A dimension that appears
+    here was evaluated — an axis the engine could not assess is *absent* from the
+    match rather than present with a zero (docs/MATCHING_ELIGIBILITY.md §Coverage).
+    """
+
+    dimension: MatchDimension
+    score: float
+    score_percent: int
+    weight: float
+    reasons: tuple[ReasonResponse, ...]
+
+    @classmethod
+    def of(cls, dimension: DimensionScore) -> "DimensionScoreResponse":
+        return cls(dimension=dimension.dimension, score=dimension.score,
+                   score_percent=to_percent(dimension.score),
+                   weight=dimension.weight,
+                   reasons=tuple(ReasonResponse.of(reason)
+                                 for reason in dimension.reasons))
+
+
+class MatchResponse(ApiModel):
+    """How well one candidate fits one posting — the compatibility axis alone.
+
+    Nothing here reflects eligibility: a blocked application can still be a 92%
+    match, and this model is where that number lives untouched. `classification` is
+    the band the score falls in, and `evidence_confidence` is the *separate* "how
+    much could we even assess?" axis — a high score over one evaluable dimension is
+    a confident-looking number with low coverage, and the two fields say so
+    independently (docs/MATCHING_ELIGIBILITY.md §Coverage).
+    """
+
+    overall: float
+    overall_percent: int
+    classification: MatchClassification
+    evidence_confidence: float | None
+    evidence_confidence_percent: int | None
+    dimensions: tuple[DimensionScoreResponse, ...]
+    evaluator_key: str | None
+    evaluated_at: datetime
+
+    @classmethod
+    def of(cls, evaluation: MatchEvaluation) -> "MatchResponse":
+        confidence = evaluation.evidence_confidence
+        return cls(
+            overall=evaluation.overall,
+            overall_percent=to_percent(evaluation.overall),
+            classification=DEFAULT_MATCH_PROFILE.classify(evaluation.overall),
+            evidence_confidence=confidence,
+            evidence_confidence_percent=(None if confidence is None
+                                         else to_percent(confidence)),
+            dimensions=tuple(DimensionScoreResponse.of(dimension)
+                             for dimension in evaluation.dimensions),
+            evaluator_key=evaluation.evaluator_key,
+            evaluated_at=evaluation.evaluated_at)
+
+
+class EligibilityCheckResponse(ApiModel):
+    """One gate, evaluated — with who decided it and on what authority.
+
+    `determined_by` and `authority` are the audit facts §Legal-policy safety rests
+    on: an operator-maintained pack value carries `OPERATOR_CONFIG`, which the
+    engine can only ever turn into REVIEW_REQUIRED, never a refusal. `reasons` is
+    empty for a passing gate and non-empty for every other verdict, mirroring the
+    domain invariant.
+    """
+
+    requirement: EligibilityRequirement
+    status: EligibilityStatus
+    determined_by: DeterminationSource
+    authority: RuleAuthority
+    detail: str | None
+    reasons: tuple[ReasonResponse, ...]
+
+    @classmethod
+    def of(cls, check: EligibilityCheck) -> "EligibilityCheckResponse":
+        return cls(requirement=check.requirement, status=check.status,
+                   determined_by=check.determined_by, authority=check.authority,
+                   detail=check.detail,
+                   reasons=tuple(ReasonResponse.of(reason)
+                                 for reason in check.reasons))
+
+
+class EligibilityResponse(ApiModel):
+    """May this application happen at all — the binary axis alone.
+
+    `status` is the worst-of aggregate the domain derives from the checks, and
+    `is_blocking` is true only for a definite INELIGIBLE: the two honest middles
+    (INCOMPLETE, REVIEW_REQUIRED) route to human review rather than refusing. The
+    checks travel with it so a UI can explain the verdict gate by gate rather than
+    reducing it to a single word.
+    """
+
+    status: EligibilityStatus
+    is_blocking: bool
+    checks: tuple[EligibilityCheckResponse, ...]
+    policy_version: str | None
+    determined_at: datetime
+
+    @classmethod
+    def of(cls, result: EligibilityResult) -> "EligibilityResponse":
+        return cls(status=result.status, is_blocking=result.is_blocking,
+                   checks=tuple(EligibilityCheckResponse.of(check)
+                                for check in result.checks),
+                   policy_version=result.policy_version,
+                   determined_at=result.determined_at)
+
+
+class AssessedOpportunityResponse(ApiModel):
+    """The posting an assessment is about, as much of it as a list card needs.
+
+    A summary rather than the whole `Opportunity` — no description, salary or source
+    snapshot — because the assessment endpoints answer "how does this pair look?",
+    not "show me the posting". It is the same shape whether it arrives from an
+    evaluate call or a list, so a client holds one opportunity model here.
+    """
+
+    id: OpportunityId
+    title: str
+    company_name: str
+    company_id: CompanyId | None
+    opportunity_type: OpportunityType | None
+    workplace_mode: WorkplaceMode | None
+    location_country: str | None
+    location_city: str | None
+
+    @classmethod
+    def of(cls, opportunity: Opportunity) -> "AssessedOpportunityResponse":
+        location = opportunity.location
+        return cls(
+            id=opportunity.id, title=opportunity.title,
+            company_name=opportunity.company_name,
+            company_id=opportunity.company_id,
+            opportunity_type=opportunity.opportunity_type,
+            workplace_mode=opportunity.workplace_mode,
+            location_country=None if location is None else location.country,
+            location_city=None if location is None else location.city)
+
+
+class AssessmentResponse(ApiModel):
+    """One opportunity, assessed on both axes for one candidate.
+
+    The two verdicts sit side by side and neither derives from the other: `match`
+    is `null` when no dimension was scorable (rendered as the UNKNOWN band, never a
+    zero), while `eligibility` is always present. This is the shape both the
+    evaluate endpoint and the single-pair read return, so a client learns it once.
+    """
+
+    opportunity: AssessedOpportunityResponse
+    match: MatchResponse | None
+    eligibility: EligibilityResponse
+
+    @classmethod
+    def of(cls, assessment: "Assessment") -> "AssessmentResponse":
+        return cls(
+            opportunity=AssessedOpportunityResponse.of(assessment.opportunity),
+            match=None if assessment.match is None
+            else MatchResponse.of(assessment.match),
+            eligibility=EligibilityResponse.of(assessment.eligibility))
+
+
+class AssessmentListResponse(ApiModel):
+    """A user's assessed pairs, newest first, wrapped rather than bare.
+
+    A wrapper for the same reason `SearchProfileListResponse` is one: a top-level
+    array cannot grow a field, and the day this needs a cursor or a count it would
+    otherwise be a breaking change. The order is chronological, not a ranking — an
+    INELIGIBLE pair is not pushed down by faking a low score
+    (docs/MATCHING_ELIGIBILITY.md §Ranking).
+    """
+
+    assessments: tuple[AssessmentResponse, ...]
+
+    @classmethod
+    def of(cls, assessments: "tuple[Assessment, ...]") -> "AssessmentListResponse":
+        return cls(assessments=tuple(AssessmentResponse.of(assessment)
+                                     for assessment in assessments))
+
+
+class EvaluateMatchRequest(ApiModel):
+    """Ask for one posting to be assessed for the signed-in account's profile.
+
+    The body names the *opportunity* and nothing else. There is no `candidate_profile_id`
+    and no `user_id`: the candidate is the account's own profile, resolved from the
+    session, so a request cannot ask for someone else's profile to be scored against
+    a posting (docs/ENGINEERING_STANDARDS.md §Security).
+    """
+
+    opportunity_id: OpportunityId

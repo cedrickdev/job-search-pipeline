@@ -69,6 +69,138 @@
         "title": "AppliedBody",
         "type": "object"
       },
+      "AssessedOpportunityResponse": {
+        "additionalProperties": false,
+        "description": "The posting an assessment is about, as much of it as a list card needs.\n\nA summary rather than the whole `Opportunity` — no description, salary or source\nsnapshot — because the assessment endpoints answer \"how does this pair look?\",\nnot \"show me the posting\". It is the same shape whether it arrives from an\nevaluate call or a list, so a client holds one opportunity model here.",
+        "properties": {
+          "company_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Id"
+          },
+          "company_name": {
+            "title": "Company Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "location_city": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location City"
+          },
+          "location_country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Country"
+          },
+          "opportunity_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpportunityType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "workplace_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkplaceMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "company_name",
+          "company_id",
+          "opportunity_type",
+          "workplace_mode",
+          "location_country",
+          "location_city"
+        ],
+        "title": "AssessedOpportunityResponse",
+        "type": "object"
+      },
+      "AssessmentListResponse": {
+        "additionalProperties": false,
+        "description": "A user's assessed pairs, newest first, wrapped rather than bare.\n\nA wrapper for the same reason `SearchProfileListResponse` is one: a top-level\narray cannot grow a field, and the day this needs a cursor or a count it would\notherwise be a breaking change. The order is chronological, not a ranking — an\nINELIGIBLE pair is not pushed down by faking a low score\n(docs/MATCHING_ELIGIBILITY.md §Ranking).",
+        "properties": {
+          "assessments": {
+            "items": {
+              "$ref": "#/components/schemas/AssessmentResponse"
+            },
+            "title": "Assessments",
+            "type": "array"
+          }
+        },
+        "required": [
+          "assessments"
+        ],
+        "title": "AssessmentListResponse",
+        "type": "object"
+      },
+      "AssessmentResponse": {
+        "additionalProperties": false,
+        "description": "One opportunity, assessed on both axes for one candidate.\n\nThe two verdicts sit side by side and neither derives from the other: `match`\nis `null` when no dimension was scorable (rendered as the UNKNOWN band, never a\nzero), while `eligibility` is always present. This is the shape both the\nevaluate endpoint and the single-pair read return, so a client learns it once.",
+        "properties": {
+          "eligibility": {
+            "$ref": "#/components/schemas/EligibilityResponse"
+          },
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatchResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "opportunity": {
+            "$ref": "#/components/schemas/AssessedOpportunityResponse"
+          }
+        },
+        "required": [
+          "opportunity",
+          "match",
+          "eligibility"
+        ],
+        "title": "AssessmentResponse",
+        "type": "object"
+      },
       "AtsPlatform": {
         "description": "The applicant tracking systems this deployment can already read (§9).\n\nExactly the three V1 has adapters for. Adding a fourth means adding a source\nplugin, so the enum grows with the capability rather than ahead of it — a\nmember nobody can fetch would be a promise the platform does not keep.",
         "enum": [
@@ -1092,6 +1224,189 @@
         "title": "DetectionStatus",
         "type": "string"
       },
+      "DeterminationSource": {
+        "description": "Who decided a check, which is an audit fact, not a detail.\n\n`LLM_EXTRACTION` is deliberately the weakest: see the module docstring and\nthe `EligibilityCheck` validator below.",
+        "enum": [
+          "DETERMINISTIC_RULE",
+          "COUNTRY_PACK_RULE",
+          "CANDIDATE_DECLARATION",
+          "HUMAN_REVIEW",
+          "LLM_EXTRACTION"
+        ],
+        "title": "DeterminationSource",
+        "type": "string"
+      },
+      "DimensionScoreResponse": {
+        "additionalProperties": false,
+        "description": "One axis of a match, on both scales, with the reasons behind it.\n\n`score_percent` is the axis rendered for a UI; `score` and `weight` are the\ncanonical values an audit or a re-weighting would want. A dimension that appears\nhere was evaluated — an axis the engine could not assess is *absent* from the\nmatch rather than present with a zero (docs/MATCHING_ELIGIBILITY.md §Coverage).",
+        "properties": {
+          "dimension": {
+            "$ref": "#/components/schemas/MatchDimension"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ReasonResponse"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "score_percent": {
+            "title": "Score Percent",
+            "type": "integer"
+          },
+          "weight": {
+            "title": "Weight",
+            "type": "number"
+          }
+        },
+        "required": [
+          "dimension",
+          "score",
+          "score_percent",
+          "weight",
+          "reasons"
+        ],
+        "title": "DimensionScoreResponse",
+        "type": "object"
+      },
+      "EligibilityCheckResponse": {
+        "additionalProperties": false,
+        "description": "One gate, evaluated — with who decided it and on what authority.\n\n`determined_by` and `authority` are the audit facts §Legal-policy safety rests\non: an operator-maintained pack value carries `OPERATOR_CONFIG`, which the\nengine can only ever turn into REVIEW_REQUIRED, never a refusal. `reasons` is\nempty for a passing gate and non-empty for every other verdict, mirroring the\ndomain invariant.",
+        "properties": {
+          "authority": {
+            "$ref": "#/components/schemas/RuleAuthority"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "determined_by": {
+            "$ref": "#/components/schemas/DeterminationSource"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ReasonResponse"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "requirement": {
+            "$ref": "#/components/schemas/EligibilityRequirement"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EligibilityStatus"
+          }
+        },
+        "required": [
+          "requirement",
+          "status",
+          "determined_by",
+          "authority",
+          "detail",
+          "reasons"
+        ],
+        "title": "EligibilityCheckResponse",
+        "type": "object"
+      },
+      "EligibilityRequirement": {
+        "description": "The gates an opportunity can put in front of a candidate.\n\nEvery member is binary by nature. Nothing here is \"how good is the match\" —\nthat is `MatchDimension`. Country-specific rules (which permit allows what,\nwhat the local minimum working age is) are Country Pack knowledge (Phase 5);\nthis enum only names the *kind* of gate so the verdict has a stable code.",
+        "enum": [
+          "WORK_AUTHORIZATION",
+          "PERMIT_HOURS_CAP",
+          "MINIMUM_AGE",
+          "LANGUAGE_MINIMUM",
+          "EDUCATION_LEVEL",
+          "CERTIFICATION",
+          "DRIVING_LICENCE",
+          "AVAILABILITY_WINDOW",
+          "LOCATION_REACHABLE"
+        ],
+        "title": "EligibilityRequirement",
+        "type": "string"
+      },
+      "EligibilityResponse": {
+        "additionalProperties": false,
+        "description": "May this application happen at all — the binary axis alone.\n\n`status` is the worst-of aggregate the domain derives from the checks, and\n`is_blocking` is true only for a definite INELIGIBLE: the two honest middles\n(INCOMPLETE, REVIEW_REQUIRED) route to human review rather than refusing. The\nchecks travel with it so a UI can explain the verdict gate by gate rather than\nreducing it to a single word.",
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/EligibilityCheckResponse"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "determined_at": {
+            "format": "date-time",
+            "title": "Determined At",
+            "type": "string"
+          },
+          "is_blocking": {
+            "title": "Is Blocking",
+            "type": "boolean"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EligibilityStatus"
+          }
+        },
+        "required": [
+          "status",
+          "is_blocking",
+          "checks",
+          "policy_version",
+          "determined_at"
+        ],
+        "title": "EligibilityResponse",
+        "type": "object"
+      },
+      "EligibilityStatus": {
+        "description": "Four values, because fewer would lie.\n\nTwo of them are the honest middle the phase order insists on, and they are\nnot interchangeable:\n\n- `INCOMPLETE` means the platform does not yet know — evidence is missing.\n  Reading it as eligible produces applications that waste everyone's time;\n  reading it as ineligible silently hides opportunities. It pairs with the\n  `ELIGIBILITY_INCOMPLETE` reason code docs/ENGINEERING_STANDARDS.md\n  §Observability asks for.\n- `REVIEW_REQUIRED` means the platform found something a human must confirm\n  before it counts against the candidate — most importantly an eligibility\n  rule that is operator-maintained rather than legally verified (see\n  `RuleAuthority`). It is *not* a refusal: it is the platform refusing to\n  refuse on an unverified basis.\n\nA value that is not `ELIGIBLE` never submits an application on its own;\n`INELIGIBLE` blocks and the two middles route to human review\n(`is_blocking`).",
+        "enum": [
+          "ELIGIBLE",
+          "INCOMPLETE",
+          "REVIEW_REQUIRED",
+          "INELIGIBLE"
+        ],
+        "title": "EligibilityStatus",
+        "type": "string"
+      },
+      "EvaluateMatchRequest": {
+        "additionalProperties": false,
+        "description": "Ask for one posting to be assessed for the signed-in account's profile.\n\nThe body names the *opportunity* and nothing else. There is no `candidate_profile_id`\nand no `user_id`: the candidate is the account's own profile, resolved from the\nsession, so a request cannot ask for someone else's profile to be scored against\na posting (docs/ENGINEERING_STANDARDS.md §Security).",
+        "properties": {
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ],
+        "title": "EvaluateMatchRequest",
+        "type": "object"
+      },
       "EvidenceResponse": {
         "additionalProperties": false,
         "description": "Why the backend believes one thing about a company.\n\nCarried out to the client because §10 and §12 both rest on it: \"this employer is\non Greenhouse\" and \"this employer takes spontaneous applications\" are only worth\nshowing next to what they were concluded from. A code the UI can branch on, a\nsentence a human can read, and — when there is one — the URL that said so.",
@@ -1619,6 +1934,105 @@
         "title": "LoginRequest",
         "type": "object"
       },
+      "MatchClassification": {
+        "description": "The band a match falls in, named once so no surface invents its own.\n\ndocs/V2_SPECIFICATION.md §9 and the phase order both refuse scattered\n`if score > 0.8` literals: a threshold that lives in five components drifts\ninto five different products. The bands live on `MatchProfile` and this enum\nis their vocabulary.\n\n`UNKNOWN` is not a low score — it is the honest answer when no dimension\ncould be evaluated at all, and it must never be rendered as WEAK. \"We could\nnot assess this\" and \"this is a poor fit\" are different facts.",
+        "enum": [
+          "EXCELLENT",
+          "STRONG",
+          "MODERATE",
+          "WEAK",
+          "UNKNOWN"
+        ],
+        "title": "MatchClassification",
+        "type": "string"
+      },
+      "MatchDimension": {
+        "description": "The axes a candidate/opportunity pair is scored on.\n\nAll six are *compatibility* axes: each answers \"how well does this fit?\" and\neach is legitimately a matter of degree. Anything that answers \"is this\nallowed?\" belongs to eligibility, not here.",
+        "enum": [
+          "SKILLS_FIT",
+          "EXPERIENCE_FIT",
+          "EDUCATION_FIT",
+          "LANGUAGE_FIT",
+          "LOCATION_FIT",
+          "SCHEDULE_FIT"
+        ],
+        "title": "MatchDimension",
+        "type": "string"
+      },
+      "MatchResponse": {
+        "additionalProperties": false,
+        "description": "How well one candidate fits one posting — the compatibility axis alone.\n\nNothing here reflects eligibility: a blocked application can still be a 92%\nmatch, and this model is where that number lives untouched. `classification` is\nthe band the score falls in, and `evidence_confidence` is the *separate* \"how\nmuch could we even assess?\" axis — a high score over one evaluable dimension is\na confident-looking number with low coverage, and the two fields say so\nindependently (docs/MATCHING_ELIGIBILITY.md §Coverage).",
+        "properties": {
+          "classification": {
+            "$ref": "#/components/schemas/MatchClassification"
+          },
+          "dimensions": {
+            "items": {
+              "$ref": "#/components/schemas/DimensionScoreResponse"
+            },
+            "title": "Dimensions",
+            "type": "array"
+          },
+          "evaluated_at": {
+            "format": "date-time",
+            "title": "Evaluated At",
+            "type": "string"
+          },
+          "evaluator_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluator Key"
+          },
+          "evidence_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Confidence"
+          },
+          "evidence_confidence_percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Confidence Percent"
+          },
+          "overall": {
+            "title": "Overall",
+            "type": "number"
+          },
+          "overall_percent": {
+            "title": "Overall Percent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "overall",
+          "overall_percent",
+          "classification",
+          "evidence_confidence",
+          "evidence_confidence_percent",
+          "dimensions",
+          "evaluator_key",
+          "evaluated_at"
+        ],
+        "title": "MatchResponse",
+        "type": "object"
+      },
       "MatchedRadiusResponse": {
         "additionalProperties": false,
         "description": "Which radius branch admitted a result, by its index and its label.",
@@ -2041,6 +2455,47 @@
         "title": "RadiusSearchArea",
         "type": "object"
       },
+      "ReasonImpact": {
+        "description": "Whether a reason argues for a candidate/opportunity pair or against it.",
+        "enum": [
+          "POSITIVE",
+          "NEGATIVE",
+          "NEUTRAL"
+        ],
+        "title": "ReasonImpact",
+        "type": "string"
+      },
+      "ReasonResponse": {
+        "additionalProperties": false,
+        "description": "One typed reason behind a score or a verdict.\n\nA `code` a client branches on, a `detail` a human reads, and the `impact` that\nsays whether it helped or hurt. Never a serialized exception and never a secret:\nthe reasons the engines emit are drawn from a closed vocabulary\n(docs/MATCHING_ELIGIBILITY.md §Reasons), so this model cannot carry a stack\ntrace or an environment value into a UI.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "impact": {
+            "$ref": "#/components/schemas/ReasonImpact"
+          }
+        },
+        "required": [
+          "code",
+          "detail",
+          "impact"
+        ],
+        "title": "ReasonResponse",
+        "type": "object"
+      },
       "RegenBody": {
         "properties": {
           "creativity": {
@@ -2152,6 +2607,17 @@
           "only"
         ],
         "title": "RemoteSelection",
+        "type": "string"
+      },
+      "RuleAuthority": {
+        "description": "How much a rule behind a check is entitled to close a gate.\n\nThe distinction has legal teeth. A Country Pack's permit table, its minimum\nworking age and its language thresholds are *operator-maintained\nconfiguration*, not law this repository asserts — docs/COUNTRY_PACKS.md\n§Eligibility and the `PermitRule` docstring say so in the same words. A wrong\nnumber in a YAML file must never become an automatic \"you may not apply\".\n\nSo authority is carried on the check and enforced by the domain: only a\n`VERIFIED` rule may produce `INELIGIBLE`. Anything less can inform, can lower\na match score elsewhere, and can raise `REVIEW_REQUIRED` so a human looks —\nbut it cannot refuse on its own. The four levels, weakest last:\n\n- `VERIFIED` — reviewed against the actual legal source and signed off; the\n  only authority permitted to block.\n- `SOURCE_DECLARED` — the opportunity or employer stated the requirement\n  itself (e.g. a posting that says \"EU work permit required\"). Strong, but a\n  posting is not the law and can be wrong, so it informs and reviews.\n- `OPERATOR_CONFIG` — a value an operator maintains in a Country Pack. The\n  default for pack-supplied rules, and deliberately not blocking.\n- `UNKNOWN` — no provenance stated; treated as the weakest.",
+        "enum": [
+          "VERIFIED",
+          "SOURCE_DECLARED",
+          "OPERATOR_CONFIG",
+          "UNKNOWN"
+        ],
+        "title": "RuleAuthority",
         "type": "string"
       },
       "SearchProfileDraft": {
@@ -4676,6 +5142,70 @@
         ]
       }
     },
+    "/api/v2/matches": {
+      "get": {
+        "description": "This account's assessed pairs, most recently determined first.\n\nChronological, not ranked: both axes travel untouched and an INELIGIBLE pair is\nnever pushed down by pretending its match is low. A UI that wants to rank by fit\nor filter by eligibility has both numbers and does so itself\n(docs/MATCHING_ELIGIBILITY.md §Ranking).",
+        "operationId": "list_matches_api_v2_matches_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssessmentListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Matches",
+        "tags": [
+          "v2-matches"
+        ]
+      }
+    },
+    "/api/v2/matches/evaluate": {
+      "post": {
+        "description": "Assess one posting for this account's profile, on both axes.\n\nRuns the deterministic match engine and the eligibility engine independently\nand stores each verdict in its own record. Not a 201: the pair's verdicts are\nkeyed on `(profile, opportunity)`, so a re-evaluation replaces the previous\nanswer rather than creating a resource, and `200` with the fresh assessment is\nthe honest status.\n\n404 when the account has no profile yet (go to onboarding) or when no posting\nis stored under the id — two distinct error codes, because the frontend acts on\nthem differently.",
+        "operationId": "evaluate_match_api_v2_matches_evaluate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluateMatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssessmentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Evaluate Match",
+        "tags": [
+          "v2-matches"
+        ]
+      }
+    },
     "/api/v2/me/profile": {
       "get": {
         "description": "This account's candidate profile.\n\n404 when onboarding has not saved one yet. Not an empty 200: \"no profile\" is a\ndifferent state from \"a profile with no fields filled in\", and the onboarding\nscreen has to tell them apart.",
@@ -5035,6 +5565,50 @@
         "summary": "Complete",
         "tags": [
           "v2-onboarding"
+        ]
+      }
+    },
+    "/api/v2/opportunities/{opportunity_id}/match": {
+      "get": {
+        "description": "The stored assessment for one pair, or 404 if it has not been evaluated.\n\nA pure read — it never runs an engine. The 404 covers \"not evaluated yet\", \"no\nprofile yet\" and \"not this account's posting-run\" without distinguishing them:\nthe service answers `None` for all three, so a caller cannot learn that another\nuser has assessed a posting by asking about it (§Security: ids must not be\nenumerable).",
+        "operationId": "read_match_api_v2_opportunities__opportunity_id__match_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssessmentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Match",
+        "tags": [
+          "v2-matches"
         ]
       }
     }

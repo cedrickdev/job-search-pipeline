@@ -16,9 +16,16 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID
 
+from backend.app.domain.candidate import (
+    Availability,
+    CandidateProfile,
+    WorkAuthorization,
+    WorkAuthorizationStatus,
+)
 from backend.app.domain.common import (
     GeoPoint,
     LanguageLevel,
+    LanguageProficiency,
     LanguageRequirement,
     Location,
     Reason,
@@ -41,6 +48,7 @@ from backend.app.domain.identifiers import (
     CandidateProfileId,
     CompanyId,
     CompanyLocationId,
+    EligibilityResultId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
@@ -69,6 +77,7 @@ COMPANY = CompanyId(UUID("00000000-0000-4000-8000-000000000031"))
 OTHER_COMPANY = CompanyId(UUID("00000000-0000-4000-8000-000000000032"))
 COMPANY_LOCATION = CompanyLocationId(UUID("00000000-0000-4000-8000-000000000035"))
 EVALUATION = MatchEvaluationId(UUID("00000000-0000-4000-8000-000000000041"))
+ELIGIBILITY = EligibilityResultId(UUID("00000000-0000-4000-8000-000000000045"))
 POLICY = ApplicationPolicyId(UUID("00000000-0000-4000-8000-000000000051"))
 DECISION = ApplicationDecisionId(UUID("00000000-0000-4000-8000-000000000061"))
 SEARCH_PROFILE = SearchProfileId(UUID("00000000-0000-4000-8000-000000000071"))
@@ -113,6 +122,7 @@ def a_check(requirement=EligibilityRequirement.WORK_AUTHORIZATION,
 def an_eligibility_result(*checks, **overrides):
     """A result over `checks`, defaulting to a single passing gate."""
     fields = {
+        "id": ELIGIBILITY,
         "user_id": USER,
         "candidate_profile_id": PROFILE,
         "opportunity_id": OPPORTUNITY,
@@ -121,6 +131,43 @@ def an_eligibility_result(*checks, **overrides):
     }
     fields.update(overrides)
     return EligibilityResult(**fields)
+
+
+def a_candidate_profile(**overrides):
+    """A candidate owned by `USER`, based in Lausanne.
+
+    Deliberately sparse where Phase 9 has no data — no evidence, no claims — and
+    populated where the engines actually read: a base location, one declared
+    language, one work authorization and an availability band. A test that needs
+    the empty case passes `languages=()`, `work_authorizations=()` or
+    `availability=None`; one that needs a different owner passes `user_id=OTHER_USER`
+    with `id=OTHER_PROFILE`.
+    """
+    fields = {
+        "id": PROFILE,
+        "user_id": USER,
+        "display_name": "Fixture Candidate",
+        "base_location": Location(country="CH", region="Vaud", city="Lausanne",
+                                  point=LAUSANNE, raw="Lausanne, Suisse"),
+        "languages": (LanguageProficiency(language="fr", level=LanguageLevel.C2),),
+        "work_authorizations": (
+            WorkAuthorization(country="CH",
+                              status=WorkAuthorizationStatus.CITIZEN),),
+        "availability": Availability(min_weekly_hours=20.0, max_weekly_hours=42.0),
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return CandidateProfile(**fields)
+
+
+def a_work_authorization(**overrides):
+    """A single-country right to work, CH/CITIZEN unless overridden."""
+    fields = {
+        "country": "CH",
+        "status": WorkAuthorizationStatus.CITIZEN,
+    }
+    fields.update(overrides)
+    return WorkAuthorization(**fields)
 
 
 def a_source_record(**overrides):

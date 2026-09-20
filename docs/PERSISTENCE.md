@@ -108,7 +108,7 @@ Two columns are deliberately not `TIMESTAMPTZ`:
 
 ## Schema
 
-Seventeen tables, all keyed by `UUID` (never a serial). Eight came from `rev_0002`:
+Nineteen tables, all keyed by `UUID` (never a serial). Eight came from `rev_0002`:
 
 | Table | Holds | Ownership |
 | --- | --- | --- |
@@ -147,6 +147,28 @@ are **shared facts with no `user_id`**, for the reason `companies` has none: an
 employer is a fact about the world, not a row belonging to whoever discovered it
 first. The identity rules, the evidence model and the ambiguity policy behind these
 columns are in [Company Discovery](./COMPANY_DISCOVERY.md).
+
+`rev_0005` is Phase 7's geo enrichment (`geocoding_cache` and the location columns —
+see [Geo Opportunity Explorer](./GEO_SEARCH.md)), and two came from `rev_0006`, which
+is Phase 9's:
+
+| Table | Holds | Ownership |
+| --- | --- | --- |
+| `eligibility_results` | one gate verdict per (profile, posting), with a denormalized worst-of `status` | `user_id` + `candidate_profile_id`, CASCADE |
+| `eligibility_checks` | the typed gates a verdict is derived from, one per `(result_id, ordinal)` | `result_id`, CASCADE |
+
+`rev_0006` is purely additive — it alters nothing existing, so a database at `0005`
+keeps every posting, employer, evaluation and geocode it had, and `alembic upgrade
+head` reaches the same schema fresh or from `0005`. Eligibility is the *second* axis
+and gets its own pair of tables rather than a column on `match_evaluations`: folding
+a legal gate into the score's row is the first step towards averaging it into a
+percentage, and the schema keeps them apart so the code cannot. Three CHECK
+constraints on `eligibility_checks` make the domain's accountability rules physical —
+a non-ELIGIBLE gate carries a reason, an `LLM_EXTRACTION` gate can only be
+`INCOMPLETE`, and a `COUNTRY_PACK_RULE` gate may only reach `INELIGIBLE` when its
+authority is `VERIFIED`. That last one is the Phase 9 legal-safety invariant enforced
+by the database, not merely by Python. See [Matching and
+Eligibility](./MATCHING_ELIGIBILITY.md).
 
 `rev_0002` created `users` and `candidate_profiles` deliberately empty of everything
 identity needs, so that user-scoped rows could carry a real foreign key before anything

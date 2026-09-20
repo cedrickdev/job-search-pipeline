@@ -56,11 +56,14 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyCareerSiteRepository,
     SqlAlchemyCompanyDiscoveryRepository,
     SqlAlchemyCompanyRepository,
+    SqlAlchemyEligibilityResultRepository,
+    SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
     SqlAlchemySearchProfileRepository,
     SqlAlchemySessionRepository,
     SqlAlchemyUserRepository,
 )
+from backend.app.services.assessment import AssessmentService
 from backend.app.services.authentication import (
     AuthenticatedSession,
     AuthenticationService,
@@ -214,6 +217,27 @@ def geo_search_service(
                             SqlAlchemySearchProfileRepository(session))
 
 
+def assessment_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        packs: Annotated[CountryPackRegistry, Depends(country_packs)],
+) -> AssessmentService:
+    """The match-and-eligibility orchestrator, composed for this request.
+
+    Four repositories and the pack registry: the profile it scores, the posting it
+    scores against, and the two verdict stores it writes to — kept apart because the
+    two axes are separate records, not two fields of one. The country packs are the
+    cached, read-only registry every other service shares; the engines read from a
+    pack but never write one. No clock in the constructor — the route hands `now` to
+    `evaluate`, so a single request's timestamps agree.
+    """
+    return AssessmentService(
+        SqlAlchemyCandidateProfileRepository(session),
+        SqlAlchemyOpportunityRepository(session),
+        SqlAlchemyMatchEvaluationRepository(session),
+        SqlAlchemyEligibilityResultRepository(session),
+        packs)
+
+
 def company_discovery_service(
         session: Annotated[AsyncSession, Depends(database_session)],
         packs: Annotated[CountryPackRegistry, Depends(country_packs)],
@@ -311,3 +335,4 @@ Companies = Annotated[CompanyDirectoryService, Depends(company_directory_service
 CompanyDiscovery = Annotated[CompanyDiscoveryService,
                              Depends(company_discovery_service)]
 GeoSearch = Annotated[GeoSearchService, Depends(geo_search_service)]
+Assessment = Annotated[AssessmentService, Depends(assessment_service)]

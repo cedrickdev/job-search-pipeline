@@ -64,8 +64,8 @@ SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
                  "geocoding_cache", "opportunities", "opportunity_source_records")
 
 # Rows one user owns, named by the `user_id` Phase 4's authorization filter reads.
-USER_OWNED_TABLES = ("candidate_profiles", "match_evaluations", "search_profiles",
-                     "user_sessions")
+USER_OWNED_TABLES = ("candidate_profiles", "eligibility_results",
+                     "match_evaluations", "search_profiles", "user_sessions")
 
 # Rows owned through a parent instead of directly: a language belongs to a profile,
 # an area to a search profile, a dimension score to an evaluation. They carry no
@@ -77,6 +77,7 @@ PARENT_OWNED_TABLES = {
     "candidate_work_authorizations": "candidate_profiles",
     "company_aliases": "companies",
     "company_career_sites": "companies",
+    "eligibility_checks": "eligibility_results",
     "match_dimension_scores": "match_evaluations",
     "search_areas": "search_profiles",
 }
@@ -105,7 +106,7 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_eighteen_v2_tables():
+def test_the_metadata_holds_exactly_the_twenty_v2_tables():
     """A tripwire on the shape of the schema itself.
 
     `models.py` is the only place a V2 table may be declared, so the three
@@ -115,7 +116,7 @@ def test_the_metadata_holds_exactly_the_eighteen_v2_tables():
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
         PARENT_OWNED_TABLES) | {"users"}
-    assert len(TABLES) == 18
+    assert len(TABLES) == 20
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))

@@ -29,6 +29,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 
 from backend.app.api import API_V2_PREFIX
+from backend.app.services.assessment import (
+    CandidateProfileNotFound,
+    OpportunityNotFound,
+)
 from backend.app.services.authentication import (
     AccountDisabled,
     AccountLocked,
@@ -161,6 +165,24 @@ def install_v2_error_handlers(app: FastAPI) -> None:
                      "saved search",
                      has_profile=exc.has_profile,
                      active_search_profiles=exc.active_searches)
+
+    @app.exception_handler(CandidateProfileNotFound)
+    async def _no_candidate_profile(request: Request,
+                                    exc: CandidateProfileNotFound) -> JSONResponse:
+        # Its own code, and the same one `GET /me/profile` uses for the same state:
+        # a client reads it as "onboarding is not finished" and sends the user to
+        # the profile form, not as "that posting does not exist".
+        return _json(status.HTTP_404_NOT_FOUND, "candidate_profile_not_found",
+                     "this account has not saved a candidate profile yet")
+
+    @app.exception_handler(OpportunityNotFound)
+    async def _no_opportunity(request: Request,
+                              exc: OpportunityNotFound) -> JSONResponse:
+        # A posting is a shared fact with no owner, so "no such posting" is the only
+        # reason this fires — there is no "not yours" to keep indistinguishable from
+        # it, unlike a user-owned assessment read.
+        return _json(status.HTTP_404_NOT_FOUND, "opportunity_not_found",
+                     "no opportunity is stored under that id")
 
     @app.exception_handler(IntegrityError)
     async def _integrity(request: Request, exc: IntegrityError) -> JSONResponse:

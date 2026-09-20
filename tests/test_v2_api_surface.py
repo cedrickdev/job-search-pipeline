@@ -13,11 +13,12 @@ document is exactly what `scripts/dump_openapi.py` hands the frontend's type
 generator. A route added without a test fails the first assertion in this module,
 which is the point of pinning a count that a normal change has no reason to touch.
 
-The counts moved once at Phase 6 — the three company operations — and again at
+The counts moved once at Phase 6 — the three company operations — again at
 Phase 7, which adds the three geo reads: postings near a place, employers near a
-place, and one saved search run as a geo query. All six are held to the same four
-rules the Phase 4 twelve are — under the prefix, authenticated, safe where they read,
-and carrying no credential field.
+place, and one saved search run as a geo query, and again at Phase 9, which adds
+the three assessment routes: evaluate a pair, read one pair, list a user's pairs.
+All nine are held to the same four rules the Phase 4 twelve are — under the prefix,
+authenticated, safe where they read, and carrying no credential field.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -25,7 +26,13 @@ from datetime import timedelta
 import pytest
 
 from backend.app.api import API_V2_PREFIX
-from backend.app.domain.identifiers import CompanyId, SearchProfileId
+from backend.app.domain.identifiers import (
+    CompanyId,
+    OpportunityId,
+    SearchProfileId,
+    default_candidate_profile_id,
+    eligibility_result_id,
+)
 from backend.app.services.authentication import SESSION_TOUCH_INTERVAL
 from tests.v2_api import (
     PLACEHOLDER_ID,
@@ -34,7 +41,12 @@ from tests.v2_api import (
     operations,
     schema_property_names,
 )
-from tests.v2_builders import a_company, a_search_profile
+from tests.v2_builders import (
+    a_company,
+    a_search_profile,
+    an_eligibility_result,
+    an_opportunity,
+)
 
 # The whole V2 surface as of Phase 7, spelled out. Written as a literal on purpose:
 # a test that derived it from the application would agree with any change.
@@ -45,14 +57,17 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/companies/{company_id}"),
     ("GET", "/api/v2/geo/companies"),
     ("GET", "/api/v2/geo/opportunities"),
+    ("GET", "/api/v2/matches"),
     ("GET", "/api/v2/me/profile"),
     ("GET", "/api/v2/me/search-profiles"),
     ("GET", "/api/v2/me/search-profiles/{search_profile_id}/opportunities"),
     ("GET", "/api/v2/onboarding"),
+    ("GET", "/api/v2/opportunities/{opportunity_id}/match"),
     ("POST", "/api/v2/auth/login"),
     ("POST", "/api/v2/auth/logout"),
     ("POST", "/api/v2/auth/register"),
     ("POST", "/api/v2/company-discovery/run"),
+    ("POST", "/api/v2/matches/evaluate"),
     ("POST", "/api/v2/me/search-profiles"),
     ("POST", "/api/v2/onboarding/complete"),
     ("PUT", "/api/v2/me/profile"),
@@ -93,7 +108,7 @@ def _get_with_scope(path: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_the_v2_surface_is_exactly_the_eighteen_operations_phases_4_6_and_7_define(
+async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_and_9_define(
         tmp_path):
     """The inventory, and every path scoped under the one prefix.
 
@@ -106,18 +121,21 @@ async def test_the_v2_surface_is_exactly_the_eighteen_operations_phases_4_6_and_
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 15
+        assert len({path for _, path in published}) == 18
 
 
 @pytest.mark.asyncio
 async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path):
     """The inventory half of "no GET mutates state".
 
-    Nine `GET`s, all of them reports. `POST /onboarding/complete` exists precisely so
-    that the screen displaying progress does not have to be the thing that records
+    Eleven `GET`s, all of them reports. `POST /onboarding/complete` exists precisely
+    so that the screen displaying progress does not have to be the thing that records
     it, and `POST /company-discovery/run` is the same split for the directory: reading
     it is safe, filling it is a write an operator triggers. The three Phase 7 reads
-    join the reports — a map is a view, and viewing it writes nothing.
+    join the reports — a map is a view, and viewing it writes nothing — and so do the
+    two Phase 9 assessment reads: `GET /matches` and `GET /opportunities/{id}/match`
+    read stored verdicts, while `POST /matches/evaluate` is the write that produces
+    them.
     """
     async with api_harness(tmp_path) as api:
         published = operations(api.app, under=API_V2_PREFIX)
@@ -128,10 +146,12 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/companies/{company_id}",
             "/api/v2/geo/companies",
             "/api/v2/geo/opportunities",
+            "/api/v2/matches",
             "/api/v2/me/profile",
             "/api/v2/me/search-profiles",
             "/api/v2/me/search-profiles/{search_profile_id}/opportunities",
-            "/api/v2/onboarding"}
+            "/api/v2/onboarding",
+            "/api/v2/opportunities/{opportunity_id}/match"}
         assert not [method for method, _ in published
                     if method in {"HEAD", "OPTIONS", "TRACE", "PATCH"}]
 
@@ -160,12 +180,24 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                                              locations=()))
         await api.searches.upsert(a_search_profile(
             id=SearchProfileId(PLACEHOLDER_ID), user_id=user_id))
+        # `GET /opportunities/{id}/match` reads a stored verdict, so the sweep only
+        # exercises its 200 path when the pair has one: a posting under the
+        # placeholder id and an eligibility keyed on this account's default profile
+        # and that posting. Both are seeded so the read is real, not a 404.
+        posting_id = OpportunityId(PLACEHOLDER_ID)
+        profile_id = default_candidate_profile_id(user_id)
+        await api.postings.upsert(an_opportunity(id=posting_id))
+        await api.eligibilities.upsert(an_eligibility_result(
+            id=eligibility_result_id(profile_id, posting_id),
+            user_id=user_id, candidate_profile_id=profile_id,
+            opportunity_id=posting_id))
         reads = [_get_with_scope(concrete(path)) for method, path in operations(
             api.app, under=API_V2_PREFIX) if method == "GET"]
         before = deepcopy((api.users.users, api.sessions.sessions,
                            api.profiles.profiles, api.searches.searches,
                            api.companies.companies, api.career_sites.sites,
-                           api.discoveries.records, api.postings.opportunities))
+                           api.discoveries.records, api.postings.opportunities,
+                           api.matches.evaluations, api.eligibilities.results))
 
         for path in reads:
             for _ in range(2):
@@ -175,7 +207,8 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
         assert (api.users.users, api.sessions.sessions, api.profiles.profiles,
                 api.searches.searches, api.companies.companies,
                 api.career_sites.sites, api.discoveries.records,
-                api.postings.opportunities) == before
+                api.postings.opportunities, api.matches.evaluations,
+                api.eligibilities.results) == before
 
 
 @pytest.mark.asyncio
@@ -207,7 +240,7 @@ async def test_the_one_write_a_get_performs_is_last_seen_at_and_it_cannot_extend
 @pytest.mark.asyncio
 async def test_every_operation_but_register_and_login_refuses_an_anonymous_caller(
         tmp_path):
-    """401 from all sixteen, with no body sent and nothing created.
+    """401 from all nineteen, with no body sent and nothing created.
 
     No payload is needed because FastAPI resolves the session dependency before it
     validates a body, so the refusal happens before the request is read — which is
@@ -224,7 +257,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
         protected = [(method, path) for method, path in operations(
             api.app, under=API_V2_PREFIX) if (method, path) not in PUBLIC_OPERATIONS]
 
-        assert len(protected) == 16
+        assert len(protected) == 19
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

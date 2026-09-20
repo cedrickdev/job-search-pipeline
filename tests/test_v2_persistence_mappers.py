@@ -27,8 +27,16 @@ from backend.app.domain.common import (
     SalaryRange,
     WorkloadRange,
 )
+from backend.app.domain.eligibility import (
+    DeterminationSource,
+    EligibilityCheck,
+    EligibilityRequirement,
+    EligibilityStatus,
+    RuleAuthority,
+)
 from backend.app.domain.identifiers import (
     CompanyLocationId,
+    EligibilityResultId,
     EvidenceId,
     MatchEvaluationId,
 )
@@ -38,6 +46,9 @@ from backend.app.infrastructure.database.mappers import (
     company_to_domain,
     company_to_row,
     dimension_score_row_id,
+    eligibility_check_row_id,
+    eligibility_result_to_domain,
+    eligibility_result_to_row,
     match_evaluation_to_domain,
     match_evaluation_to_row,
     opportunity_to_domain,
@@ -50,17 +61,22 @@ from backend.app.infrastructure.database.models import CompanyLocationRow, Oppor
 from tests.v2_builders import (
     COMPANY,
     COMPANY_LOCATION,
+    ELIGIBILITY,
     EVALUATION,
     OPPORTUNITY,
     OTHER_OPPORTUNITY,
+    a_check,
     a_company,
     a_company_location,
+    a_reason,
+    an_eligibility_result,
     an_evaluation,
     an_opportunity,
 )
 
 EVIDENCE = EvidenceId(UUID("00000000-0000-4000-8000-000000000071"))
 SECOND_EVALUATION = MatchEvaluationId(UUID("00000000-0000-4000-8000-000000000042"))
+SECOND_RESULT = EligibilityResultId(UUID("00000000-0000-4000-8000-000000000046"))
 SECOND_SITE = CompanyLocationId(UUID("00000000-0000-4000-8000-000000000036"))
 
 
@@ -293,6 +309,89 @@ def test_a_stored_reason_with_an_unexpected_key_is_refused():
     """
     with pytest.raises(ValidationError):
         reasons_from_json([{"code": "OLD", "detail": "why", "severity": "high"}])
+
+
+def test_an_eligibility_result_survives_the_trip_to_the_rows_and_back():
+    """The whole verdict, including an unverified pack rule's authority and detail.
+
+    Equality over the entire object, for the reason the posting round trip is: a
+    field added to `EligibilityCheck` and forgotten in the mapper fails here. The
+    second check is the §59 case — a Country Pack's operator-maintained hours cap,
+    REVIEW_REQUIRED rather than a refusal — so `authority`, `detail` and the reason a
+    non-ELIGIBLE gate must carry are all on the path this asserts.
+    """
+    result = an_eligibility_result(
+        a_check(),
+        EligibilityCheck(
+            requirement=EligibilityRequirement.PERMIT_HOURS_CAP,
+            status=EligibilityStatus.REVIEW_REQUIRED,
+            determined_by=DeterminationSource.COUNTRY_PACK_RULE,
+            authority=RuleAuthority.OPERATOR_CONFIG,
+            detail="Swiss student permit caps paid work at 15h/week.",
+            reasons=(a_reason(code="PERMIT_HOURS_CAP_REVIEW",
+                              impact=ReasonImpact.NEGATIVE),)))
+    assert eligibility_result_to_domain(eligibility_result_to_row(result)) == result
+
+
+def test_the_stored_status_is_the_worst_of_the_checks_the_domain_recomputes():
+    """The denormalized column is the derived verdict; the read-back ignores it.
+
+    The column exists so a list can rank and filter without loading every check,
+    and worst-of aggregation means one closed gate closes the result — so a passing
+    gate beside an ineligible one still stores INELIGIBLE. Corrupting the column and
+    reading the row back still yields the verdict the checks imply, because
+    `eligibility_result_to_domain` never passes `status`: the copy and the source
+    cannot drift.
+    """
+    row = eligibility_result_to_row(an_eligibility_result(
+        a_check(status=EligibilityStatus.ELIGIBLE),
+        a_check(requirement=EligibilityRequirement.LANGUAGE_MINIMUM,
+                status=EligibilityStatus.INELIGIBLE)))
+    assert row.status is EligibilityStatus.INELIGIBLE
+    row.status = EligibilityStatus.ELIGIBLE
+    assert eligibility_result_to_domain(row).status is EligibilityStatus.INELIGIBLE
+
+
+def test_an_eligibility_check_key_is_derived_from_its_position():
+    """`(result, ordinal)` — the same pair the unique constraint covers.
+
+    Pinned to a literal for the reason `dimension_score_row_id` is: two calls
+    agreeing with each other would also hold for `uuid4`, and what has to be stable
+    across runs is the value itself, so a change to the namespace or the seed string
+    is a deliberate migration rather than a silent orphaning of every check already
+    written.
+    """
+    assert eligibility_check_row_id(ELIGIBILITY, 0) == \
+        UUID("7dd6b214-29f7-5086-b05a-41ebe7aff799")
+    assert eligibility_check_row_id(ELIGIBILITY, 0) != \
+        eligibility_check_row_id(ELIGIBILITY, 1)
+    assert eligibility_check_row_id(ELIGIBILITY, 0) != \
+        eligibility_check_row_id(SECOND_RESULT, 0)
+
+
+def test_re_evaluating_reuses_the_check_row_at_each_position():
+    """Checks are matched by `ordinal`, not by list identity and not by requirement.
+
+    A requirement can repeat — two required languages are two LANGUAGE_MINIMUM gates
+    — so position is the natural key a re-evaluation reconciles on: the row at
+    ordinal 0 is updated in place, keeping its surrogate key, even though its
+    requirement changed, and a position the re-run no longer produces is dropped for
+    the delete-orphan cascade. This is the one behaviour that differs from the
+    dimension mapper, which keys on the dimension itself.
+    """
+    row = eligibility_result_to_row(an_eligibility_result(
+        a_check(status=EligibilityStatus.INELIGIBLE),
+        a_check(requirement=EligibilityRequirement.LANGUAGE_MINIMUM,
+                status=EligibilityStatus.INELIGIBLE)))
+    kept = row.checks[0]
+
+    updated = eligibility_result_to_row(an_eligibility_result(
+        a_check(requirement=EligibilityRequirement.LANGUAGE_MINIMUM,
+                status=EligibilityStatus.REVIEW_REQUIRED)), row)
+    assert len(updated.checks) == 1
+    assert updated.checks[0] is kept
+    assert kept.requirement is EligibilityRequirement.LANGUAGE_MINIMUM
+    assert kept.status is EligibilityStatus.REVIEW_REQUIRED
 
 
 def test_a_company_survives_the_trip_with_all_of_its_sites():

@@ -68,6 +68,12 @@ from backend.app.domain.company import (
     DetectionStatus,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.eligibility import (
+    DeterminationSource,
+    EligibilityRequirement,
+    EligibilityStatus,
+    RuleAuthority,
+)
 from backend.app.domain.geo import GeocodingOutcome
 from backend.app.domain.matching import MatchDimension
 from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
@@ -1366,6 +1372,146 @@ class GeocodingCacheRow(TimestampedMixin, Base):
     # refreshed in place.
     checked_at: Mapped[datetime]
     expires_at: Mapped[datetime | None]
+
+
+# `EligibilityCheck._verdict_is_accountable`, as three CHECKs. The domain refuses
+# to *construct* a check that trips any of them; restating them here is what keeps
+# a row written by a migration, a backfill or psql from asserting a verdict the
+# engine could never have produced — most consequentially the legal-safety rule,
+# below, that operator-maintained pack data may not refuse an application on its
+# own (docs/COUNTRY_PACKS.md §Eligibility, §59). Each is written as the implication
+# it is — `NOT antecedent OR consequent` — because that is the form a CHECK, which
+# fails only on FALSE, evaluates the way the prose reads.
+_ELIGIBILITY_REASONS_PRESENT: Final[str] = (
+    f"status = '{EligibilityStatus.ELIGIBLE.value}'"
+    " OR jsonb_array_length(reasons) >= 1"
+)
+
+_ELIGIBILITY_LLM_IS_INCOMPLETE: Final[str] = (
+    f"determined_by <> '{DeterminationSource.LLM_EXTRACTION.value}'"
+    f" OR status = '{EligibilityStatus.INCOMPLETE.value}'"
+)
+
+_ELIGIBILITY_PACK_BLOCKS_ONLY_WHEN_VERIFIED: Final[str] = (
+    f"determined_by <> '{DeterminationSource.COUNTRY_PACK_RULE.value}'"
+    f" OR status <> '{EligibilityStatus.INELIGIBLE.value}'"
+    f" OR authority = '{RuleAuthority.VERIFIED.value}'"
+)
+
+
+class EligibilityResultRow(TimestampedMixin, Base):
+    """Whether one candidate may apply to one opportunity — the second, separate axis.
+
+    Deliberately its own table beside `match_evaluations`, never a column on it:
+    docs/V2_SPECIFICATION.md §13 and CLAUDE.md make eligibility a different question
+    from fit, with a different verdict type, and a schema that folded the two would
+    invite exactly the averaging the phase order forbids. A pair can score 92% and
+    be INELIGIBLE, or 61% and ELIGIBLE; two tables is what keeps those independent.
+
+    `status` is stored even though `EligibilityResult.status` is *derived* from the
+    checks. The duplication is the same trade `MatchEvaluationRow.overall` makes: a
+    list that ranks and filters by verdict must not load every child row of every
+    result to do it. The mapper writes the derived value and never a second opinion,
+    and `ck_eligibility_checks_*` keep the checks it is derived from honest, so the
+    denormalized copy cannot assert a pass over a failed gate.
+
+    `UNIQUE (candidate_profile_id, opportunity_id)` makes re-evaluation an upsert,
+    and the foreign keys cascade from `users` so a deleted account leaves no verdict
+    behind. `user_id` is carried for the same authorization reason it is on
+    `match_evaluations`: every scoped read is `WHERE user_id = ?`, and a policy that
+    needed a join to know the owner is one that will be written without it.
+    """
+
+    __tablename__ = "eligibility_results"
+    __table_args__ = (
+        UniqueConstraint("candidate_profile_id", "opportunity_id"),
+        # The shape of every authorization-scoped read: this user's verdicts,
+        # newest first.
+        Index("ix_eligibility_results_user_id_determined_at",
+              "user_id", "determined_at"),
+        Index("ix_eligibility_results_opportunity_id", "opportunity_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    candidate_profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    opportunity_id: Mapped[UUID] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"))
+    status: Mapped[EligibilityStatus] = mapped_column(
+        enum_column(EligibilityStatus, "eligibility_result_status"))
+    # The engine and policy that produced this verdict, for audit — the eligibility
+    # twin of `match_evaluations.evaluator_key`, kept a plain string for the same
+    # provider-neutral reason.
+    policy_version: Mapped[str | None]
+    determined_at: Mapped[datetime]
+
+    checks: Mapped[list["EligibilityCheckRow"]] = relationship(
+        back_populates="result", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="EligibilityCheckRow.ordinal")
+
+
+class EligibilityCheckRow(TimestampedMixin, Base):
+    """One gate of one eligibility result, with the reasons that closed it.
+
+    A child table rather than a JSONB array on the result, and for a sharper reason
+    than `match_dimension_scores` has: the three CHECKs below are the domain's
+    accountability invariants, and PostgreSQL can only police them per row. Folding
+    the checks into a document column would move `EligibilityCheck._verdict_is_
+    accountable` back into Python alone, where the first write that skipped the model
+    would be free to store an unexplained refusal or an LLM-decided one.
+
+    `ordinal` is the natural key. Unlike a dimension score, a requirement may repeat
+    — two required languages are two `LANGUAGE_MINIMUM` gates — so the requirement
+    cannot identify a row and position is what is left. `UNIQUE (result_id, ordinal)`
+    is therefore what makes re-evaluating a pair update the rows already there, and a
+    gate that a re-run no longer emits is deleted by the `delete-orphan` cascade.
+
+    `evidence_ids` from the domain object is not stored, exactly as on
+    `candidate_work_authorizations`: Phase 10 owns the evidence table, and a column
+    of ids pointing at a table that does not exist would be a foreign key that
+    cannot be declared.
+    """
+
+    __tablename__ = "eligibility_checks"
+    __table_args__ = (
+        UniqueConstraint("result_id", "ordinal"),
+        # `EligibilityCheck._verdict_is_accountable`, restated so a non-model write
+        # cannot slip past it. Order matches the domain validator.
+        CheckConstraint(_ELIGIBILITY_REASONS_PRESENT,
+                        name="reasons_present_unless_eligible"),
+        CheckConstraint(_ELIGIBILITY_LLM_IS_INCOMPLETE,
+                        name="llm_extraction_is_incomplete"),
+        CheckConstraint(_ELIGIBILITY_PACK_BLOCKS_ONLY_WHEN_VERIFIED,
+                        name="pack_rule_blocks_only_when_verified"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    # Short FK column name on purpose: the convention derives
+    # `fk_eligibility_checks_result_id_eligibility_results` (51 chars) from it, and
+    # `eligibility_result_id` would push that past PostgreSQL's 63-char limit into a
+    # silently truncated name a migration cannot reliably drop — the same reason the
+    # candidate child tables say `profile_id`.
+    result_id: Mapped[UUID] = mapped_column(
+        ForeignKey("eligibility_results.id", ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(SmallInteger, doc=_ORDINAL_DOC)
+    requirement: Mapped[EligibilityRequirement] = mapped_column(
+        enum_column(EligibilityRequirement, "eligibility_requirement"))
+    status: Mapped[EligibilityStatus] = mapped_column(
+        enum_column(EligibilityStatus, "eligibility_check_status"))
+    determined_by: Mapped[DeterminationSource] = mapped_column(
+        enum_column(DeterminationSource, "eligibility_determination_source"))
+    authority: Mapped[RuleAuthority] = mapped_column(
+        enum_column(RuleAuthority, "eligibility_rule_authority"),
+        server_default=text(f"'{RuleAuthority.UNKNOWN.value}'"))
+    detail: Mapped[str | None]
+    reasons: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+
+    result: Mapped["EligibilityResultRow"] = relationship(
+        back_populates="checks", lazy="raise")
 
 
 

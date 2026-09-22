@@ -85,7 +85,7 @@ does not restate the rules. `LLMProviderType` has four members, split by transpo
 | `CLAUDE_CODE` | CLI | nothing but a display name — the CLI self-authenticates |
 | `CODEX` | CLI | nothing but a display name |
 | `OPENAI_COMPATIBLE` | remote HTTP | `base_url` (https), `model`, an API key, custom headers |
-| `LOCAL_OPENAI_COMPATIBLE` | loopback HTTP | `base_url` (loopback), `model`, custom headers; keyless |
+| `LOCAL_OPENAI_COMPATIBLE` | loopback HTTP | `base_url` (loopback literal, **same machine**), `model`, custom headers; keyless |
 
 Two shape rules are validators on the model, so a bad shape is a 422 before anything is
 written, not a broken row:
@@ -95,6 +95,26 @@ written, not a broken row:
   §1 security invariant; the model makes it unconstructible.
 - **An API connection requires a `base_url`.** The hostname is never assumed, so it is
   required and never defaulted.
+
+The `base_url` itself is vetted not by the model but by the SSRF gate (`net_policy`,
+[LLM Provider Architecture](./LLM_PROVIDER_ARCHITECTURE.md) §5) when the connection is
+built into a live provider — at probe or generation time, never at the DB write, so
+listing or editing a stored connection needs no DNS. Two rules there shape what a
+connection may reach:
+
+- **`LOCAL_OPENAI_COMPATIBLE` means the same machine, not the local network.** The
+  `base_url` must be a loopback literal (`127.0.0.1`, `[::1]`) or `localhost`; a
+  private-LAN address such as `10.0.0.5` or `192.168.1.10` is refused, because it is off
+  the box. This is what makes the `LOCAL_ONLY` privacy class an honest "the prompt never
+  leaves the machine". A "local" connection pointed at a non-loopback address surfaces
+  `PROVIDER_MISCONFIGURED` on the probe, not a silent send.
+- **`OPENAI_COMPATIBLE` must reach a public `https` address.** A literal loopback or
+  private-LAN base URL is refused statically; a hostname is resolved immediately before
+  each request and refused unless *every* resolved address is public, so a name pointed
+  at the cloud-metadata endpoint (`169.254.169.254`) or a private LAN cannot be used to
+  reach inside the deployment. Redirects are not followed. A residual DNS-rebinding
+  window remains (the socket is not pinned to the validated address); the platform does
+  not overstate this as complete protection.
 
 A third rule pairs the credential: `encrypted_api_key` and `secret_version` are stored
 together or not at all. All three are also **database CHECK constraints**
@@ -211,6 +231,12 @@ status the settings page renders, and its `detail` is a secret-free sentence the
 platform composed, never a raw provider message. Health is deliberately **not
 persisted**: a stale "healthy" row would mislead more than an unknown would, so the
 registry keeps the last health in-process and a settings page reads the current state.
+
+A probe applies the **same outbound SSRF policy as a generation** — it is not a bypass.
+For a remote hostname, the target is resolved and validated before the probe's
+`GET /models` leaves, and a target that resolves to an internal address comes back as a
+`MISCONFIGURED` health state rather than a request that quietly reached inside. A probe
+sends no candidate data.
 
 `ProviderHealthStatus` has six members — `UNKNOWN`, `HEALTHY`, `DEGRADED`,
 `UNAVAILABLE`, `AUTH_REQUIRED`, `MISCONFIGURED` — and `UNKNOWN` is *usable*: a provider

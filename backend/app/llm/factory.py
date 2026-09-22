@@ -27,6 +27,7 @@ from backend.app.llm.contracts import LLMProvider
 from backend.app.llm.failures import LLMError, LLMFailureCode
 from backend.app.llm.providers.claude_code import ClaudeCodeProvider
 from backend.app.llm.providers.codex import CodexProvider
+from backend.app.llm.providers.net_policy import HostResolver
 from backend.app.llm.providers.openai_compatible import OpenAICompatibleProvider
 from backend.app.llm.secrets import SecretCipher, SecretDecryptionError
 
@@ -53,13 +54,17 @@ class LLMProviderFactory:
 
     Holds the `SecretCipher` used to decrypt a stored credential and, for the API
     adapters, an optional `http_transport` — the `httpx.MockTransport` seam the tests
-    substitute so no network call is made. The CLI adapters take neither.
+    substitute so no network call is made — and an optional `resolver`, the DNS seam the
+    SSRF check reaches through (a test injects a deterministic fake; production leaves it
+    `None` and the adapter uses a real lookup). The CLI adapters take none of them.
     """
 
     def __init__(self, *, cipher: SecretCipher | None = None,
-                 http_transport: "httpx.AsyncBaseTransport | None" = None) -> None:
+                 http_transport: "httpx.AsyncBaseTransport | None" = None,
+                 resolver: HostResolver | None = None) -> None:
         self._cipher = cipher
         self._http_transport = http_transport
+        self._resolver = resolver
 
     def create(self, connection: LLMConnection) -> LLMProvider:
         """The live provider for one connection — the one allowed type switch.
@@ -95,7 +100,8 @@ class LLMProviderFactory:
             api_key=self._decrypt(connection),
             extra_headers=connection.custom_headers,
             priority=connection.priority,
-            http_transport=self._http_transport)
+            http_transport=self._http_transport,
+            resolver=self._resolver)
 
     def _decrypt(self, connection: LLMConnection) -> SecretStr | None:
         """The connection's plaintext credential, or `None` when it stores none."""

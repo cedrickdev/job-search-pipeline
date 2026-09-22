@@ -142,22 +142,47 @@ and a hosted gateway is the transport classification and the credential:
 
 - a **local** provider (`LOCAL_OPENAI_COMPATIBLE`) points at a loopback address, is
   keyless, and claims `LOCAL_EXECUTION` — the prompt never leaves the machine;
-- a **remote** provider (`OPENAI_COMPATIBLE_API`) points at an `https` host, carries a
-  bearer credential, and does not claim `LOCAL_EXECUTION`.
+- a **remote** provider (`OPENAI_COMPATIBLE_API`) points at an `https` *public* host,
+  carries a bearer credential, and does not claim `LOCAL_EXECUTION`.
 
 The hostname is never assumed to be OpenAI's; `base_url`, `model` and optional custom
-headers are all configurable. Two security properties are enforced here:
+headers are all configurable. The SSRF gate (`net_policy`) runs in two stages, because
+one static check cannot see what a hostname resolves to:
 
-- **SSRF is closed at construction.** `net_policy.validate_base_url` vets the
-  user-supplied URL before any client is built: only `http`/`https`, the link-local
-  and cloud-metadata range (`169.254.169.254`) refused for everyone, a remote address
-  required to be `https` so a plaintext prompt never crosses a network, and a
-  `LOCAL_OPENAI_COMPATIBLE` provider required to point at a loopback *literal*. Name
-  resolution is deliberately not done at validation time — that would be a side effect
-  and a TOCTOU gap — so a hostname is allowed only for remote `https` URLs.
+- **A static check at construction (`validate_base_url`).** Only `http`/`https`; the
+  link-local/metadata (`169.254.169.254`), unspecified, multicast and reserved ranges
+  refused for everyone; a remote provider forced onto `https` so a plaintext prompt
+  never crosses a network; a `LOCAL_OPENAI_COMPATIBLE` provider forced onto a *loopback
+  literal* (or `localhost`); and a remote provider refused a loopback or private-LAN
+  *literal*, because a remote target must be public. A hostname cannot be classified
+  without DNS, and a lookup here would be a side effect and a TOCTOU window, so it is
+  left provisionally `REMOTE` and checked at call time instead.
+- **A resolution check before every request (`resolve_and_validate_remote_host`).** A
+  remote hostname is resolved through an injected `HostResolver` immediately before
+  `generate`, `stream` and `healthcheck`, and the request is refused unless *every*
+  resolved address is public. A loopback, private-LAN (RFC1918 / IPv6 ULA), link-local
+  or metadata answer — even one among several — is a refusal, so a name pointed at
+  `169.254.169.254` or `10.0.0.5` cannot reach inside the deployment. A resolver failure
+  is a typed `PROVIDER_MISCONFIGURED` whose detail is composed from the table, never the
+  resolver's own text, so a `gaierror` string cannot leak.
+
+Two invariants follow:
+
+- **Local means the same machine, not the same network.** Only a loopback address is
+  `LOCAL_EXECUTION`, and therefore only loopback satisfies the `LOCAL_ONLY` privacy
+  class. A private-LAN address is *not* local: it is off the box, so it is refused for a
+  local provider, and it is not public, so it is refused for a remote one. `LOCAL_ONLY`
+  is an honest "this prompt never leaves the machine", not "it stays on the LAN".
 - **`LOCAL_EXECUTION` is set from the validated address class, never the label.** An
   "Ollama" connection whose URL resolves remote is remote, so a privacy filter reads
   the truth about where the data goes.
+
+Redirects are disabled at the client (`follow_redirects=False`), so a `3xx` cannot
+re-target a request at an address the policy never saw. A residual DNS-rebinding window
+remains: resolution happens immediately before the request but the socket is not pinned
+to the validated address, so a name that answers a public IP for the check and a private
+IP for the connection is not fully closed — pinning the socket while preserving SNI is a
+noted follow-up, and the layer does not claim complete rebinding protection.
 
 Reserved headers (`host`, `content-length`, `authorization`, `content-type`) cannot be
 overridden by a custom header — a user who set `Host` expecting it to route somewhere
@@ -186,7 +211,8 @@ required — there is no default, because guessing "external is fine" is exactly
 mistake that leaks a prompt:
 
 - `LOCAL_ONLY` — the prompt may go only to a provider that runs on this machine *by
-  validated address*. The default for anything carrying candidate evidence.
+  validated address* — a loopback address or a CLI, never a private-LAN endpoint. The
+  default for anything carrying candidate evidence.
 - `EXTERNAL_ALLOWED` — the caller has judged the content safe to send off the machine.
 - `SPECIFIC_CONNECTION_ONLY` — only the named connections, wherever they are, and never
   a fallback off them.

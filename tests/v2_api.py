@@ -107,6 +107,7 @@ from tests.v2_fakes import (
     FakeSessionRepository,
     FakeUserRepository,
 )
+from tests.v2_llm import FakeHostResolver
 
 # The instant every flow starts at, and the two addresses they sign in with.
 NOW: Final[datetime] = datetime(2026, 4, 1, 8, 0, tzinfo=UTC)
@@ -393,9 +394,17 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     # socket — it answers 200 for a plausible loopback endpoint, so a healthcheck test
     # asserts the mapped status rather than a connection error.
     llm_cipher = FernetSecretCipher(generate_master_key())
+    # The DNS seam the SSRF check reaches through, deterministic so a probe of a
+    # hostname connection never contacts real DNS: the test gateway name resolves to a
+    # public address, so the resolve-and-validate step passes and the probe reaches the
+    # `MockTransport` above. A literal-address connection (the loopback local body) skips
+    # DNS entirely.
+    llm_resolver = FakeHostResolver(
+        {"gateway.example.invalid": ("93.184.216.34",)})
     app.dependency_overrides[llm_connection_service] = lambda: LLMConnectionService(
         llm_connections, cipher=llm_cipher,
-        http_transport=httpx.MockTransport(_healthcheck_ok))
+        http_transport=httpx.MockTransport(_healthcheck_ok),
+        resolver=llm_resolver)
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:

@@ -48,7 +48,12 @@ from backend.app.llm.failures import (
     LLMFailureCode,
     classify_provider_failure,
 )
-from backend.app.llm.providers.net_policy import validate_base_url
+from backend.app.llm.providers.net_policy import (
+    HostResolver,
+    SystemHostResolver,
+    resolve_and_validate_remote_host,
+    validate_base_url,
+)
 
 # Headers a caller must not override: they are set by the client from the request
 # body and the target, and letting a "custom header" replace one is how a request is
@@ -102,6 +107,7 @@ class OpenAICompatibleProvider:
         extra_headers: Mapping[str, str] | None = None,
         priority: int = 100,
         http_transport: httpx.AsyncBaseTransport | None = None,
+        resolver: HostResolver | None = None,
         output_cap_bytes: int = DEFAULT_OUTPUT_CAP_BYTES,
     ) -> None:
         if transport not in (ProviderTransport.OPENAI_COMPATIBLE_API,
@@ -124,6 +130,10 @@ class OpenAICompatibleProvider:
         self._extra_headers = validate_custom_headers(extra_headers or {})
         self._priority = priority
         self._http_transport = http_transport
+        # The resolver is the seam the SSRF check reaches DNS through: production uses a
+        # real lookup, a test injects a deterministic fake, so the check runs before
+        # every request without a test ever contacting real DNS (§5).
+        self._resolver = resolver if resolver is not None else SystemHostResolver()
         self._output_cap = output_cap_bytes
 
     @property
@@ -174,6 +184,19 @@ class OpenAICompatibleProvider:
             payload["response_format"] = {"type": "json_object"}
         return payload
 
+    async def _guard_target(self) -> None:
+        """Re-validate the target's addresses immediately before an outbound request.
+
+        A literal or loopback address was fully classified at construction and needs no
+        DNS; only a remote *hostname* is resolved here, and the request is refused
+        unless every answer is public (§8, §22). Running this at call time rather than
+        only at save is what closes the validate-only TOCTOU: a name re-pointed after
+        the connection was stored is caught before the request, not after.
+        """
+        if not self._url.needs_runtime_resolution:
+            return
+        await resolve_and_validate_remote_host(self._url.host, self._resolver)
+
     async def generate(self, request: LLMRequest) -> LLMResponse:
         """One non-streaming completion, parsed into an `LLMResponse`.
 
@@ -181,6 +204,7 @@ class OpenAICompatibleProvider:
         HTTP-status failure is normalized through `classify_provider_failure` with the
         credential blanked, so a 401 body that echoed the key cannot leak.
         """
+        await self._guard_target()
         url = f"{self._url.normalized}/chat/completions"
         payload = self._payload(request, stream=False)
         try:
@@ -208,6 +232,14 @@ class OpenAICompatibleProvider:
         url = f"{self._url.normalized}/chat/completions"
         payload = self._payload(request, stream=True)
         yield LLMStreamEvent.started()
+        try:
+            await self._guard_target()
+        except LLMError as exc:
+            # The SSRF check refused the target before a byte was sent — surface it as
+            # the stream's error event, the same shape a bad status produces, so a
+            # blocked host never reaches the request (§22).
+            yield LLMStreamEvent.errored(exc.code, exc.detail)
+            return
         chunks: list[str] = []
         produced = 0
         try:
@@ -251,6 +283,14 @@ class OpenAICompatibleProvider:
         not a retry; a connection error is `UNAVAILABLE`. The credential is blanked
         from any detail.
         """
+        try:
+            await self._guard_target()
+        except LLMError as exc:
+            # A probe applies the same outbound policy as a generation (§21): a target
+            # that resolves to an internal address is a `MISCONFIGURED` health state,
+            # reported as data, never a probe that quietly reaches inside.
+            return ProviderHealth(status=ProviderHealthStatus.MISCONFIGURED,
+                                  detail=exc.detail)
         url = f"{self._url.normalized}/models"
         try:
             async with self._client(10.0) as client:
@@ -269,7 +309,13 @@ class OpenAICompatibleProvider:
                               detail=f"the provider answered HTTP {response.status_code}")
 
     def _client(self, timeout: float) -> httpx.AsyncClient:
-        return httpx.AsyncClient(timeout=timeout, transport=self._http_transport)
+        # `follow_redirects=False` is explicit, not the default relied on: a `3xx` to a
+        # freshly validated hostname could re-target the request at an internal address
+        # the policy never saw, so a redirect is surfaced as its status rather than
+        # chased (§10). httpx defaults this off; stating it keeps it off if the default
+        # ever changes.
+        return httpx.AsyncClient(timeout=timeout, transport=self._http_transport,
+                                 follow_redirects=False)
 
     def _parse_completion(self, body: Mapping[str, Any],
                           request: LLMRequest) -> LLMResponse:

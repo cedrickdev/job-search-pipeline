@@ -42,6 +42,7 @@ from backend.app.llm.connection import (
 )
 from backend.app.llm.contracts import ProviderHealth
 from backend.app.llm.factory import LLMProviderFactory
+from backend.app.llm.providers.net_policy import HostResolver
 from backend.app.llm.secrets import CURRENT_SECRET_VERSION, SecretCipher
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
@@ -131,7 +132,8 @@ class LLMConnectionService:
     credential with (optional — a CLI-only deployment configures none), and the factory
     it builds a live provider from for a health probe. `http_transport` is the
     `httpx.MockTransport` seam a test injects so a healthcheck makes no real network
-    call; production leaves it `None` and the adapter opens its own client.
+    call, and `resolver` is the DNS seam the SSRF check reaches through; production
+    leaves both `None` and the adapter opens its own client and resolves for real.
 
     No clock in the constructor: the route hands `now` to each write, so a single
     request's `created_at`/`updated_at` agree — the convention every other write
@@ -140,11 +142,13 @@ class LLMConnectionService:
 
     def __init__(self, connections: LLMConnectionRepository, *,
                  cipher: SecretCipher | None = None,
-                 http_transport: httpx.AsyncBaseTransport | None = None) -> None:
+                 http_transport: httpx.AsyncBaseTransport | None = None,
+                 resolver: HostResolver | None = None) -> None:
         self._connections = connections
         self._cipher = cipher
         self._factory = LLMProviderFactory(cipher=cipher,
-                                           http_transport=http_transport)
+                                           http_transport=http_transport,
+                                           resolver=resolver)
 
     async def list_for_user(self, user_id: UserId, *,
                             limit: int = DEFAULT_LIMIT) -> tuple[LLMConnection, ...]:

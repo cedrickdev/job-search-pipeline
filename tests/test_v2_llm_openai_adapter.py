@@ -27,8 +27,16 @@ from backend.app.llm.providers.openai_compatible import (
     OpenAICompatibleProvider,
     parse_sse_delta,
 )
+from tests.v2_llm import FakeHostResolver
 
 pytestmark = pytest.mark.asyncio
+
+# The default gateway name resolves to a public address, so the resolve-and-validate
+# step every request runs (§8) passes without touching real DNS. A test that needs a
+# private or metadata answer builds its own resolver.
+_PUBLIC_GATEWAY_IP = "93.184.216.34"
+_GATEWAY_RESOLVER = FakeHostResolver(
+    {"gateway.example.invalid": (_PUBLIC_GATEWAY_IP,)})
 
 
 def _request(**overrides) -> LLMRequest:
@@ -49,6 +57,7 @@ def _completion_body(text: str = "hello", *, usage: dict | None = None) -> dict:
 def _remote(handler, *, api_key: str | None = "sk-topsecret-value",
             base_url: str = "https://gateway.example.invalid/v1",
             transport: ProviderTransport = ProviderTransport.OPENAI_COMPATIBLE_API,
+            resolver: FakeHostResolver | None = None,
             **overrides) -> OpenAICompatibleProvider:
     return OpenAICompatibleProvider(
         provider_key="conn_gw",
@@ -58,6 +67,7 @@ def _remote(handler, *, api_key: str | None = "sk-topsecret-value",
         transport=transport,
         api_key=SecretStr(api_key) if api_key is not None else None,
         http_transport=httpx.MockTransport(handler),
+        resolver=resolver if resolver is not None else _GATEWAY_RESOLVER,
         **overrides)
 
 
@@ -195,6 +205,112 @@ async def test_healthcheck_is_auth_required_on_a_401():
     provider = _remote(lambda r: httpx.Response(401))
     health = await provider.healthcheck()
     assert health.status is ProviderHealthStatus.AUTH_REQUIRED
+
+
+# --- SSRF: resolution-time validation (§8, §12-17, §22) --------------------
+
+
+def _unreached(request: httpx.Request) -> httpx.Response:
+    """A handler that must never be called: reaching it means the gate let a request out."""
+    raise AssertionError(f"the request reached the transport: {request.url}")
+
+
+async def test_generate_refuses_a_hostname_that_resolves_to_the_metadata_address():
+    provider = _remote(_unreached, resolver=FakeHostResolver(
+        {"gateway.example.invalid": ("169.254.169.254",)}))
+    with pytest.raises(LLMError) as caught:
+        await provider.generate(_request())
+    assert caught.value.code is LLMFailureCode.PROVIDER_MISCONFIGURED
+
+
+async def test_generate_refuses_a_hostname_that_resolves_to_a_private_address():
+    provider = _remote(_unreached, resolver=FakeHostResolver(
+        {"gateway.example.invalid": ("10.0.0.5",)}))
+    with pytest.raises(LLMError) as caught:
+        await provider.generate(_request())
+    assert caught.value.code is LLMFailureCode.PROVIDER_MISCONFIGURED
+
+
+async def test_generate_refuses_a_hostname_that_resolves_to_loopback():
+    provider = _remote(_unreached, resolver=FakeHostResolver(
+        {"gateway.example.invalid": ("127.0.0.1",)}))
+    with pytest.raises(LLMError) as caught:
+        await provider.generate(_request())
+    assert caught.value.code is LLMFailureCode.PROVIDER_MISCONFIGURED
+
+
+async def test_generate_refuses_a_mixed_public_and_private_resolution():
+    # One bad answer among several is enough: an attacker controlling the name only
+    # needs the connection to use the private one (§6).
+    provider = _remote(_unreached, resolver=FakeHostResolver(
+        {"gateway.example.invalid": ("93.184.216.34", "10.0.0.5")}))
+    with pytest.raises(LLMError) as caught:
+        await provider.generate(_request())
+    assert caught.value.code is LLMFailureCode.PROVIDER_MISCONFIGURED
+
+
+async def test_generate_accepts_a_hostname_that_resolves_to_a_public_address():
+    provider = _remote(
+        lambda r: httpx.Response(200, json=_completion_body("ok")),
+        resolver=FakeHostResolver({"gateway.example.invalid": ("93.184.216.34",)}))
+    response = await provider.generate(_request())
+    assert response.text == "ok"
+
+
+async def test_a_public_ip_literal_skips_dns_and_still_works():
+    # A literal was classified at construction; no resolver entry is needed, and an
+    # empty resolver proves DNS is not consulted for a literal target.
+    provider = _remote(lambda r: httpx.Response(200, json=_completion_body("ok")),
+                       base_url="https://93.184.216.34/v1",
+                       resolver=FakeHostResolver({}))
+    response = await provider.generate(_request())
+    assert response.text == "ok"
+
+
+async def test_a_dns_failure_is_a_typed_misconfiguration_without_leaking():
+    # The resolver raises for an unknown name; the error is typed and carries no
+    # resolver text (§7, §25).
+    provider = _remote(_unreached, resolver=FakeHostResolver({}))
+    with pytest.raises(LLMError) as caught:
+        await provider.generate(_request())
+    assert caught.value.code is LLMFailureCode.PROVIDER_MISCONFIGURED
+    assert "fake resolver" not in caught.value.detail
+    assert "gaierror" not in caught.value.detail.lower()
+
+
+async def test_stream_refuses_a_blocked_target_before_a_byte():
+    provider = _remote(_unreached, resolver=FakeHostResolver(
+        {"gateway.example.invalid": ("169.254.169.254",)}))
+    events = [e async for e in provider.stream(_request())]
+    errors = [e for e in events if e.type.value == "ERROR"]
+    assert errors and errors[0].error_code == LLMFailureCode.PROVIDER_MISCONFIGURED
+    # No TEXT_DELTA was produced — nothing left the machine.
+    assert not [e for e in events if e.type.value == "TEXT_DELTA"]
+
+
+async def test_healthcheck_refuses_a_blocked_target_as_misconfigured():
+    provider = _remote(_unreached, resolver=FakeHostResolver(
+        {"gateway.example.invalid": ("10.0.0.5",)}))
+    health = await provider.healthcheck()
+    assert health.status is ProviderHealthStatus.MISCONFIGURED
+
+
+async def test_a_redirect_is_not_followed_to_a_new_target():
+    # follow_redirects is off: a 302 that would re-point at the metadata endpoint is
+    # surfaced as a status, never chased (§10). The handler is called once.
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(302, headers={"location": "http://169.254.169.254/"})
+
+    provider = _remote(handler)
+    with pytest.raises(LLMError) as caught:
+        await provider.generate(_request())
+    # A 302 is not a success and not a metadata fetch; it normalizes to a typed error.
+    assert caught.value.code is LLMFailureCode.PROVIDER_PROTOCOL_ERROR
+    assert len(seen) == 1
+    assert "169.254.169.254" not in seen[0]
 
 
 # --- the SSE delta parser --------------------------------------------------

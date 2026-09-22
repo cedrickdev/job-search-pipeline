@@ -11,8 +11,14 @@ job is to be chosen (or not) and to succeed or fail on cue.
 The CLI-adapter tests do not use this — they run a real subprocess against a fake
 binary script (the V1 `test_chat_core.py` pattern), because a CLI adapter's whole job
 is the subprocess mechanics a stub would paper over.
+
+`FakeHostResolver` is the DNS seam the SSRF check reaches through in a test: a fixed
+name→addresses table, so the OpenAI-compatible adapter's resolve-and-validate step is
+deterministic and no test contacts real DNS (§5). A name absent from the table raises,
+standing in for NXDOMAIN.
 """
-from collections.abc import AsyncIterator
+import ipaddress
+from collections.abc import AsyncIterator, Mapping
 
 from backend.app.llm.capabilities import BASELINE_CAPABILITY, Capability
 from backend.app.llm.contracts import (
@@ -113,3 +119,28 @@ class FakeProvider:
 
     async def healthcheck(self) -> ProviderHealth:
         return self._health
+
+
+_IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
+
+
+class FakeHostResolver:
+    """A deterministic `HostResolver`: a fixed name→addresses map, no real DNS.
+
+    Construct it with `{hostname: (ip, ip, ...)}` of literal address strings. `resolve`
+    returns the parsed addresses for a known name and raises `OSError` for an unknown
+    one — the NXDOMAIN stand-in the SSRF check normalizes to `PROVIDER_MISCONFIGURED`
+    (§7). A name can map to several addresses so a test can prove the "every answer must
+    be public" rule refuses a mixed public/private result (§6).
+    """
+
+    def __init__(self, answers: Mapping[str, tuple[str, ...]] | None = None) -> None:
+        self._answers = {name: tuple(ips) for name, ips in (answers or {}).items()}
+
+    async def resolve(self, hostname: str) -> tuple[_IPAddress, ...]:
+        try:
+            literals = self._answers[hostname]
+        except KeyError as exc:
+            raise OSError(
+                f"fake resolver has no answer for {hostname!r}") from exc
+        return tuple(ipaddress.ip_address(ip) for ip in literals)

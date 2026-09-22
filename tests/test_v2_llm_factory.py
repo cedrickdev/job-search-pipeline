@@ -23,6 +23,7 @@ from backend.app.llm.providers.codex import CodexProvider
 from backend.app.llm.providers.openai_compatible import OpenAICompatibleProvider
 from backend.app.llm.secrets import SecretCipher, SecretDecryptionError
 from tests.v2_builders import CONNECTION, OTHER_CONNECTION, an_llm_connection
+from tests.v2_llm import FakeHostResolver
 
 
 class _EchoCipher:
@@ -120,8 +121,9 @@ async def test_the_decrypted_key_reaches_the_authorization_header():
                          "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
 
-    factory = LLMProviderFactory(cipher=cipher,
-                                 http_transport=httpx.MockTransport(handler))
+    factory = LLMProviderFactory(
+        cipher=cipher, http_transport=httpx.MockTransport(handler),
+        resolver=FakeHostResolver({"gateway.example.invalid": ("93.184.216.34",)}))
     provider = factory.create(connection)
     response = await provider.generate(
         LLMRequest(messages=(LLMMessage.user("hi"),)))

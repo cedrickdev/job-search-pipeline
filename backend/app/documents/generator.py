@@ -69,6 +69,14 @@ class DocumentGenerator(Protocol):
     and a cover letter are different enough compositions that an adapter usually
     implements them separately. Both are pure with respect to the platform: they
     return content, and the service is what validates and persists it.
+
+    Both are `async`, because the point of this seam is that a model-backed
+    generator can sit behind it (Phase 11's `LLMDocumentGenerator`), and reaching a
+    model is I/O — a subprocess or an HTTP call the `LLMRouter` awaits. The
+    deterministic reference does no I/O and returns immediately, but it is `async`
+    too so the one seam serves both without the service needing to know which it
+    holds: a synchronous protocol would have forced every caller to learn that a
+    model-backed generator cannot honour it.
     """
 
     @property
@@ -76,14 +84,14 @@ class DocumentGenerator(Protocol):
         """Provenance stamp recorded on every version this generator produces."""
         ...
 
-    def generate_resume(self, *, profile: CandidateProfile,
-                        opportunity: Opportunity,
-                        context: GenerationContext) -> ResumeDocument:
+    async def generate_resume(self, *, profile: CandidateProfile,
+                              opportunity: Opportunity,
+                              context: GenerationContext) -> ResumeDocument:
         ...
 
-    def generate_cover_letter(self, *, profile: CandidateProfile,
-                             opportunity: Opportunity,
-                             context: GenerationContext) -> CoverLetterDocument:
+    async def generate_cover_letter(self, *, profile: CandidateProfile,
+                                    opportunity: Opportunity,
+                                    context: GenerationContext) -> CoverLetterDocument:
         ...
 
 
@@ -103,9 +111,9 @@ class DeterministicDocumentGenerator:
 
     # --- résumé ---------------------------------------------------------
 
-    def generate_resume(self, *, profile: CandidateProfile,
-                        opportunity: Opportunity,
-                        context: GenerationContext) -> ResumeDocument:
+    async def generate_resume(self, *, profile: CandidateProfile,
+                              opportunity: Opportunity,
+                              context: GenerationContext) -> ResumeDocument:
         if not profile.evidence:
             raise InsufficientEvidence(
                 "the candidate has no evidence on file, so no résumé can be built "
@@ -187,9 +195,9 @@ class DeterministicDocumentGenerator:
 
     # --- cover letter ---------------------------------------------------
 
-    def generate_cover_letter(self, *, profile: CandidateProfile,
-                             opportunity: Opportunity,
-                             context: GenerationContext) -> CoverLetterDocument:
+    async def generate_cover_letter(self, *, profile: CandidateProfile,
+                                    opportunity: Opportunity,
+                                    context: GenerationContext) -> CoverLetterDocument:
         paragraphs = self._letter_paragraphs(profile)
         if not paragraphs:
             raise InsufficientEvidence(

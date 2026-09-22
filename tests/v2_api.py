@@ -65,6 +65,7 @@ from backend.app.api.dependencies import (
     document_service,
     evidence_service,
     geo_search_service,
+    llm_connection_service,
     now,
     onboarding_service,
     session_factory,
@@ -87,8 +88,10 @@ from backend.app.services.company_discovery import (
 from backend.app.services.documents import DocumentService
 from backend.app.services.evidence import CandidateEvidenceService
 from backend.app.services.geo_search import GeoSearchService
+from backend.app.services.llm_connections import LLMConnectionService
 from backend.app.services.onboarding import OnboardingService
 from backend.app.discovery.bootstrap import build_country_packs
+from backend.app.llm.secrets import FernetSecretCipher, generate_master_key
 from server.app import create_app
 from tests.v2_fakes import (
     FakeCandidateDocumentRepository,
@@ -97,6 +100,7 @@ from tests.v2_fakes import (
     FakeCompanyDiscoveryRepository,
     FakeCompanyRepository,
     FakeEligibilityResultRepository,
+    FakeLLMConnectionRepository,
     FakeMatchEvaluationRepository,
     FakeOpportunityRepository,
     FakeSearchProfileRepository,
@@ -178,6 +182,20 @@ def credentials(*, email: str = EMAIL, password: SecretStr = PASSWORD,
     return {"email": email, "password": password.get_secret_value(), **extra}
 
 
+def _healthcheck_ok(request: httpx.Request) -> httpx.Response:
+    """A stand-in OpenAI-compatible server that answers `GET /models` with 200.
+
+    The healthcheck seam for the LLM settings surface: the connection service builds a
+    real provider and probes it, and this transport lets that probe resolve to a
+    `HEALTHY` status without a socket. It asserts the shape the adapter sends — a
+    `GET` at `/models` — so a route that stopped probing would fail here rather than
+    pass vacuously.
+    """
+    assert request.method == "GET", request.method
+    assert request.url.path.endswith("/models"), request.url.path
+    return httpx.Response(200, json={"data": []})
+
+
 def _no_database() -> Never:
     """What a V2 route gets here if it asks for a PostgreSQL session."""
     raise AssertionError(
@@ -217,6 +235,7 @@ class Harness:
     eligibilities: FakeEligibilityResultRepository
     documents: FakeCandidateDocumentRepository
     providers: CompanyProviderRegistry
+    llm_connections: FakeLLMConnectionRepository
 
     def url(self, path: str) -> str:
         """A V2 path, prefixed once so no test spells `/api/v2` itself."""
@@ -330,6 +349,7 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     eligibilities = FakeEligibilityResultRepository()
     documents = FakeCandidateDocumentRepository()
     providers = CompanyProviderRegistry()
+    llm_connections = FakeLLMConnectionRepository()
     directory = CompanyDirectoryService(companies, career_sites, discoveries)
     # The assessment service reads the real country packs — the CH pack is what the
     # legal-safety path exercises — over the fake verdict stores. `build_country_packs`
@@ -366,6 +386,16 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
         profiles, postings, documents, DeterministicDocumentGenerator(),
         CandidateEvidenceGuard(),
         LocalDocumentArtifactStore(tmp_path / "document_artifacts"))
+    # A real Fernet cipher over a per-harness master key, so a stored credential is
+    # genuinely encrypted and the `has_api_key`/never-the-value guarantee is exercised
+    # end to end rather than stubbed. The `MockTransport` is the healthcheck seam: a
+    # probe of an OpenAI-compatible connection lists models over it and never opens a
+    # socket — it answers 200 for a plausible loopback endpoint, so a healthcheck test
+    # asserts the mapped status rather than a connection error.
+    llm_cipher = FernetSecretCipher(generate_master_key())
+    app.dependency_overrides[llm_connection_service] = lambda: LLMConnectionService(
+        llm_connections, cipher=llm_cipher,
+        http_transport=httpx.MockTransport(_healthcheck_ok))
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:
@@ -374,7 +404,8 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
                       searches=searches, postings=postings, companies=companies,
                       career_sites=career_sites, discoveries=discoveries,
                       matches=matches, eligibilities=eligibilities,
-                      documents=documents, providers=providers)
+                      documents=documents, providers=providers,
+                      llm_connections=llm_connections)
 
 
 def operations(app: FastAPI, *, under: str) -> tuple[tuple[str, str], ...]:

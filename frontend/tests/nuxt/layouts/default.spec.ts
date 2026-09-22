@@ -100,13 +100,14 @@ describe('default layout (V1 AppShell)', () => {
 
     const links = wrapper.findAll(NAV)
     expect(links.map(a => a.text()))
-      .toEqual(['Overview', 'Jobs', 'Analytics', 'Settings', 'Companies', 'Map', 'Documents', 'Evidence'])
+      .toEqual(['Overview', 'Jobs', 'Analytics', 'Settings', 'Companies', 'Map', 'Documents', 'Evidence', 'Providers'])
     const href = (label: string) =>
       links.find(a => a.text() === label)!.attributes('href')
     expect(href('Companies')).toBe('/companies')
     expect(href('Map')).toBe('/map')
     expect(href('Documents')).toBe('/documents')
     expect(href('Evidence')).toBe('/evidence')
+    expect(href('Providers')).toBe('/providers')
   })
 
   it('toggles the global copilot panel', async () => {

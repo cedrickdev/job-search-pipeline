@@ -185,6 +185,27 @@ export type DocumentStatus = Schemas['DocumentStatus']
 /** Why the guard refused a version — `UNKNOWN_EVIDENCE`, `INVENTED_NUMBER`, `ALTERED_IDENTITY`, … */
 export type DocumentViolationCode = Schemas['DocumentViolationCode']
 
+/** One stored LLM connection, credential reduced to `has_api_key` — never the value. */
+export type LLMConnection = Schemas['LLMConnectionResponse']
+
+/** This account's connections, in the router's priority-then-id order. */
+export type LLMConnectionList = Schemas['LLMConnectionListResponse']
+
+/** A new connection as the settings form submits it. `api_key` is write-only. */
+export type CreateLLMConnectionRequest = Schemas['CreateLLMConnectionRequest']
+
+/** A partial edit: unset fields untouched, `api_key` XOR `remove_api_key` for the credential. */
+export type UpdateLLMConnectionRequest = Schemas['UpdateLLMConnectionRequest']
+
+/** The result of probing a connection's live provider — data, never an exception. */
+export type LLMConnectionHealth = Schemas['LLMConnectionHealthResponse']
+
+/** `CLAUDE_CODE | CODEX | OPENAI_COMPATIBLE | LOCAL_OPENAI_COMPATIBLE`. */
+export type LLMProviderType = Schemas['LLMProviderType']
+
+/** A provider's runtime reachability — `UNKNOWN | HEALTHY | DEGRADED | UNAVAILABLE | AUTH_REQUIRED | MISCONFIGURED`. */
+export type ProviderHealthStatus = Schemas['ProviderHealthStatus']
+
 /**
  * Every `error` slug `/api/v2` can answer with, as one union.
  *
@@ -199,9 +220,11 @@ export type V2ErrorCode =
   | 'account_locked'
   | 'artifact_unavailable'
   | 'candidate_profile_not_found'
+  | 'capability_not_supported'
   | 'claim_cites_unknown_evidence'
   | 'company_not_found'
   | 'conflict'
+  | 'context_length_exceeded'
   | 'csrf_failed'
   | 'database_unavailable'
   | 'document_not_found'
@@ -209,7 +232,22 @@ export type V2ErrorCode =
   | 'email_already_registered'
   | 'insufficient_evidence'
   | 'invalid_credentials'
+  | 'llm_connection_invalid'
+  | 'llm_connection_not_found'
+  | 'llm_secret_key_unavailable'
   | 'not_authenticated'
   | 'onboarding_incomplete'
+  | 'output_limit_exceeded'
+  | 'provider_auth_required'
+  | 'provider_cancelled'
+  | 'provider_content_filtered'
+  | 'provider_internal_error'
+  | 'provider_misconfigured'
+  | 'provider_protocol_error'
+  | 'provider_rate_limited'
+  | 'provider_timeout'
+  | 'provider_unavailable'
   | 'search_profile_not_found'
+  | 'session_not_found'
+  | 'structured_output_invalid'
   | 'validation_failed'

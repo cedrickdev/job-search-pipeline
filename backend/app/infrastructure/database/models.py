@@ -39,6 +39,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     SmallInteger,
     String,
@@ -89,6 +90,10 @@ from backend.app.domain.opportunity import ContractType, OpportunityType, Workpl
 from backend.app.domain.search import SearchAreaKind
 from backend.app.domain.user import UserStatus
 from backend.app.infrastructure.database.base import Base, TimestampedMixin
+from backend.app.llm.connection import LLMProviderType
+from backend.app.llm.contracts import TaskPurpose
+from backend.app.llm.failures import LLMFailureCode
+from backend.app.llm.telemetry import LLMRunStatus
 
 # Advertised pay. `NUMERIC`, never a float: 4500.10 has to come back as 4500.10.
 # Two decimals is what postings quote, and 12 integer digits covers a yearly
@@ -1752,6 +1757,216 @@ class DocumentVersionRow(TimestampedMixin, Base):
 
     document: Mapped["CandidateDocumentRow"] = relationship(
         back_populates="versions", lazy="raise")
+
+
+# `LLMConnection._transport_shape_is_coherent`, as a CHECK. A CLI connection carries
+# no base URL, no stored credential and no custom headers — the data-layer half of
+# the §1 rule that the platform never injects a credential into a self-authenticating
+# CLI — while an API connection must name the endpoint it speaks to (§5 forbids
+# assuming the hostname, so it is required, never defaulted). The two provider-type
+# lists are the `_CLI_TYPES` split in `backend.app.llm.connection`, restated so a
+# non-model write cannot store a connection the factory could not build.
+_LLM_CONNECTION_TRANSPORT_SHAPE: Final[str] = (
+    f"(provider_type IN ('{LLMProviderType.CLAUDE_CODE.value}',"
+    f" '{LLMProviderType.CODEX.value}')"
+    " AND base_url IS NULL AND encrypted_api_key IS NULL"
+    " AND custom_headers = '{}'::jsonb)"
+    f" OR (provider_type IN ('{LLMProviderType.OPENAI_COMPATIBLE.value}',"
+    f" '{LLMProviderType.LOCAL_OPENAI_COMPATIBLE.value}')"
+    " AND base_url IS NOT NULL)"
+)
+
+# `LLMConnection._secret_pair_is_complete`: the ciphertext and the version tag naming
+# the key that made it are stored together or not at all, so a row can never carry a
+# ciphertext no version can decrypt or a version with nothing to decrypt.
+_LLM_CONNECTION_SECRET_PAIR: Final[str] = (
+    "(encrypted_api_key IS NULL) = (secret_version IS NULL)"  # noqa: S105 — a SQL CHECK
+)
+
+# `LLMRun._status_agrees_with_shape`, as two CHECKs. A STARTED run is in flight and
+# has no `finished_at`; a terminal run has one. A failure (FAILED or TIMEOUT) carries
+# a code; every other status carries none — so a stored row cannot claim a success
+# with a failure code or a failure with none.
+_LLM_RUN_STARTED_HAS_NO_FINISH: Final[str] = (
+    f"(status = '{LLMRunStatus.STARTED.value}') = (finished_at IS NULL)"
+)
+_LLM_RUN_FAILURE_CARRIES_CODE: Final[str] = (
+    f"(status IN ('{LLMRunStatus.FAILED.value}', '{LLMRunStatus.TIMEOUT.value}'))"
+    " = (failure_code IS NOT NULL)"
+)
+# `LLMRun._fallback_pair_is_complete`: the provider given way from and the reason it
+# gave are recorded together, so a run cannot name a fallback origin with no reason.
+_LLM_RUN_FALLBACK_PAIR: Final[str] = (
+    "(fallback_from IS NULL) = (fallback_reason IS NULL)"
+)
+
+# A provider key as `LLMProviderMetadata.provider_key` validates it. Distinct from
+# `_PROVENANCE_KEY_LENGTH`'s `^[a-z][a-z0-9_]*$` because a provider key may carry a
+# hyphen; the trailing `-` in the class is a literal.
+_PROVIDER_KEY_PATTERN: Final[str] = "^[a-z][a-z0-9_-]*$"
+
+
+class LLMConnectionRow(TimestampedMixin, Base):
+    """A user's stored connection to an LLM provider (Phase 11 §4).
+
+    User-owned: `user_id` cascades from `users`, and every read is `WHERE user_id = ?`
+    so one account cannot see another's connections or the keys they hold. The
+    credential is `encrypted_api_key` — the ciphertext `SecretCipher` produced, never
+    the plaintext — beside `secret_version`, the tag naming the key that made it; the
+    two are both-or-neither (`ck_llm_connections_secret_pair`), and the master key that
+    decrypts them is never a column (§21).
+
+    `is_default` marks the connection a task uses when the user stated no preference,
+    and a partial unique index allows at most one per account — the connection twin of
+    `company_locations`' single-headquarters rule. `custom_headers` is JSONB rather
+    than a child table for the reason `ats_evidence` is: it is read and written whole
+    with the connection and never queried into.
+    """
+
+    __tablename__ = "llm_connections"
+    __table_args__ = (
+        CheckConstraint(_LLM_CONNECTION_SECRET_PAIR, name="secret_pair_complete"),
+        CheckConstraint(_LLM_CONNECTION_TRANSPORT_SHAPE,
+                        name="transport_shape_coherent"),
+        CheckConstraint("secret_version >= 1", name="secret_version_positive"),
+        CheckConstraint("priority >= 0", name="priority_non_negative"),
+        # Scoped reads list a user's connections by priority; one index serves them.
+        Index("ix_llm_connections_user_id", "user_id"),
+        # At most one default per account, said to the database the way the single
+        # headquarters is: a partial unique index, free on the non-default rows.
+        Index("uq_llm_connections_user_id_default", "user_id",
+              unique=True, postgresql_where=text("is_default")),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    provider_type: Mapped[LLMProviderType] = mapped_column(
+        enum_column(LLMProviderType, "llm_provider_type"))
+    display_name: Mapped[str]
+    base_url: Mapped[str | None]
+    model: Mapped[str | None]
+    encrypted_api_key: Mapped[str | None]
+    secret_version: Mapped[int | None] = mapped_column(SmallInteger)
+    custom_headers: Mapped[dict[str, str]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
+    enabled: Mapped[bool] = mapped_column(server_default=text("true"))
+    is_default: Mapped[bool] = mapped_column(server_default=text("false"))
+    priority: Mapped[int] = mapped_column(SmallInteger, server_default=text("100"))
+
+    sessions: Mapped[list["ProviderSessionRow"]] = relationship(
+        back_populates="connection", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="ProviderSessionRow.conversation_key")
+
+
+class ProviderSessionRow(TimestampedMixin, Base):
+    """The provider-side handle for one conversation on one connection (§4).
+
+    Replaces V1's provider-specific `claude_session_id` column with a neutral
+    `external_session_id`, so a resumable exchange keeps its handle without a generic
+    table learning a provider's vocabulary. `UNIQUE (connection_id, conversation_key)`
+    is the natural key `provider_session_id` derives the primary key from, so resuming
+    a conversation refreshes the one row rather than inserting a second.
+
+    `user_id` is carried for the authorization reason every user-owned table states —
+    a session is read for its owner — and cascades from `users`; the connection
+    cascade takes a session with the connection it belongs to.
+    """
+
+    __tablename__ = "provider_sessions"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "conversation_key"),
+        Index("ix_provider_sessions_user_id", "user_id"),
+        Index("ix_provider_sessions_connection_id", "connection_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    connection_id: Mapped[UUID] = mapped_column(
+        ForeignKey("llm_connections.id", ondelete="CASCADE"))
+    conversation_key: Mapped[str]
+    purpose: Mapped[TaskPurpose] = mapped_column(
+        enum_column(TaskPurpose, "provider_session_purpose"),
+        server_default=text(f"'{TaskPurpose.GENERIC.value}'"))
+    external_session_id: Mapped[str | None]
+
+    connection: Mapped["LLMConnectionRow"] = relationship(
+        back_populates="sessions", lazy="raise")
+
+
+class LLMRunRow(TimestampedMixin, Base):
+    """One telemetry record of one LLM call (§12, §56).
+
+    `user_id` and `connection_id` are nullable: a healthcheck probe has no user, and a
+    provider built by `bootstrap` rather than from a stored connection has no
+    connection. `connection_id` is `ON DELETE SET NULL`, not CASCADE — a run is
+    provenance and outlives the connection it used, the same trade
+    `company_discovery_records` makes — while `user_id` cascades, so deleting an
+    account takes its runs with it.
+
+    The token, cost and latency columns are all nullable because the unknown is null,
+    never zero (§58): a CLI that reports no usage leaves them NULL, and a telemetry sum
+    skips them rather than counting a fabricated 0. The three CHECKs restate
+    `LLMRun`'s validators, so a row written outside the model still cannot claim a
+    success with a failure code, a STARTED run that finished, or a fallback with no
+    reason.
+    """
+
+    __tablename__ = "llm_runs"
+    __table_args__ = (
+        CheckConstraint(_LLM_RUN_STARTED_HAS_NO_FINISH,
+                        name="started_has_no_finish"),
+        CheckConstraint(_LLM_RUN_FAILURE_CARRIES_CODE, name="failure_carries_code"),
+        CheckConstraint(_LLM_RUN_FALLBACK_PAIR, name="fallback_pair_complete"),
+        CheckConstraint("prompt_tokens >= 0 AND completion_tokens >= 0"
+                        " AND total_tokens >= 0", name="token_counts_non_negative"),
+        CheckConstraint("cost_usd >= 0.0", name="cost_non_negative"),
+        CheckConstraint("latency_ms >= 0", name="latency_non_negative"),
+        CheckConstraint(f"provider_key ~ '{_PROVIDER_KEY_PATTERN}'",
+                        name="provider_key_format"),
+        # "My runs, newest first" and "this provider's runs, newest first" — the two
+        # questions a telemetry screen and a status page ask.
+        Index("ix_llm_runs_user_id_started_at", "user_id", "started_at"),
+        Index("ix_llm_runs_provider_key_started_at", "provider_key", "started_at"),
+        Index("ix_llm_runs_connection_id", "connection_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    connection_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("llm_connections.id", ondelete="SET NULL"))
+    provider_key: Mapped[str]
+    provider_type: Mapped[LLMProviderType | None] = mapped_column(
+        enum_column(LLMProviderType, "llm_run_provider_type"))
+    model: Mapped[str | None]
+    purpose: Mapped[TaskPurpose] = mapped_column(
+        enum_column(TaskPurpose, "llm_run_purpose"),
+        server_default=text(f"'{TaskPurpose.GENERIC.value}'"))
+    status: Mapped[LLMRunStatus] = mapped_column(
+        enum_column(LLMRunStatus, "llm_run_status"))
+
+    prompt_name: Mapped[str | None]
+    prompt_version: Mapped[str | None]
+
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer)
+    total_tokens: Mapped[int | None] = mapped_column(Integer)
+    cost_usd: Mapped[float | None]
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+
+    failure_code: Mapped[LLMFailureCode | None] = mapped_column(
+        enum_column(LLMFailureCode, "llm_run_failure_code"))
+    failure_detail: Mapped[str | None]
+
+    fallback_from: Mapped[str | None]
+    fallback_reason: Mapped[LLMFailureCode | None] = mapped_column(
+        enum_column(LLMFailureCode, "llm_run_fallback_reason"))
+
+    started_at: Mapped[datetime]
+    finished_at: Mapped[datetime | None]
 
 
 

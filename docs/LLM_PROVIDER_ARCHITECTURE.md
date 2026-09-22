@@ -1,290 +1,348 @@
 # LLM Provider Architecture
 
-## 1. Goal
+Built in Phase 11. This document is the reference for the provider-neutral LLM
+platform: the boundary that turns "the LLM" into a replaceable infrastructure
+dependency, so no business module ever branches on *which* provider it holds. The
+settings surface a user configures connections through — the write side — is
+documented separately in [LLM Connections](./LLM_CONNECTIONS.md); this document is the
+runtime: the contract, the router, the adapters and the telemetry that sit under it.
 
-The LLM must be a replaceable reasoning dependency.
+The whole layer lives in `backend/app/llm/`. The one rule it exists to keep:
 
-Job Search Pipeline must support several connection modes without allowing any one provider to leak into business logic.
+> Business code composes a typed `LLMRequest` and hands it to the router. It never
+> names a provider, imports a provider SDK, or reads a provider-specific field. The
+> single place allowed to know a provider type maps to a concrete adapter is
+> `backend/app/llm/factory.py`.
 
-Required categories:
-
-1. Claude Code CLI/session integration;
-2. Codex CLI/session integration;
-3. generic external API via `base_url + api_key + model`;
-4. native/provider adapters where useful;
-5. local OpenAI-compatible servers such as Ollama/LM Studio.
-
-Because CLI interfaces evolve, CLI adapters must perform capability/version detection and isolate command-line details inside the adapter.
-
-## 2. Important distinction
-
-Claude Code and Codex are coding-agent/CLI environments, while external LLM gateways are API providers.
-
-They must not be represented as the same transport internally.
-
-Use:
-
-```text
-LLMProvider
-  ├── CLIProvider
-  │    ├── ClaudeCodeProvider
-  │    └── CodexProvider
-  └── APIProvider
-       ├── OpenAICompatibleProvider
-       ├── AnthropicProvider
-       ├── GeminiProvider
-       └── LocalOpenAICompatibleProvider
+```
+                       business service
+                             │  builds an LLMRequest + a RoutingPolicy
+                             ▼
+   LLMTelemetryRecorder ── wraps ──▶ LLMRouter ──filters/orders──▶ LLMProviderRegistry
+        │ writes one LLMRun                 │ runs the first candidate
+        ▼                                   ▼
+     llm_runs                    ┌── LLMProvider (Protocol) ──┐
+                                 │                            │
+                          ClaudeCodeProvider          OpenAICompatibleProvider
+                          CodexProvider                 (local or remote)
+                             (CLI transport)             (HTTP transport)
 ```
 
-The public application interface remains common.
+## 1. The contract every provider speaks
 
-## 3. Provider-neutral contract
+`backend/app/llm/contracts.py` is the boundary. Above it a service builds an
+`LLMRequest` out of typed messages and a `TaskPurpose`; below it an adapter turns that
+request into whatever its transport needs — a CLI argv, an HTTP body — and returns an
+`LLMResponse` or a stream of `LLMStreamEvent`s. Neither side names the other's world: a
+service never sees a `base_url`, an adapter never sees a `CandidateProfile`.
 
-Suggested concepts:
+`LLMProvider` is the `Protocol` the router holds — four members and nothing that
+reveals a transport. A provider **describes itself** (`metadata`), **generates**
+(`generate` one-shot, `stream` incremental), and **can be probed** (`healthcheck`).
+`generate` and `stream` raise `LLMError` on failure, never a sentinel, so a caller
+cannot mistake a failure for an empty answer; `healthcheck` returns a `ProviderHealth`
+and raises nothing, because a provider being down is data a settings page renders, not
+an exception it must catch.
 
-```python
-class LLMClient(Protocol):
-    async def generate(
-        self,
-        request: LLMRequest,
-    ) -> LLMResponse:
-        ...
+Every value in the contract is a frozen Pydantic model with `extra="forbid"` — the
+same discipline the domain uses, for the same reason: an LLM-produced payload that
+invents a field fails rather than losing it silently. These are *infrastructure*
+values, not domain models, so the module is free to be imported by adapters that also
+import `httpx` or `subprocess`, which the domain purity test forbids under
+`backend/app/domain`.
 
-    async def stream(
-        self,
-        request: LLMRequest,
-    ) -> AsyncIterator[LLMEvent]:
-        ...
+`LLMRequest` carries the messages, an optional `system` instruction, an optional
+`model` (a connection carries a default; a request that names one overrides it), the
+`TaskPurpose`, `max_output_tokens`/`temperature`/`reasoning_effort` hints, an optional
+`StructuredOutputSpec`, tool definitions, a `SessionContext`, a timeout, and the
+`prompt_name`/`prompt_version` provenance stamp. Its `required_capabilities()` is
+**derived from its shape**, so the router filters on fact rather than a caller's
+say-so: asking for structured output *is* requiring `STRUCTURED_OUTPUT`, and the two
+cannot drift.
 
-    async def healthcheck(self) -> ProviderHealth:
-        ...
+## 2. Transport is a classification, never a branch
 
-    def capabilities(self) -> LLMCapabilities:
-        ...
+`ProviderTransport` (in `contracts.py`) has three members — `CLI`,
+`OPENAI_COMPATIBLE_API`, `LOCAL_OPENAI_COMPATIBLE`. Like `CompanyProviderType`, it is
+**descriptive and never dispatched on**: the moment the router branched on it, the
+"no hard-coded provider" rule would be back in another shape. It classifies for a
+status page and decides nothing.
+
+The physical tree the design called for is what shipped, configured rather than deeply
+subclassed:
+
+```
+LLMProvider (Protocol)
+  ├── ClaudeCodeProvider        (CLI transport, its own adapter)
+  ├── CodexProvider             (CLI transport, a separate adapter — not a subclass)
+  └── OpenAICompatibleProvider  (one adapter, configured local or remote)
 ```
 
-`LLMRequest` should contain:
+The two CLI adapters are deliberately **not** related by inheritance: they share only
+the `SafeCliRunner` boundary, and coupling them would make a change to Claude's
+stream-json parsing silently reshape Codex. The two OpenAI-compatible transports —
+a hosted gateway and a loopback server — are **one** adapter configured differently,
+because Ollama, LM Studio, a self-hosted vLLM and a hosted gateway all speak the same
+`/chat/completions` wire format. Native Anthropic/Gemini adapters are not in Phase 11;
+`LLMProviderType` is where a later phase adds them.
 
-- messages;
-- system instructions;
-- model;
-- temperature/reasoning policy where supported;
-- structured output schema;
-- tools allowed;
-- metadata;
-- timeout;
-- max output tokens.
+## 3. Capability filtering
 
-## 4. Connection profile
+`backend/app/llm/capabilities.py` is the vocabulary a task's requirement is written
+in. A résumé service does not ask "is this Claude?"; it asks "can this provider return
+structured output?" and lets the router refuse a provider that cannot, so a mismatch
+is a typed `CAPABILITY_NOT_SUPPORTED`, not a stack trace three layers down. The set:
+`TEXT_GENERATION` (the floor every provider claims), `STREAMING`, `STRUCTURED_OUTPUT`,
+`TOOLS`, `SESSION_RESUME`, `REASONING_CONTROL`, `SYSTEM_INSTRUCTIONS`, `TOKEN_USAGE`,
+`COST_USAGE`, `LOCAL_EXECUTION`.
 
-Persist a user/provider connection as:
+Capability is deliberately separate from health: a capability is a *static* fact about
+an adapter's shape (a read-only CLI cannot honour a `response_schema`), health is the
+*runtime* answer to "reachable now?". The router filters on capability first and
+consults health second. The adapters declare honestly — the Claude CLI adapter does
+**not** claim `STRUCTURED_OUTPUT`, `TOOLS` or `REASONING_CONTROL`, because it is run
+read-only with stream-json text, and claiming a capability it does not implement would
+route a task to a dead end.
 
-```text
-LLMConnection
-- id
-- user_id
-- provider_type
-- display_name
-- base_url nullable
-- model
-- encrypted_api_key nullable
-- cli_profile nullable
-- enabled
-- priority
-- created_at
-- updated_at
-```
+## 4. The connection profile
 
-Do not persist provider-specific fields such as `claude_session_id` in generic conversation tables.
+`backend/app/llm/connection.py` is the persisted half: an `LLMConnection` is what a
+user configured for one provider — which `LLMProviderType`, at which `base_url`, with
+which `model`, and (for a hosted gateway) an API key kept **encrypted at rest**.
+Two shape rules are enforced on the value object rather than left to the API, because
+a value that can be constructed wrong is one a migration or a test will eventually
+construct wrong:
 
-Use a generalized provider session:
+- **A CLI connection carries no credential, no base URL and no custom headers.** Claude
+  Code and Codex authenticate themselves and run a local binary; injecting a key or a
+  URL would be meaningless and, for the `ANTHROPIC_*` case, would violate the §1
+  security invariant. The model refuses it, so no code path stores one.
+- **An API connection carries a base URL.** An OpenAI-compatible endpoint cannot be
+  reached without one, and the hostname is never assumed — so it is required and never
+  defaulted.
 
-```text
-ProviderSession
-- conversation_id
-- provider_connection_id
-- external_session_id
-- metadata
-```
+The credential is never a plaintext field. `encrypted_api_key` is the ciphertext and
+`secret_version` names the key that produced it — both-or-neither, enforced by a
+validator and by a database CHECK. The plaintext exists only for the instant the
+factory decrypts it to build a provider.
+
+V1's provider-specific `claude_session_id` in a generic conversation table is exactly
+the leak this phase removes. `backend/app/llm/sessions.py`'s `ProviderSession` is the
+replacement: one row per `(connection, conversation)` holding the provider's own
+handle under the neutral name `external_session_id`. Its id is *derived* from the
+connection and the conversation key, so resuming refreshes the one row rather than
+appending a second — the idempotence the Claude CLI's stale-session recovery depends
+on. A stateless provider simply never sets the handle.
 
 ## 5. Generic gateway support
 
-The application must allow configuration like:
+`OpenAICompatibleProvider` (`backend/app/llm/providers/openai_compatible.py`) is the
+one adapter for every OpenAI-compatible endpoint. What differs between a local server
+and a hosted gateway is the transport classification and the credential:
 
-```text
-Provider type: OpenAI-compatible
-Base URL: https://gateway.example.com/v1
-API key: ********
-Model: external-model-name
-```
+- a **local** provider (`LOCAL_OPENAI_COMPATIBLE`) points at a loopback address, is
+  keyless, and claims `LOCAL_EXECUTION` — the prompt never leaves the machine;
+- a **remote** provider (`OPENAI_COMPATIBLE_API`) points at an `https` host, carries a
+  bearer credential, and does not claim `LOCAL_EXECUTION`.
 
-Do not assume the hostname belongs to OpenAI.
+The hostname is never assumed to be OpenAI's; `base_url`, `model` and optional custom
+headers are all configurable. Two security properties are enforced here:
 
-Required configurable fields:
+- **SSRF is closed at construction.** `net_policy.validate_base_url` vets the
+  user-supplied URL before any client is built: only `http`/`https`, the link-local
+  and cloud-metadata range (`169.254.169.254`) refused for everyone, a remote address
+  required to be `https` so a plaintext prompt never crosses a network, and a
+  `LOCAL_OPENAI_COMPATIBLE` provider required to point at a loopback *literal*. Name
+  resolution is deliberately not done at validation time — that would be a side effect
+  and a TOCTOU gap — so a hostname is allowed only for remote `https` URLs.
+- **`LOCAL_EXECUTION` is set from the validated address class, never the label.** An
+  "Ollama" connection whose URL resolves remote is remote, so a privacy filter reads
+  the truth about where the data goes.
 
-- `base_url`;
-- `api_key`;
-- `model`;
-- optional custom headers;
-- optional organization/project identifier;
-- timeout;
-- TLS verification policy must default to secure and must not be silently disabled.
+Reserved headers (`host`, `content-length`, `authorization`, `content-type`) cannot be
+overridden by a custom header — a user who set `Host` expecting it to route somewhere
+is told it will not, rather than having it silently dropped. One contained
+`httpx.AsyncClient` is built per call and closed with it, so a settings change takes
+effect on the next request rather than after a restart. `http_transport` is the
+`httpx.MockTransport` test seam, so the whole adapter is testable without a socket.
 
-The first API contract to support should be OpenAI-compatible chat/responses semantics through a contained adapter.
+## 6. The provider router
 
-## 6. Provider router
+`backend/app/llm/router.py` is the one place a request meets a provider. A service
+builds an `LLMRequest` and a `RoutingPolicy` and calls `route`; the router filters the
+registry by capability and privacy, orders the survivors by a fixed rule, and runs the
+first.
 
-A router chooses the provider based on:
+**The ordering is deterministic.** Most specific first: (1) an explicit `provider_key`
+pin on the policy; (2) the policy's `preferred_keys`, in the order given; (3)
+everything else the filters left, by the registry's total order (priority, then key).
+A request routed twice against an unchanged registry picks the same provider, because
+every tie has a key tie-break — which is what makes a fallback chain reproducible
+rather than a coin flip.
 
-- user preference;
-- task capability;
-- provider availability;
-- model requirements;
-- cost limits;
-- latency policy;
-- privacy policy;
-- fallback configuration.
+**Privacy is enforced before capability spends anything.** `PrivacyClass` is a
+property of the *request*, decided by the caller from what the prompt carries, and is
+required — there is no default, because guessing "external is fine" is exactly the
+mistake that leaks a prompt:
 
-Example:
+- `LOCAL_ONLY` — the prompt may go only to a provider that runs on this machine *by
+  validated address*. The default for anything carrying candidate evidence.
+- `EXTERNAL_ALLOWED` — the caller has judged the content safe to send off the machine.
+- `SPECIFIC_CONNECTION_ONLY` — only the named connections, wherever they are, and never
+  a fallback off them.
 
-```text
-Resume tailoring → structured-output capable model
-Chat → preferred interactive model
-Interview simulation → streaming model
-Cheap extraction → small/low-cost model
-```
+## 7. Fallbacks are explicit and recorded
 
-The router must not silently switch to a provider that violates the user's privacy or cost policy.
+Fallback is **off by default** (`allow_fallback=False`): switching models is a
+decision a caller opts into, not something discovered after the fact. A provider whose
+failure is *retryable* (a timeout, a rate limit, a transient outage) is retried within
+itself a bounded number of times (`DEFAULT_MAX_ATTEMPTS_PER_PROVIDER = 2`); a provider
+that still fails, or fails unretryably (a missing capability, a bad credential), hands
+off to the next candidate **only if** the policy allowed it. When the winner was not
+the first choice, the `RoutingOutcome` — and the telemetry run — record `fallback_from`
+and a coded `fallback_reason`, so an operator can see the platform switched and why.
 
-## 7. Fallbacks
+Streaming has a stricter rule: fallback is possible **only before the first byte**. A
+stream that has already emitted a `TEXT_DELTA` cannot fall back, because the consumer
+has seen tokens and replaying from a different provider would duplicate them.
 
-Fallbacks should be explicit and auditable.
-
-Example:
-
-1. preferred provider unavailable;
-2. router checks allowed fallback list;
-3. execution uses fallback;
-4. run records `fallback_from` and `fallback_reason`.
+A routing decision is inspectable without spending a call: `router.candidates(request,
+policy)` returns the eligible providers in the order they would be tried.
 
 ## 8. Structured outputs
 
-High-impact tasks require schema validation.
+A `StructuredOutputSpec` asks a provider for JSON matching a schema, but the layer
+**re-validates the result independently** — a provider's claim to have honoured a
+schema is never taken on trust. A response that asked for structured output and got
+nothing valid never becomes an `LLMResponse`; it raises `STRUCTURED_OUTPUT_INVALID`. A
+single bounded repair attempt is allowed (`allow_repair`, default true) — one, never a
+loop, because an unbounded repair turns a broken provider into a spend spiral. Invalid
+output does not mutate state.
 
-Examples:
+The document generator is where this rule earns its place: `LLMDocumentGenerator`
+(`backend/app/documents/llm_generator.py`) re-validates the model's JSON into a
+`ResumeDocument`/`CoverLetterDocument` and raises `STRUCTURED_OUTPUT_INVALID` on a
+mismatch, never forwarding a `ValidationError`. The Evidence Guard stays *outside* the
+provider — the service rejects invented candidate facts — so the truth guarantee does
+not depend on the model behaving (see [ATS Documents](./ATS_DOCUMENTS.md)).
 
-- application decision;
-- eligibility extraction;
-- CV rewrite;
-- interview score;
-- action proposals.
+## 9. Tool permissions — the model proposes, the application executes
 
-Invalid model output:
-
-1. does not mutate state;
-2. may be retried with constrained repair;
-3. ultimately fails with a typed error.
-
-## 9. Tool permissions
-
-LLM reasoning and tool execution must be separated.
-
-The model may propose:
-
-```json
-{
-  "type": "regenerate_resume",
-  "application_id": "...",
-  "args": {}
-}
-```
-
-Application services validate:
-
-- authorization;
-- current state;
-- user policy;
-- limits;
-- input schema.
-
-Only then is a tool/action executed.
+A `ToolDefinition` tells the model a tool exists and what shape its arguments take; a
+`ToolCall` in a response (or a `TOOL_PROPOSAL` stream event) is a *request to act*, not
+an action. Nothing in the LLM layer executes anything: the application validates a
+proposal's authorization, current state, policy, limits and input schema, and only
+then runs it. This is why the Claude CLI adapter runs with read-only tools
+(`Read,Grep,Glob`) and Phase 11 does not widen that.
 
 ## 10. Prompt architecture
 
-Prompts should be versioned by task.
+`backend/app/llm/prompts.py` versions prompts by task. A `PromptTemplate` records a
+`name`, a `version`, a `schema_version` and model-independent instructions, and
+renders into an `LLMRequest` stamped with `prompt_name`/`prompt_version` so an answer
+can be traced to the prompt that produced it. Phase 11 ships `resume_tailoring/1.0`
+and `cover_letter/1.0` (each carrying the truth rule and a JSON schema); the chat and
+interview-prep purposes are declared in `TaskPurpose` as the vocabulary later phases
+fill.
 
-Suggested structure:
+## 11. Failure normalization
 
-```text
-llm/prompts/
-  opportunity_analysis/
-  matching/
-  resume_tailoring/
-  cover_letter/
-  interview/
-  chat/
-```
+`backend/app/llm/failures.py` turns *any* way a call can fail — a CLI subprocess that
+exits non-zero, an HTTP 429, a local server that is not running, a response that does
+not match its schema — into one of a fixed `LLMFailureCode` set. Business code above
+the router catches `LLMError` and reads `.code`; it never inspects a provider-specific
+exception, which keeps the "no `if provider == …`" rule true on the failure path too.
+An unrecognised failure is `PROVIDER_INTERNAL_ERROR`, never a new ad-hoc string. The
+code also tells the router whether a failure is `retryable`.
 
-Each prompt version records:
+Two secret-safety rules hold at this boundary:
 
-- name;
-- version;
-- schema version;
-- model-independent instructions;
-- tests/evaluation fixtures.
-
-## 11. Context management
-
-Do not dump the entire candidate and opportunity database into every request.
-
-Build task-specific context:
-
-- only relevant candidate evidence;
-- normalized opportunity requirements;
-- company facts;
-- user policy;
-- prior conversation summary where required.
-
-Keep access to raw source data for traceability.
+1. **A detail is composed from a fixed table, never forwarded from a provider.** A
+   hosted API's 401 body can echo the very key that was rejected; a CLI's stderr can
+   print the argv. `classify_provider_failure` reads the exception to pick a code and
+   never copies its text out — the only thing ever appended is an HTTP status number.
+2. **`redact_secrets` runs over any caller-supplied detail anyway** — belt and braces
+   for the one string an adapter knew something specific enough to say — blanking
+   declared credential values and the `sk-…`/`Bearer …`/`?api_key=` shapes a credential
+   travels in.
 
 ## 12. Cost and token telemetry
 
-For each LLM call record when available:
+`backend/app/llm/recorder.py` wraps `LLMRouter.route` and writes one `LLMRun`
+(`backend/app/llm/telemetry.py`) per call. It lives *around* the router rather than
+inside it, for the reason the router holds no repository: routing is a pure decision,
+persistence is a side effect a service owns. Three properties hold:
 
-- provider;
-- model;
-- prompt/input tokens;
-- output tokens;
-- cached tokens;
-- latency;
-- estimated cost;
-- request purpose;
-- success/failure.
+- **Latency is measured on a monotonic clock, timestamps on the wall clock.** An NTP
+  step mid-call must not make a call report a negative latency, so the duration comes
+  from `time.monotonic` while `started_at`/`finished_at` come from the injected clock.
+- **The unknown stays null.** Tokens and cost are copied straight off the response's
+  `TokenUsage`, which is already null where a provider reported nothing — the recorder
+  never substitutes a 0 that a dashboard would sum.
+- **A failure is recorded, typed and secret-free, then re-raised.** The recorder does
+  not swallow the error; a caller's own failure handling is unchanged by telemetry
+  being on.
 
-## 13. Privacy
+A call the router *refused* before trying any provider (`NoProviderAvailable`) is not
+an LLM call and gets no run — there was no provider to attribute one to. A `CANCELLED`
+run is not counted against a provider, and a `TIMEOUT` is separated from a `FAILED`
+because a deadline and a refusal are different operational facts.
 
-The UI must disclose which provider receives candidate data.
+## 13. Privacy and disclosure
 
-A user should be able to choose:
+The privacy classes above are the enforcement; the [LLM Connections](./LLM_CONNECTIONS.md)
+settings surface is the disclosure. A user chooses local-only, one external provider or
+a fallback set by configuring connections and a routing preference. **A sensitive
+credential value is never returned to the frontend after storage** — the API surfaces
+`has_api_key`, never the value or its ciphertext (see §21 below and the connections
+doc). The credential is encrypted at rest with a master key that is never a database
+column.
 
-- local-only;
-- one external provider;
-- selected provider fallback set.
+## 14. Migration from V1, and what is contained
 
-Sensitive credential values must never be returned to the frontend after storage.
+The strangler order the design called for is what happened: the generic
+request/response/capability contract came first, then the CLI and OpenAI-compatible
+adapters wrapped V1's working mechanics behind it, then generic session persistence
+replaced `claude_session_id`. V1's own `server/chat.py` is left untouched — the Phase
+11 adapters are a *parallel* path over the same transport, and V1's chat, interview
+prep and local-model streaming still run through V1's code. The parity that matters is
+pinned by tests rather than asserted: the V1 subprocess and Ollama/LM Studio tests
+still pass, and the Phase 10 prompt-injection regression still holds.
 
-## 14. Migration from V1
+The **one** allowed provider-type switch is `backend/app/llm/factory.py`. Its
+`LLMProviderFactory.create` is the only function permitted to branch on
+`LLMProviderType`; it decrypts the stored credential at the instant a provider is built
+and never before, and it builds a CLI provider without a base URL or a key — so there
+is no path here that could inject the `ANTHROPIC_*` credential the §1 invariant forbids.
+`backend/app/llm/bootstrap.py` composes a populated registry from a user's connections
+per use, never a process-wide singleton, because a registry accumulates health as calls
+run and a cached one would share that state between users.
 
-V1 currently contains Claude-specific concepts plus Ollama/LM Studio support.
+## Security invariants (the non-negotiables)
 
-Migration order:
+- **§1 — the platform never injects `ANTHROPIC_API_KEY`.** `server/_env.py::child_env()`
+  strips the entire `ANTHROPIC_*` namespace from every CLI subprocess, and no adapter
+  passes a credential through the environment. The Claude CLI's auth stays CLI-managed.
+  This is a V1 invariant Phase 11 must not weaken; a CLI connection is structurally
+  incapable of storing a key.
+- **Explicit argv, never a shell.** `SafeCliRunner` uses `create_subprocess_exec`, so a
+  value inside a command can never be reinterpreted as a shell metacharacter. It also
+  enforces a deadline, an output cap, and a kill-on-exit so a wedged binary cannot hold
+  a request open or exhaust memory.
+- **§21 — credentials encrypted at rest, key never in the database.** Fernet
+  (AES-128-CBC + HMAC-SHA256) via `backend/app/llm/secrets.py`; the master key comes
+  from `JOBSEARCH_LLM_SECRET_KEY` in the environment and is never a column, a response
+  field, or a log line. A database dump holds ciphertext and a version tag and nothing
+  that reads them. See [LLM Connections](./LLM_CONNECTIONS.md).
+- **No raw-prompt endpoint.** There is no `POST /llm/complete` and no generic
+  prompt-passthrough. A task that needs a model routes through its own service
+  (documents, matching, chat), which builds a request from a versioned prompt.
 
-1. define generic request/response/capability schemas;
-2. wrap the current Claude CLI implementation behind `ClaudeCodeProvider`;
-3. wrap the existing OpenAI-compatible local implementation;
-4. rename generic session persistence;
-5. add `CodexProvider`;
-6. add user-configurable OpenAI-compatible gateway;
-7. remove provider-specific imports from chat/application modules.
+## Tests
 
-Do not remove the working V1 paths until adapter parity tests pass.
+The layer is covered without a live LLM or a socket (CLAUDE.md §Testing): the router,
+registry, capabilities, secrets, net_policy, failures and contracts have unit suites;
+the OpenAI-compatible adapter is exercised through `httpx.MockTransport`; the CLI
+adapters run against fake-binary scripts; and `tests/v2_llm.py::FakeProvider` is the
+shared double a service test routes through. The API settings surface is tested in
+`tests/test_v2_api_llm.py`, and the persistence layer on real PostgreSQL.

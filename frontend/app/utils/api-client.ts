@@ -157,6 +157,11 @@ export function apiPut<T>(path: string, body?: unknown): Promise<T> {
   return request<T>('PUT', path, body)
 }
 
+/** PATCH, for the partial edits V2 uses on an LLM connection (unset field untouched). */
+export function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  return request<T>('PATCH', path, body)
+}
+
 /** DELETE, whose 204 resolves to `null` through the empty-body rule above. */
 export function apiDelete<T>(path: string): Promise<T> {
   return request<T>('DELETE', path)

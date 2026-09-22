@@ -252,7 +252,14 @@ Adapters include ATS-specific, browser, email and manual-required implementation
 
 No domain module may import Anthropic/OpenAI/Codex/Claude-specific SDK code directly.
 
-All LLM access flows through the provider-neutral layer specified in `LLM_PROVIDER_ARCHITECTURE.md`.
+All LLM access flows through the provider-neutral layer, built in Phase 11 and
+specified in [LLM Provider Architecture](./LLM_PROVIDER_ARCHITECTURE.md). A business
+service composes a typed `LLMRequest` and a `RoutingPolicy` and hands them to the
+router; it never names a provider or reads a provider-specific field. The single place
+allowed to know a provider type maps to a concrete adapter is
+`backend/app/llm/factory.py`. The connections a user configures — the write side, with
+the credential encrypted at rest and never returned — are [LLM
+Connections](./LLM_CONNECTIONS.md).
 
 ## 10. Typed LLM outputs
 
@@ -268,6 +275,15 @@ Examples:
 - `ChatActionProposal`.
 
 Never parse irreversible business actions from unconstrained prose.
+
+Phase 11 makes this a boundary the layer enforces, not a convention: a
+`StructuredOutputSpec` on a request is re-validated **independently** of the provider's
+claim to have honoured it, and a mismatch — even after one bounded repair attempt —
+raises `STRUCTURED_OUTPUT_INVALID` and mutates nothing. The document generator is the
+first user: `LLMDocumentGenerator` re-validates the model's JSON into a
+`ResumeDocument`/`CoverLetterDocument`, and the Evidence Guard stays *outside* the
+provider, so the truth guarantee never depends on the model behaving (see [ATS
+Documents](./ATS_DOCUMENTS.md)).
 
 ## 11. Geo architecture
 
@@ -455,6 +471,14 @@ Requirements:
 
 Phase 4 built the session half of this: Argon2id passwords, server-side sessions whose tokens are stored only as SHA-256 digests, a double-submit CSRF check compared against the session row, and cookies whose `Secure` flag is a deployment setting rather than an inference from the request scheme. [V2 Authentication](./AUTHENTICATION.md) is the reference, including what it deliberately leaves out.
 
+Phase 11 built the credential half for LLM providers: a stored API key is encrypted at
+rest with Fernet (AES-128-CBC + HMAC-SHA256), the master key comes from
+`JOBSEARCH_LLM_SECRET_KEY` and is never a database column, and the API surfaces
+`has_api_key`, never the value. The CLI providers are structurally keyless — the
+platform never injects `ANTHROPIC_API_KEY`, and `server/_env.py::child_env()` strips
+the whole `ANTHROPIC_*` namespace from every subprocess. There is no raw-prompt
+endpoint. [LLM Connections](./LLM_CONNECTIONS.md) is the reference.
+
 ## 16. Migration philosophy
 
 Do not perform a big-bang rewrite.
@@ -466,3 +490,11 @@ Use strangler-style migration:
 3. migrate persistence;
 4. move endpoints;
 5. delete obsolete modules only after parity and tests.
+
+Phase 11's LLM work is the strangler pattern applied to a reasoning dependency: the
+provider-neutral contract came first, the CLI and OpenAI-compatible adapters wrapped
+V1's working `server/chat.py` mechanics *behind* it, and generic `ProviderSession`
+persistence replaced V1's `claude_session_id`. V1's own code is left running — the
+Phase 11 adapters are a parallel path over the same transport — and the V1 subprocess,
+Ollama/LM Studio and prompt-injection tests still pass, which is the parity that lets a
+later phase move callers over.

@@ -18,6 +18,7 @@ from backend.app.api.routes import (
     companies,
     documents,
     geo,
+    llm,
     matches,
     me,
     onboarding,
@@ -36,4 +37,5 @@ def create_v2_router() -> APIRouter:
     router.include_router(geo.router)
     router.include_router(matches.router)
     router.include_router(documents.router)
+    router.include_router(llm.router)
     return router

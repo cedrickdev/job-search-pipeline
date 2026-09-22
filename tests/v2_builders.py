@@ -64,12 +64,15 @@ from backend.app.domain.identifiers import (
     CompanyLocationId,
     EligibilityResultId,
     EvidenceId,
+    LLMConnectionId,
+    LLMRunId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
     UserId,
     candidate_document_id,
     document_version_id,
+    provider_session_id,
 )
 from backend.app.domain.matching import DimensionScore, MatchDimension, MatchEvaluation
 from backend.app.domain.opportunity import (
@@ -80,6 +83,10 @@ from backend.app.domain.opportunity import (
     WorkplaceMode,
 )
 from backend.app.domain.search import CountrySearchArea, SearchProfile
+from backend.app.llm.connection import LLMConnection, LLMProviderType
+from backend.app.llm.contracts import TaskPurpose
+from backend.app.llm.sessions import ProviderSession
+from backend.app.llm.telemetry import LLMRun, LLMRunStatus
 
 NOW = datetime(2026, 3, 1, 9, 30, tzinfo=UTC)
 LATER = datetime(2026, 3, 2, 9, 30, tzinfo=UTC)
@@ -101,6 +108,9 @@ SEARCH_PROFILE = SearchProfileId(UUID("00000000-0000-4000-8000-000000000071"))
 OTHER_SEARCH_PROFILE = SearchProfileId(UUID("00000000-0000-4000-8000-000000000072"))
 EVIDENCE = EvidenceId(UUID("00000000-0000-4000-8000-000000000081"))
 DOCUMENT = CandidateDocumentId(UUID("00000000-0000-4000-8000-000000000091"))
+CONNECTION = LLMConnectionId(UUID("00000000-0000-4000-8000-0000000000a1"))
+OTHER_CONNECTION = LLMConnectionId(UUID("00000000-0000-4000-8000-0000000000a2"))
+RUN = LLMRunId(UUID("00000000-0000-4000-8000-0000000000b1"))
 
 # Somewhere real, so a distance a test asserts on can be checked against a map.
 LAUSANNE = GeoPoint(latitude=46.5197, longitude=6.6323)
@@ -364,3 +374,80 @@ def a_search_profile(*areas, **overrides):
     }
     fields.update(overrides)
     return SearchProfile(**fields)
+
+
+def an_llm_connection(**overrides):
+    """A user's OpenAI-compatible connection, with a stored (placeholder) credential.
+
+    Defaults to the shape that carries the most columns — a remote API connection
+    with a base URL, a model and an encrypted key — so a mapper that dropped one
+    fails a round-trip test. `encrypted_api_key` is an opaque placeholder ciphertext,
+    never a real key; a test that wants a CLI connection passes
+    `provider_type=LLMProviderType.CLAUDE_CODE, base_url=None, encrypted_api_key=None,
+    secret_version=None`, and one that wants another owner passes `user_id=OTHER_USER`.
+    """
+    fields = {
+        "id": CONNECTION,
+        "user_id": USER,
+        "provider_type": LLMProviderType.OPENAI_COMPATIBLE,
+        "display_name": "Work gateway",
+        "base_url": "https://gateway.example.invalid/v1",
+        "model": "external-model",
+        "encrypted_api_key": "gAAAAAB-placeholder-ciphertext-not-a-real-key",
+        "secret_version": 1,
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return LLMConnection(**fields)
+
+
+def a_provider_session(*, connection_id=CONNECTION, conversation_key="chat-1",
+                       **overrides):
+    """A provider session for one conversation on one connection.
+
+    The id derives from `(connection_id, conversation_key)` — the same rule the
+    domain enforces — so overriding either through the keyword parameters keeps the
+    id it would actually be stored under.
+    """
+    fields = {
+        "id": provider_session_id(connection_id, conversation_key),
+        "user_id": USER,
+        "connection_id": connection_id,
+        "conversation_key": conversation_key,
+        "purpose": TaskPurpose.CAREER_CHAT,
+        "external_session_id": "provider-session-abc",
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return ProviderSession(**fields)
+
+
+def an_llm_run(**overrides):
+    """A succeeded telemetry run with every measured field populated.
+
+    Deliberately full — tokens, cost, latency, a connection and a model — so a
+    round-trip proves the mapper carried each. A test that needs the unknown-is-null
+    case passes `prompt_tokens=None` (and so on); one that needs a failure passes
+    `status=LLMRunStatus.FAILED, failure_code=...`.
+    """
+    fields = {
+        "id": RUN,
+        "user_id": USER,
+        "connection_id": CONNECTION,
+        "provider_key": "openai_compatible",
+        "provider_type": LLMProviderType.OPENAI_COMPATIBLE,
+        "model": "external-model",
+        "purpose": TaskPurpose.RESUME_TAILORING,
+        "status": LLMRunStatus.SUCCEEDED,
+        "prompt_tokens": 1200,
+        "completion_tokens": 300,
+        "total_tokens": 1500,
+        "cost_usd": 0.012,
+        "latency_ms": 840,
+        "started_at": NOW,
+        "finished_at": LATER,
+    }
+    fields.update(overrides)
+    return LLMRun(**fields)

@@ -193,6 +193,14 @@ AUTH_LOCKOUT_MINUTES_VARIABLE: Final[str] = "JOBSEARCH_AUTH_LOCKOUT_MINUTES"
 DOCUMENT_ARTIFACT_ROOT_VARIABLE: Final[str] = "JOBSEARCH_DOCUMENT_ARTIFACT_ROOT"
 DEFAULT_DOCUMENT_ARTIFACT_ROOT: Final[str] = "var/document_artifacts"
 
+# The Fernet master key the LLM connection store encrypts provider credentials with
+# (Phase 11, docs/LLM_PROVIDER_ARCHITECTURE.md §21). Read from the environment,
+# never stored in the database and never returned by the API. A deployment that
+# manages remote LLM connections must set it; one that uses only CLI and keyless
+# local providers never needs it, so its absence is not an error until a credential
+# has to be encrypted.
+LLM_SECRET_KEY_VARIABLE: Final[str] = "JOBSEARCH_LLM_SECRET_KEY"  # noqa: S105 — an env var name, not a credential
+
 _TRUE_WORDS: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 
@@ -367,6 +375,38 @@ class DocumentSettings(BaseModel):
         source = environ if env is None else env
         value = source.get(DOCUMENT_ARTIFACT_ROOT_VARIABLE, "").strip()
         return cls(artifact_root=value or DEFAULT_DOCUMENT_ARTIFACT_ROOT)
+
+
+class LLMSecretSettings(BaseModel):
+    """The master key for encrypting stored LLM credentials — env-sourced, never DB.
+
+    Frozen and closed like every settings model, and with the same custom repr rule
+    as `DatabaseSettings`: the key is excluded from the repr so a traceback that
+    renders this object cannot print it. `master_key` is optional because a
+    deployment using only CLI and keyless local providers never encrypts anything;
+    the service raises a clear error only if a credential must be stored while it is
+    absent, rather than failing at startup for a feature the deployment does not use.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    master_key: str | None = Field(default=None, repr=False)
+
+    @property
+    def has_key(self) -> bool:
+        return bool(self.master_key)
+
+    def __repr__(self) -> str:
+        return f"LLMSecretSettings(master_key={'set' if self.has_key else 'unset'!r})"
+
+    __str__ = __repr__
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
+        """Read the master key from the environment, leaving it unset when absent."""
+        source = environ if env is None else env
+        value = source.get(LLM_SECRET_KEY_VARIABLE, "").strip()
+        return cls(master_key=value or None)
 
 
 

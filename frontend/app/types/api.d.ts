@@ -1121,6 +1121,153 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/settings/llm/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Connections
+         * @description This account's connections, in the router's priority-then-id order.
+         *
+         *     Every credential is reduced to `has_api_key`; the values never leave the service.
+         */
+        get: operations["list_connections_api_v2_settings_llm_connections_get"];
+        put?: never;
+        /**
+         * Create Connection
+         * @description Store a new connection for this account, encrypting any credential first.
+         *
+         *     201, because it creates a resource: the response carries the id the connection was
+         *     filed under, which a later edit, probe or default targets. 422 when the shape is
+         *     incoherent (a CLI carrying a key, an API missing a base URL) — the `LLMConnection`
+         *     model decides that once, for every writer. 409 (`llm_secret_key_unavailable`) when
+         *     a credential is submitted but the deployment configured no master key to encrypt
+         *     it: the honest answer, rather than storing the key in the clear.
+         */
+        post: operations["create_connection_api_v2_settings_llm_connections_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/settings/llm/connections/{connection_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Connection
+         * @description One connection, credential reduced to `has_api_key`.
+         *
+         *     404 for "no such connection" and "not yours" alike — the service raises one error
+         *     for both, so a caller cannot enumerate another account's connections by id.
+         */
+        get: operations["read_connection_api_v2_settings_llm_connections__connection_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Connection
+         * @description Delete one connection, and its stored credential with it.
+         *
+         *     Not idempotent, on purpose: a second `DELETE` answers 404 rather than 204, so a
+         *     client working from a stale list is told rather than misled. Scoped to the owner —
+         *     a delete of an id that is not this account's removes nothing and 404s, the same as
+         *     a never-created id, so a caller cannot probe another account by trying to delete.
+         */
+        delete: operations["delete_connection_api_v2_settings_llm_connections__connection_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Connection
+         * @description Apply a partial edit, re-encrypting or clearing the credential on request.
+         *
+         *     A `PATCH`, not a `PUT`: an unset field is left as stored, and the credential has
+         *     three states — `api_key` rotates it, `remove_api_key` clears it, neither leaves it.
+         *     Sending both is a 422, refused before the service is called. 404 when the id is not
+         *     this account's; 422 when the edit would leave an incoherent shape; 409 when a new
+         *     credential is given but no master key is configured.
+         */
+        patch: operations["update_connection_api_v2_settings_llm_connections__connection_id__patch"];
+        trace?: never;
+    };
+    "/api/v2/settings/llm/connections/{connection_id}/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Connection Default
+         * @description Make one connection the account's default, clearing the flag on the rest.
+         *
+         *     The invariant "at most one default" holds after the write: the service clears every
+         *     other default first, then marks this one. 404 when not this account's.
+         */
+        put: operations["set_connection_default_api_v2_settings_llm_connections__connection_id__default_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/settings/llm/connections/{connection_id}/enabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Connection Enabled
+         * @description Turn a connection on or off without deleting it or its stored key.
+         *
+         *     A disabled connection keeps its row and its credential and is simply filtered out
+         *     of the router's candidates until it is turned back on. 404 when not this account's.
+         */
+        put: operations["set_connection_enabled_api_v2_settings_llm_connections__connection_id__enabled_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/settings/llm/connections/{connection_id}/healthcheck": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Healthcheck Connection
+         * @description Probe one connection's live provider and return its health (not stored).
+         *
+         *     A `POST` because it does work — it builds the provider and reaches out — even
+         *     though it stores nothing. The result is data: a provider that is down is an
+         *     `UNAVAILABLE` status the settings page renders, and its `detail` is a secret-free
+         *     sentence the platform composed, never a raw provider message. 404 when the id is
+         *     not this account's.
+         */
+        post: operations["healthcheck_connection_api_v2_settings_llm_connections__connection_id__healthcheck_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1901,6 +2048,48 @@ export interface components {
             signature: string;
         };
         /**
+         * CreateLLMConnectionRequest
+         * @description A new LLM connection as the settings form submits it (§4, §13).
+         *
+         *     No `id`, `user_id`, or timestamps — the service supplies them from the session and
+         *     the request clock, so there is no field to file a connection under another account.
+         *     `api_key` is write-only: it is accepted here and never echoed, and a connection
+         *     response reports only `has_api_key`. The `provider_type` decides which of the other
+         *     fields are meaningful, and the `LLMConnection` model — not this schema — is the one
+         *     that refuses an incoherent shape (a CLI carrying a key, an API without a base URL),
+         *     so the rule lives in one place.
+         */
+        CreateLLMConnectionRequest: {
+            /** Api Key */
+            api_key?: string | null;
+            /** Base Url */
+            base_url?: string | null;
+            /** Custom Headers */
+            custom_headers?: {
+                [key: string]: string;
+            };
+            /** Display Name */
+            display_name: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Is Default
+             * @default false
+             */
+            is_default: boolean;
+            /** Model */
+            model?: string | null;
+            /**
+             * Priority
+             * @default 100
+             */
+            priority: number;
+            provider_type: components["schemas"]["LLMProviderType"];
+        };
+        /**
          * DetectedAtsResponse
          * @description Which platform an employer publishes on, and how sure that is.
          *
@@ -2374,6 +2563,90 @@ export interface components {
             scheduled_for?: string | null;
         };
         /**
+         * LLMConnectionHealthResponse
+         * @description The result of probing a connection's live provider — data, never an exception.
+         *
+         *     `status` is the runtime answer to "can this serve a request now?" and `detail` is a
+         *     secret-free sentence produced by the platform's own redaction, never a raw provider
+         *     message. A provider being down is an `UNAVAILABLE` status a settings page renders,
+         *     not an error it must catch.
+         */
+        LLMConnectionHealthResponse: {
+            /** Detail */
+            detail: string | null;
+            /** Latency Ms */
+            latency_ms: number | null;
+            status: components["schemas"]["ProviderHealthStatus"];
+        };
+        /**
+         * LLMConnectionListResponse
+         * @description This account's connections, in the router's priority-then-id order, wrapped.
+         */
+        LLMConnectionListResponse: {
+            /** Connections */
+            connections: components["schemas"]["LLMConnectionResponse"][];
+        };
+        /**
+         * LLMConnectionResponse
+         * @description One stored connection, echoed back with the credential reduced to a boolean.
+         *
+         *     `has_api_key` is the only thing said about a credential — never its value, never
+         *     its ciphertext (§13). `provider_type`, `base_url` and `model` describe where and as
+         *     what the connection reaches its model; `is_default`, `enabled` and `priority` are
+         *     how a task chooses among a user's connections. `custom_headers` is echoed because a
+         *     header is a route hint, not a secret — an API key must never be put in one, which
+         *     the connection model does not police, so the settings UI keeps that field for
+         *     non-secret headers only.
+         */
+        LLMConnectionResponse: {
+            /** Base Url */
+            base_url: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Custom Headers */
+            custom_headers: {
+                [key: string]: string;
+            };
+            /** Display Name */
+            display_name: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Has Api Key */
+            has_api_key: boolean;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Default */
+            is_default: boolean;
+            /** Model */
+            model: string | null;
+            /** Priority */
+            priority: number;
+            provider_type: components["schemas"]["LLMProviderType"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * LLMProviderType
+         * @description Which adapter a connection is built into — the closed set Phase 11 implements.
+         *
+         *     Dispatched on by `backend.app.llm.factory` alone, and nowhere else: the factory is
+         *     the one place allowed to know a provider type maps to a concrete adapter, which is
+         *     what keeps the "no `if provider == …` in business code" rule (§3) true. Later
+         *     phases add native Anthropic/Gemini adapters here (§105); Phase 11 ships the CLI
+         *     pair and the two OpenAI-compatible transports.
+         * @enum {string}
+         */
+        LLMProviderType: "CLAUDE_CODE" | "CODEX" | "OPENAI_COMPATIBLE" | "LOCAL_OPENAI_COMPATIBLE";
+        /**
          * LanguageLevel
          * @description CEFR levels plus NATIVE.
          *
@@ -2683,6 +2956,17 @@ export interface components {
             reason: components["schemas"]["SourceFailureCode"] | null;
             status: components["schemas"]["SourceHealthStatus"];
         };
+        /**
+         * ProviderHealthStatus
+         * @description The runtime answer to "can this provider serve a request now?" (§37).
+         *
+         *     Separate from `Capability` on purpose (see `backend.app.llm.capabilities`): a
+         *     provider can be fully capable and momentarily `UNAVAILABLE`, or capable and
+         *     `AUTH_REQUIRED` until a key is set. `UNKNOWN` is the honest state before anything
+         *     has probed it — distinct from `UNAVAILABLE`, which is a probe that failed.
+         * @enum {string}
+         */
+        ProviderHealthStatus: "UNKNOWN" | "HEALTHY" | "DEGRADED" | "UNAVAILABLE" | "AUTH_REQUIRED" | "MISCONFIGURED";
         /**
          * RadiusSearchArea
          * @description Everything within `radius_km` of `center`.
@@ -3038,6 +3322,14 @@ export interface components {
              */
             last_seen_at: string;
         };
+        /**
+         * SetLLMConnectionEnabledRequest
+         * @description The on/off a settings page toggles, without deleting the row or its key.
+         */
+        SetLLMConnectionEnabledRequest: {
+            /** Enabled */
+            enabled: boolean;
+        };
         /** SettingsBody */
         SettingsBody: {
             /** Auto Apply */
@@ -3158,6 +3450,37 @@ export interface components {
             detail?: string | null;
             /** Status */
             status: string;
+        };
+        /**
+         * UpdateLLMConnectionRequest
+         * @description A partial edit to a connection — every field optional, an unset one untouched.
+         *
+         *     The credential needs three states, not two: `api_key` set rotates it,
+         *     `remove_api_key` clears it, and neither leaves it as stored — so a user edits a
+         *     gateway's model without re-typing its key, or drops the key without touching the
+         *     rest. `api_key` and `remove_api_key` together is contradictory and refused here, so
+         *     the service is never handed an ambiguous instruction.
+         */
+        UpdateLLMConnectionRequest: {
+            /** Api Key */
+            api_key?: string | null;
+            /** Base Url */
+            base_url?: string | null;
+            /** Custom Headers */
+            custom_headers?: {
+                [key: string]: string;
+            } | null;
+            /** Display Name */
+            display_name?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Priority */
+            priority?: number | null;
+            /**
+             * Remove Api Key
+             * @default false
+             */
+            remove_api_key: boolean;
         };
         /**
          * UserStatus
@@ -5018,6 +5341,251 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CandidateDocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_connections_api_v2_settings_llm_connections_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionListResponse"];
+                };
+            };
+        };
+    };
+    create_connection_api_v2_settings_llm_connections_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateLLMConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_connection_api_v2_settings_llm_connections__connection_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_connection_api_v2_settings_llm_connections__connection_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_connection_api_v2_settings_llm_connections__connection_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateLLMConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_connection_default_api_v2_settings_llm_connections__connection_id__default_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_connection_enabled_api_v2_settings_llm_connections__connection_id__enabled_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetLLMConnectionEnabledRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    healthcheck_connection_api_v2_settings_llm_connections__connection_id__healthcheck_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionHealthResponse"];
                 };
             };
             /** @description Validation Error */

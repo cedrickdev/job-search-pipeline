@@ -149,7 +149,7 @@ class DocumentService:
         context = GenerationContext(
             document_type=document_type, target_language=target_language,
             candidate_profile_id=profile.id, opportunity_id=opportunity_id)
-        content = self._compose(document_type, profile, opportunity, context)
+        content = await self._compose(document_type, profile, opportunity, context)
         report = self._guard.review(content, profile=profile, opportunity=opportunity)
 
         existing = await self._documents.get_for_pair(
@@ -219,19 +219,21 @@ class DocumentService:
             raise DocumentArtifactMissing(str(document_id))
         return self._artifacts.get(version.artifact.storage_key)
 
-    def _compose(self, document_type: CandidateDocumentType,
-                 profile: CandidateProfile, opportunity: Opportunity,
-                 context: GenerationContext) -> DocumentContent:
+    async def _compose(self, document_type: CandidateDocumentType,
+                       profile: CandidateProfile, opportunity: Opportunity,
+                       context: GenerationContext) -> DocumentContent:
         """Dispatch to the generator method for the type.
 
         Two methods rather than one taking a type, because the generator's contract
         splits them (§19): a résumé and a cover letter are different enough
-        compositions that an adapter implements each on its own.
+        compositions that an adapter implements each on its own. Awaited because the
+        generator is `async` (a model-backed one reaches a provider over I/O); the
+        deterministic reference simply returns without suspending.
         """
         if document_type is CandidateDocumentType.RESUME:
-            return self._generator.generate_resume(
+            return await self._generator.generate_resume(
                 profile=profile, opportunity=opportunity, context=context)
-        return self._generator.generate_cover_letter(
+        return await self._generator.generate_cover_letter(
             profile=profile, opportunity=opportunity, context=context)
 
     def _build_version(self, *, document_id: CandidateDocumentId, number: int,

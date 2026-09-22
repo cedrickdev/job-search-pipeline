@@ -51,6 +51,15 @@ dependencies = [
     # is the login identifier — so this is a runtime dependency of the API, not a
     # convenience for the tests.
     "email-validator>=2.1",
+    # --- Phase 11: provider-neutral LLM platform ---------------------------
+    # Fernet (AES-128-CBC + HMAC-SHA256), the established authenticated symmetric
+    # scheme the LLM connection store encrypts a provider's API key with. No
+    # home-grown crypto (docs/LLM_PROVIDER_ARCHITECTURE.md §21,
+    # docs/ENGINEERING_STANDARDS.md §Security): the master key comes from the
+    # environment, never the database, and only the ciphertext and a version tag are
+    # stored. A runtime dependency of the API — `SecretCipher` is built when a
+    # connection is created or read — not a test convenience.
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]

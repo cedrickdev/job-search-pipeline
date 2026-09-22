@@ -50,6 +50,7 @@ from backend.app.domain.identifiers import (
     CandidateProfileId,
     CompanyId,
     EligibilityResultId,
+    LLMConnectionId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
@@ -60,6 +61,9 @@ from backend.app.domain.matching import MatchEvaluation
 from backend.app.domain.opportunity import Opportunity
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserSession
+from backend.app.llm.connection import LLMConnection
+from backend.app.llm.sessions import ProviderSession
+from backend.app.llm.telemetry import LLMRun
 
 # Every list method is capped. An uncapped query is fine against the empty
 # development database and is an outage against a real one, and the caller that
@@ -647,6 +651,131 @@ class CandidateDocumentRepository(Protocol):
             self, user_id: UserId, *,
             limit: int = DEFAULT_LIMIT) -> tuple[CandidateDocument, ...]:
         """This user's documents, most recently updated first."""
+        ...
+
+
+# Phase 11. The three contracts below are what the provider-neutral LLM platform
+# persists, and nothing more. A connection is user-owned and so takes `user_id`
+# first, exactly like the Phase 4 tables; a provider session is scoped the same way;
+# a telemetry run is written once at the start and updated once at the end, so its
+# store is an upsert like every other.
+
+
+@runtime_checkable
+class LLMConnectionRepository(Protocol):
+    """A user's stored LLM connections — user-owned, so `user_id` comes first (§4).
+
+    A connection carries a credential, so the isolation the other user-owned
+    repositories enforce matters most here: a `get` for another account reads as
+    absent, and there is no method that returns a connection without naming its owner.
+    The ciphertext moves through the mapper unread; nothing in this contract exposes a
+    decrypted key.
+    """
+
+    async def get(self, user_id: UserId,
+                  connection_id: LLMConnectionId) -> LLMConnection | None:
+        """The connection, or `None` — including when it belongs to somebody else.
+
+        Not found and not yours are indistinguishable, as in every user-owned
+        repository: a caller that could tell them apart could enumerate another user's
+        connections by id.
+        """
+        ...
+
+    async def get_default(self, user_id: UserId) -> LLMConnection | None:
+        """The connection this user marked default, if one is marked.
+
+        At most one exists — a partial unique index holds it — so this is a lookup by
+        owner rather than a choice among rows, the connection twin of
+        `CandidateProfileRepository.get_default`.
+        """
+        ...
+
+    async def list_for_user(self, user_id: UserId, *, enabled_only: bool = False,
+                            limit: int = DEFAULT_LIMIT) -> tuple[LLMConnection, ...]:
+        """This user's connections, by priority then id — the router's own order.
+
+        `enabled_only` is what the bootstrap of a user's live registry reads and what
+        a settings page filters on; it is a parameter rather than a separate method so
+        the `(user_id, priority)` shape serves one query.
+        """
+        ...
+
+    async def upsert(self, connection: LLMConnection) -> LLMConnection:
+        """Write the connection.
+
+        The owner comes from `connection.user_id`, so there is no signature in which
+        the row's owner and the caller's intent can disagree. Setting a connection
+        default is `clear_default` then this upsert, in that order: the partial unique
+        index refuses a second default, so the old one must be cleared first.
+        """
+        ...
+
+    async def clear_default(self, user_id: UserId) -> int:
+        """Unset the default flag on all of this user's connections; returns how many.
+
+        The first half of "make this one default": a single `UPDATE`, so promoting a
+        connection cannot momentarily leave two defaults and trip the unique index.
+        """
+        ...
+
+    async def delete(self, user_id: UserId, connection_id: LLMConnectionId) -> bool:
+        """Delete one of this user's connections; `True` if a row was removed.
+
+        Scoped by `user_id` so a delete cannot remove somebody else's connection by
+        id. Its provider sessions go with it by `ON DELETE CASCADE`; its telemetry
+        runs are kept, their `connection_id` set NULL, because a run is provenance
+        that outlives the connection it used.
+        """
+        ...
+
+
+@runtime_checkable
+class ProviderSessionRepository(Protocol):
+    """Provider-side sessions — user-owned, keyed by connection and conversation (§4)."""
+
+    async def get(self, user_id: UserId, connection_id: LLMConnectionId,
+                  conversation_key: str) -> ProviderSession | None:
+        """The session for this conversation on this connection, if one exists.
+
+        The lookup a resume does before a turn: it finds the row holding the
+        provider's `external_session_id` so the request can ask to continue. Scoped by
+        `user_id`, so one account cannot resume another's provider-side conversation.
+        """
+        ...
+
+    async def upsert(self, session: ProviderSession) -> ProviderSession:
+        """Write the session, or refresh the `external_session_id` a turn just issued.
+
+        Idempotent per `(connection_id, conversation_key)` — the pair the id derives
+        from — so continuing a conversation updates the one row rather than adding a
+        second.
+        """
+        ...
+
+
+@runtime_checkable
+class LLMRunRepository(Protocol):
+    """LLM telemetry runs — written once at the start, updated once at the end (§56).
+
+    Not scoped by `user_id` on write, because a run's owner is nullable: a healthcheck
+    probe has none. Reads that surface runs to a user *are* scoped, which is why
+    `list_for_user` takes one and there is no bare `get` that could return another
+    account's run by id.
+    """
+
+    async def upsert(self, run: LLMRun) -> LLMRun:
+        """Write the run, or move it from STARTED to its terminal state.
+
+        Keyed on the run's own id, so the same id written twice — once in flight, once
+        finished — updates the one row. A run that was never observed to start (a
+        synchronous call recorded whole) is a single upsert of a terminal row.
+        """
+        ...
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[LLMRun, ...]:
+        """This user's runs, most recently started first — the telemetry feed."""
         ...
 
 

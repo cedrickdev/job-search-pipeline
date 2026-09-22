@@ -80,7 +80,10 @@ export function job(template: JobTemplate, jobId: number): string {
 // are GET-only reads that still need a session but never a CSRF token. Phase 10
 // adds the evidence store (`/me/evidence` GET+POST, `/me/claims` POST), the two
 // document generators keyed by posting, and the document list, one document and
-// its PDF download. The `satisfies` clause is the same compile-time guard.
+// its PDF download. Phase 11 adds the LLM connection settings — the list and its
+// create (`/settings/llm/connections` GET+POST), one connection (GET+PATCH+DELETE),
+// and its enable, default and healthcheck sub-resources. The `satisfies` clause is
+// the same compile-time guard.
 export const V2_ENDPOINTS = {
   login: '/api/v2/auth/login',
   logout: '/api/v2/auth/logout',
@@ -104,6 +107,11 @@ export const V2_ENDPOINTS = {
   documentDownload: '/api/v2/documents/{document_id}/download',
   opportunityResume: '/api/v2/opportunities/{opportunity_id}/resume',
   opportunityCoverLetter: '/api/v2/opportunities/{opportunity_id}/cover-letter',
+  llmConnections: '/api/v2/settings/llm/connections',
+  llmConnection: '/api/v2/settings/llm/connections/{connection_id}',
+  llmConnectionEnabled: '/api/v2/settings/llm/connections/{connection_id}/enabled',
+  llmConnectionDefault: '/api/v2/settings/llm/connections/{connection_id}/default',
+  llmConnectionHealthcheck: '/api/v2/settings/llm/connections/{connection_id}/healthcheck',
 } as const satisfies Record<string, keyof paths>
 
 /**
@@ -183,4 +191,24 @@ type OpportunityTemplate = Extract<
  */
 export function opportunityDocument(template: OpportunityTemplate, opportunityId: string): string {
   return template.replace('{opportunity_id}', opportunityId)
+}
+
+/** Every V2 endpoint whose template contains `{connection_id}`. */
+type ConnectionTemplate = Extract<
+  (typeof V2_ENDPOINTS)[keyof typeof V2_ENDPOINTS],
+  `${string}{connection_id}${string}`
+>
+
+/**
+ * Resolve a `{connection_id}` template — the read, edit, delete, enable, default or
+ * healthcheck of one stored LLM connection (Phase 11).
+ *
+ * A connection id is a UUID string and the owner is not in the path: a connection is
+ * user-owned, reached through the session, so asking for another account's connection
+ * by id is a 404 rather than its stored settings. The credential never travels in a
+ * URL — it is a write-only field of the body, surfaced back only as `has_api_key`
+ * (docs/AUTHENTICATION.md §Authorization, docs/LLM_CONNECTIONS.md §Sharing).
+ */
+export function llmConnection(template: ConnectionTemplate, connectionId: string): string {
+  return template.replace('{connection_id}', connectionId)
 }

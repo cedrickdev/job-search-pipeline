@@ -144,11 +144,12 @@ def a_context(profile, opportunity,
 
 # --- the guard: one test per violation code ---------------------------------
 
-def test_the_guard_passes_content_built_only_from_held_evidence():
+@pytest.mark.asyncio
+async def test_the_guard_passes_content_built_only_from_held_evidence():
     """The generator's own output clears every gate — the base case the rest flip."""
     profile = a_full_profile()
     opportunity = an_opportunity()
-    content = DeterministicDocumentGenerator().generate_resume(
+    content = await DeterministicDocumentGenerator().generate_resume(
         profile=profile, opportunity=opportunity,
         context=a_context(profile, opportunity))
 
@@ -280,13 +281,14 @@ def test_a_failing_report_names_every_problem_at_once():
 
 # --- the deterministic generator --------------------------------------------
 
-def test_the_generator_builds_a_resume_that_passes_the_guard():
+@pytest.mark.asyncio
+async def test_the_generator_builds_a_resume_that_passes_the_guard():
     """Selection and reordering, never invention — so the guard passes by design."""
     profile = a_full_profile()
     opportunity = an_opportunity()
     generator = DeterministicDocumentGenerator()
 
-    resume = generator.generate_resume(
+    resume = await generator.generate_resume(
         profile=profile, opportunity=opportunity,
         context=a_context(profile, opportunity))
 
@@ -297,12 +299,13 @@ def test_the_generator_builds_a_resume_that_passes_the_guard():
         resume, profile=profile, opportunity=opportunity).ok
 
 
-def test_the_generator_builds_a_cover_letter_that_passes_the_guard():
+@pytest.mark.asyncio
+async def test_the_generator_builds_a_cover_letter_that_passes_the_guard():
     profile = a_full_profile()
     opportunity = an_opportunity()
     generator = DeterministicDocumentGenerator()
 
-    letter = generator.generate_cover_letter(
+    letter = await generator.generate_cover_letter(
         profile=profile, opportunity=opportunity,
         context=a_context(profile, opportunity,
                           document_type=CandidateDocumentType.COVER_LETTER))
@@ -313,7 +316,8 @@ def test_the_generator_builds_a_cover_letter_that_passes_the_guard():
         letter, profile=profile, opportunity=opportunity).ok
 
 
-def test_the_generator_refuses_rather_than_inventing_when_there_is_no_evidence():
+@pytest.mark.asyncio
+async def test_the_generator_refuses_rather_than_inventing_when_there_is_no_evidence():
     """InsufficientEvidence, not an empty document: the honest answer is to say so."""
     user_id = new_user_id()
     barren = CandidateProfile(
@@ -323,14 +327,15 @@ def test_the_generator_refuses_rather_than_inventing_when_there_is_no_evidence()
     generator = DeterministicDocumentGenerator()
 
     with pytest.raises(InsufficientEvidence):
-        generator.generate_resume(
+        await generator.generate_resume(
             profile=barren, opportunity=opportunity,
             context=a_context(barren, opportunity))
 
 
 # --- rendering: the PDF an ATS can actually read ----------------------------
 
-def test_a_rendered_resume_is_ats_readable_text():
+@pytest.mark.asyncio
+async def test_a_rendered_resume_is_ats_readable_text():
     """Reading the PDF back with `pypdf` finds the candidate's facts as text.
 
     The only honest proof that an ATS can parse the layout: not a picture of text,
@@ -339,7 +344,7 @@ def test_a_rendered_resume_is_ats_readable_text():
     """
     profile = a_full_profile()
     opportunity = an_opportunity()
-    resume = DeterministicDocumentGenerator().generate_resume(
+    resume = await DeterministicDocumentGenerator().generate_resume(
         profile=profile, opportunity=opportunity,
         context=a_context(profile, opportunity))
 
@@ -353,11 +358,12 @@ def test_a_rendered_resume_is_ats_readable_text():
     assert "checkout" in text.lower()
 
 
-def test_rendering_the_same_content_twice_is_deterministic():
+@pytest.mark.asyncio
+async def test_rendering_the_same_content_twice_is_deterministic():
     """Same content, same bytes — what makes a re-render a no-op, not a new file."""
     profile = a_full_profile()
     opportunity = an_opportunity()
-    letter = DeterministicDocumentGenerator().generate_cover_letter(
+    letter = await DeterministicDocumentGenerator().generate_cover_letter(
         profile=profile, opportunity=opportunity,
         context=a_context(profile, opportunity,
                           document_type=CandidateDocumentType.COVER_LETTER))
@@ -469,13 +475,13 @@ async def test_a_rejected_version_is_kept_with_its_report_and_no_artifact(tmp_pa
     class _FabricatingGenerator:
         key = "fabricating-test/1"
 
-        def generate_resume(self, *, profile, opportunity, context):
+        async def generate_resume(self, *, profile, opportunity, context):
             return ResumeDocument(
                 full_name="Someone Else",
                 summary=EvidenceBackedText(text="Invented",
                                            evidence_ids=(new_evidence_id(),)))
 
-        def generate_cover_letter(self, *, profile, opportunity, context):
+        async def generate_cover_letter(self, *, profile, opportunity, context):
             raise AssertionError("not exercised")
 
     store = LocalDocumentArtifactStore(tmp_path / "artifacts")
@@ -548,7 +554,7 @@ async def test_prompt_injection_from_the_posting_cannot_smuggle_new_candidate_fa
 
         key = "injected-test/1"
 
-        def generate_resume(self, *, profile, opportunity, context):
+        async def generate_resume(self, *, profile, opportunity, context):
             return ResumeDocument(
                 full_name=profile.display_name,  # identity kept: isolate the facts
                 experience=(ResumeEntry(
@@ -560,7 +566,7 @@ async def test_prompt_injection_from_the_posting_cannot_smuggle_new_candidate_fa
                 skill_groups=(ResumeSkillGroup(
                     name="Skills", skills=("Java", "Kubernetes")),))
 
-        def generate_cover_letter(self, *, profile, opportunity, context):
+        async def generate_cover_letter(self, *, profile, opportunity, context):
             raise AssertionError("not exercised")
 
     profiles = FakeCandidateProfileRepository()

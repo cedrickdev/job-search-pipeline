@@ -16,12 +16,15 @@ which is the point of pinning a count that a normal change has no reason to touc
 The counts moved once at Phase 6 — the three company operations — again at
 Phase 7, which adds the three geo reads: postings near a place, employers near a
 place, and one saved search run as a geo query, again at Phase 9, which adds the
-three assessment routes: evaluate a pair, read one pair, list a user's pairs, and
+three assessment routes: evaluate a pair, read one pair, list a user's pairs,
 again at Phase 10, which adds eight: the two evidence writes and the evidence read
 under `/me`, the two document generators keyed by posting, and the list, read and
-download of a generated document. All of them are held to the same four rules the
+download of a generated document, and again at Phase 11, which adds eight for the
+LLM connection settings surface: list and create, read, edit (`PATCH`), enable and
+default, delete, and a healthcheck probe. All of them are held to the same rules the
 Phase 4 twelve are — under the prefix, authenticated, safe where they read, and
-carrying no credential field.
+carrying no credential field. Phase 11 is where the last rule earns its keep: the
+create and edit bodies accept an `api_key`, and no response schema may echo it.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -33,6 +36,7 @@ from backend.app.documents import LocalDocumentArtifactStore
 from backend.app.domain.identifiers import (
     CandidateDocumentId,
     CompanyId,
+    LLMConnectionId,
     OpportunityId,
     SearchProfileId,
     default_candidate_profile_id,
@@ -52,6 +56,7 @@ from tests.v2_builders import (
     a_rendered_document,
     a_search_profile,
     an_eligibility_result,
+    an_llm_connection,
     an_opportunity,
 )
 
@@ -59,6 +64,7 @@ from tests.v2_builders import (
 # a test that derived it from the application would agree with any change.
 V2_OPERATIONS = (
     ("DELETE", "/api/v2/me/search-profiles/{search_profile_id}"),
+    ("DELETE", "/api/v2/settings/llm/connections/{connection_id}"),
     ("GET", "/api/v2/auth/session"),
     ("GET", "/api/v2/companies"),
     ("GET", "/api/v2/companies/{company_id}"),
@@ -74,6 +80,9 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/me/search-profiles/{search_profile_id}/opportunities"),
     ("GET", "/api/v2/onboarding"),
     ("GET", "/api/v2/opportunities/{opportunity_id}/match"),
+    ("GET", "/api/v2/settings/llm/connections"),
+    ("GET", "/api/v2/settings/llm/connections/{connection_id}"),
+    ("PATCH", "/api/v2/settings/llm/connections/{connection_id}"),
     ("POST", "/api/v2/auth/login"),
     ("POST", "/api/v2/auth/logout"),
     ("POST", "/api/v2/auth/register"),
@@ -85,8 +94,12 @@ V2_OPERATIONS = (
     ("POST", "/api/v2/onboarding/complete"),
     ("POST", "/api/v2/opportunities/{opportunity_id}/cover-letter"),
     ("POST", "/api/v2/opportunities/{opportunity_id}/resume"),
+    ("POST", "/api/v2/settings/llm/connections"),
+    ("POST", "/api/v2/settings/llm/connections/{connection_id}/healthcheck"),
     ("PUT", "/api/v2/me/profile"),
     ("PUT", "/api/v2/me/search-profiles/{search_profile_id}"),
+    ("PUT", "/api/v2/settings/llm/connections/{connection_id}/default"),
+    ("PUT", "/api/v2/settings/llm/connections/{connection_id}/enabled"),
 )
 
 # The two operations a caller reaches without a session, because their purpose is to
@@ -136,7 +149,7 @@ async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_de
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 25
+        assert len({path for _, path in published}) == 30
 
 
 @pytest.mark.asyncio
@@ -172,9 +185,14 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/me/search-profiles",
             "/api/v2/me/search-profiles/{search_profile_id}/opportunities",
             "/api/v2/onboarding",
-            "/api/v2/opportunities/{opportunity_id}/match"}
+            "/api/v2/opportunities/{opportunity_id}/match",
+            "/api/v2/settings/llm/connections",
+            "/api/v2/settings/llm/connections/{connection_id}"}
+        # `HEAD`/`OPTIONS`/`TRACE` are never published. `PATCH` now is — the one
+        # partial edit the surface has, on an LLM connection — so it is not forbidden,
+        # only absent from the safe-method (`GET`) set asserted above.
         assert not [method for method, _ in published
-                    if method in {"HEAD", "OPTIONS", "TRACE", "PATCH"}]
+                    if method in {"HEAD", "OPTIONS", "TRACE"}]
 
 
 @pytest.mark.asyncio
@@ -225,6 +243,11 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
         await api.documents.upsert(a_rendered_document(
             id=document_id, user_id=user_id, candidate_profile_id=profile_id,
             opportunity_id=posting_id, storage_key=storage_key))
+        # `GET /settings/llm/connections/{id}` reads a stored connection, so the sweep
+        # exercises its 200 path only when one exists under the placeholder id and this
+        # account. The list read beside it needs no seed — an empty list is a 200.
+        await api.llm_connections.upsert(an_llm_connection(
+            id=LLMConnectionId(PLACEHOLDER_ID), user_id=user_id))
         reads = [_get_with_scope(concrete(path)) for method, path in operations(
             api.app, under=API_V2_PREFIX) if method == "GET"]
         before = deepcopy((api.users.users, api.sessions.sessions,
@@ -232,7 +255,7 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                            api.companies.companies, api.career_sites.sites,
                            api.discoveries.records, api.postings.opportunities,
                            api.matches.evaluations, api.eligibilities.results,
-                           api.documents.documents))
+                           api.documents.documents, api.llm_connections.connections))
 
         for path in reads:
             for _ in range(2):
@@ -243,7 +266,8 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                 api.searches.searches, api.companies.companies,
                 api.career_sites.sites, api.discoveries.records,
                 api.postings.opportunities, api.matches.evaluations,
-                api.eligibilities.results, api.documents.documents) == before
+                api.eligibilities.results, api.documents.documents,
+                api.llm_connections.connections) == before
 
 
 @pytest.mark.asyncio
@@ -275,7 +299,7 @@ async def test_the_one_write_a_get_performs_is_last_seen_at_and_it_cannot_extend
 @pytest.mark.asyncio
 async def test_every_operation_but_register_and_login_refuses_an_anonymous_caller(
         tmp_path):
-    """401 from all twenty-seven, with no body sent and nothing created.
+    """401 from all thirty-five, with no body sent and nothing created.
 
     No payload is needed because FastAPI resolves the session dependency before it
     validates a body, so the refusal happens before the request is read — which is
@@ -292,7 +316,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
         protected = [(method, path) for method, path in operations(
             api.app, under=API_V2_PREFIX) if (method, path) not in PUBLIC_OPERATIONS]
 
-        assert len(protected) == 27
+        assert len(protected) == 35
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

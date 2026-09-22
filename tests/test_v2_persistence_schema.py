@@ -68,8 +68,16 @@ SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
 # `candidate_profile_id` for the same reason every user-owned table does: each
 # scoped read is `WHERE user_id = :current_user`.
 USER_OWNED_TABLES = ("candidate_documents", "candidate_profiles",
-                     "eligibility_results", "match_evaluations", "search_profiles",
-                     "user_sessions")
+                     "eligibility_results", "llm_connections", "match_evaluations",
+                     "provider_sessions", "search_profiles", "user_sessions")
+
+# Telemetry rows: user-attributable, but not user-owned. `llm_runs` (Phase 11)
+# carries a `user_id` so a user can list their own calls, but it is *nullable* — a
+# healthcheck probe has no user — and its `connection_id` is `ON DELETE SET NULL`,
+# because a run is provenance that outlives the connection it used. That puts it in
+# neither the shared group (which carries no `user_id` at all) nor the user-owned one
+# (whose owner is NOT NULL), so it is its own small category with its own rule below.
+TELEMETRY_TABLES = ("llm_runs",)
 
 # Rows owned through a parent instead of directly: a language belongs to a profile,
 # an area to a search profile, a dimension score to an evaluation. They carry no
@@ -119,17 +127,17 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_twenty_four_v2_tables():
+def test_the_metadata_holds_exactly_the_twenty_seven_v2_tables():
     """A tripwire on the shape of the schema itself.
 
-    `models.py` is the only place a V2 table may be declared, so the three
-    ownership groups plus `users` are the inventory. A new table has to be added to
-    one of them — which is the moment to ask whether it needs `user_id`, a cascade
-    and a migration.
+    `models.py` is the only place a V2 table may be declared, so the four ownership
+    groups plus `users` are the inventory. A new table has to be added to one of
+    them — which is the moment to ask whether it needs `user_id`, a cascade and a
+    migration.
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
-        PARENT_OWNED_TABLES) | {"users"}
-    assert len(TABLES) == 24
+        PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | {"users"}
+    assert len(TABLES) == 27
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
@@ -252,6 +260,27 @@ def test_parent_owned_rows_reach_their_owner_through_one_cascading_parent(table_
     to_parent = [fk for fk in table.foreign_keys if fk.column.table.name == parent]
     assert [fk.ondelete for fk in to_parent] == ["CASCADE"]
     assert table.columns[to_parent[0].parent.name].nullable is False
+
+
+@pytest.mark.parametrize("table_name", TELEMETRY_TABLES)
+def test_telemetry_rows_are_user_attributable_but_not_user_owned(table_name):
+    """A run names its user when it has one, and lets go of its connection.
+
+    `user_id` exists so a telemetry read can be scoped `WHERE user_id = :current_user`,
+    and cascades from `users` so deleting an account takes its runs. But it is
+    *nullable* — a healthcheck probe has no user — which is the line between this and
+    a user-owned table, whose owner may not be NULL. `connection_id` is `SET NULL` on
+    delete, because a run records what happened and must survive the connection it
+    used being removed (§56).
+    """
+    table = TABLES[table_name]
+    assert "user_id" in table.columns
+    assert table.columns["user_id"].nullable is True
+    to_users = [fk for fk in table.foreign_keys if fk.column.table.name == "users"]
+    assert [fk.ondelete for fk in to_users] == ["CASCADE"]
+    to_connections = [fk for fk in table.foreign_keys
+                      if fk.column.table.name == "llm_connections"]
+    assert [fk.ondelete for fk in to_connections] == ["SET NULL"]
 
 
 def test_every_foreign_key_states_what_happens_on_delete():

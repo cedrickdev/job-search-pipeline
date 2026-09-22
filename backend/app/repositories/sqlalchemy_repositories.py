@@ -59,6 +59,7 @@ from backend.app.domain.identifiers import (
     CandidateProfileId,
     CompanyId,
     EligibilityResultId,
+    LLMConnectionId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
@@ -85,10 +86,16 @@ from backend.app.infrastructure.database.mappers import (
     discovery_record_to_row,
     eligibility_result_to_domain,
     eligibility_result_to_row,
+    llm_connection_to_domain,
+    llm_connection_to_row,
+    llm_run_to_domain,
+    llm_run_to_row,
     match_evaluation_to_domain,
     match_evaluation_to_row,
     opportunity_to_domain,
     opportunity_to_row,
+    provider_session_to_domain,
+    provider_session_to_row,
     search_profile_to_domain,
     search_profile_to_row,
     user_session_to_domain,
@@ -105,9 +112,12 @@ from backend.app.infrastructure.database.models import (
     CompanyLocationRow,
     CompanyRow,
     EligibilityResultRow,
+    LLMConnectionRow,
+    LLMRunRow,
     MatchEvaluationRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
+    ProviderSessionRow,
     SearchProfileRow,
     UserRow,
     UserSessionRow,
@@ -117,6 +127,9 @@ from backend.app.infrastructure.database.types import (
     within_bounds,
     within_radius,
 )
+from backend.app.llm.connection import LLMConnection
+from backend.app.llm.sessions import ProviderSession
+from backend.app.llm.telemetry import LLMRun
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
     CompanyCandidate,
@@ -136,8 +149,11 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
         CompanyDiscoveryRepository,
         CompanyRepository,
         EligibilityResultRepository,
+        LLMConnectionRepository,
+        LLMRunRepository,
         MatchEvaluationRepository,
         OpportunityRepository,
+        ProviderSessionRepository,
         SearchProfileRepository,
         SessionRepository,
         UserRepository,
@@ -148,7 +164,9 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
             "OpportunityRepository", "MatchEvaluationRepository",
             "EligibilityResultRepository", "UserRepository",
             "SessionRepository", "CandidateProfileRepository",
-            "SearchProfileRepository", "CandidateDocumentRepository"]:
+            "SearchProfileRepository", "CandidateDocumentRepository",
+            "LLMConnectionRepository", "ProviderSessionRepository",
+            "LLMRunRepository"]:
         """Structural conformance, enforced by `mypy backend`.
 
         The `Protocol`s in `contracts` are satisfied by shape, so nothing would
@@ -166,7 +184,10 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
                 SqlAlchemySessionRepository(session),
                 SqlAlchemyCandidateProfileRepository(session),
                 SqlAlchemySearchProfileRepository(session),
-                SqlAlchemyCandidateDocumentRepository(session))
+                SqlAlchemyCandidateDocumentRepository(session),
+                SqlAlchemyLLMConnectionRepository(session),
+                SqlAlchemyProviderSessionRepository(session),
+                SqlAlchemyLLMRunRepository(session))
 
 
 def _rows_affected(result: Result[Any]) -> int:
@@ -1168,6 +1189,145 @@ class SqlAlchemyCandidateDocumentRepository:
             .order_by(CandidateDocumentRow.updated_at.desc(), CandidateDocumentRow.id)
             .limit(limit))
         return tuple(candidate_document_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyLLMConnectionRepository:
+    """`LLMConnectionRepository` over an `AsyncSession`, `user_id` on every statement.
+
+    Another user's connection reads as absent and an upsert cannot take one over: the
+    load misses on the `user_id` predicate, the insert runs, and the primary key
+    rejects it. No `selectinload`: `llm_connection_to_domain` does not read the
+    `sessions` relationship, which exists for the cascade, so loading it on every read
+    would be work for data nothing looks at.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   connection_id: LLMConnectionId) -> LLMConnectionRow | None:
+        result = await self._session.execute(
+            select(LLMConnectionRow).where(LLMConnectionRow.id == connection_id,
+                                           LLMConnectionRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  connection_id: LLMConnectionId) -> LLMConnection | None:
+        row = await self._row(user_id, connection_id)
+        return None if row is None else llm_connection_to_domain(row)
+
+    async def get_default(self, user_id: UserId) -> LLMConnection | None:
+        result = await self._session.execute(
+            select(LLMConnectionRow).where(LLMConnectionRow.user_id == user_id,
+                                           LLMConnectionRow.is_default.is_(True)))
+        row = result.scalar_one_or_none()
+        return None if row is None else llm_connection_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *, enabled_only: bool = False,
+                            limit: int = DEFAULT_LIMIT) -> tuple[LLMConnection, ...]:
+        statement = select(LLMConnectionRow).where(
+            LLMConnectionRow.user_id == user_id)
+        if enabled_only:
+            statement = statement.where(LLMConnectionRow.enabled.is_(True))
+        result = await self._session.execute(
+            statement
+            # Priority then id — the router's own order, so the registry a caller
+            # builds from this list is tried in the sequence the routing rule expects.
+            .order_by(LLMConnectionRow.priority, LLMConnectionRow.id)
+            .limit(limit))
+        return tuple(llm_connection_to_domain(row) for row in result.scalars())
+
+    async def upsert(self, connection: LLMConnection) -> LLMConnection:
+        row = llm_connection_to_row(
+            connection, await self._row(connection.user_id, connection.id))
+        self._session.add(row)
+        # A second default for the same account fails here on
+        # `uq_llm_connections_user_id_default` — which is why a service promoting a
+        # connection calls `clear_default` first.
+        await self._session.flush()
+        return llm_connection_to_domain(row)
+
+    async def clear_default(self, user_id: UserId) -> int:
+        result = await self._session.execute(
+            update(LLMConnectionRow)
+            .where(LLMConnectionRow.user_id == user_id,
+                   LLMConnectionRow.is_default.is_(True))
+            .values(is_default=False))
+        return _rows_affected(result)
+
+    async def delete(self, user_id: UserId,
+                     connection_id: LLMConnectionId) -> bool:
+        result = await self._session.execute(
+            delete(LLMConnectionRow).where(LLMConnectionRow.id == connection_id,
+                                           LLMConnectionRow.user_id == user_id))
+        # Provider sessions go with it by `ON DELETE CASCADE`; telemetry runs stay,
+        # their `connection_id` set NULL, so a bulk `DELETE` is right — no children
+        # need to be in the identity map for the rows to disappear.
+        return bool(_rows_affected(result))
+
+
+class SqlAlchemyProviderSessionRepository:
+    """`ProviderSessionRepository` over an `AsyncSession`, `user_id` on every read.
+
+    The id is uuid5 over `(connection_id, conversation_key)`, so an upsert loads by id
+    only to preserve what the stored row knew; the `get` a resume performs is scoped
+    by `user_id`, so one account cannot continue another's provider-side conversation.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, user_id: UserId, connection_id: LLMConnectionId,
+                  conversation_key: str) -> ProviderSession | None:
+        result = await self._session.execute(
+            select(ProviderSessionRow).where(
+                ProviderSessionRow.user_id == user_id,
+                ProviderSessionRow.connection_id == connection_id,
+                ProviderSessionRow.conversation_key == conversation_key))
+        row = result.scalar_one_or_none()
+        return None if row is None else provider_session_to_domain(row)
+
+    async def upsert(self, session: ProviderSession) -> ProviderSession:
+        result = await self._session.execute(
+            select(ProviderSessionRow).where(ProviderSessionRow.id == session.id))
+        existing = result.scalar_one_or_none()
+        row = provider_session_to_row(session, existing)
+        self._session.add(row)
+        await self._session.flush()
+        return provider_session_to_domain(row)
+
+
+class SqlAlchemyLLMRunRepository:
+    """`LLMRunRepository` over an `AsyncSession`.
+
+    The write is not user-scoped, because a run's owner is nullable — a healthcheck
+    probe has none — but `list_for_user` is, so a telemetry screen only ever surfaces
+    its own account's runs. The upsert loads by the run's own id, so writing the same
+    id twice (STARTED, then a terminal state) updates the one row.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, run_id: UUID) -> LLMRunRow | None:
+        result = await self._session.execute(
+            select(LLMRunRow).where(LLMRunRow.id == run_id))
+        return result.scalar_one_or_none()
+
+    async def upsert(self, run: LLMRun) -> LLMRun:
+        row = llm_run_to_row(run, await self._row(run.id))
+        self._session.add(row)
+        await self._session.flush()
+        return llm_run_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[LLMRun, ...]:
+        result = await self._session.execute(
+            select(LLMRunRow)
+            .where(LLMRunRow.user_id == user_id)
+            .order_by(LLMRunRow.started_at.desc(), LLMRunRow.id)
+            .limit(limit))
+        return tuple(llm_run_to_domain(row) for row in result.scalars())
 
 
 

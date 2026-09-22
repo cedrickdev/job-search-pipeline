@@ -27,11 +27,16 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   // an infrastructure fault (a 500), not something the user did or can fix.
   artifact_unavailable: 'This document could not be retrieved right now. Try again in a moment.',
   candidate_profile_not_found: 'No profile has been saved for this account yet.',
+  // A provider cannot do what a task needs (structured output on a plain CLI, tools on
+  // a bare completion endpoint). The fix is choosing a different provider, not a retry.
+  capability_not_supported: 'This provider does not support what that task needs. Choose a different connection.',
   // A generated line cited an evidence id the profile does not hold. The candidate
   // never types ids, so this is a stale form rather than a mistake to correct inline.
   claim_cites_unknown_evidence: 'That claim refers to evidence that is no longer on file. Reload and try again.',
   company_not_found: 'That company is not in the directory.',
   conflict: 'That change conflicts with something already saved. Reload and retry.',
+  // The prompt plus its history was larger than the model's context window.
+  context_length_exceeded: 'That request was too long for this model to handle.',
   csrf_failed: 'This request could not be verified. Reload the page and try again.',
   database_unavailable: 'The service is temporarily unavailable. Try again in a moment.',
   document_not_found: 'That document does not exist.',
@@ -41,9 +46,37 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   // document, and the answer is to add evidence, never to invent content.
   insufficient_evidence: 'There is not enough evidence on your profile to build this document yet. Add evidence first.',
   invalid_credentials: 'That email address and password do not match an account.',
+  // The connection's fields do not make a coherent shape — a CLI carrying a base URL,
+  // an API missing one. The `messages` on the body say which rule failed.
+  llm_connection_invalid: 'These connection settings are not valid together.',
+  llm_connection_not_found: 'That LLM connection no longer exists.',
+  // A credential was submitted, but the deployment configured no key to encrypt it —
+  // an operator decision, not something a user can fix from this form.
+  llm_secret_key_unavailable: 'This deployment is not configured to store an API key. Ask an administrator to enable it.',
   not_authenticated: 'Your session has ended. Sign in again to continue.',
   onboarding_incomplete: 'Save a profile and at least one active search first.',
+  // The provider's answer exceeded the adapter's hard cap and was cut off.
+  output_limit_exceeded: 'This provider returned more than could be handled. Try again.',
+  // A hosted API refused for want of a valid credential (a 401/403). The fix is the
+  // key on this connection, not a retry.
+  provider_auth_required: 'This provider rejected its credentials. Check the API key on this connection.',
+  provider_cancelled: 'That request was cancelled before it finished.',
+  // The provider's own safety filter refused the request or the completion.
+  provider_content_filtered: 'This provider’s safety filter refused that request.',
+  provider_internal_error: 'This provider failed unexpectedly. Try again in a moment.',
+  // Required configuration is missing or invalid before any request — no base URL, a
+  // local endpoint that is not loopback. Surfaces from a healthcheck of a bad shape.
+  provider_misconfigured: 'This connection is not configured correctly. Check its endpoint and model.',
+  provider_protocol_error: 'This provider returned something that could not be understood.',
+  provider_rate_limited: 'This provider is rate-limiting requests. Try again shortly.',
+  provider_timeout: 'This provider did not answer in time. Try again.',
+  provider_unavailable: 'This provider could not be reached. Check that it is running.',
   search_profile_not_found: 'That saved search no longer exists.',
+  // A resume was asked for a session the provider no longer holds.
+  session_not_found: 'That session has expired on the provider. Try again.',
+  // The model answered, but its JSON did not match the requested schema even after the
+  // one repair attempt — the content is untrusted and dropped rather than half-parsed.
+  structured_output_invalid: 'This provider returned an answer in the wrong format. Try again.',
   validation_failed: 'Some of the details below are not valid.',
 }
 

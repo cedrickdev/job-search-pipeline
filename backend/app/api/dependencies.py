@@ -45,7 +45,12 @@ from backend.app.companies.bootstrap import build_company_discovery
 from backend.app.companies.providers.manual_seed import (
     PROVIDER_KEY as MANUAL_SEED_PROVIDER,
 )
-from backend.app.core.settings import AuthSettings, DatabaseSettings, DocumentSettings
+from backend.app.core.settings import (
+    AuthSettings,
+    DatabaseSettings,
+    DocumentSettings,
+    LLMSecretSettings,
+)
 from backend.app.discovery.bootstrap import build_country_packs
 from backend.app.documents import (
     DeterministicDocumentGenerator,
@@ -57,6 +62,7 @@ from backend.app.infrastructure.database.engine import (
     create_session_factory,
     session_scope,
 )
+from backend.app.llm.secrets import FernetSecretCipher, SecretCipher
 from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyCandidateDocumentRepository,
     SqlAlchemyCandidateProfileRepository,
@@ -64,6 +70,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyCompanyDiscoveryRepository,
     SqlAlchemyCompanyRepository,
     SqlAlchemyEligibilityResultRepository,
+    SqlAlchemyLLMConnectionRepository,
     SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
     SqlAlchemySearchProfileRepository,
@@ -84,6 +91,7 @@ from backend.app.services.company_discovery import (
 from backend.app.services.documents import DocumentService
 from backend.app.services.evidence import CandidateEvidenceService
 from backend.app.services.geo_search import GeoSearchService
+from backend.app.services.llm_connections import LLMConnectionService
 from backend.app.services.onboarding import OnboardingService
 from country_packs.registry import CountryPackRegistry
 
@@ -101,9 +109,16 @@ SAFE_METHODS: Final[frozenset[str]] = frozenset({"GET", "HEAD", "OPTIONS"})
 AUTH_SETTINGS_ATTRIBUTE: Final[str] = "v2_auth_settings"
 DATABASE_SETTINGS_ATTRIBUTE: Final[str] = "v2_database_settings"
 DOCUMENT_SETTINGS_ATTRIBUTE: Final[str] = "v2_document_settings"
+LLM_KEY_SETTINGS_ATTRIBUTE: Final[str] = "v2_llm_key_settings"
+LLM_CIPHER_ATTRIBUTE: Final[str] = "v2_llm_cipher"
 SESSION_FACTORY_ATTRIBUTE: Final[str] = "v2_session_factory"
 ENGINE_ATTRIBUTE: Final[str] = "v2_engine"
 COUNTRY_PACKS_ATTRIBUTE: Final[str] = "v2_country_packs"
+
+# The sentinel a cached `None` cipher is stored as, so "resolved to no cipher" is told
+# apart from "not resolved yet" — a deployment with no master key must not re-read the
+# environment on every request just because its resolved cipher is falsy.
+_NO_CIPHER: Final = "no-cipher"
 
 
 def now() -> datetime:
@@ -280,6 +295,64 @@ def document_service(
         LocalDocumentArtifactStore(Path(settings.artifact_root)))
 
 
+def llm_secret_settings(request: Request) -> LLMSecretSettings:
+    """The master key for encrypting stored LLM credentials, resolved once and cached.
+
+    Cached on `app.state` like the other settings, and for the same reason: re-reading
+    `JOBSEARCH_LLM_SECRET_KEY` per request would let the key change under a running
+    process and split a deployment's credentials across two ciphers, so a value stored
+    a moment ago could no longer decrypt.
+    """
+    settings = getattr(request.app.state, LLM_KEY_SETTINGS_ATTRIBUTE, None)
+    if isinstance(settings, LLMSecretSettings):
+        return settings
+    resolved = LLMSecretSettings.from_env()
+    setattr(request.app.state, LLM_KEY_SETTINGS_ATTRIBUTE, resolved)
+    return resolved
+
+
+def llm_cipher(
+        settings: Annotated[LLMSecretSettings, Depends(llm_secret_settings)],
+        request: Request,
+) -> SecretCipher | None:
+    """The Fernet cipher, or `None` when the deployment configured no master key.
+
+    Built once and cached on `app.state`: a `Fernet` compiles its key, and a
+    deployment that manages API credentials makes that cost once per process rather
+    than per request. `None` is a legitimate resolved value — a CLI-only deployment
+    encrypts nothing — so it is cached under a sentinel to tell "resolved to no cipher"
+    apart from "not resolved yet", and the connection service raises a clear
+    `LLMSecretKeyUnavailable` only if a credential must actually be stored without one.
+    """
+    cached = getattr(request.app.state, LLM_CIPHER_ATTRIBUTE, None)
+    if isinstance(cached, FernetSecretCipher):
+        return cached
+    if cached == _NO_CIPHER:
+        return None
+    resolved: SecretCipher | None = (
+        FernetSecretCipher(settings.master_key) if settings.master_key else None)
+    setattr(request.app.state, LLM_CIPHER_ATTRIBUTE,
+            resolved if resolved is not None else _NO_CIPHER)
+    return resolved
+
+
+def llm_connection_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        cipher: Annotated[SecretCipher | None, Depends(llm_cipher)],
+) -> LLMConnectionService:
+    """The write side of the LLM settings surface: one repository and the cipher.
+
+    The cipher is what encrypts a submitted credential before it is stored; a CLI-only
+    deployment passes `None` and the service refuses only the write that would need a
+    key it cannot make. No clock in the constructor — the route hands `now` to each
+    write, so a single request's `created_at`/`updated_at` agree. No `http_transport`:
+    a healthcheck opens a real client in production, and a test overrides this whole
+    dependency to inject a `MockTransport`-backed service rather than reach through it.
+    """
+    return LLMConnectionService(
+        SqlAlchemyLLMConnectionRepository(session), cipher=cipher)
+
+
 def assessment_service(
         session: Annotated[AsyncSession, Depends(database_session)],
         packs: Annotated[CountryPackRegistry, Depends(country_packs)],
@@ -401,3 +474,4 @@ GeoSearch = Annotated[GeoSearchService, Depends(geo_search_service)]
 Assessment = Annotated[AssessmentService, Depends(assessment_service)]
 Evidence = Annotated[CandidateEvidenceService, Depends(evidence_service)]
 Documents = Annotated[DocumentService, Depends(document_service)]
+LLMConnections = Annotated[LLMConnectionService, Depends(llm_connection_service)]

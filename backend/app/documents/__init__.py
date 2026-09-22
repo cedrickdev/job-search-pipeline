@@ -20,10 +20,15 @@ from backend.app.documents.generator import (
     REFERENCE_GENERATOR_KEY,
     DeterministicDocumentGenerator,
     DocumentGenerator,
+    InsufficientEvidence,
 )
 from backend.app.documents.guard import (
     CandidateEvidenceGuard,
     numeric_tokens,
+)
+from backend.app.documents.llm_generator import (
+    LLM_GENERATOR_KEY,
+    LLMDocumentGenerator,
 )
 from backend.app.documents.render import (
     DOCUMENT_RENDERER_KEY,
@@ -38,6 +43,9 @@ __all__ = [
     "DOCUMENT_RENDERER_KEY",
     "DocumentArtifactStore",
     "DocumentGenerator",
+    "InsufficientEvidence",
+    "LLM_GENERATOR_KEY",
+    "LLMDocumentGenerator",
     "LocalDocumentArtifactStore",
     "REFERENCE_GENERATOR_KEY",
     "RenderedDocument",

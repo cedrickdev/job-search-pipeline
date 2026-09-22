@@ -123,6 +123,7 @@ from backend.app.domain.identifiers import (
     CompanyId,
     DocumentVersionId,
     EvidenceId,
+    LLMConnectionId,
     OpportunityId,
     SearchProfileId,
     UserId,
@@ -143,6 +144,12 @@ from backend.app.domain.opportunity import (
 )
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserStatus
+from backend.app.llm.connection import (
+    DEFAULT_CONNECTION_PRIORITY,
+    LLMConnection,
+    LLMProviderType,
+)
+from backend.app.llm.contracts import ProviderHealth, ProviderHealthStatus
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
     CompanyGeoResult,
@@ -1476,3 +1483,133 @@ class CandidateDocumentListResponse(ApiModel):
            ) -> "CandidateDocumentListResponse":
         return cls(documents=tuple(CandidateDocumentResponse.of(document)
                                    for document in documents))
+
+
+# --- LLM connections (settings surface) --------------------------------------
+
+class CreateLLMConnectionRequest(ApiModel):
+    """A new LLM connection as the settings form submits it (§4, §13).
+
+    No `id`, `user_id`, or timestamps — the service supplies them from the session and
+    the request clock, so there is no field to file a connection under another account.
+    `api_key` is write-only: it is accepted here and never echoed, and a connection
+    response reports only `has_api_key`. The `provider_type` decides which of the other
+    fields are meaningful, and the `LLMConnection` model — not this schema — is the one
+    that refuses an incoherent shape (a CLI carrying a key, an API without a base URL),
+    so the rule lives in one place.
+    """
+
+    provider_type: LLMProviderType
+    display_name: str = Field(min_length=1, max_length=120)
+    base_url: str | None = Field(default=None, min_length=1, max_length=2000)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key: SecretStr | None = None
+    custom_headers: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
+    is_default: bool = False
+    priority: int = Field(default=DEFAULT_CONNECTION_PRIORITY, ge=0)
+
+
+class UpdateLLMConnectionRequest(ApiModel):
+    """A partial edit to a connection — every field optional, an unset one untouched.
+
+    The credential needs three states, not two: `api_key` set rotates it,
+    `remove_api_key` clears it, and neither leaves it as stored — so a user edits a
+    gateway's model without re-typing its key, or drops the key without touching the
+    rest. `api_key` and `remove_api_key` together is contradictory and refused here, so
+    the service is never handed an ambiguous instruction.
+    """
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    base_url: str | None = Field(default=None, min_length=1, max_length=2000)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key: SecretStr | None = None
+    remove_api_key: bool = False
+    custom_headers: dict[str, str] | None = None
+    priority: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _key_change_is_unambiguous(self) -> Self:
+        if self.api_key is not None and self.remove_api_key:
+            raise ValueError(
+                "set api_key to rotate the credential or remove_api_key to clear it, "
+                "not both")
+        return self
+
+
+class SetLLMConnectionEnabledRequest(ApiModel):
+    """The on/off a settings page toggles, without deleting the row or its key."""
+
+    enabled: bool
+
+
+class LLMConnectionResponse(ApiModel):
+    """One stored connection, echoed back with the credential reduced to a boolean.
+
+    `has_api_key` is the only thing said about a credential — never its value, never
+    its ciphertext (§13). `provider_type`, `base_url` and `model` describe where and as
+    what the connection reaches its model; `is_default`, `enabled` and `priority` are
+    how a task chooses among a user's connections. `custom_headers` is echoed because a
+    header is a route hint, not a secret — an API key must never be put in one, which
+    the connection model does not police, so the settings UI keeps that field for
+    non-secret headers only.
+    """
+
+    id: LLMConnectionId
+    provider_type: LLMProviderType
+    display_name: str
+    base_url: str | None
+    model: str | None
+    has_api_key: bool
+    custom_headers: dict[str, str]
+    enabled: bool
+    is_default: bool
+    priority: int
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, connection: LLMConnection) -> "LLMConnectionResponse":
+        return cls(
+            id=connection.id,
+            provider_type=connection.provider_type,
+            display_name=connection.display_name,
+            base_url=connection.base_url,
+            model=connection.model,
+            has_api_key=connection.has_api_key,
+            custom_headers=dict(connection.custom_headers),
+            enabled=connection.enabled,
+            is_default=connection.is_default,
+            priority=connection.priority,
+            created_at=connection.created_at,
+            updated_at=connection.updated_at)
+
+
+class LLMConnectionListResponse(ApiModel):
+    """This account's connections, in the router's priority-then-id order, wrapped."""
+
+    connections: tuple[LLMConnectionResponse, ...]
+
+    @classmethod
+    def of(cls, connections: "tuple[LLMConnection, ...]"
+           ) -> "LLMConnectionListResponse":
+        return cls(connections=tuple(LLMConnectionResponse.of(c) for c in connections))
+
+
+class LLMConnectionHealthResponse(ApiModel):
+    """The result of probing a connection's live provider — data, never an exception.
+
+    `status` is the runtime answer to "can this serve a request now?" and `detail` is a
+    secret-free sentence produced by the platform's own redaction, never a raw provider
+    message. A provider being down is an `UNAVAILABLE` status a settings page renders,
+    not an error it must catch.
+    """
+
+    status: ProviderHealthStatus
+    detail: str | None
+    latency_ms: int | None
+
+    @classmethod
+    def of(cls, health: ProviderHealth) -> "LLMConnectionHealthResponse":
+        return cls(status=health.status, detail=health.detail,
+                   latency_ms=health.latency_ms)

@@ -26,6 +26,9 @@ import type {
   DocumentArtifact,
   DocumentVersion,
   GeoLocation,
+  LLMConnection,
+  LLMConnectionHealth,
+  LLMConnectionList,
   OnboardingState,
   OpportunityGeoItem,
   OpportunityGeoResponse,
@@ -44,6 +47,7 @@ const EVIDENCE_ID = '66666666-6666-4666-8666-666666666666'
 const CLAIM_ID = '77777777-7777-4777-8777-777777777777'
 const DOCUMENT_ID = '88888888-8888-4888-8888-888888888888'
 const VERSION_ID = '99999999-9999-4999-8999-999999999999'
+const CONNECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
 export function account(overrides: Partial<Account> = {}): Account {
   return {
@@ -407,4 +411,51 @@ export function documentList(
   documents: CandidateDocument[] = [candidateDocument()],
   overrides: Partial<CandidateDocumentList> = {}): CandidateDocumentList {
   return { documents, ...overrides }
+}
+
+// --- Phase 11: LLM connections -------------------------------------------------------
+//
+// The default is a local OpenAI-compatible connection: an endpoint, no credential, the
+// one shape a keyless-and-enabled default exercises. The cases the settings UI is strict
+// about — a CLI that stores no key, a hosted gateway with `has_api_key: true`, a disabled
+// one — are written by overriding `provider_type`, `has_api_key` and `enabled`, because
+// those are exactly the branches the form and the row treat differently. `has_api_key` is
+// the only thing ever said about a credential; no fixture carries a key value, because no
+// response ever does (§13).
+
+/** One stored connection. The default is an enabled, keyless local endpoint. */
+export function llmConnection(overrides: Partial<LLMConnection> = {}): LLMConnection {
+  return {
+    id: CONNECTION_ID,
+    provider_type: 'LOCAL_OPENAI_COMPATIBLE',
+    display_name: 'Local Ollama',
+    base_url: 'http://127.0.0.1:11434/v1',
+    model: 'llama3.2',
+    has_api_key: false,
+    custom_headers: {},
+    enabled: true,
+    is_default: true,
+    priority: 100,
+    created_at: '2026-01-02T09:00:00Z',
+    updated_at: '2026-01-02T09:00:00Z',
+    ...overrides,
+  }
+}
+
+/** This account's connections, in priority-then-id order, wrapped. */
+export function llmConnectionList(
+  connections: LLMConnection[] = [llmConnection()],
+  overrides: Partial<LLMConnectionList> = {}): LLMConnectionList {
+  return { connections, ...overrides }
+}
+
+/** A health probe result. The default is a reachable provider with a latency. */
+export function llmConnectionHealth(
+  overrides: Partial<LLMConnectionHealth> = {}): LLMConnectionHealth {
+  return {
+    status: 'HEALTHY',
+    detail: null,
+    latency_ms: 42,
+    ...overrides,
+  }
 }

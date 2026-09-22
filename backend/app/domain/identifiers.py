@@ -46,6 +46,9 @@ EligibilityResultId = NewType("EligibilityResultId", UUID)
 ApplicationDecisionId = NewType("ApplicationDecisionId", UUID)
 CandidateDocumentId = NewType("CandidateDocumentId", UUID)
 DocumentVersionId = NewType("DocumentVersionId", UUID)
+LLMConnectionId = NewType("LLMConnectionId", UUID)
+ProviderSessionId = NewType("ProviderSessionId", UUID)
+LLMRunId = NewType("LLMRunId", UUID)
 
 
 def new_user_id() -> UserId:
@@ -276,3 +279,41 @@ def document_version_id(document_id: CandidateDocumentId,
     return DocumentVersionId(
         uuid5(SURROGATE_KEY_NAMESPACE,
               f"document_version:{document_id}:{version}"))
+
+
+def new_llm_connection_id() -> LLMConnectionId:
+    """The id of a user's configured way to reach an LLM provider (Phase 11).
+
+    Random, not derived: a user legitimately keeps two connections of the same
+    provider type — a work OpenAI-compatible gateway and a personal one — so
+    nothing about the pair `(user, provider_type)` identifies one, and a derived
+    key would make the second overwrite the first.
+    """
+    return LLMConnectionId(uuid4())
+
+
+def provider_session_id(connection_id: LLMConnectionId,
+                        conversation_key: str) -> ProviderSessionId:
+    """The id of one connection's session for one logical conversation.
+
+    Derived rather than random, for the reason `default_candidate_profile_id` is:
+    a conversation continued against the same connection must reuse — and refresh —
+    the one session row that holds the provider's `external_session_id`, not append
+    a second every time it resumes. `conversation_key` is the caller's stable handle
+    for the exchange (a chat id, a prep session key); `connection_id` scopes it,
+    because the same conversation resumed against a different provider is a genuinely
+    different provider-side session.
+    """
+    return ProviderSessionId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"provider_session:{connection_id}:{conversation_key}"))
+
+
+def new_llm_run_id() -> LLMRunId:
+    """The id of one telemetry record of one LLM call (Phase 11).
+
+    Random: a run is an event, not an entity a retry should collapse onto — two
+    calls for the same purpose are two rows, which is the whole point of the
+    telemetry (docs/LLM_PROVIDER_ARCHITECTURE.md §12).
+    """
+    return LLMRunId(uuid4())

@@ -6,7 +6,7 @@ This directory is the source of truth for the V2 product and implementation plan
 
 1. [V2 Product Specification](./V2_SPECIFICATION.md)
 2. [Technical Architecture](./ARCHITECTURE.md)
-3. [LLM Provider Architecture](./LLM_PROVIDER_ARCHITECTURE.md)
+3. [LLM Provider Architecture](./LLM_PROVIDER_ARCHITECTURE.md) — the provider-neutral runtime: the typed contract, the deterministic router, the CLI and OpenAI-compatible adapters, capability filtering, explicit fallbacks and telemetry, built in Phase 11
 4. [Implementation Plan](./IMPLEMENTATION_PLAN.md)
 5. [Frontend Architecture](./FRONTEND_ARCHITECTURE.md) — Nuxt 4 + Vue 3, the active frontend since Phase 3
 6. [Engineering Standards](./ENGINEERING_STANDARDS.md)
@@ -19,7 +19,8 @@ This directory is the source of truth for the V2 product and implementation plan
 13. [Matching and Eligibility](./MATCHING_ELIGIBILITY.md) — the two deterministic engines, the score-versus-verdict separation, evidence coverage, the legal-safety rule and the assessment API, built in Phase 9
 14. [Candidate Evidence Store](./CANDIDATE_EVIDENCE.md) — the attested-facts substrate a document is built from, the citation invariant, the evidence/claim API and screen, built in Phase 10
 15. [ATS Documents](./ATS_DOCUMENTS.md) — the résumé/cover-letter generator, the evidence guard's four gates, WeasyPrint rendering, the version lifecycle and the document API, built in Phase 10
-16. [V1 Baseline](./V1_BASELINE.md) — what V1 is and what its checks report, measured in Phase 0
+16. [LLM Connections](./LLM_CONNECTIONS.md) — the settings surface for the provider-neutral platform: user-owned connections, the write-only credential, Fernet encryption at rest, health as a probe and the `/providers` screen, built in Phase 11
+17. [V1 Baseline](./V1_BASELINE.md) — what V1 is and what its checks report, measured in Phase 0
 
 ## Product principle
 

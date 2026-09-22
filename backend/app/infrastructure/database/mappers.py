@@ -93,8 +93,11 @@ from backend.app.domain.identifiers import (
     DocumentVersionId,
     EligibilityResultId,
     EvidenceId,
+    LLMConnectionId,
+    LLMRunId,
     MatchEvaluationId,
     OpportunityId,
+    ProviderSessionId,
     SearchProfileId,
     UserId,
     UserSessionId,
@@ -132,16 +135,24 @@ from backend.app.infrastructure.database.models import (
     DocumentVersionRow,
     EligibilityCheckRow,
     EligibilityResultRow,
+    LLMConnectionRow,
+    LLMRunRow,
     LocationColumnsMixin,
     MatchDimensionScoreRow,
     MatchEvaluationRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
+    ProviderSessionRow,
     SearchAreaRow,
     SearchProfileRow,
     UserRow,
     UserSessionRow,
 )
+from backend.app.llm.connection import LLMConnection, LLMProviderType
+from backend.app.llm.contracts import TaskPurpose
+from backend.app.llm.failures import LLMFailureCode
+from backend.app.llm.sessions import ProviderSession
+from backend.app.llm.telemetry import LLMRun, LLMRunStatus
 
 """Namespace for primary keys the domain does not carry.
 
@@ -1436,6 +1447,174 @@ def candidate_document_to_domain(row: CandidateDocumentRow) -> CandidateDocument
         versions=tuple(_document_version_to_domain(child) for child in row.versions),
         created_at=row.created_at,
         updated_at=row.updated_at)
+
+
+# Phase 11: the provider-neutral LLM platform's persisted values. Three plain
+# projections — a connection, a provider session, a telemetry run — each re-validated
+# through its model on the way out, so a row that reached the table past the CHECKs
+# (a hand-built one in a test) still fails here rather than producing a value the
+# router or the factory would then trust.
+#
+# The credential is the one field handled with care: `encrypted_api_key` is copied as
+# the opaque ciphertext it is, never decrypted here — decryption is the factory's job,
+# at the instant a provider is built (docs/LLM_PROVIDER_ARCHITECTURE.md §21). This
+# module only moves the ciphertext between the row and the value.
+
+
+def llm_connection_to_row(connection: LLMConnection,
+                          row: LLMConnectionRow | None = None) -> LLMConnectionRow:
+    """An `LLMConnection` onto its row.
+
+    `created_at` and `updated_at` are written from the domain object, as on `users`:
+    the caller owns the clock, so a test can store a connection created last week.
+    `custom_headers` is copied into a new dict rather than assigned, for the reason
+    `discovery_record_to_row` copies `raw`: the domain mapping is not frozen, and
+    handing the same object to SQLAlchemy would let a later mutation change what is
+    flushed.
+    """
+    target = LLMConnectionRow(id=connection.id) if row is None else row
+    target.user_id = connection.user_id
+    target.provider_type = connection.provider_type
+    target.display_name = connection.display_name
+    target.base_url = connection.base_url
+    target.model = connection.model
+    target.encrypted_api_key = connection.encrypted_api_key
+    target.secret_version = connection.secret_version
+    target.custom_headers = dict(connection.custom_headers)
+    target.enabled = connection.enabled
+    target.is_default = connection.is_default
+    target.priority = connection.priority
+    target.created_at = connection.created_at
+    target.updated_at = connection.updated_at
+    return target
+
+
+def llm_connection_to_domain(row: LLMConnectionRow) -> LLMConnection:
+    """An `llm_connections` row as an `LLMConnection`, re-validated through the model.
+
+    The transport-shape and secret-pair invariants run again here, so a row that
+    somehow reached the table with a CLI connection carrying a base URL fails with a
+    sentence rather than being handed to the factory.
+    """
+    return LLMConnection(
+        id=LLMConnectionId(row.id),
+        user_id=UserId(row.user_id),
+        provider_type=LLMProviderType(row.provider_type),
+        display_name=row.display_name,
+        base_url=row.base_url,
+        model=row.model,
+        encrypted_api_key=row.encrypted_api_key,
+        secret_version=row.secret_version,
+        custom_headers=dict(row.custom_headers),
+        enabled=row.enabled,
+        is_default=row.is_default,
+        priority=row.priority,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def provider_session_to_row(session: ProviderSession,
+                            row: ProviderSessionRow | None = None
+                            ) -> ProviderSessionRow:
+    """A `ProviderSession` onto its row.
+
+    `created_at`/`updated_at` are domain-supplied, as on the connection. The id is
+    already derived from `(connection_id, conversation_key)` by the domain, so this is
+    a plain projection with no key to compute.
+    """
+    target = ProviderSessionRow(id=session.id) if row is None else row
+    target.user_id = session.user_id
+    target.connection_id = session.connection_id
+    target.conversation_key = session.conversation_key
+    target.purpose = session.purpose
+    target.external_session_id = session.external_session_id
+    target.created_at = session.created_at
+    target.updated_at = session.updated_at
+    return target
+
+
+def provider_session_to_domain(row: ProviderSessionRow) -> ProviderSession:
+    """A `provider_sessions` row as a `ProviderSession`, re-validated on the way out.
+
+    `_id_is_derived_from_its_key` runs again, so a row whose id disagrees with its
+    `(connection_id, conversation_key)` — one a resume would never find — fails here.
+    """
+    return ProviderSession(
+        id=ProviderSessionId(row.id),
+        user_id=UserId(row.user_id),
+        connection_id=LLMConnectionId(row.connection_id),
+        conversation_key=row.conversation_key,
+        purpose=TaskPurpose(row.purpose),
+        external_session_id=row.external_session_id,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def llm_run_to_row(run: LLMRun, row: LLMRunRow | None = None) -> LLMRunRow:
+    """An `LLMRun` onto its row.
+
+    `started_at` and `finished_at` are domain facts (the call's own window), so they
+    are written from the object; `created_at`/`updated_at` are left to the server
+    defaults, the row-write bookkeeping. Every token, cost and latency field is copied
+    as-is, keeping the unknown as NULL (§58) rather than a fabricated 0.
+    """
+    target = LLMRunRow(id=run.id) if row is None else row
+    target.user_id = run.user_id
+    target.connection_id = run.connection_id
+    target.provider_key = run.provider_key
+    target.provider_type = run.provider_type
+    target.model = run.model
+    target.purpose = run.purpose
+    target.status = run.status
+    target.prompt_name = run.prompt_name
+    target.prompt_version = run.prompt_version
+    target.prompt_tokens = run.prompt_tokens
+    target.completion_tokens = run.completion_tokens
+    target.total_tokens = run.total_tokens
+    target.cost_usd = run.cost_usd
+    target.latency_ms = run.latency_ms
+    target.failure_code = run.failure_code
+    target.failure_detail = run.failure_detail
+    target.fallback_from = run.fallback_from
+    target.fallback_reason = run.fallback_reason
+    target.started_at = run.started_at
+    target.finished_at = run.finished_at
+    return target
+
+
+def llm_run_to_domain(row: LLMRunRow) -> LLMRun:
+    """An `llm_runs` row as an `LLMRun`, re-validated through the model.
+
+    `_status_agrees_with_shape` and `_fallback_pair_is_complete` run again, so a row
+    that reached the table past the CHECKs still cannot become a run claiming a
+    success with a failure code or a fallback with no reason.
+    """
+    return LLMRun(
+        id=LLMRunId(row.id),
+        user_id=None if row.user_id is None else UserId(row.user_id),
+        connection_id=(None if row.connection_id is None
+                       else LLMConnectionId(row.connection_id)),
+        provider_key=row.provider_key,
+        provider_type=(None if row.provider_type is None
+                       else LLMProviderType(row.provider_type)),
+        model=row.model,
+        purpose=TaskPurpose(row.purpose),
+        status=LLMRunStatus(row.status),
+        prompt_name=row.prompt_name,
+        prompt_version=row.prompt_version,
+        prompt_tokens=row.prompt_tokens,
+        completion_tokens=row.completion_tokens,
+        total_tokens=row.total_tokens,
+        cost_usd=row.cost_usd,
+        latency_ms=row.latency_ms,
+        failure_code=(None if row.failure_code is None
+                      else LLMFailureCode(row.failure_code)),
+        failure_detail=row.failure_detail,
+        fallback_from=row.fallback_from,
+        fallback_reason=(None if row.fallback_reason is None
+                         else LLMFailureCode(row.fallback_reason)),
+        started_at=row.started_at,
+        finished_at=row.finished_at)
 
 
 

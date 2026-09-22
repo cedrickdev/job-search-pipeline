@@ -1635,6 +1635,89 @@
         "title": "CoverLetterDocument",
         "type": "object"
       },
+      "CreateLLMConnectionRequest": {
+        "additionalProperties": false,
+        "description": "A new LLM connection as the settings form submits it (§4, §13).\n\nNo `id`, `user_id`, or timestamps — the service supplies them from the session and\nthe request clock, so there is no field to file a connection under another account.\n`api_key` is write-only: it is accepted here and never echoed, and a connection\nresponse reports only `has_api_key`. The `provider_type` decides which of the other\nfields are meaningful, and the `LLMConnection` model — not this schema — is the one\nthat refuses an incoherent shape (a CLI carrying a key, an API without a base URL),\nso the rule lives in one place.",
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "format": "password",
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "custom_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Custom Headers",
+            "type": "object"
+          },
+          "display_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "priority": {
+            "default": 100,
+            "minimum": 0.0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "provider_type": {
+            "$ref": "#/components/schemas/LLMProviderType"
+          }
+        },
+        "required": [
+          "provider_type",
+          "display_name"
+        ],
+        "title": "CreateLLMConnectionRequest",
+        "type": "object"
+      },
       "DetectedAtsResponse": {
         "additionalProperties": false,
         "description": "Which platform an employer publishes on, and how sure that is.\n\n`status` is the whole point (§10): `CONFIRMED` came from the platform's own\naddress space, `LIKELY` from configuration a human typed. A client that showed\nthe two the same way would be inventing certainty the backend refused to claim.",
@@ -2495,6 +2578,162 @@
         "title": "InterviewPatch",
         "type": "object"
       },
+      "LLMConnectionHealthResponse": {
+        "additionalProperties": false,
+        "description": "The result of probing a connection's live provider — data, never an exception.\n\n`status` is the runtime answer to \"can this serve a request now?\" and `detail` is a\nsecret-free sentence produced by the platform's own redaction, never a raw provider\nmessage. A provider being down is an `UNAVAILABLE` status a settings page renders,\nnot an error it must catch.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProviderHealthStatus"
+          }
+        },
+        "required": [
+          "status",
+          "detail",
+          "latency_ms"
+        ],
+        "title": "LLMConnectionHealthResponse",
+        "type": "object"
+      },
+      "LLMConnectionListResponse": {
+        "additionalProperties": false,
+        "description": "This account's connections, in the router's priority-then-id order, wrapped.",
+        "properties": {
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/LLMConnectionResponse"
+            },
+            "title": "Connections",
+            "type": "array"
+          }
+        },
+        "required": [
+          "connections"
+        ],
+        "title": "LLMConnectionListResponse",
+        "type": "object"
+      },
+      "LLMConnectionResponse": {
+        "additionalProperties": false,
+        "description": "One stored connection, echoed back with the credential reduced to a boolean.\n\n`has_api_key` is the only thing said about a credential — never its value, never\nits ciphertext (§13). `provider_type`, `base_url` and `model` describe where and as\nwhat the connection reaches its model; `is_default`, `enabled` and `priority` are\nhow a task chooses among a user's connections. `custom_headers` is echoed because a\nheader is a route hint, not a secret — an API key must never be put in one, which\nthe connection model does not police, so the settings UI keeps that field for\nnon-secret headers only.",
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "custom_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Custom Headers",
+            "type": "object"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "has_api_key": {
+            "title": "Has Api Key",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "priority": {
+            "title": "Priority",
+            "type": "integer"
+          },
+          "provider_type": {
+            "$ref": "#/components/schemas/LLMProviderType"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider_type",
+          "display_name",
+          "base_url",
+          "model",
+          "has_api_key",
+          "custom_headers",
+          "enabled",
+          "is_default",
+          "priority",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "LLMConnectionResponse",
+        "type": "object"
+      },
+      "LLMProviderType": {
+        "description": "Which adapter a connection is built into — the closed set Phase 11 implements.\n\nDispatched on by `backend.app.llm.factory` alone, and nowhere else: the factory is\nthe one place allowed to know a provider type maps to a concrete adapter, which is\nwhat keeps the \"no `if provider == …` in business code\" rule (§3) true. Later\nphases add native Anthropic/Gemini adapters here (§105); Phase 11 ships the CLI\npair and the two OpenAI-compatible transports.",
+        "enum": [
+          "CLAUDE_CODE",
+          "CODEX",
+          "OPENAI_COMPATIBLE",
+          "LOCAL_OPENAI_COMPATIBLE"
+        ],
+        "title": "LLMProviderType",
+        "type": "string"
+      },
       "LanguageLevel": {
         "description": "CEFR levels plus NATIVE.\n\nCEFR is a cross-border scale rather than one country's vocabulary, so it is\nsafe in the universal model; a Country Pack that publishes its own scale maps\nonto these levels instead of adding members here.",
         "enum": [
@@ -3172,6 +3411,19 @@
         "title": "ProviderHealthResponse",
         "type": "object"
       },
+      "ProviderHealthStatus": {
+        "description": "The runtime answer to \"can this provider serve a request now?\" (§37).\n\nSeparate from `Capability` on purpose (see `backend.app.llm.capabilities`): a\nprovider can be fully capable and momentarily `UNAVAILABLE`, or capable and\n`AUTH_REQUIRED` until a key is set. `UNKNOWN` is the honest state before anything\nhas probed it — distinct from `UNAVAILABLE`, which is a probe that failed.",
+        "enum": [
+          "UNKNOWN",
+          "HEALTHY",
+          "DEGRADED",
+          "UNAVAILABLE",
+          "AUTH_REQUIRED",
+          "MISCONFIGURED"
+        ],
+        "title": "ProviderHealthStatus",
+        "type": "string"
+      },
       "RadiusSearchArea": {
         "additionalProperties": false,
         "description": "Everything within `radius_km` of `center`.\n\nNo country field, and that is the point: a 30 km radius around Geneva covers\ntwo countries, and a search that silently added a country filter would drop\nthe French side of a commute the candidate would happily make. Right-to-work\nis an eligibility question (`WorkAuthorization`), not a discovery filter.",
@@ -3729,6 +3981,21 @@
         "title": "SessionResponse",
         "type": "object"
       },
+      "SetLLMConnectionEnabledRequest": {
+        "additionalProperties": false,
+        "description": "The on/off a settings page toggles, without deleting the row or its key.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "SetLLMConnectionEnabledRequest",
+        "type": "object"
+      },
       "SettingsBody": {
         "properties": {
           "auto_apply": {
@@ -3921,6 +4188,97 @@
           "status"
         ],
         "title": "StatusBody",
+        "type": "object"
+      },
+      "UpdateLLMConnectionRequest": {
+        "additionalProperties": false,
+        "description": "A partial edit to a connection — every field optional, an unset one untouched.\n\nThe credential needs three states, not two: `api_key` set rotates it,\n`remove_api_key` clears it, and neither leaves it as stored — so a user edits a\ngateway's model without re-typing its key, or drops the key without touching the\nrest. `api_key` and `remove_api_key` together is contradictory and refused here, so\nthe service is never handed an ambiguous instruction.",
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "format": "password",
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "custom_headers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Headers"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "remove_api_key": {
+            "default": false,
+            "title": "Remove Api Key",
+            "type": "boolean"
+          }
+        },
+        "title": "UpdateLLMConnectionRequest",
         "type": "object"
       },
       "UserStatus": {
@@ -6832,6 +7190,341 @@
         "summary": "Generate Resume",
         "tags": [
           "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/settings/llm/connections": {
+      "get": {
+        "description": "This account's connections, in the router's priority-then-id order.\n\nEvery credential is reduced to `has_api_key`; the values never leave the service.",
+        "operationId": "list_connections_api_v2_settings_llm_connections_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Connections",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      },
+      "post": {
+        "description": "Store a new connection for this account, encrypting any credential first.\n\n201, because it creates a resource: the response carries the id the connection was\nfiled under, which a later edit, probe or default targets. 422 when the shape is\nincoherent (a CLI carrying a key, an API missing a base URL) — the `LLMConnection`\nmodel decides that once, for every writer. 409 (`llm_secret_key_unavailable`) when\na credential is submitted but the deployment configured no master key to encrypt\nit: the honest answer, rather than storing the key in the clear.",
+        "operationId": "create_connection_api_v2_settings_llm_connections_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLLMConnectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Connection",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      }
+    },
+    "/api/v2/settings/llm/connections/{connection_id}": {
+      "delete": {
+        "description": "Delete one connection, and its stored credential with it.\n\nNot idempotent, on purpose: a second `DELETE` answers 404 rather than 204, so a\nclient working from a stale list is told rather than misled. Scoped to the owner —\na delete of an id that is not this account's removes nothing and 404s, the same as\na never-created id, so a caller cannot probe another account by trying to delete.",
+        "operationId": "delete_connection_api_v2_settings_llm_connections__connection_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Connection",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      },
+      "get": {
+        "description": "One connection, credential reduced to `has_api_key`.\n\n404 for \"no such connection\" and \"not yours\" alike — the service raises one error\nfor both, so a caller cannot enumerate another account's connections by id.",
+        "operationId": "read_connection_api_v2_settings_llm_connections__connection_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Connection",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      },
+      "patch": {
+        "description": "Apply a partial edit, re-encrypting or clearing the credential on request.\n\nA `PATCH`, not a `PUT`: an unset field is left as stored, and the credential has\nthree states — `api_key` rotates it, `remove_api_key` clears it, neither leaves it.\nSending both is a 422, refused before the service is called. 404 when the id is not\nthis account's; 422 when the edit would leave an incoherent shape; 409 when a new\ncredential is given but no master key is configured.",
+        "operationId": "update_connection_api_v2_settings_llm_connections__connection_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLLMConnectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Connection",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      }
+    },
+    "/api/v2/settings/llm/connections/{connection_id}/default": {
+      "put": {
+        "description": "Make one connection the account's default, clearing the flag on the rest.\n\nThe invariant \"at most one default\" holds after the write: the service clears every\nother default first, then marks this one. 404 when not this account's.",
+        "operationId": "set_connection_default_api_v2_settings_llm_connections__connection_id__default_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Connection Default",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      }
+    },
+    "/api/v2/settings/llm/connections/{connection_id}/enabled": {
+      "put": {
+        "description": "Turn a connection on or off without deleting it or its stored key.\n\nA disabled connection keeps its row and its credential and is simply filtered out\nof the router's candidates until it is turned back on. 404 when not this account's.",
+        "operationId": "set_connection_enabled_api_v2_settings_llm_connections__connection_id__enabled_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetLLMConnectionEnabledRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Connection Enabled",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      }
+    },
+    "/api/v2/settings/llm/connections/{connection_id}/healthcheck": {
+      "post": {
+        "description": "Probe one connection's live provider and return its health (not stored).\n\nA `POST` because it does work — it builds the provider and reaches out — even\nthough it stores nothing. The result is data: a provider that is down is an\n`UNAVAILABLE` status the settings page renders, and its `detail` is a secret-free\nsentence the platform composed, never a raw provider message. 404 when the id is\nnot this account's.",
+        "operationId": "healthcheck_connection_api_v2_settings_llm_connections__connection_id__healthcheck_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionHealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Healthcheck Connection",
+        "tags": [
+          "v2-llm-settings"
         ]
       }
     }

@@ -31,6 +31,7 @@ from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from backend.app.api import API_V2_PREFIX
 from backend.app.documents import ArtifactNotFound
 from backend.app.documents.generator import InsufficientEvidence
+from backend.app.llm.failures import LLMError, LLMFailureCode
 from backend.app.services.assessment import (
     CandidateProfileNotFound,
     OpportunityNotFound,
@@ -46,6 +47,11 @@ from backend.app.services.documents import (
     DocumentNotFound,
 )
 from backend.app.services.evidence import ClaimCitesUnknownEvidence
+from backend.app.services.llm_connections import (
+    LLMConnectionInvalid,
+    LLMConnectionNotFound,
+    LLMSecretKeyUnavailable,
+)
 from backend.app.services.onboarding import OnboardingIncomplete, SearchProfileNotFound
 
 # What a client is told when the database cannot be reached. Deliberately not
@@ -61,6 +67,23 @@ DATABASE_UNAVAILABLE: Final[str] = "database_unavailable"
 # is the one form that is correct on both, and 422 is what FastAPI's own validation
 # handler returns — this handler only changes the body.
 UNPROCESSABLE_CONTENT: Final[int] = 422
+
+# Which HTTP status each LLM failure becomes when one surfaces to a client. The LLM is
+# an upstream dependency, so an unmapped failure is a 502 (`_llm_error` defaults there):
+# from the caller's side a provider fault is a bad answer from a gateway, not a fault of
+# the request. The mapped ones are the failures a client can act on differently — a bad
+# credential or a missing capability is the operator's to fix (409, not a retry), a rate
+# limit is retryable after a wait (429), a timeout or an outage is a transient upstream
+# state (504/503). `STRUCTURED_OUTPUT_INVALID` stays a 502: the model misbehaved, which
+# is the gateway's problem to the caller, not the request's.
+_LLM_STATUS: Final[dict[LLMFailureCode, int]] = {
+    LLMFailureCode.PROVIDER_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
+    LLMFailureCode.PROVIDER_TIMEOUT: status.HTTP_504_GATEWAY_TIMEOUT,
+    LLMFailureCode.PROVIDER_AUTH_REQUIRED: status.HTTP_409_CONFLICT,
+    LLMFailureCode.PROVIDER_RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
+    LLMFailureCode.PROVIDER_MISCONFIGURED: status.HTTP_409_CONFLICT,
+    LLMFailureCode.CAPABILITY_NOT_SUPPORTED: status.HTTP_409_CONFLICT,
+}
 
 
 class ApiError(Exception):
@@ -235,6 +258,47 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         return _json(UNPROCESSABLE_CONTENT, "claim_cites_unknown_evidence",
                      "the claim cites evidence that is not on your profile",
                      evidence_ids=[str(eid) for eid in exc.evidence_ids])
+
+    @app.exception_handler(LLMConnectionNotFound)
+    async def _llm_connection_missing(request: Request,
+                                      exc: LLMConnectionNotFound) -> JSONResponse:
+        # 404 for "no such connection" and "not yours" alike — the service raises one
+        # exception for both so a caller cannot enumerate other users' connection ids.
+        # `str(exc)` is not returned: it carries the requested id, which is the client's
+        # own but need not be echoed to say "not found".
+        return _json(status.HTTP_404_NOT_FOUND, "llm_connection_not_found",
+                     "no such LLM connection")
+
+    @app.exception_handler(LLMConnectionInvalid)
+    async def _llm_connection_invalid(request: Request,
+                                      exc: LLMConnectionInvalid) -> JSONResponse:
+        # 422: the fields are well-formed individually but do not make a coherent
+        # connection (a CLI carrying a base URL, an API missing one). The `messages`
+        # are the model's own validator sentences, not the rejected input, so a form
+        # can show which rule failed without a value being echoed back.
+        return _json(UNPROCESSABLE_CONTENT, "llm_connection_invalid",
+                     "the connection fields do not form a valid connection",
+                     messages=list(exc.messages))
+
+    @app.exception_handler(LLMSecretKeyUnavailable)
+    async def _llm_secret_unavailable(request: Request,
+                                      exc: LLMSecretKeyUnavailable) -> JSONResponse:
+        # 409, not 422: the request is well-formed, but storing its credential would
+        # need a master key the deployment never configured. The honest answer is that
+        # the platform cannot hold a secret, not to store the key in the clear. The
+        # sentence is the service's own fixed explanation, never user input.
+        return _json(status.HTTP_409_CONFLICT, "llm_secret_key_unavailable",
+                     "this deployment is not configured to store an API credential")
+
+    @app.exception_handler(LLMError)
+    async def _llm_error(request: Request, exc: LLMError) -> JSONResponse:
+        # A provider failure, normalized upstream to a typed, secret-free `LLMError`
+        # (the detail is composed from a fixed table, never a provider's own message —
+        # see `backend.app.llm.failures`). The status comes from the code; the body's
+        # `error` is the failure code lowercased, so a client branches on the same
+        # closed vocabulary the LLM layer uses (§61) rather than parsing the sentence.
+        status_code = _LLM_STATUS.get(exc.code, status.HTTP_502_BAD_GATEWAY)
+        return _json(status_code, exc.code.value.lower(), exc.detail)
 
     @app.exception_handler(IntegrityError)
     async def _integrity(request: Request, exc: IntegrityError) -> JSONResponse:

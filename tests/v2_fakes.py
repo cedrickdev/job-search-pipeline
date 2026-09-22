@@ -62,8 +62,11 @@ from backend.app.domain.identifiers import (
     CompanyDiscoveryRecordId,
     CompanyId,
     EligibilityResultId,
+    LLMConnectionId,
+    LLMRunId,
     MatchEvaluationId,
     OpportunityId,
+    ProviderSessionId,
     SearchProfileId,
     UserId,
     UserSessionId,
@@ -72,6 +75,9 @@ from backend.app.domain.matching import MatchEvaluation
 from backend.app.domain.opportunity import Opportunity
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserSession, normalize_email
+from backend.app.llm.connection import LLMConnection
+from backend.app.llm.sessions import ProviderSession
+from backend.app.llm.telemetry import LLMRun
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
     CandidateDocumentRepository,
@@ -84,11 +90,14 @@ from backend.app.repositories.contracts import (
     CompanyPage,
     CompanyRepository,
     EligibilityResultRepository,
+    LLMConnectionRepository,
+    LLMRunRepository,
     MatchedRadius,
     MatchEvaluationRepository,
     OpportunityGeoResult,
     OpportunityNearby,
     OpportunityRepository,
+    ProviderSessionRepository,
     SearchProfileRepository,
     SessionRepository,
     UserRepository,
@@ -106,7 +115,8 @@ def _implements_contracts() -> tuple[
         SearchProfileRepository, CompanyRepository, CareerSiteRepository,
         CompanyDiscoveryRepository, OpportunityRepository,
         MatchEvaluationRepository, EligibilityResultRepository,
-        CandidateDocumentRepository]:
+        CandidateDocumentRepository, LLMConnectionRepository,
+        ProviderSessionRepository, LLMRunRepository]:
     """Structural conformance, the same guard `sqlalchemy_repositories` carries.
 
     A fake whose signature drifted from the `Protocol` would still run — Python
@@ -120,7 +130,8 @@ def _implements_contracts() -> tuple[
             FakeCompanyRepository(), FakeCareerSiteRepository(),
             FakeCompanyDiscoveryRepository(), FakeOpportunityRepository(),
             FakeMatchEvaluationRepository(), FakeEligibilityResultRepository(),
-            FakeCandidateDocumentRepository())
+            FakeCandidateDocumentRepository(), FakeLLMConnectionRepository(),
+            FakeProviderSessionRepository(), FakeLLMRunRepository())
 
 
 def _meters_between(one: GeoPoint, other: GeoPoint) -> float:
@@ -888,4 +899,108 @@ class FakeCandidateDocumentRepository:
         # updated_at DESC, id`.
         mine.sort(key=lambda document: str(document.id))
         mine.sort(key=lambda document: document.updated_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeLLMConnectionRepository:
+    """LLM connections, keyed by id and scoped by owner on every read (Phase 11).
+
+    User-owned, so a `get` for another account reads as absent — the isolation that
+    matters most for a table holding credentials. Like the real repository, promoting
+    a connection is `clear_default` then `upsert`; this fake does not itself enforce
+    the single-default unique index (the persistence tests do, against PostgreSQL),
+    the same way `FakeUserRepository` leaves `uq_users_email` to the real store.
+    """
+
+    def __init__(self) -> None:
+        self.connections: dict[LLMConnectionId, LLMConnection] = {}
+
+    async def get(self, user_id: UserId,
+                  connection_id: LLMConnectionId) -> LLMConnection | None:
+        found = self.connections.get(connection_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def get_default(self, user_id: UserId) -> LLMConnection | None:
+        return next((connection.model_copy(deep=True)
+                     for connection in self.connections.values()
+                     if connection.user_id == user_id and connection.is_default), None)
+
+    async def list_for_user(self, user_id: UserId, *, enabled_only: bool = False,
+                            limit: int = DEFAULT_LIMIT) -> tuple[LLMConnection, ...]:
+        mine = [connection.model_copy(deep=True)
+                for connection in self.connections.values()
+                if connection.user_id == user_id
+                and (connection.enabled or not enabled_only)]
+        # Priority then id — the router's own order, like the real query.
+        mine.sort(key=lambda connection: (connection.priority, str(connection.id)))
+        return tuple(mine[:limit])
+
+    async def upsert(self, connection: LLMConnection) -> LLMConnection:
+        stored = connection.model_copy(deep=True)
+        self.connections[stored.id] = stored
+        return stored
+
+    async def clear_default(self, user_id: UserId) -> int:
+        cleared = 0
+        for connection_id, connection in list(self.connections.items()):
+            if connection.user_id == user_id and connection.is_default:
+                self.connections[connection_id] = connection.model_copy(
+                    update={"is_default": False})
+                cleared += 1
+        return cleared
+
+    async def delete(self, user_id: UserId, connection_id: LLMConnectionId) -> bool:
+        connection = self.connections.get(connection_id)
+        if connection is None or connection.user_id != user_id:
+            return False
+        del self.connections[connection_id]
+        return True
+
+
+class FakeProviderSessionRepository:
+    """Provider sessions, scoped by owner and keyed by the connection/conversation pair."""
+
+    def __init__(self) -> None:
+        self.sessions: dict[ProviderSessionId, ProviderSession] = {}
+
+    async def get(self, user_id: UserId, connection_id: LLMConnectionId,
+                  conversation_key: str) -> ProviderSession | None:
+        return next((session.model_copy(deep=True)
+                     for session in self.sessions.values()
+                     if session.user_id == user_id
+                     and session.connection_id == connection_id
+                     and session.conversation_key == conversation_key), None)
+
+    async def upsert(self, session: ProviderSession) -> ProviderSession:
+        stored = session.model_copy(deep=True)
+        self.sessions[stored.id] = stored
+        return stored
+
+
+class FakeLLMRunRepository:
+    """Telemetry runs, written once and updated once, and read back per user.
+
+    The write is not user-scoped — a probe's run has no owner — but `list_for_user`
+    is, so a telemetry read only ever surfaces its own account's runs. The upsert
+    keys on the run's own id, so a STARTED run and its terminal update land on one row.
+    """
+
+    def __init__(self) -> None:
+        self.runs: dict[LLMRunId, LLMRun] = {}
+
+    async def upsert(self, run: LLMRun) -> LLMRun:
+        stored = run.model_copy(deep=True)
+        self.runs[stored.id] = stored
+        return stored
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[LLMRun, ...]:
+        mine = [run.model_copy(deep=True) for run in self.runs.values()
+                if run.user_id == user_id]
+        # Most recently started first, ties broken by id — the real `ORDER BY
+        # started_at DESC, id`.
+        mine.sort(key=lambda run: str(run.id))
+        mine.sort(key=lambda run: run.started_at, reverse=True)
         return tuple(mine[:limit])

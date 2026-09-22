@@ -29,6 +29,15 @@ from uuid import UUID, uuid5
 
 from pydantic import SecretStr, TypeAdapter
 
+from backend.app.domain.application import (
+    Application,
+    PinnedDocument,
+)
+from backend.app.domain.application_answer import ApplicationAnswer
+from backend.app.domain.application_event import (
+    ApplicationEvent,
+    SubmissionAttempt,
+)
 from backend.app.domain.candidate import (
     Availability,
     CandidateClaim,
@@ -63,6 +72,7 @@ from backend.app.domain.company import (
     Evidence,
     SpontaneousApplicationChannel,
 )
+from backend.app.domain.decision import ApplicationDecision
 from backend.app.domain.documents import (
     CandidateDocument,
     CandidateDocumentType,
@@ -82,6 +92,10 @@ from backend.app.domain.eligibility import (
 )
 from backend.app.domain.identifiers import (
     SURROGATE_KEY_NAMESPACE,
+    ApplicationDecisionId,
+    ApplicationEventId,
+    ApplicationId,
+    ApplicationPolicyId,
     CandidateDocumentId,
     CandidateProfileId,
     CareerSiteId,
@@ -99,6 +113,7 @@ from backend.app.domain.identifiers import (
     OpportunityId,
     ProviderSessionId,
     SearchProfileId,
+    SubmissionAttemptId,
     UserId,
     UserSessionId,
 )
@@ -110,6 +125,7 @@ from backend.app.domain.opportunity import (
     OpportunityType,
     WorkplaceMode,
 )
+from backend.app.domain.policy import ApplicationPolicy, DimensionThreshold
 from backend.app.domain.search import (
     CountrySearchArea,
     RadiusSearchArea,
@@ -120,6 +136,10 @@ from backend.app.domain.search import (
 )
 from backend.app.domain.user import User, UserSession, UserStatus
 from backend.app.infrastructure.database.models import (
+    ApplicationDecisionRow,
+    ApplicationEventRow,
+    ApplicationPolicyRow,
+    ApplicationRow,
     CandidateAvailabilitySlotRow,
     CandidateClaimRow,
     CandidateDocumentRow,
@@ -145,6 +165,7 @@ from backend.app.infrastructure.database.models import (
     ProviderSessionRow,
     SearchAreaRow,
     SearchProfileRow,
+    SubmissionAttemptRow,
     UserRow,
     UserSessionRow,
 )
@@ -1624,3 +1645,218 @@ def llm_run_to_domain(row: LLMRunRow) -> LLMRun:
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 — the application engine. A policy, a decision, an application and its
+# two append-only child records. `pinned_documents`, `answers`, `reasons` and
+# `dimension_thresholds` are JSONB carrying the domain value objects verbatim —
+# `model_dump(mode="json")` in, `model_validate` out — so a value that reached the
+# table is re-validated through the domain on the way back, never trusted raw.
+# The event and attempt rows are written one at a time by their own repositories
+# (the trail only grows), so unlike `match_evaluations` there is no wholesale
+# child reconciliation on the application row.
+# ---------------------------------------------------------------------------
+
+
+def application_policy_to_row(policy: ApplicationPolicy,
+                              row: ApplicationPolicyRow | None = None
+                              ) -> ApplicationPolicyRow:
+    target = ApplicationPolicyRow(id=policy.id) if row is None else row
+    target.user_id = policy.user_id
+    target.name = policy.name
+    target.is_active = policy.is_active
+    target.mode = policy.mode
+    target.require_approval_before_submission = \
+        policy.require_approval_before_submission
+    target.allowed_opportunity_types = [t.value for t in policy.allowed_opportunity_types]
+    target.minimum_overall_score = policy.minimum_overall_score
+    target.dimension_thresholds = [
+        threshold.model_dump(mode="json") for threshold in policy.dimension_thresholds]
+    target.allow_incomplete_eligibility = policy.allow_incomplete_eligibility
+    target.allow_spontaneous_applications = policy.allow_spontaneous_applications
+    target.max_applications_per_day = policy.max_applications_per_day
+    target.max_applications_per_week = policy.max_applications_per_week
+    target.created_at = policy.created_at
+    target.updated_at = policy.updated_at
+    return target
+
+
+def application_policy_to_domain(row: ApplicationPolicyRow) -> ApplicationPolicy:
+    return ApplicationPolicy(
+        id=ApplicationPolicyId(row.id),
+        user_id=UserId(row.user_id),
+        name=row.name,
+        is_active=row.is_active,
+        mode=row.mode,
+        require_approval_before_submission=row.require_approval_before_submission,
+        allowed_opportunity_types=tuple(
+            OpportunityType(value) for value in row.allowed_opportunity_types),
+        minimum_overall_score=row.minimum_overall_score,
+        dimension_thresholds=tuple(
+            DimensionThreshold.model_validate(entry)
+            for entry in row.dimension_thresholds),
+        allow_incomplete_eligibility=row.allow_incomplete_eligibility,
+        allow_spontaneous_applications=row.allow_spontaneous_applications,
+        max_applications_per_day=row.max_applications_per_day,
+        max_applications_per_week=row.max_applications_per_week,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def application_decision_to_row(decision: ApplicationDecision,
+                                row: ApplicationDecisionRow | None = None
+                                ) -> ApplicationDecisionRow:
+    """A decision onto its row. The embedded match/eligibility snapshots are not
+    persisted here — they live in their own tables and the engine re-reads them —
+    so a row is the intent plus the ids and reasons it is about."""
+    target = ApplicationDecisionRow(id=decision.id) if row is None else row
+    target.user_id = decision.user_id
+    target.candidate_profile_id = decision.candidate_profile_id
+    target.opportunity_id = decision.opportunity_id
+    target.company_id = decision.company_id
+    target.policy_id = decision.policy_id
+    target.kind = decision.kind
+    target.reasons = reasons_to_json(decision.reasons)
+    target.confidence = decision.confidence
+    target.requires_human_review = decision.requires_human_review
+    target.decided_by = decision.decided_by
+    target.decided_at = decision.decided_at
+    return target
+
+
+def application_decision_to_domain(row: ApplicationDecisionRow) -> ApplicationDecision:
+    return ApplicationDecision(
+        id=ApplicationDecisionId(row.id),
+        user_id=UserId(row.user_id),
+        candidate_profile_id=CandidateProfileId(row.candidate_profile_id),
+        opportunity_id=(None if row.opportunity_id is None
+                        else OpportunityId(row.opportunity_id)),
+        company_id=None if row.company_id is None else CompanyId(row.company_id),
+        policy_id=(None if row.policy_id is None
+                   else ApplicationPolicyId(row.policy_id)),
+        kind=row.kind,
+        reasons=reasons_from_json(row.reasons),
+        confidence=row.confidence,
+        requires_human_review=row.requires_human_review,
+        decided_by=row.decided_by,
+        decided_at=row.decided_at)
+
+
+def application_to_row(application: Application,
+                       row: ApplicationRow | None = None) -> ApplicationRow:
+    """An `Application` onto its row, columns only.
+
+    The `events` and `attempts` relationships are deliberately untouched: they are
+    append-only and written by their own repositories, so an application upsert must
+    not reconcile them (which, with `lazy="raise"`, it could not do without an eager
+    load anyway).
+    """
+    target = ApplicationRow(id=application.id) if row is None else row
+    target.user_id = application.user_id
+    target.candidate_profile_id = application.candidate_profile_id
+    target.decision_id = application.decision_id
+    target.channel = application.channel
+    target.state = application.state
+    target.idempotency_key = application.idempotency_key
+    target.opportunity_id = application.opportunity_id
+    target.company_id = application.company_id
+    target.policy_id = application.policy_id
+    target.pinned_documents = [
+        pin.model_dump(mode="json") for pin in application.pinned_documents]
+    target.answers = [answer.model_dump(mode="json") for answer in application.answers]
+    target.form_fingerprint = application.form_fingerprint
+    target.attempt_count = application.attempt_count
+    target.correlation_id = application.correlation_id
+    target.created_at = application.created_at
+    target.updated_at = application.updated_at
+    return target
+
+
+def application_to_domain(row: ApplicationRow) -> Application:
+    return Application(
+        id=ApplicationId(row.id),
+        user_id=UserId(row.user_id),
+        candidate_profile_id=CandidateProfileId(row.candidate_profile_id),
+        decision_id=ApplicationDecisionId(row.decision_id),
+        channel=row.channel,
+        state=row.state,
+        idempotency_key=row.idempotency_key,
+        opportunity_id=(None if row.opportunity_id is None
+                        else OpportunityId(row.opportunity_id)),
+        company_id=None if row.company_id is None else CompanyId(row.company_id),
+        policy_id=(None if row.policy_id is None
+                   else ApplicationPolicyId(row.policy_id)),
+        pinned_documents=tuple(
+            PinnedDocument.model_validate(entry) for entry in row.pinned_documents),
+        answers=tuple(
+            ApplicationAnswer.model_validate(entry) for entry in row.answers),
+        form_fingerprint=row.form_fingerprint,
+        attempt_count=row.attempt_count,
+        correlation_id=row.correlation_id,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def application_event_to_row(event: ApplicationEvent,
+                             row: ApplicationEventRow | None = None
+                             ) -> ApplicationEventRow:
+    target = ApplicationEventRow(id=event.id) if row is None else row
+    target.application_id = event.application_id
+    target.event_type = event.event_type
+    target.actor = event.actor
+    target.from_state = event.from_state
+    target.to_state = event.to_state
+    target.detail = event.detail
+    target.reasons = reasons_to_json(event.reasons)
+    target.correlation_id = event.correlation_id
+    target.occurred_at = event.occurred_at
+    return target
+
+
+def application_event_to_domain(row: ApplicationEventRow) -> ApplicationEvent:
+    return ApplicationEvent(
+        id=ApplicationEventId(row.id),
+        application_id=ApplicationId(row.application_id),
+        event_type=row.event_type,
+        actor=row.actor,
+        from_state=row.from_state,
+        to_state=row.to_state,
+        detail=row.detail,
+        reasons=reasons_from_json(row.reasons),
+        correlation_id=row.correlation_id,
+        occurred_at=row.occurred_at)
+
+
+def submission_attempt_to_row(attempt: SubmissionAttempt,
+                              row: SubmissionAttemptRow | None = None
+                              ) -> SubmissionAttemptRow:
+    target = SubmissionAttemptRow(id=attempt.id) if row is None else row
+    target.application_id = attempt.application_id
+    target.attempt_number = attempt.attempt_number
+    target.adapter_key = attempt.adapter_key
+    target.outcome = attempt.outcome
+    target.detail = attempt.detail
+    target.confirmation_reference = attempt.confirmation_reference
+    target.human_required_reason = attempt.human_required_reason
+    target.failure_code = attempt.failure_code
+    target.correlation_id = attempt.correlation_id
+    target.started_at = attempt.started_at
+    target.finished_at = attempt.finished_at
+    return target
+
+
+def submission_attempt_to_domain(row: SubmissionAttemptRow) -> SubmissionAttempt:
+    return SubmissionAttempt(
+        id=SubmissionAttemptId(row.id),
+        application_id=ApplicationId(row.application_id),
+        attempt_number=row.attempt_number,
+        adapter_key=row.adapter_key,
+        outcome=row.outcome,
+        detail=row.detail,
+        confirmation_reference=row.confirmation_reference,
+        human_required_reason=row.human_required_reason,
+        failure_code=row.failure_code,
+        correlation_id=row.correlation_id,
+        started_at=row.started_at,
+        finished_at=row.finished_at)

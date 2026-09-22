@@ -10,6 +10,10 @@
 // one into a request cannot reach anything.
 import type {
   Account,
+  Application,
+  ApplicationEvent,
+  ApplicationEventList,
+  ApplicationList,
   CandidateClaim,
   CandidateDocument,
   CandidateDocumentList,
@@ -48,6 +52,7 @@ const CLAIM_ID = '77777777-7777-4777-8777-777777777777'
 const DOCUMENT_ID = '88888888-8888-4888-8888-888888888888'
 const VERSION_ID = '99999999-9999-4999-8999-999999999999'
 const CONNECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const APPLICATION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
 export function account(overrides: Partial<Account> = {}): Account {
   return {
@@ -458,4 +463,46 @@ export function llmConnectionHealth(
     latency_ms: 42,
     ...overrides,
   }
+}
+
+export function application(overrides: Partial<Application> = {}): Application {
+  return {
+    id: APPLICATION_ID,
+    state: 'PLANNED',
+    channel: 'BROWSER',
+    opportunity_id: OPPORTUNITY_ID,
+    company_id: null,
+    pinned_documents: [],
+    attempt_count: 0,
+    created_at: '2026-03-01T09:30:00Z',
+    updated_at: '2026-03-01T09:30:00Z',
+    ...overrides,
+  }
+}
+
+export function applicationList(
+  applications: Application[] = [application()],
+): ApplicationList {
+  return { applications }
+}
+
+export function applicationEvent(
+  overrides: Partial<ApplicationEvent> = {},
+): ApplicationEvent {
+  return {
+    event_type: 'CREATED',
+    actor: 'SYSTEM',
+    from_state: null,
+    to_state: 'PLANNED',
+    detail: 'opened for opportunity',
+    reasons: [],
+    occurred_at: '2026-03-01T09:30:00Z',
+    ...overrides,
+  }
+}
+
+export function applicationEventList(
+  events: ApplicationEvent[] = [applicationEvent()],
+): ApplicationEventList {
+  return { events }
 }

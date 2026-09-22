@@ -33,7 +33,10 @@ import pytest
 
 from backend.app.api import API_V2_PREFIX
 from backend.app.documents import LocalDocumentArtifactStore
+from backend.app.domain.application import Application, build_idempotency_key
+from backend.app.domain.application_channel import ApplicationChannel
 from backend.app.domain.identifiers import (
+    ApplicationId,
     CandidateDocumentId,
     CompanyId,
     LLMConnectionId,
@@ -53,6 +56,7 @@ from tests.v2_api import (
 )
 from tests.v2_builders import (
     a_company,
+    a_decision,
     a_rendered_document,
     a_search_profile,
     an_eligibility_result,
@@ -65,6 +69,9 @@ from tests.v2_builders import (
 V2_OPERATIONS = (
     ("DELETE", "/api/v2/me/search-profiles/{search_profile_id}"),
     ("DELETE", "/api/v2/settings/llm/connections/{connection_id}"),
+    ("GET", "/api/v2/applications"),
+    ("GET", "/api/v2/applications/{application_id}"),
+    ("GET", "/api/v2/applications/{application_id}/events"),
     ("GET", "/api/v2/auth/session"),
     ("GET", "/api/v2/companies"),
     ("GET", "/api/v2/companies/{company_id}"),
@@ -83,6 +90,11 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/settings/llm/connections"),
     ("GET", "/api/v2/settings/llm/connections/{connection_id}"),
     ("PATCH", "/api/v2/settings/llm/connections/{connection_id}"),
+    ("POST", "/api/v2/applications"),
+    ("POST", "/api/v2/applications/{application_id}/approve"),
+    ("POST", "/api/v2/applications/{application_id}/cancel"),
+    ("POST", "/api/v2/applications/{application_id}/prepare"),
+    ("POST", "/api/v2/applications/{application_id}/submit"),
     ("POST", "/api/v2/auth/login"),
     ("POST", "/api/v2/auth/logout"),
     ("POST", "/api/v2/auth/register"),
@@ -149,7 +161,7 @@ async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_de
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 30
+        assert len({path for _, path in published}) == 37
 
 
 @pytest.mark.asyncio
@@ -171,6 +183,9 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
         published = operations(api.app, under=API_V2_PREFIX)
 
         assert {path for method, path in published if method == "GET"} == {
+            "/api/v2/applications",
+            "/api/v2/applications/{application_id}",
+            "/api/v2/applications/{application_id}/events",
             "/api/v2/auth/session",
             "/api/v2/companies",
             "/api/v2/companies/{company_id}",
@@ -248,6 +263,23 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
         # account. The list read beside it needs no seed — an empty list is a 200.
         await api.llm_connections.upsert(an_llm_connection(
             id=LLMConnectionId(PLACEHOLDER_ID), user_id=user_id))
+        # `GET /applications/{id}` and its `/events` read a stored application, so the
+        # sweep exercises their 200 path only when one exists under the placeholder id
+        # and this account. The id is the placeholder rather than the derived one — the
+        # read is by id — and the idempotency key is the real one for the pair, which is
+        # all the aggregate's validator requires.
+        decision = await api.application_decisions.upsert(a_decision(
+            candidate_profile_id=profile_id, opportunity_id=posting_id,
+            user_id=user_id))
+        key = build_idempotency_key(candidate_profile_id=profile_id,
+                                    channel=ApplicationChannel.BROWSER,
+                                    opportunity_id=posting_id)
+        await api.applications.upsert(Application(
+            id=ApplicationId(PLACEHOLDER_ID), user_id=user_id,
+            candidate_profile_id=profile_id, decision_id=decision.id,
+            channel=ApplicationChannel.BROWSER, idempotency_key=key,
+            opportunity_id=posting_id, created_at=api.clock.instant,
+            updated_at=api.clock.instant))
         reads = [_get_with_scope(concrete(path)) for method, path in operations(
             api.app, under=API_V2_PREFIX) if method == "GET"]
         before = deepcopy((api.users.users, api.sessions.sessions,
@@ -316,7 +348,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
         protected = [(method, path) for method, path in operations(
             api.app, under=API_V2_PREFIX) if (method, path) not in PUBLIC_OPERATIONS]
 
-        assert len(protected) == 35
+        assert len(protected) == 43
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

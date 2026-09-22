@@ -49,6 +49,9 @@ DocumentVersionId = NewType("DocumentVersionId", UUID)
 LLMConnectionId = NewType("LLMConnectionId", UUID)
 ProviderSessionId = NewType("ProviderSessionId", UUID)
 LLMRunId = NewType("LLMRunId", UUID)
+ApplicationId = NewType("ApplicationId", UUID)
+ApplicationEventId = NewType("ApplicationEventId", UUID)
+SubmissionAttemptId = NewType("SubmissionAttemptId", UUID)
 
 
 def new_user_id() -> UserId:
@@ -317,3 +320,50 @@ def new_llm_run_id() -> LLMRunId:
     telemetry (docs/LLM_PROVIDER_ARCHITECTURE.md §12).
     """
     return LLMRunId(uuid4())
+
+
+def application_id(idempotency_key: str) -> ApplicationId:
+    """The id of one application, derived from its idempotency key (Phase 12 §36).
+
+    Derived rather than random, and this is the load-bearing decision of the
+    duplicate-prevention story: the id *is* a function of the idempotency key, so
+    two independent attempts to open an application for the same
+    `(candidate_profile, target, channel)` compute the same id and collide on the
+    primary key instead of opening a second application against the same posting.
+    The database's UNIQUE constraint on the key (`rev_0009`) is the second half —
+    it catches a hand-written row that bypassed this function — but the derivation
+    is what makes the common path idempotent by construction rather than by a
+    caught error (docs/APPLICATION_ENGINE.md §36-40).
+
+    `idempotency_key` is the value `Application.build_idempotency_key` composes; it
+    is passed in rather than recomputed here for the same reason `company_alias_id`
+    takes a normalized alias: this module knows about UUIDs and must not grow a
+    dependency on the rules that shape the key.
+    """
+    return ApplicationId(uuid5(SURROGATE_KEY_NAMESPACE, f"application:{idempotency_key}"))
+
+
+def new_application_event_id() -> ApplicationEventId:
+    """The id of one entry in an application's append-only audit trail (§41).
+
+    Random: an event is a fact that happened at an instant, never an entity a
+    retry should collapse onto. Two "submission started" events are two facts, and
+    the trail is the aggregate's own history, so each row stands on its own.
+    """
+    return ApplicationEventId(uuid4())
+
+
+def submission_attempt_id(application: ApplicationId,
+                          attempt_number: int) -> SubmissionAttemptId:
+    """The id of one submission attempt against one application (§39).
+
+    Derived from `(application, attempt_number)` — the pair the unique constraint
+    covers — so a retried write of attempt 2 after a failed flush lands on the same
+    row rather than inserting a third. The attempt number is the application's own
+    monotonic counter, assigned by the submission service; this only turns that
+    pair into a stable key, exactly as `document_version_id` does for a document's
+    versions.
+    """
+    return SubmissionAttemptId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"submission_attempt:{application}:{attempt_number}"))

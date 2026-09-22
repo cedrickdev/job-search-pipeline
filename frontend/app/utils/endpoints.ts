@@ -112,6 +112,13 @@ export const V2_ENDPOINTS = {
   llmConnectionEnabled: '/api/v2/settings/llm/connections/{connection_id}/enabled',
   llmConnectionDefault: '/api/v2/settings/llm/connections/{connection_id}/default',
   llmConnectionHealthcheck: '/api/v2/settings/llm/connections/{connection_id}/healthcheck',
+  applications: '/api/v2/applications',
+  application: '/api/v2/applications/{application_id}',
+  applicationPrepare: '/api/v2/applications/{application_id}/prepare',
+  applicationApprove: '/api/v2/applications/{application_id}/approve',
+  applicationSubmit: '/api/v2/applications/{application_id}/submit',
+  applicationCancel: '/api/v2/applications/{application_id}/cancel',
+  applicationEvents: '/api/v2/applications/{application_id}/events',
 } as const satisfies Record<string, keyof paths>
 
 /**
@@ -211,4 +218,23 @@ type ConnectionTemplate = Extract<
  */
 export function llmConnection(template: ConnectionTemplate, connectionId: string): string {
   return template.replace('{connection_id}', connectionId)
+}
+
+/** Every V2 endpoint whose template contains `{application_id}`. */
+type ApplicationTemplate = Extract<
+  (typeof V2_ENDPOINTS)[keyof typeof V2_ENDPOINTS],
+  `${string}{application_id}${string}`
+>
+
+/**
+ * Resolve an `{application_id}` template — the read, prepare, approve, submit, cancel
+ * or event trail of one application (Phase 12).
+ *
+ * An application id is a UUID string and the owner is not in the path: an application
+ * is user-owned, reached through the session, so asking for another account's
+ * application by id is a 404 rather than its state
+ * (docs/AUTHENTICATION.md §Authorization, docs/APPLICATION_ENGINE.md §Sharing).
+ */
+export function application(template: ApplicationTemplate, applicationId: string): string {
+  return template.replace('{application_id}', applicationId)
 }

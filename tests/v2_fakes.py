@@ -32,8 +32,12 @@ from datetime import datetime
 from pydantic import SecretStr
 
 from backend.app.core.tokens import digests_match
+from backend.app.domain.application import Application, ApplicationState
+from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
 from backend.app.domain.candidate import CandidateProfile
 from backend.app.domain.common import GeoPoint
+from backend.app.domain.decision import ApplicationDecision
+from backend.app.domain.policy import ApplicationPolicy
 from backend.app.domain.documents import (
     CandidateDocument,
     CandidateDocumentType,
@@ -55,6 +59,9 @@ from backend.app.domain.geo import (
 )
 from backend.app.domain.eligibility import EligibilityResult
 from backend.app.domain.identifiers import (
+    ApplicationDecisionId,
+    ApplicationId,
+    ApplicationPolicyId,
     CandidateDocumentId,
     CandidateProfileId,
     CareerSiteId,
@@ -68,6 +75,7 @@ from backend.app.domain.identifiers import (
     OpportunityId,
     ProviderSessionId,
     SearchProfileId,
+    SubmissionAttemptId,
     UserId,
     UserSessionId,
 )
@@ -80,6 +88,10 @@ from backend.app.llm.sessions import ProviderSession
 from backend.app.llm.telemetry import LLMRun
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
+    ApplicationDecisionRepository,
+    ApplicationEventRepository,
+    ApplicationPolicyRepository,
+    ApplicationRepository,
     CandidateDocumentRepository,
     CandidateProfileRepository,
     CareerSiteRepository,
@@ -100,6 +112,7 @@ from backend.app.repositories.contracts import (
     ProviderSessionRepository,
     SearchProfileRepository,
     SessionRepository,
+    SubmissionAttemptRepository,
     UserRepository,
 )
 
@@ -116,7 +129,10 @@ def _implements_contracts() -> tuple[
         CompanyDiscoveryRepository, OpportunityRepository,
         MatchEvaluationRepository, EligibilityResultRepository,
         CandidateDocumentRepository, LLMConnectionRepository,
-        ProviderSessionRepository, LLMRunRepository]:
+        ProviderSessionRepository, LLMRunRepository,
+        ApplicationPolicyRepository, ApplicationDecisionRepository,
+        ApplicationRepository, ApplicationEventRepository,
+        SubmissionAttemptRepository]:
     """Structural conformance, the same guard `sqlalchemy_repositories` carries.
 
     A fake whose signature drifted from the `Protocol` would still run — Python
@@ -131,7 +147,10 @@ def _implements_contracts() -> tuple[
             FakeCompanyDiscoveryRepository(), FakeOpportunityRepository(),
             FakeMatchEvaluationRepository(), FakeEligibilityResultRepository(),
             FakeCandidateDocumentRepository(), FakeLLMConnectionRepository(),
-            FakeProviderSessionRepository(), FakeLLMRunRepository())
+            FakeProviderSessionRepository(), FakeLLMRunRepository(),
+            FakeApplicationPolicyRepository(), FakeApplicationDecisionRepository(),
+            FakeApplicationRepository(), FakeApplicationEventRepository(),
+            FakeSubmissionAttemptRepository())
 
 
 def _meters_between(one: GeoPoint, other: GeoPoint) -> float:
@@ -1003,4 +1022,221 @@ class FakeLLMRunRepository:
         # started_at DESC, id`.
         mine.sort(key=lambda run: str(run.id))
         mine.sort(key=lambda run: run.started_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeApplicationPolicyRepository:
+    """Application policies, keyed by id and scoped by owner on every read (§70).
+
+    User-owned, so a `get` for another account reads as absent. `get_default` returns
+    this account's active default — the most recently updated active policy — which is
+    what the engine reads before every submission.
+    """
+
+    def __init__(self) -> None:
+        self.policies: dict[ApplicationPolicyId, ApplicationPolicy] = {}
+
+    async def get(self, user_id: UserId,
+                  policy_id: ApplicationPolicyId) -> ApplicationPolicy | None:
+        found = self.policies.get(policy_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def get_default(self, user_id: UserId) -> ApplicationPolicy | None:
+        mine = [policy.model_copy(deep=True) for policy in self.policies.values()
+                if policy.user_id == user_id and policy.is_active]
+        mine.sort(key=lambda policy: str(policy.id))
+        mine.sort(key=lambda policy: policy.updated_at, reverse=True)
+        return mine[0] if mine else None
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT
+                            ) -> tuple[ApplicationPolicy, ...]:
+        mine = [policy.model_copy(deep=True) for policy in self.policies.values()
+                if policy.user_id == user_id]
+        mine.sort(key=lambda policy: str(policy.id))
+        mine.sort(key=lambda policy: policy.updated_at, reverse=True)
+        return tuple(mine[:limit])
+
+    async def upsert(self, policy: ApplicationPolicy) -> ApplicationPolicy:
+        stored = policy.model_copy(deep=True)
+        self.policies[stored.id] = stored
+        return stored
+
+
+class FakeApplicationDecisionRepository:
+    """Decisions of intent, keyed by id and scoped by owner, with pair lookup (§2-3).
+
+    `get_for_pair` returns the most recent decision for a (candidate, opportunity)
+    pair, so a re-decided pair reads its latest intent — the real `ORDER BY decided_at
+    DESC` behaviour.
+    """
+
+    def __init__(self) -> None:
+        self.decisions: dict[ApplicationDecisionId, ApplicationDecision] = {}
+
+    async def get(self, user_id: UserId,
+                  decision_id: ApplicationDecisionId) -> ApplicationDecision | None:
+        found = self.decisions.get(decision_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId
+                           ) -> ApplicationDecision | None:
+        mine = [d.model_copy(deep=True) for d in self.decisions.values()
+                if d.user_id == user_id
+                and d.candidate_profile_id == candidate_profile_id
+                and d.opportunity_id == opportunity_id]
+        mine.sort(key=lambda d: str(d.id))
+        mine.sort(key=lambda d: d.decided_at, reverse=True)
+        return mine[0] if mine else None
+
+    async def upsert(self, decision: ApplicationDecision) -> ApplicationDecision:
+        stored = decision.model_copy(deep=True)
+        self.decisions[stored.id] = stored
+        return stored
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT
+                            ) -> tuple[ApplicationDecision, ...]:
+        mine = [d.model_copy(deep=True) for d in self.decisions.values()
+                if d.user_id == user_id]
+        mine.sort(key=lambda d: str(d.id))
+        mine.sort(key=lambda d: d.decided_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeApplicationRepository:
+    """Applications, keyed by id and scoped by owner, with the engine's lookups (§36).
+
+    The idempotency guarantee is modelled: `upsert` keys on the application's own id,
+    which is derived from the idempotency key, so writing a second application for the
+    same target lands on the same row — the fake cannot represent a duplicate any more
+    than the real UNIQUE constraint can. `count_submitted_since` and `list_in_flight`
+    back the rate limit (§49) and startup recovery (§88).
+    """
+
+    def __init__(self) -> None:
+        self.applications: dict[ApplicationId, Application] = {}
+
+    async def get(self, user_id: UserId,
+                  application_id: ApplicationId) -> Application | None:
+        found = self.applications.get(application_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def get_by_idempotency_key(self, user_id: UserId,
+                                     idempotency_key: str) -> Application | None:
+        return next((app.model_copy(deep=True)
+                     for app in self.applications.values()
+                     if app.user_id == user_id
+                     and app.idempotency_key == idempotency_key), None)
+
+    async def upsert(self, application: Application) -> Application:
+        stored = application.model_copy(deep=True)
+        self.applications[stored.id] = stored
+        return stored
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
+        mine = [app.model_copy(deep=True) for app in self.applications.values()
+                if app.user_id == user_id]
+        mine.sort(key=lambda app: str(app.id))
+        mine.sort(key=lambda app: app.updated_at, reverse=True)
+        return tuple(mine[:limit])
+
+    async def count_submitted_since(self, user_id: UserId,
+                                    since: datetime) -> int:
+        return sum(1 for app in self.applications.values()
+                   if app.user_id == user_id
+                   and app.state is ApplicationState.SUBMITTED
+                   and app.updated_at >= since)
+
+    async def list_in_flight(self, *,
+                             limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
+        in_flight = [app.model_copy(deep=True) for app in self.applications.values()
+                     if app.state in (ApplicationState.SUBMITTING,
+                                      ApplicationState.PREPARING)]
+        in_flight.sort(key=lambda app: str(app.id))
+        return tuple(in_flight[:limit])
+
+
+class FakeApplicationEventRepository:
+    """The append-only audit trail; events are inserted and never rewritten (§41).
+
+    Ownership is resolved through an injected application lookup, mirroring the real
+    read that joins to `applications` — a list for an application that is not the
+    caller's returns empty. `append` only ever inserts, because an event id is unique.
+    """
+
+    def __init__(self, applications: "FakeApplicationRepository | None" = None) -> None:
+        self.events: list[ApplicationEvent] = []
+        self._applications = applications
+
+    def bind(self, applications: "FakeApplicationRepository") -> None:
+        """Wire the application store used for the ownership check on reads."""
+        self._applications = applications
+
+    async def append(self, event: ApplicationEvent) -> ApplicationEvent:
+        stored = event.model_copy(deep=True)
+        self.events.append(stored)
+        return stored
+
+    async def list_for_application(self, user_id: UserId,
+                                   application_id: ApplicationId, *,
+                                   limit: int = DEFAULT_LIMIT
+                                   ) -> tuple[ApplicationEvent, ...]:
+        if self._applications is not None:
+            owner = self._applications.applications.get(application_id)
+            if owner is None or owner.user_id != user_id:
+                return ()
+        mine = [event.model_copy(deep=True) for event in self.events
+                if event.application_id == application_id]
+        mine.sort(key=lambda event: event.occurred_at)
+        return tuple(mine[:limit])
+
+
+class FakeSubmissionAttemptRepository:
+    """Submission attempts; written in flight and completed once, never rewritten (§39).
+
+    Keyed on the attempt's own id (derived from application + attempt number), so the
+    in-flight row and its completion land on one row. Ownership on the list read is
+    resolved through an injected application lookup, like the real join.
+    """
+
+    def __init__(self, applications: "FakeApplicationRepository | None" = None) -> None:
+        self.attempts: dict[SubmissionAttemptId, SubmissionAttempt] = {}
+        self._applications = applications
+
+    def bind(self, applications: "FakeApplicationRepository") -> None:
+        self._applications = applications
+
+    async def upsert(self, attempt: SubmissionAttempt) -> SubmissionAttempt:
+        stored = attempt.model_copy(deep=True)
+        self.attempts[stored.id] = stored
+        return stored
+
+    async def get(self, application_id: ApplicationId,
+                  attempt_number: int) -> SubmissionAttempt | None:
+        return next((attempt.model_copy(deep=True)
+                     for attempt in self.attempts.values()
+                     if attempt.application_id == application_id
+                     and attempt.attempt_number == attempt_number), None)
+
+    async def list_for_application(self, user_id: UserId,
+                                   application_id: ApplicationId, *,
+                                   limit: int = DEFAULT_LIMIT
+                                   ) -> tuple[SubmissionAttempt, ...]:
+        if self._applications is not None:
+            owner = self._applications.applications.get(application_id)
+            if owner is None or owner.user_id != user_id:
+                return ()
+        mine = [attempt.model_copy(deep=True) for attempt in self.attempts.values()
+                if attempt.application_id == application_id]
+        mine.sort(key=lambda attempt: attempt.attempt_number)
         return tuple(mine[:limit])

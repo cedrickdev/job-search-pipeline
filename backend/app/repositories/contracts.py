@@ -31,6 +31,8 @@ from typing import NamedTuple, Protocol, runtime_checkable
 
 from pydantic import SecretStr
 
+from backend.app.domain.application import Application
+from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
 from backend.app.domain.candidate import CandidateProfile
 from backend.app.domain.common import GeoPoint, Location
 from backend.app.domain.company import (
@@ -42,10 +44,14 @@ from backend.app.domain.company import (
     CompanyLocation,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.decision import ApplicationDecision
 from backend.app.domain.documents import CandidateDocument, CandidateDocumentType
 from backend.app.domain.eligibility import EligibilityResult
 from backend.app.domain.geo import GeoSearchQuery, GeoStatus, RemoteScope
 from backend.app.domain.identifiers import (
+    ApplicationDecisionId,
+    ApplicationId,
+    ApplicationPolicyId,
     CandidateDocumentId,
     CandidateProfileId,
     CompanyId,
@@ -59,6 +65,7 @@ from backend.app.domain.identifiers import (
 )
 from backend.app.domain.matching import MatchEvaluation
 from backend.app.domain.opportunity import Opportunity
+from backend.app.domain.policy import ApplicationPolicy
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserSession
 from backend.app.llm.connection import LLMConnection
@@ -779,4 +786,178 @@ class LLMRunRepository(Protocol):
         ...
 
 
+# Phase 12. The five contracts below are what the application engine persists. A
+# policy, a decision and an application are all user-owned, so `user_id` comes first
+# on every read, exactly like the Phase 4/10 tables. The event trail and the
+# submission attempts are append-only: an event is inserted and never updated, an
+# attempt is written in flight and completed once, and neither is ever rewritten —
+# the trail can only grow (§41).
+
+
+@runtime_checkable
+class ApplicationPolicyRepository(Protocol):
+    """A user's standing application rules — user-owned, so `user_id` comes first.
+
+    A user has one active default policy (the cautious `MANUAL` one onboarding
+    creates) and may keep others. `get_default` is what the engine reads before every
+    submission, so a missing policy is a safe absence the service turns into "prepare
+    only", never an autonomous submission.
+    """
+
+    async def get(self, user_id: UserId,
+                  policy_id: ApplicationPolicyId) -> ApplicationPolicy | None:
+        """The policy, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def get_default(self, user_id: UserId) -> ApplicationPolicy | None:
+        """This account's active default policy, or `None` if it has none yet."""
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ApplicationPolicy, ...]:
+        """This user's policies, most recently updated first."""
+        ...
+
+    async def upsert(self, policy: ApplicationPolicy) -> ApplicationPolicy:
+        """Write the policy; the owner comes from `policy.user_id`."""
+        ...
+
+
+@runtime_checkable
+class ApplicationDecisionRepository(Protocol):
+    """Decisions of intent — user-owned, keyed for lookup by the pair they decide.
+
+    A decision is the record the matcher produced ("apply to this / skip this"); the
+    engine reads it back when an application is created. `get_for_pair` is how a
+    service finds the current decision for a (candidate, opportunity) pair without
+    holding its id.
+    """
+
+    async def get(self, user_id: UserId,
+                  decision_id: ApplicationDecisionId) -> ApplicationDecision | None:
+        """The decision, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def get_for_pair(
+            self, user_id: UserId, candidate_profile_id: CandidateProfileId,
+            opportunity_id: OpportunityId) -> ApplicationDecision | None:
+        """The current decision for one (candidate, opportunity) pair, if any."""
+        ...
+
+    async def upsert(self, decision: ApplicationDecision) -> ApplicationDecision:
+        """Write the decision; the owner comes from `decision.user_id`."""
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ApplicationDecision, ...]:
+        """This user's decisions, most recently decided first."""
+        ...
+
+
+@runtime_checkable
+class ApplicationRepository(Protocol):
+    """Applications — the execution aggregate, user-owned so `user_id` comes first.
+
+    The idempotency guarantee is physical: `application.id` is derived from the
+    idempotency key and the table's UNIQUE constraint covers the key (§36), so
+    `upsert` of a second application for the same target collides rather than opening
+    a duplicate. `count_submitted_since` backs the rate limit the gate reads (§49),
+    counted inside the caller's transaction so the reservation is concurrency-safe;
+    `list_in_flight` backs startup recovery (§88), and is deliberately *not*
+    user-scoped because recovery is a system sweep across every account's stuck runs.
+    """
+
+    async def get(self, user_id: UserId,
+                  application_id: ApplicationId) -> Application | None:
+        """The application, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def get_by_idempotency_key(
+            self, user_id: UserId, idempotency_key: str) -> Application | None:
+        """The application for one target and channel, if this account has one.
+
+        The duplicate check a create does first: same key means same application, so
+        a hit is returned rather than a second one opened (§36).
+        """
+        ...
+
+    async def upsert(self, application: Application) -> Application:
+        """Write the application; the owner comes from `application.user_id`."""
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
+        """This user's applications, most recently updated first."""
+        ...
+
+    async def count_submitted_since(self, user_id: UserId,
+                                    since: datetime) -> int:
+        """How many of this user's applications reached SUBMITTED since an instant.
+
+        The count the rate-limit reservation reads (§49-51). The caller passes the
+        window start (start-of-day, start-of-week) computed against its own clock, so
+        this stays a pure query and the reservation logic — count, compare, write —
+        happens inside one transaction the caller controls.
+        """
+        ...
+
+    async def list_in_flight(self, *,
+                             limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
+        """Every application stuck mid-flight, across all accounts, for recovery.
+
+        The sweep §88 needs at startup: an application left in SUBMITTING by a worker
+        crash is neither this account's concern nor safe to leave, so recovery reads
+        them system-wide and resolves each to SUBMISSION_STATE_UNKNOWN.
+        """
+        ...
+
+
+@runtime_checkable
+class ApplicationEventRepository(Protocol):
+    """The append-only audit trail (§41). Events are inserted, never updated.
+
+    There is no `upsert` and no `update` on purpose: a correction is a new event, so
+    the store offers only `append` and reads. The list read is user-scoped through
+    the application it belongs to, so one account cannot read another's trail by id.
+    """
+
+    async def append(self, event: ApplicationEvent) -> ApplicationEvent:
+        """Insert one event. Its id is random and unique, so this only ever inserts."""
+        ...
+
+    async def list_for_application(
+            self, user_id: UserId, application_id: ApplicationId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ApplicationEvent, ...]:
+        """One application's events oldest-first, or empty if it is not this user's."""
+        ...
+
+
+@runtime_checkable
+class SubmissionAttemptRepository(Protocol):
+    """Submission attempts (§39). Written in flight, completed once, never rewritten.
+
+    Keyed on `(application_id, attempt_number)`, the pair the attempt's id derives
+    from, so the in-flight row written at SUBMISSION_STARTED and the completed row are
+    the same row — an `upsert` on the same id — not two. That is what leaves crash
+    evidence: an attempt with no `finished_at` is one a worker began and never
+    reported (§88).
+    """
+
+    async def upsert(self, attempt: SubmissionAttempt) -> SubmissionAttempt:
+        """Write the attempt, or complete an in-flight one; keyed on its own id."""
+        ...
+
+    async def get(self, application_id: ApplicationId,
+                  attempt_number: int) -> SubmissionAttempt | None:
+        """One attempt by its number, or `None`."""
+        ...
+
+    async def list_for_application(
+            self, user_id: UserId, application_id: ApplicationId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[SubmissionAttempt, ...]:
+        """One application's attempts oldest-first, or empty if not this user's."""
+        ...
 

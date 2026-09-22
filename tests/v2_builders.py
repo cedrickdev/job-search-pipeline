@@ -74,7 +74,12 @@ from backend.app.domain.identifiers import (
     document_version_id,
     provider_session_id,
 )
+from backend.app.domain.decision import (
+    ApplicationDecision,
+    ApplicationDecisionKind,
+)
 from backend.app.domain.matching import DimensionScore, MatchDimension, MatchEvaluation
+from backend.app.domain.policy import ApplicationPolicy, AutomationMode
 from backend.app.domain.opportunity import (
     ContractType,
     Opportunity,
@@ -160,6 +165,56 @@ def an_eligibility_result(*checks, **overrides):
     }
     fields.update(overrides)
     return EligibilityResult(**fields)
+
+
+def a_policy(**overrides):
+    """An application policy owned by `USER`.
+
+    Defaults to the cautious `MANUAL` policy onboarding would create — brake on, no
+    autonomy — so a test that wants an autonomous one opts in explicitly with
+    `mode=AutomationMode.AUTOPILOT, require_approval_before_submission=False`.
+    """
+    fields = {
+        "id": POLICY,
+        "user_id": USER,
+        "name": "Default policy",
+        "mode": AutomationMode.MANUAL,
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return ApplicationPolicy(**fields)
+
+
+def an_autopilot_policy(**overrides):
+    """A policy that permits unattended submission: AUTOPILOT with the brake off."""
+    fields = {
+        "mode": AutomationMode.AUTOPILOT,
+        "require_approval_before_submission": False,
+    }
+    fields.update(overrides)
+    return a_policy(**fields)
+
+
+def a_decision(**overrides):
+    """An AUTO_APPLY decision for the fixture pair, with a positive reason.
+
+    Carries no `match`/`eligibility` by default so a test can supply exactly the
+    verdicts it is exercising; a submitting kind with an INELIGIBLE eligibility would
+    be refused by the domain, which is the point of keeping them separate here.
+    """
+    fields = {
+        "id": DECISION,
+        "user_id": USER,
+        "candidate_profile_id": PROFILE,
+        "opportunity_id": OPPORTUNITY,
+        "policy_id": POLICY,
+        "kind": ApplicationDecisionKind.AUTO_APPLY,
+        "reasons": (a_reason(code="MEETS_POLICY", impact=ReasonImpact.POSITIVE),),
+        "decided_at": NOW,
+    }
+    fields.update(overrides)
+    return ApplicationDecision(**fields)
 
 
 def a_candidate_profile(**overrides):

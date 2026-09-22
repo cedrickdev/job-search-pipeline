@@ -206,6 +206,30 @@ export type LLMProviderType = Schemas['LLMProviderType']
 /** A provider's runtime reachability — `UNKNOWN | HEALTHY | DEGRADED | UNAVAILABLE | AUTH_REQUIRED | MISCONFIGURED`. */
 export type ProviderHealthStatus = Schemas['ProviderHealthStatus']
 
+// Phase 12: the application engine. One application's current state and target, the
+// list, its append-only event trail, and the one-field create request.
+
+/** One application: its lifecycle state, target and pinned materials. */
+export type Application = Schemas['ApplicationResponse']
+
+/** This account's applications, newest first. */
+export type ApplicationList = Schemas['ApplicationListResponse']
+
+/** One immutable entry in an application's audit trail. */
+export type ApplicationEvent = Schemas['ApplicationEventResponse']
+
+/** One application's events, oldest first. */
+export type ApplicationEventList = Schemas['ApplicationEventListResponse']
+
+/** The one-field body that opens an application for a posting. */
+export type CreateApplicationRequest = Schemas['CreateApplicationRequest']
+
+/** Where an application sits in its lifecycle — the value a UI renders and acts on. */
+export type ApplicationState = Application['state']
+
+/** The route an application takes to an employer. */
+export type ApplicationChannel = Application['channel']
+
 /**
  * Every `error` slug `/api/v2` can answer with, as one union.
  *
@@ -218,6 +242,17 @@ export type ProviderHealthStatus = Schemas['ProviderHealthStatus']
 export type V2ErrorCode =
   | 'account_disabled'
   | 'account_locked'
+  | 'application_adapter_error'
+  | 'application_channel_unsupported'
+  | 'application_decision_missing'
+  | 'application_document_not_ready'
+  | 'application_duplicate'
+  | 'application_form_changed'
+  | 'application_missing_answer'
+  | 'application_not_actionable'
+  | 'application_not_found'
+  | 'application_rate_limited'
+  | 'application_submission_unknown'
   | 'artifact_unavailable'
   | 'candidate_profile_not_found'
   | 'capability_not_supported'

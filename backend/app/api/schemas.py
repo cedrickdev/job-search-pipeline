@@ -54,6 +54,17 @@ from backend.app.discovery.contracts import (
     SourceHealth,
     SourceHealthStatus,
 )
+from backend.app.domain.application import (
+    Application,
+    ApplicationState,
+    PinnedDocument,
+)
+from backend.app.domain.application_channel import ApplicationChannel
+from backend.app.domain.application_event import (
+    ApplicationEvent,
+    ApplicationEventActor,
+    ApplicationEventType,
+)
 from backend.app.domain.base import CountryCode, LanguageCode
 from backend.app.domain.candidate import (
     CandidateClaim,
@@ -117,6 +128,7 @@ from backend.app.domain.geo import (
     RemoteScope,
 )
 from backend.app.domain.identifiers import (
+    ApplicationId,
     CandidateDocumentId,
     CandidateProfileId,
     ClaimId,
@@ -1613,3 +1625,111 @@ class LLMConnectionHealthResponse(ApiModel):
     def of(cls, health: ProviderHealth) -> "LLMConnectionHealthResponse":
         return cls(status=health.status, detail=health.detail,
                    latency_ms=health.latency_ms)
+
+
+# --- Phase 12: the application engine ---------------------------------------
+
+class CreateApplicationRequest(ApiModel):
+    """Open an application for one posting from its current decision.
+
+    The body names the *opportunity* and nothing else: the candidate is the
+    account's own profile and the intent is the decision already stored for the pair,
+    both resolved server-side, so a request cannot open an application against
+    someone else's profile or invent an intent (§2-3, §Security).
+    """
+
+    opportunity_id: OpportunityId
+
+
+class PinnedDocumentResponse(ApiModel):
+    """One exact document version an application will submit (§14-16)."""
+
+    document_id: CandidateDocumentId
+    version_id: DocumentVersionId
+    version: int
+    document_type: CandidateDocumentType
+
+    @classmethod
+    def of(cls, pinned: PinnedDocument) -> "PinnedDocumentResponse":
+        return cls(document_id=pinned.document_id, version_id=pinned.version_id,
+                   version=pinned.version, document_type=pinned.document_type)
+
+
+class ApplicationResponse(ApiModel):
+    """One application's current state, target and pinned materials.
+
+    The lifecycle `state` is what a UI renders and acts on — READY_FOR_REVIEW shows
+    an "Approve & Submit" control, REQUIRES_HUMAN a hand-off, SUBMITTED a receipt.
+    `answers` and the correlation id are deliberately not exposed: the answers can
+    carry personal values a list view has no need for, and the trail is the audited
+    place to see what happened.
+    """
+
+    id: ApplicationId
+    state: ApplicationState
+    channel: ApplicationChannel
+    opportunity_id: OpportunityId | None
+    company_id: CompanyId | None
+    pinned_documents: tuple[PinnedDocumentResponse, ...]
+    attempt_count: int
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, application: Application) -> "ApplicationResponse":
+        return cls(
+            id=application.id, state=application.state, channel=application.channel,
+            opportunity_id=application.opportunity_id,
+            company_id=application.company_id,
+            pinned_documents=tuple(PinnedDocumentResponse.of(pin)
+                                   for pin in application.pinned_documents),
+            attempt_count=application.attempt_count,
+            created_at=application.created_at, updated_at=application.updated_at)
+
+
+class ApplicationListResponse(ApiModel):
+    """This account's applications, newest first, wrapped so it can grow a field."""
+
+    applications: tuple[ApplicationResponse, ...]
+
+    @classmethod
+    def of(cls, applications: tuple[Application, ...]) -> "ApplicationListResponse":
+        return cls(applications=tuple(ApplicationResponse.of(app)
+                                      for app in applications))
+
+
+class ApplicationEventResponse(ApiModel):
+    """One immutable entry in an application's audit trail (§41).
+
+    `reasons` reuse the closed-vocabulary `ReasonResponse`, so the "why" behind a
+    gate decision or a refusal renders identically to everywhere else and can never
+    carry a stack trace or a secret.
+    """
+
+    event_type: ApplicationEventType
+    actor: ApplicationEventActor
+    from_state: ApplicationState | None
+    to_state: ApplicationState | None
+    detail: str | None
+    reasons: tuple[ReasonResponse, ...]
+    occurred_at: datetime
+
+    @classmethod
+    def of(cls, event: ApplicationEvent) -> "ApplicationEventResponse":
+        return cls(
+            event_type=event.event_type, actor=event.actor,
+            from_state=event.from_state, to_state=event.to_state,
+            detail=event.detail,
+            reasons=tuple(ReasonResponse.of(reason) for reason in event.reasons),
+            occurred_at=event.occurred_at)
+
+
+class ApplicationEventListResponse(ApiModel):
+    """One application's events, oldest first — the trail as it grew."""
+
+    events: tuple[ApplicationEventResponse, ...]
+
+    @classmethod
+    def of(cls, events: tuple[ApplicationEvent, ...]) -> "ApplicationEventListResponse":
+        return cls(events=tuple(ApplicationEventResponse.of(event)
+                                for event in events))

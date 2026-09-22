@@ -23,6 +23,22 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   // Replaced below by a message carrying the deadline; kept for the case where the
   // body arrives without one.
   account_locked: 'Too many failed sign-in attempts. Try again later.',
+  // The application-engine refusals (§80-82). Each is a state the caller resolves, not
+  // a request to reshape: an adapter fault, a channel the platform cannot drive, a
+  // decision not yet made, a document not ready, a form that changed, an unanswerable
+  // required field, an operation the state forbids, an unknown id, a duplicate, an
+  // exhausted budget, or a send whose outcome could not be confirmed.
+  application_adapter_error: 'This application could not be completed automatically. Try again or apply manually.',
+  application_channel_unsupported: 'This posting has no automated application path. Apply to it yourself.',
+  application_decision_missing: 'Decide on this opportunity before opening an application for it.',
+  application_document_not_ready: 'A required document is not a finished version yet. Generate one first.',
+  application_duplicate: 'You have already applied to this posting.',
+  application_form_changed: 'The application form changed since it was prepared. Prepare it again.',
+  application_missing_answer: 'A required question has no trustworthy answer, so this needs you.',
+  application_not_actionable: 'This application cannot do that in its current state. Reload to see where it stands.',
+  application_not_found: 'That application does not exist.',
+  application_rate_limited: 'You have reached your application limit for now. Try again later.',
+  application_submission_unknown: 'This application left the platform but could not be confirmed. Check before retrying.',
   // The artifact store could not return the bytes of a version it says is rendered —
   // an infrastructure fault (a 500), not something the user did or can fix.
   artifact_unavailable: 'This document could not be retrieved right now. Try again in a moment.',

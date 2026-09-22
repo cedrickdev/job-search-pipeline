@@ -31,7 +31,13 @@ from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from backend.app.api import API_V2_PREFIX
 from backend.app.documents import ArtifactNotFound
 from backend.app.documents.generator import InsufficientEvidence
+from backend.app.domain.application_failure import ApplicationError, ApplicationFailureCode
 from backend.app.llm.failures import LLMError, LLMFailureCode
+from backend.app.services.applications import (
+    ApplicationDecisionMissing,
+    ApplicationNotActionable,
+    ApplicationNotFound,
+)
 from backend.app.services.assessment import (
     CandidateProfileNotFound,
     OpportunityNotFound,
@@ -83,6 +89,18 @@ _LLM_STATUS: Final[dict[LLMFailureCode, int]] = {
     LLMFailureCode.PROVIDER_RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
     LLMFailureCode.PROVIDER_MISCONFIGURED: status.HTTP_409_CONFLICT,
     LLMFailureCode.CAPABILITY_NOT_SUPPORTED: status.HTTP_409_CONFLICT,
+}
+
+# Which HTTP status each application-execution failure becomes. A duplicate is the
+# idempotency guard surfacing (409, not a retry); an exhausted rate budget is
+# retryable after a wait (429); everything else is a 409 — a well-formed request the
+# engine refused on a state the caller must resolve (a document not ready, a form
+# that changed), not a fault of the request's shape. An unmapped code defaults to 409
+# in the handler. The body's `error` is the failure code lowercased, so a client
+# branches on the same closed vocabulary the engine uses (§80-82).
+_APPLICATION_STATUS: Final[dict[ApplicationFailureCode, int]] = {
+    ApplicationFailureCode.APPLICATION_DUPLICATE: status.HTTP_409_CONFLICT,
+    ApplicationFailureCode.APPLICATION_RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
 }
 
 
@@ -289,6 +307,43 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         # sentence is the service's own fixed explanation, never user input.
         return _json(status.HTTP_409_CONFLICT, "llm_secret_key_unavailable",
                      "this deployment is not configured to store an API credential")
+
+    @app.exception_handler(ApplicationNotFound)
+    async def _application_missing(request: Request,
+                                   exc: ApplicationNotFound) -> JSONResponse:
+        # 404 for "no such application" and "not yours" alike — the service raises one
+        # exception for both so a caller cannot enumerate other users' application ids.
+        return _json(status.HTTP_404_NOT_FOUND, "application_not_found",
+                     "no such application")
+
+    @app.exception_handler(ApplicationDecisionMissing)
+    async def _application_decision_missing(
+            request: Request, exc: ApplicationDecisionMissing) -> JSONResponse:
+        # 409, not 404: the posting exists, but no decision of intent has been made for
+        # it, so there is nothing to open an application from — decide first, then apply.
+        return _json(status.HTTP_409_CONFLICT, "application_decision_missing",
+                     "no decision has been made for this opportunity yet")
+
+    @app.exception_handler(ApplicationNotActionable)
+    async def _application_not_actionable(
+            request: Request, exc: ApplicationNotActionable) -> JSONResponse:
+        # 409: the application is real and this account's, but the operation does not
+        # apply in its current state (approving one never prepared, submitting one not
+        # approved). The state is named so a UI can re-render, not as a secret.
+        return _json(status.HTTP_409_CONFLICT, "application_not_actionable",
+                     f"cannot {exc.operation} an application in state {exc.state.value}",
+                     state=exc.state.value, operation=exc.operation)
+
+    @app.exception_handler(ApplicationError)
+    async def _application_error(request: Request,
+                                 exc: ApplicationError) -> JSONResponse:
+        # A typed, secret-free execution failure (the detail is composed from a fixed
+        # table, never an adapter's own message — see
+        # `backend.app.domain.application_failure`). The status comes from the code; the
+        # body's `error` is the code lowercased, the same closed vocabulary the engine
+        # branches on.
+        status_code = _APPLICATION_STATUS.get(exc.code, status.HTTP_409_CONFLICT)
+        return _json(status_code, exc.code.value.lower(), exc.detail)
 
     @app.exception_handler(LLMError)
     async def _llm_error(request: Request, exc: LLMError) -> JSONResponse:

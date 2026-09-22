@@ -57,6 +57,7 @@ from backend.app.api import API_V2_PREFIX
 from backend.app.api.cookies import COOKIE_PATH
 from backend.app.api.dependencies import (
     CSRF_HEADER,
+    application_service,
     assessment_service,
     auth_settings,
     authentication_service,
@@ -78,6 +79,8 @@ from backend.app.documents import (
     LocalDocumentArtifactStore,
 )
 from backend.app.documents.guard import CandidateEvidenceGuard
+from backend.app.application_engine.bootstrap import build_application_registry
+from backend.app.services.applications import ApplicationService
 from backend.app.services.assessment import AssessmentService
 from backend.app.services.authentication import AuthenticationService
 from backend.app.services.company_directory import CompanyDirectoryService
@@ -94,6 +97,10 @@ from backend.app.discovery.bootstrap import build_country_packs
 from backend.app.llm.secrets import FernetSecretCipher, generate_master_key
 from server.app import create_app
 from tests.v2_fakes import (
+    FakeApplicationDecisionRepository,
+    FakeApplicationEventRepository,
+    FakeApplicationPolicyRepository,
+    FakeApplicationRepository,
     FakeCandidateDocumentRepository,
     FakeCandidateProfileRepository,
     FakeCareerSiteRepository,
@@ -105,6 +112,7 @@ from tests.v2_fakes import (
     FakeOpportunityRepository,
     FakeSearchProfileRepository,
     FakeSessionRepository,
+    FakeSubmissionAttemptRepository,
     FakeUserRepository,
 )
 from tests.v2_llm import FakeHostResolver
@@ -237,6 +245,11 @@ class Harness:
     documents: FakeCandidateDocumentRepository
     providers: CompanyProviderRegistry
     llm_connections: FakeLLMConnectionRepository
+    application_policies: FakeApplicationPolicyRepository
+    application_decisions: FakeApplicationDecisionRepository
+    applications: FakeApplicationRepository
+    application_events: FakeApplicationEventRepository
+    submission_attempts: FakeSubmissionAttemptRepository
 
     def url(self, path: str) -> str:
         """A V2 path, prefixed once so no test spells `/api/v2` itself."""
@@ -351,6 +364,14 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     documents = FakeCandidateDocumentRepository()
     providers = CompanyProviderRegistry()
     llm_connections = FakeLLMConnectionRepository()
+    # The Phase 12 stores. The event and attempt fakes resolve ownership through the
+    # application store, so they are bound to it — the real reads join to
+    # `applications` for the same check.
+    application_policies = FakeApplicationPolicyRepository()
+    application_decisions = FakeApplicationDecisionRepository()
+    applications = FakeApplicationRepository()
+    application_events = FakeApplicationEventRepository(applications)
+    submission_attempts = FakeSubmissionAttemptRepository(applications)
     directory = CompanyDirectoryService(companies, career_sites, discoveries)
     # The assessment service reads the real country packs — the CH pack is what the
     # legal-safety path exercises — over the fake verdict stores. `build_country_packs`
@@ -405,6 +426,16 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
         llm_connections, cipher=llm_cipher,
         http_transport=httpx.MockTransport(_healthcheck_ok),
         resolver=llm_resolver)
+    # The application engine over the fakes, with a fallback-only registry (the
+    # generic adapter): the request-flow tests exercise the lifecycle and the gate,
+    # not a real browser or mail server, so every prepared application routes to a
+    # human exactly as the cautious API default does.
+    app.dependency_overrides[application_service] = lambda: ApplicationService(
+        applications=applications, events=application_events,
+        attempts=submission_attempts, decisions=application_decisions,
+        policies=application_policies, matches=matches, eligibilities=eligibilities,
+        profiles=profiles, opportunities=postings, documents=documents,
+        registry=build_application_registry())
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:
@@ -414,7 +445,12 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
                       career_sites=career_sites, discoveries=discoveries,
                       matches=matches, eligibilities=eligibilities,
                       documents=documents, providers=providers,
-                      llm_connections=llm_connections)
+                      llm_connections=llm_connections,
+                      application_policies=application_policies,
+                      application_decisions=application_decisions,
+                      applications=applications,
+                      application_events=application_events,
+                      submission_attempts=submission_attempts)
 
 
 def operations(app: FastAPI, *, under: str) -> tuple[tuple[str, str], ...]:

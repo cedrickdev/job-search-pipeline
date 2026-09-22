@@ -67,7 +67,8 @@ SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
 # `candidate_documents` (Phase 10) carries `user_id` denormalized beside its
 # `candidate_profile_id` for the same reason every user-owned table does: each
 # scoped read is `WHERE user_id = :current_user`.
-USER_OWNED_TABLES = ("candidate_documents", "candidate_profiles",
+USER_OWNED_TABLES = ("application_decisions", "application_policies", "applications",
+                     "candidate_documents", "candidate_profiles",
                      "eligibility_results", "llm_connections", "match_evaluations",
                      "provider_sessions", "search_profiles", "user_sessions")
 
@@ -90,6 +91,8 @@ TELEMETRY_TABLES = ("llm_runs",)
 # column would be that second, forgettable copy. `document_versions` reaches its
 # owner through the `candidate_documents` row, which carries the `user_id`.
 PARENT_OWNED_TABLES = {
+    "application_events": "applications",
+    "submission_attempts": "applications",
     "candidate_availability_slots": "candidate_profiles",
     "candidate_claims": "candidate_profiles",
     "candidate_evidence": "candidate_profiles",
@@ -127,7 +130,7 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_twenty_seven_v2_tables():
+def test_the_metadata_holds_exactly_the_thirty_two_v2_tables():
     """A tripwire on the shape of the schema itself.
 
     `models.py` is the only place a V2 table may be declared, so the four ownership
@@ -137,7 +140,7 @@ def test_the_metadata_holds_exactly_the_twenty_seven_v2_tables():
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
         PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | {"users"}
-    assert len(TABLES) == 27
+    assert len(TABLES) == 32
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))

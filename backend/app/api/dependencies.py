@@ -41,6 +41,7 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.api.errors import csrf_failed, not_authenticated
+from backend.app.application_engine.bootstrap import build_application_registry
 from backend.app.companies.bootstrap import build_company_discovery
 from backend.app.companies.providers.manual_seed import (
     PROVIDER_KEY as MANUAL_SEED_PROVIDER,
@@ -64,6 +65,10 @@ from backend.app.infrastructure.database.engine import (
 )
 from backend.app.llm.secrets import FernetSecretCipher, SecretCipher
 from backend.app.repositories.sqlalchemy_repositories import (
+    SqlAlchemyApplicationDecisionRepository,
+    SqlAlchemyApplicationEventRepository,
+    SqlAlchemyApplicationPolicyRepository,
+    SqlAlchemyApplicationRepository,
     SqlAlchemyCandidateDocumentRepository,
     SqlAlchemyCandidateProfileRepository,
     SqlAlchemyCareerSiteRepository,
@@ -75,8 +80,10 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyOpportunityRepository,
     SqlAlchemySearchProfileRepository,
     SqlAlchemySessionRepository,
+    SqlAlchemySubmissionAttemptRepository,
     SqlAlchemyUserRepository,
 )
+from backend.app.services.applications import ApplicationService
 from backend.app.services.assessment import AssessmentService
 from backend.app.services.authentication import (
     AuthenticatedSession,
@@ -462,6 +469,34 @@ def reject_cross_site_writes(request: Request) -> None:
         raise csrf_failed()
 
 
+def application_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> ApplicationService:
+    """The application lifecycle service, composed for this request.
+
+    Ten repositories and the adapter registry. The registry is built with only its
+    generic fallback (`build_application_registry` with no collaborators): the API
+    process prepares applications and routes them to a human, and it does not itself
+    drive a browser or send mail — that is a worker's job, and a worker deployment
+    composes a registry with a `TaskDispatcher` and an `EmailSender`. Preparing a
+    safe, fallback-only registry here is what keeps the default cautious (§13). No
+    clock in the constructor — each route hands `now` to the method it calls, so a
+    single request's timestamps and rate window agree.
+    """
+    return ApplicationService(
+        applications=SqlAlchemyApplicationRepository(session),
+        events=SqlAlchemyApplicationEventRepository(session),
+        attempts=SqlAlchemySubmissionAttemptRepository(session),
+        decisions=SqlAlchemyApplicationDecisionRepository(session),
+        policies=SqlAlchemyApplicationPolicyRepository(session),
+        matches=SqlAlchemyMatchEvaluationRepository(session),
+        eligibilities=SqlAlchemyEligibilityResultRepository(session),
+        profiles=SqlAlchemyCandidateProfileRepository(session),
+        opportunities=SqlAlchemyOpportunityRepository(session),
+        documents=SqlAlchemyCandidateDocumentRepository(session),
+        registry=build_application_registry())
+
+
 CurrentSession = Annotated[AuthenticatedSession, Depends(current_session)]
 Now = Annotated[datetime, Depends(now)]
 Auth = Annotated[AuthSettings, Depends(auth_settings)]
@@ -475,3 +510,4 @@ Assessment = Annotated[AssessmentService, Depends(assessment_service)]
 Evidence = Annotated[CandidateEvidenceService, Depends(evidence_service)]
 Documents = Annotated[DocumentService, Depends(document_service)]
 LLMConnections = Annotated[LLMConnectionService, Depends(llm_connection_service)]
+Applications = Annotated[ApplicationService, Depends(application_service)]

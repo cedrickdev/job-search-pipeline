@@ -490,6 +490,171 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/applications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Applications
+         * @description This account's applications, most recently updated first.
+         */
+        get: operations["list_applications_api_v2_applications_get"];
+        put?: never;
+        /**
+         * Create Application
+         * @description Open an application for a posting from its stored decision (§2-3, §36).
+         *
+         *     Idempotent: opening one twice for the same target returns the first rather than a
+         *     second (the id is derived from the target and channel). A 409 comes back only when
+         *     the decision is missing (decide first) or the target was already submitted (a
+         *     genuine duplicate); otherwise the current application is returned.
+         */
+        post: operations["create_application_api_v2_applications_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/applications/{application_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Application
+         * @description One application, or 404 if it is not this account's.
+         */
+        get: operations["read_application_api_v2_applications__application_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/applications/{application_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Application
+         * @description A human's approval of a prepared application (§52).
+         *
+         *     Only a READY_FOR_REVIEW application can be approved; anything else is a 409.
+         */
+        post: operations["approve_application_api_v2_applications__application_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/applications/{application_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Application
+         * @description Abandon an application before it reaches the employer.
+         *
+         *     Refused with a 409 once an application is submitted — that is a withdrawal, a
+         *     different act — or already terminal.
+         */
+        post: operations["cancel_application_api_v2_applications__application_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/applications/{application_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Application Events
+         * @description One application's append-only audit trail, oldest first (§41).
+         *
+         *     404 when the application is not this account's — the ownership check is the same
+         *     read the other endpoints use, so the trail cannot be read by guessing an id.
+         */
+        get: operations["list_application_events_api_v2_applications__application_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/applications/{application_id}/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare Application
+         * @description Prepare materials and route by the gate (auto-approve, review, human, block).
+         *
+         *     Reversible and safe to retry (§33) — it never submits. The returned state says
+         *     what happens next.
+         */
+        post: operations["prepare_application_api_v2_applications__application_id__prepare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/applications/{application_id}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit Application
+         * @description Submit an approved application — the irreversible boundary (§1, §5, §80-88).
+         *
+         *     The gate is re-evaluated against the current policy first, so an application
+         *     approved this morning is refused this afternoon if the policy became MANUAL. An
+         *     exhausted rate budget is a 429; a duplicate is a 409; an ambiguous send comes back
+         *     as SUBMISSION_STATE_UNKNOWN rather than a false success.
+         */
+        post: operations["submit_application_api_v2_applications__application_id__submit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/auth/login": {
         parameters: {
             query?: never;
@@ -1341,6 +1506,146 @@ export interface components {
             /** Valid Until */
             valid_until?: string | null;
         };
+        /**
+         * ApplicationChannel
+         * @description The route an application takes to an employer (§8-10).
+         *
+         *     Named once so the registry dispatches on a typed member rather than a platform
+         *     string scattered through business code (§8: no `if platform == "greenhouse"`).
+         *     The channels are ordered loosely from most machine-friendly to least:
+         *
+         *     - `ATS_API` — a first-class API the ATS publishes; the safest to automate;
+         *     - `ATS_FORM` — a known ATS's web form (Greenhouse, Lever, Ashby, Umantis…);
+         *     - `DIRECT_FORM` — an employer's own hosted application form;
+         *     - `BROWSER` — a page only a browser can drive (LinkedIn, WTJ, Migros…);
+         *     - `EMAIL` — an application sent to a stated recipient address (§62);
+         *     - `MANUAL` — the platform prepares, the human submits; the honest default when
+         *       nothing above fits;
+         *     - `UNSUPPORTED` — the platform has no way to apply here at all, so it says so
+         *       rather than pretending a `MANUAL` hand-off it cannot even set up.
+         * @enum {string}
+         */
+        ApplicationChannel: "ATS_API" | "ATS_FORM" | "DIRECT_FORM" | "BROWSER" | "EMAIL" | "MANUAL" | "UNSUPPORTED";
+        /**
+         * ApplicationEventActor
+         * @description Who caused an event, which is itself an audit fact.
+         *
+         *     - `SYSTEM` — the deterministic engine (a gate evaluation, an automatic transition);
+         *     - `USER` — the account holder (an approval, a cancellation from the UI);
+         *     - `WORKER` — the isolated browser/submission worker reporting an outcome.
+         * @enum {string}
+         */
+        ApplicationEventActor: "SYSTEM" | "USER" | "WORKER";
+        /**
+         * ApplicationEventListResponse
+         * @description One application's events, oldest first — the trail as it grew.
+         */
+        ApplicationEventListResponse: {
+            /** Events */
+            events: components["schemas"]["ApplicationEventResponse"][];
+        };
+        /**
+         * ApplicationEventResponse
+         * @description One immutable entry in an application's audit trail (§41).
+         *
+         *     `reasons` reuse the closed-vocabulary `ReasonResponse`, so the "why" behind a
+         *     gate decision or a refusal renders identically to everywhere else and can never
+         *     carry a stack trace or a secret.
+         */
+        ApplicationEventResponse: {
+            actor: components["schemas"]["ApplicationEventActor"];
+            /** Detail */
+            detail: string | null;
+            event_type: components["schemas"]["ApplicationEventType"];
+            from_state: components["schemas"]["ApplicationState"] | null;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Reasons */
+            reasons: components["schemas"]["ReasonResponse"][];
+            to_state: components["schemas"]["ApplicationState"] | null;
+        };
+        /**
+         * ApplicationEventType
+         * @description What happened, as a stable code a dashboard groups on (§41).
+         *
+         *     The vocabulary of the trail. Most correspond to a state change, but a few record
+         *     a *decision the engine made* without a state change — a gate evaluation, a
+         *     duplicate blocked at creation — because those are exactly the facts an audit of
+         *     "why did (didn't) this apply?" needs and a bare state history would lose.
+         * @enum {string}
+         */
+        ApplicationEventType: "CREATED" | "PREPARATION_STARTED" | "PREPARED" | "GATE_EVALUATED" | "HUMAN_REQUIRED" | "APPROVED" | "SUBMISSION_STARTED" | "SUBMITTED" | "SUBMISSION_STATE_UNKNOWN" | "FAILED" | "CANCELLED" | "WITHDRAWN" | "DUPLICATE_BLOCKED" | "RATE_LIMITED";
+        /**
+         * ApplicationListResponse
+         * @description This account's applications, newest first, wrapped so it can grow a field.
+         */
+        ApplicationListResponse: {
+            /** Applications */
+            applications: components["schemas"]["ApplicationResponse"][];
+        };
+        /**
+         * ApplicationResponse
+         * @description One application's current state, target and pinned materials.
+         *
+         *     The lifecycle `state` is what a UI renders and acts on — READY_FOR_REVIEW shows
+         *     an "Approve & Submit" control, REQUIRES_HUMAN a hand-off, SUBMITTED a receipt.
+         *     `answers` and the correlation id are deliberately not exposed: the answers can
+         *     carry personal values a list view has no need for, and the trail is the audited
+         *     place to see what happened.
+         */
+        ApplicationResponse: {
+            /** Attempt Count */
+            attempt_count: number;
+            channel: components["schemas"]["ApplicationChannel"];
+            /** Company Id */
+            company_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Opportunity Id */
+            opportunity_id: string | null;
+            /** Pinned Documents */
+            pinned_documents: components["schemas"]["PinnedDocumentResponse"][];
+            state: components["schemas"]["ApplicationState"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * ApplicationState
+         * @description Every state one application can be in (§17-18).
+         *
+         *     The happy path runs `PLANNED → PREPARING → READY_FOR_REVIEW → APPROVED →
+         *     SUBMITTING → SUBMITTED`; the branches are the honest ways it can leave that path.
+         *
+         *     - `PLANNED` — created from a decision, nothing prepared yet;
+         *     - `PREPARING` — an adapter is drafting materials and reading the form;
+         *     - `READY_FOR_REVIEW` — prepared and filled, waiting for a human to approve (§52);
+         *     - `REQUIRES_HUMAN` — stopped on something only a person can resolve (§19-27);
+         *     - `APPROVED` — cleared to submit, by a human or an autopilot policy;
+         *     - `SUBMITTING` — a submission attempt is in flight;
+         *     - `SUBMITTED` — confirmed to have reached the employer;
+         *     - `SUBMISSION_STATE_UNKNOWN` — it left the platform but no confirmation could be
+         *       read, so whether it landed is genuinely unknown; never retried automatically,
+         *       because a blind retry could double-submit (§38, §84, §88);
+         *     - `FAILED` — an execution failure that a fresh preparation could retry;
+         *     - `CANCELLED` — abandoned before it ever reached the employer;
+         *     - `WITHDRAWN` — retracted after it was submitted.
+         * @enum {string}
+         */
+        ApplicationState: "PLANNED" | "PREPARING" | "READY_FOR_REVIEW" | "REQUIRES_HUMAN" | "APPROVED" | "SUBMITTING" | "SUBMITTED" | "SUBMISSION_STATE_UNKNOWN" | "FAILED" | "CANCELLED" | "WITHDRAWN";
         /** AppliedBody */
         AppliedBody: {
             /**
@@ -2046,6 +2351,22 @@ export interface components {
             recipient?: string | null;
             /** Signature */
             signature: string;
+        };
+        /**
+         * CreateApplicationRequest
+         * @description Open an application for one posting from its current decision.
+         *
+         *     The body names the *opportunity* and nothing else: the candidate is the
+         *     account's own profile and the intent is the decision already stored for the pair,
+         *     both resolved server-side, so a request cannot open an application against
+         *     someone else's profile or invent an intent (§2-3, §Security).
+         */
+        CreateApplicationRequest: {
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
         };
         /**
          * CreateLLMConnectionRequest
@@ -2928,6 +3249,25 @@ export interface components {
          * @enum {string}
          */
         OpportunityType: "FULL_TIME" | "PART_TIME" | "STUDENT_JOB" | "INTERNSHIP" | "APPRENTICESHIP" | "WORK_STUDY" | "GRADUATE" | "TEMPORARY" | "FREELANCE";
+        /**
+         * PinnedDocumentResponse
+         * @description One exact document version an application will submit (§14-16).
+         */
+        PinnedDocumentResponse: {
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            document_type: components["schemas"]["CandidateDocumentType"];
+            /** Version */
+            version: number;
+            /**
+             * Version Id
+             * Format: uuid
+             */
+            version_id: string;
+        };
         /**
          * ProviderHealthResponse
          * @description What one company discovery provider last said about itself.
@@ -4479,6 +4819,245 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_applications_api_v2_applications_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationListResponse"];
+                };
+            };
+        };
+    };
+    create_application_api_v2_applications_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateApplicationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_application_api_v2_applications__application_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_application_api_v2_applications__application_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_application_api_v2_applications__application_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_application_events_api_v2_applications__application_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationEventListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepare_application_api_v2_applications__application_id__prepare_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_application_api_v2_applications__application_id__submit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponse"];
                 };
             };
             /** @description Validation Error */

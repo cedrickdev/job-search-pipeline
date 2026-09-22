@@ -41,6 +41,7 @@ const V2_LINKS = [
   { to: '/map', label: 'Map', exact: false },
   { to: '/documents', label: 'Documents', exact: false },
   { to: '/evidence', label: 'Evidence', exact: false },
+  { to: '/applications', label: 'Applications', exact: false },
   { to: '/providers', label: 'Providers', exact: false },
 ]
 

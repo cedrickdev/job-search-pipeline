@@ -51,6 +51,16 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql.elements import TextClause
 
+from backend.app.domain.application import ApplicationState, SubmissionOutcome
+from backend.app.domain.application_channel import (
+    ApplicationChannel,
+    HumanRequiredReason,
+)
+from backend.app.domain.application_event import (
+    ApplicationEventActor,
+    ApplicationEventType,
+)
+from backend.app.domain.application_failure import ApplicationFailureCode
 from backend.app.domain.candidate import (
     ClaimType,
     EvidenceKind,
@@ -74,6 +84,7 @@ from backend.app.domain.company import (
     DetectionStatus,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.decision import ApplicationDecisionKind
 from backend.app.domain.documents import (
     CandidateDocumentType,
     DocumentStatus,
@@ -87,6 +98,7 @@ from backend.app.domain.eligibility import (
 from backend.app.domain.geo import GeocodingOutcome
 from backend.app.domain.matching import MatchDimension
 from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
+from backend.app.domain.policy import AutomationMode
 from backend.app.domain.search import SearchAreaKind
 from backend.app.domain.user import UserStatus
 from backend.app.infrastructure.database.base import Base, TimestampedMixin
@@ -1969,8 +1981,292 @@ class LLMRunRow(TimestampedMixin, Base):
     finished_at: Mapped[datetime | None]
 
 
+# ---------------------------------------------------------------------------
+# Phase 12 — the application engine. Five tables: the user's policy, the
+# decision of intent, the execution aggregate, its append-only event trail, and
+# its submission attempts. Every CHECK below restates a domain validator, so a
+# row written by a migration or by psql cannot assert a state the engine could
+# never have produced (§17-18, §36-41).
+# ---------------------------------------------------------------------------
+
+# `ApplicationPolicy._brakes_and_limits_are_coherent`: only AUTOPILOT may switch
+# the approval brake off. Written as the implication it is, so the CHECK reads the
+# way the prose does.
+_POLICY_BRAKE_COHERENT: Final[str] = (
+    f"mode = '{AutomationMode.AUTOPILOT.value}'"
+    " OR require_approval_before_submission"
+)
+
+# `ApplicationDecision._target_matches_the_kind`: a spontaneous application names a
+# company, everything else names an opportunity.
+_DECISION_TARGET_MATCHES_KIND: Final[str] = (
+    f"(kind = '{ApplicationDecisionKind.SPONTANEOUS_APPLICATION.value}'"
+    " AND company_id IS NOT NULL)"
+    f" OR (kind <> '{ApplicationDecisionKind.SPONTANEOUS_APPLICATION.value}'"
+    " AND opportunity_id IS NOT NULL)"
+)
+
+# `Application._target_is_singular_and_keyed`: exactly one of the two targets.
+_APPLICATION_TARGET_SINGULAR: Final[str] = (
+    "(opportunity_id IS NULL) <> (company_id IS NULL)"
+)
+
+# `SubmissionResult._fields_match_the_outcome`, applied only once an outcome is
+# recorded — an in-flight attempt (outcome NULL) carries none of these yet (§88).
+_ATTEMPT_REQUIRES_HUMAN_HAS_REASON: Final[str] = (
+    f"outcome IS NULL OR outcome <> '{SubmissionOutcome.REQUIRES_HUMAN.value}'"
+    " OR human_required_reason IS NOT NULL"
+)
+_ATTEMPT_HUMAN_REASON_ONLY_ON_HUMAN: Final[str] = (
+    "human_required_reason IS NULL"
+    f" OR outcome = '{SubmissionOutcome.REQUIRES_HUMAN.value}'"
+)
+_ATTEMPT_FAILED_HAS_CODE: Final[str] = (
+    f"outcome IS NULL OR outcome <> '{SubmissionOutcome.FAILED.value}'"
+    " OR failure_code IS NOT NULL"
+)
+_ATTEMPT_CODE_ONLY_ON_FAILED: Final[str] = (
+    f"failure_code IS NULL OR outcome = '{SubmissionOutcome.FAILED.value}'"
+)
+_ATTEMPT_CONFIRMATION_ONLY_ON_SUBMITTED: Final[str] = (
+    "confirmation_reference IS NULL"
+    f" OR outcome = '{SubmissionOutcome.SUBMITTED.value}'"
+)
 
 
+class ApplicationPolicyRow(TimestampedMixin, Base):
+    """A user's standing rules about applying (§2, §70).
+
+    User-owned; `created_at`/`updated_at` are domain-supplied and written by the
+    mapper, as on `users`. The brake CHECK is the data-layer half of "only AUTOPILOT
+    may submit unattended" — a lesser mode with the approval brake off is a row the
+    engine could never have built, and the CHECK refuses it.
+    """
+
+    __tablename__ = "application_policies"
+    __table_args__ = (
+        _unit_interval("minimum_overall_score"),
+        _enum_array_members("allowed_opportunity_types", OpportunityType),
+        CheckConstraint(_POLICY_BRAKE_COHERENT, name="brake_coherent"),
+        CheckConstraint(
+            "max_applications_per_day IS NULL OR max_applications_per_day >= 0",
+            name="max_per_day_non_negative"),
+        CheckConstraint(
+            "max_applications_per_week IS NULL OR max_applications_per_week >= 0",
+            name="max_per_week_non_negative"),
+        CheckConstraint(
+            "max_applications_per_day IS NULL OR max_applications_per_week IS NULL"
+            " OR max_applications_per_day <= max_applications_per_week",
+            name="day_within_week"),
+        Index("ix_application_policies_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    name: Mapped[str]
+    is_active: Mapped[bool] = mapped_column(server_default=text("true"))
+    mode: Mapped[AutomationMode] = mapped_column(
+        enum_column(AutomationMode, "application_automation_mode"))
+    require_approval_before_submission: Mapped[bool] = mapped_column(
+        server_default=text("true"))
+    allowed_opportunity_types: Mapped[list[str]] = mapped_column(
+        ARRAY(Text()), server_default=_EMPTY_TEXT_ARRAY)
+    minimum_overall_score: Mapped[float | None]
+    dimension_thresholds: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    allow_incomplete_eligibility: Mapped[bool] = mapped_column(
+        server_default=text("false"))
+    allow_spontaneous_applications: Mapped[bool] = mapped_column(
+        server_default=text("false"))
+    max_applications_per_day: Mapped[int | None] = mapped_column(Integer)
+    max_applications_per_week: Mapped[int | None] = mapped_column(Integer)
+
+
+class ApplicationDecisionRow(TimestampedMixin, Base):
+    """One decision of intent about one target (§2-3).
+
+    `created_at`/`updated_at` are the row's own bookkeeping (server default);
+    `decided_at` is the domain fact. The embedded match and eligibility snapshots are
+    *not* stored here — they live in their own tables and the engine re-reads them at
+    gate time, so a decision row is the intent plus the ids it is about. The target
+    CHECK mirrors the domain: a spontaneous decision names a company, all others an
+    opportunity.
+    """
+
+    __tablename__ = "application_decisions"
+    __table_args__ = (
+        _unit_interval("confidence"),
+        CheckConstraint(_DECISION_TARGET_MATCHES_KIND, name="target_matches_kind"),
+        CheckConstraint("jsonb_array_length(reasons) >= 1", name="reasons_present"),
+        Index("ix_application_decisions_user_id_decided_at", "user_id", "decided_at"),
+        Index("ix_application_decisions_candidate_profile_id_opportunity_id",
+              "candidate_profile_id", "opportunity_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    # Explicitly named: the convention's
+    # `fk_application_decisions_candidate_profile_id_candidate_profiles` is 64
+    # characters, one past PostgreSQL's 63-char limit, so it is shortened here the
+    # way `eligibility_checks.result_id` shortens its column for the same reason.
+    candidate_profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE",
+                   name="fk_application_decisions_candidate_profile"))
+    opportunity_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"))
+    company_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"))
+    policy_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("application_policies.id", ondelete="SET NULL"))
+    kind: Mapped[ApplicationDecisionKind] = mapped_column(
+        enum_column(ApplicationDecisionKind, "application_decision_kind"))
+    reasons: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    confidence: Mapped[float | None]
+    requires_human_review: Mapped[bool] = mapped_column(server_default=text("false"))
+    decided_by: Mapped[str | None]
+    decided_at: Mapped[datetime]
+
+
+class ApplicationRow(TimestampedMixin, Base):
+    """The execution aggregate for one (candidate, target, channel) application (§17).
+
+    `created_at`/`updated_at` are domain-supplied and written by the mapper. The
+    UNIQUE on `idempotency_key` is the data-layer half of the duplicate-prevention
+    story (§36): the id is derived from the key, so a second application for the same
+    target collides on the key even if it bypassed the derivation. `pinned_documents`
+    and `answers` are JSONB — read and written whole with the aggregate, never joined.
+    """
+
+    __tablename__ = "applications"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key"),
+        CheckConstraint(_APPLICATION_TARGET_SINGULAR, name="target_singular"),
+        CheckConstraint("attempt_count >= 0", name="attempt_count_non_negative"),
+        Index("ix_applications_user_id_updated_at", "user_id", "updated_at"),
+        Index("ix_applications_state", "state"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    candidate_profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    decision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("application_decisions.id", ondelete="CASCADE"))
+    channel: Mapped[ApplicationChannel] = mapped_column(
+        enum_column(ApplicationChannel, "application_channel"))
+    state: Mapped[ApplicationState] = mapped_column(
+        enum_column(ApplicationState, "application_state"))
+    idempotency_key: Mapped[str]
+    opportunity_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"))
+    company_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"))
+    policy_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("application_policies.id", ondelete="SET NULL"))
+    pinned_documents: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    answers: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    form_fingerprint: Mapped[str | None]
+    attempt_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    correlation_id: Mapped[str | None]
+
+    events: Mapped[list["ApplicationEventRow"]] = relationship(
+        back_populates="application", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="ApplicationEventRow.occurred_at")
+    attempts: Mapped[list["SubmissionAttemptRow"]] = relationship(
+        back_populates="application", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="SubmissionAttemptRow.attempt_number")
+
+
+class ApplicationEventRow(TimestampedMixin, Base):
+    """One immutable entry in an application's history (§41).
+
+    Append-only: nothing updates a row here, so `updated_at` never moves off its
+    server default. `from_state`/`to_state` are nullable because a `GATE_EVALUATED`
+    or `DUPLICATE_BLOCKED` event changes no state. `occurred_at` is the domain fact;
+    `created_at` is when the row was written.
+    """
+
+    __tablename__ = "application_events"
+    __table_args__ = (
+        Index("ix_application_events_application_id_occurred_at",
+              "application_id", "occurred_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    application_id: Mapped[UUID] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"))
+    event_type: Mapped[ApplicationEventType] = mapped_column(
+        enum_column(ApplicationEventType, "application_event_type"))
+    actor: Mapped[ApplicationEventActor] = mapped_column(
+        enum_column(ApplicationEventActor, "application_event_actor"),
+        server_default=text(f"'{ApplicationEventActor.SYSTEM.value}'"))
+    from_state: Mapped[ApplicationState | None] = mapped_column(
+        enum_column(ApplicationState, "application_event_from_state"))
+    to_state: Mapped[ApplicationState | None] = mapped_column(
+        enum_column(ApplicationState, "application_event_to_state"))
+    detail: Mapped[str | None]
+    reasons: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    correlation_id: Mapped[str | None]
+    occurred_at: Mapped[datetime]
+
+    application: Mapped["ApplicationRow"] = relationship(
+        back_populates="events", lazy="raise")
+
+
+class SubmissionAttemptRow(TimestampedMixin, Base):
+    """One try at the irreversible act, recorded whole (§39, §88).
+
+    `UNIQUE (application_id, attempt_number)` matches the pair the attempt's id
+    derives from, so the in-flight row written at SUBMISSION_STARTED and its
+    completion are one row. The qualifier CHECKs restate `SubmissionResult`'s
+    validators, but each passes while `outcome` is NULL — the in-flight row that is
+    the crash evidence §88 wants.
+    """
+
+    __tablename__ = "submission_attempts"
+    __table_args__ = (
+        UniqueConstraint("application_id", "attempt_number"),
+        CheckConstraint("attempt_number >= 1", name="attempt_number_positive"),
+        CheckConstraint(_ATTEMPT_REQUIRES_HUMAN_HAS_REASON,
+                        name="requires_human_has_reason"),
+        CheckConstraint(_ATTEMPT_HUMAN_REASON_ONLY_ON_HUMAN,
+                        name="human_reason_only_on_human"),
+        CheckConstraint(_ATTEMPT_FAILED_HAS_CODE, name="failed_has_code"),
+        CheckConstraint(_ATTEMPT_CODE_ONLY_ON_FAILED, name="code_only_on_failed"),
+        CheckConstraint(_ATTEMPT_CONFIRMATION_ONLY_ON_SUBMITTED,
+                        name="confirmation_only_on_submitted"),
+        CheckConstraint("finished_at IS NULL OR finished_at >= started_at",
+                        name="finished_after_started"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    application_id: Mapped[UUID] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"))
+    attempt_number: Mapped[int] = mapped_column(SmallInteger)
+    adapter_key: Mapped[str]
+    outcome: Mapped[SubmissionOutcome | None] = mapped_column(
+        enum_column(SubmissionOutcome, "submission_attempt_outcome"))
+    detail: Mapped[str | None]
+    confirmation_reference: Mapped[str | None]
+    human_required_reason: Mapped[HumanRequiredReason | None] = mapped_column(
+        enum_column(HumanRequiredReason, "submission_attempt_human_reason"))
+    failure_code: Mapped[ApplicationFailureCode | None] = mapped_column(
+        enum_column(ApplicationFailureCode, "submission_attempt_failure_code"))
+    correlation_id: Mapped[str | None]
+    started_at: Mapped[datetime]
+    finished_at: Mapped[datetime | None]
+
+    application: Mapped["ApplicationRow"] = relationship(
+        back_populates="attempts", lazy="raise")
 
 
 

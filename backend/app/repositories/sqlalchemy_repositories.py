@@ -36,6 +36,8 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.domain.application import Application, ApplicationState
+from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
 from backend.app.domain.candidate import CandidateProfile
 from backend.app.domain.common import GeoPoint
 from backend.app.domain.company import (
@@ -46,6 +48,7 @@ from backend.app.domain.company import (
     CompanyDiscoveryRecord,
     normalize_company_name,
 )
+from backend.app.domain.decision import ApplicationDecision
 from backend.app.domain.documents import CandidateDocument, CandidateDocumentType
 from backend.app.domain.eligibility import EligibilityResult
 from backend.app.domain.geo import (
@@ -55,6 +58,9 @@ from backend.app.domain.geo import (
     remote_scope_of,
 )
 from backend.app.domain.identifiers import (
+    ApplicationDecisionId,
+    ApplicationId,
+    ApplicationPolicyId,
     CandidateDocumentId,
     CandidateProfileId,
     CompanyId,
@@ -63,14 +69,24 @@ from backend.app.domain.identifiers import (
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
+    SubmissionAttemptId,
     UserId,
     UserSessionId,
 )
 from backend.app.domain.matching import MatchEvaluation
 from backend.app.domain.opportunity import Opportunity, WorkplaceMode
+from backend.app.domain.policy import ApplicationPolicy
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.infrastructure.database.mappers import (
+    application_decision_to_domain,
+    application_decision_to_row,
+    application_event_to_domain,
+    application_event_to_row,
+    application_policy_to_domain,
+    application_policy_to_row,
+    application_to_domain,
+    application_to_row,
     candidate_document_to_domain,
     candidate_document_to_row,
     candidate_profile_to_domain,
@@ -98,12 +114,18 @@ from backend.app.infrastructure.database.mappers import (
     provider_session_to_row,
     search_profile_to_domain,
     search_profile_to_row,
+    submission_attempt_to_domain,
+    submission_attempt_to_row,
     user_session_to_domain,
     user_session_to_row,
     user_to_domain,
     user_to_row,
 )
 from backend.app.infrastructure.database.models import (
+    ApplicationDecisionRow,
+    ApplicationEventRow,
+    ApplicationPolicyRow,
+    ApplicationRow,
     CandidateDocumentRow,
     CandidateProfileRow,
     CompanyAliasRow,
@@ -119,6 +141,7 @@ from backend.app.infrastructure.database.models import (
     OpportunitySourceRecordRow,
     ProviderSessionRow,
     SearchProfileRow,
+    SubmissionAttemptRow,
     UserRow,
     UserSessionRow,
 )
@@ -143,6 +166,10 @@ from backend.app.repositories.contracts import (
 
 if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
     from backend.app.repositories.contracts import (
+        ApplicationDecisionRepository,
+        ApplicationEventRepository,
+        ApplicationPolicyRepository,
+        ApplicationRepository,
         CandidateDocumentRepository,
         CandidateProfileRepository,
         CareerSiteRepository,
@@ -156,6 +183,7 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
         ProviderSessionRepository,
         SearchProfileRepository,
         SessionRepository,
+        SubmissionAttemptRepository,
         UserRepository,
     )
 
@@ -166,7 +194,9 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
             "SessionRepository", "CandidateProfileRepository",
             "SearchProfileRepository", "CandidateDocumentRepository",
             "LLMConnectionRepository", "ProviderSessionRepository",
-            "LLMRunRepository"]:
+            "LLMRunRepository", "ApplicationPolicyRepository",
+            "ApplicationDecisionRepository", "ApplicationRepository",
+            "ApplicationEventRepository", "SubmissionAttemptRepository"]:
         """Structural conformance, enforced by `mypy backend`.
 
         The `Protocol`s in `contracts` are satisfied by shape, so nothing would
@@ -187,7 +217,12 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
                 SqlAlchemyCandidateDocumentRepository(session),
                 SqlAlchemyLLMConnectionRepository(session),
                 SqlAlchemyProviderSessionRepository(session),
-                SqlAlchemyLLMRunRepository(session))
+                SqlAlchemyLLMRunRepository(session),
+                SqlAlchemyApplicationPolicyRepository(session),
+                SqlAlchemyApplicationDecisionRepository(session),
+                SqlAlchemyApplicationRepository(session),
+                SqlAlchemyApplicationEventRepository(session),
+                SqlAlchemySubmissionAttemptRepository(session))
 
 
 def _rows_affected(result: Result[Any]) -> int:
@@ -1331,3 +1366,264 @@ class SqlAlchemyLLMRunRepository:
 
 
 
+
+
+class SqlAlchemyApplicationPolicyRepository:
+    """`ApplicationPolicyRepository` over an `AsyncSession`.
+
+    Every statement carries `user_id`, so another account's policy reads as absent.
+    `get_default` returns the most recently updated *active* policy, the row the
+    engine reads before every submission.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   policy_id: ApplicationPolicyId) -> ApplicationPolicyRow | None:
+        result = await self._session.execute(
+            select(ApplicationPolicyRow).where(
+                ApplicationPolicyRow.id == policy_id,
+                ApplicationPolicyRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  policy_id: ApplicationPolicyId) -> ApplicationPolicy | None:
+        row = await self._row(user_id, policy_id)
+        return None if row is None else application_policy_to_domain(row)
+
+    async def get_default(self, user_id: UserId) -> ApplicationPolicy | None:
+        result = await self._session.execute(
+            select(ApplicationPolicyRow)
+            .where(ApplicationPolicyRow.user_id == user_id,
+                   ApplicationPolicyRow.is_active)
+            .order_by(ApplicationPolicyRow.updated_at.desc(), ApplicationPolicyRow.id)
+            .limit(1))
+        row = result.scalar_one_or_none()
+        return None if row is None else application_policy_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT
+                            ) -> tuple[ApplicationPolicy, ...]:
+        result = await self._session.execute(
+            select(ApplicationPolicyRow)
+            .where(ApplicationPolicyRow.user_id == user_id)
+            .order_by(ApplicationPolicyRow.updated_at.desc(), ApplicationPolicyRow.id)
+            .limit(limit))
+        return tuple(application_policy_to_domain(row) for row in result.scalars())
+
+    async def upsert(self, policy: ApplicationPolicy) -> ApplicationPolicy:
+        row = application_policy_to_row(
+            policy, await self._row(policy.user_id, policy.id))
+        self._session.add(row)
+        await self._session.flush()
+        return application_policy_to_domain(row)
+
+
+class SqlAlchemyApplicationDecisionRepository:
+    """`ApplicationDecisionRepository` over an `AsyncSession`.
+
+    User-scoped everywhere. `get_for_pair` returns the most recent decision for a
+    (candidate, opportunity) pair, so a re-decided pair reads its latest intent.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   decision_id: ApplicationDecisionId
+                   ) -> ApplicationDecisionRow | None:
+        result = await self._session.execute(
+            select(ApplicationDecisionRow).where(
+                ApplicationDecisionRow.id == decision_id,
+                ApplicationDecisionRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  decision_id: ApplicationDecisionId) -> ApplicationDecision | None:
+        row = await self._row(user_id, decision_id)
+        return None if row is None else application_decision_to_domain(row)
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId
+                           ) -> ApplicationDecision | None:
+        result = await self._session.execute(
+            select(ApplicationDecisionRow)
+            .where(ApplicationDecisionRow.user_id == user_id,
+                   ApplicationDecisionRow.candidate_profile_id == candidate_profile_id,
+                   ApplicationDecisionRow.opportunity_id == opportunity_id)
+            .order_by(ApplicationDecisionRow.decided_at.desc(),
+                      ApplicationDecisionRow.id)
+            .limit(1))
+        row = result.scalar_one_or_none()
+        return None if row is None else application_decision_to_domain(row)
+
+    async def upsert(self, decision: ApplicationDecision) -> ApplicationDecision:
+        row = application_decision_to_row(
+            decision, await self._row(decision.user_id, decision.id))
+        self._session.add(row)
+        await self._session.flush()
+        return application_decision_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT
+                            ) -> tuple[ApplicationDecision, ...]:
+        result = await self._session.execute(
+            select(ApplicationDecisionRow)
+            .where(ApplicationDecisionRow.user_id == user_id)
+            .order_by(ApplicationDecisionRow.decided_at.desc(),
+                      ApplicationDecisionRow.id)
+            .limit(limit))
+        return tuple(application_decision_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyApplicationRepository:
+    """`ApplicationRepository` over an `AsyncSession`.
+
+    The `events` and `attempts` relationships are never eager-loaded here and never
+    written by an application upsert — they are append-only and owned by their own
+    repositories. `count_submitted_since` and `list_in_flight` are the two reads the
+    rate limit (§49) and startup recovery (§88) depend on; the latter is deliberately
+    unscoped, because recovery sweeps every account's stuck runs.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   application_id: ApplicationId) -> ApplicationRow | None:
+        result = await self._session.execute(
+            select(ApplicationRow).where(ApplicationRow.id == application_id,
+                                         ApplicationRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  application_id: ApplicationId) -> Application | None:
+        row = await self._row(user_id, application_id)
+        return None if row is None else application_to_domain(row)
+
+    async def get_by_idempotency_key(self, user_id: UserId,
+                                     idempotency_key: str) -> Application | None:
+        result = await self._session.execute(
+            select(ApplicationRow).where(
+                ApplicationRow.idempotency_key == idempotency_key,
+                ApplicationRow.user_id == user_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else application_to_domain(row)
+
+    async def upsert(self, application: Application) -> Application:
+        row = application_to_row(
+            application, await self._row(application.user_id, application.id))
+        self._session.add(row)
+        await self._session.flush()
+        return application_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
+        result = await self._session.execute(
+            select(ApplicationRow)
+            .where(ApplicationRow.user_id == user_id)
+            .order_by(ApplicationRow.updated_at.desc(), ApplicationRow.id)
+            .limit(limit))
+        return tuple(application_to_domain(row) for row in result.scalars())
+
+    async def count_submitted_since(self, user_id: UserId,
+                                    since: datetime) -> int:
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(ApplicationRow)
+            .where(ApplicationRow.user_id == user_id,
+                   ApplicationRow.state == ApplicationState.SUBMITTED.value,
+                   ApplicationRow.updated_at >= since))
+        return int(result.scalar_one())
+
+    async def list_in_flight(self, *,
+                             limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
+        result = await self._session.execute(
+            select(ApplicationRow)
+            .where(ApplicationRow.state.in_((ApplicationState.SUBMITTING.value,
+                                             ApplicationState.PREPARING.value)))
+            .order_by(ApplicationRow.updated_at, ApplicationRow.id)
+            .limit(limit))
+        return tuple(application_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyApplicationEventRepository:
+    """`ApplicationEventRepository` over an `AsyncSession`.
+
+    Append-only: there is only `append`, which always inserts (an event id is
+    unique). The list read joins to `applications` for the ownership check, so one
+    account cannot read another's trail by id.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def append(self, event: ApplicationEvent) -> ApplicationEvent:
+        row = application_event_to_row(event)
+        self._session.add(row)
+        await self._session.flush()
+        return application_event_to_domain(row)
+
+    async def list_for_application(self, user_id: UserId,
+                                   application_id: ApplicationId, *,
+                                   limit: int = DEFAULT_LIMIT
+                                   ) -> tuple[ApplicationEvent, ...]:
+        result = await self._session.execute(
+            select(ApplicationEventRow)
+            .join(ApplicationRow,
+                  ApplicationRow.id == ApplicationEventRow.application_id)
+            .where(ApplicationEventRow.application_id == application_id,
+                   ApplicationRow.user_id == user_id)
+            .order_by(ApplicationEventRow.occurred_at, ApplicationEventRow.id)
+            .limit(limit))
+        return tuple(application_event_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemySubmissionAttemptRepository:
+    """`SubmissionAttemptRepository` over an `AsyncSession`.
+
+    Keyed on the attempt's own id, so the in-flight row and its completion are one
+    upsert. The list read joins to `applications` for the ownership check, like the
+    event trail.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, attempt_id: SubmissionAttemptId
+                   ) -> SubmissionAttemptRow | None:
+        result = await self._session.execute(
+            select(SubmissionAttemptRow).where(
+                SubmissionAttemptRow.id == attempt_id))
+        return result.scalar_one_or_none()
+
+    async def upsert(self, attempt: SubmissionAttempt) -> SubmissionAttempt:
+        row = submission_attempt_to_row(attempt, await self._row(attempt.id))
+        self._session.add(row)
+        await self._session.flush()
+        return submission_attempt_to_domain(row)
+
+    async def get(self, application_id: ApplicationId,
+                  attempt_number: int) -> SubmissionAttempt | None:
+        result = await self._session.execute(
+            select(SubmissionAttemptRow).where(
+                SubmissionAttemptRow.application_id == application_id,
+                SubmissionAttemptRow.attempt_number == attempt_number))
+        row = result.scalar_one_or_none()
+        return None if row is None else submission_attempt_to_domain(row)
+
+    async def list_for_application(self, user_id: UserId,
+                                   application_id: ApplicationId, *,
+                                   limit: int = DEFAULT_LIMIT
+                                   ) -> tuple[SubmissionAttempt, ...]:
+        result = await self._session.execute(
+            select(SubmissionAttemptRow)
+            .join(ApplicationRow,
+                  ApplicationRow.id == SubmissionAttemptRow.application_id)
+            .where(SubmissionAttemptRow.application_id == application_id,
+                   ApplicationRow.user_id == user_id)
+            .order_by(SubmissionAttemptRow.attempt_number)
+            .limit(limit))
+        return tuple(submission_attempt_to_domain(row) for row in result.scalars())

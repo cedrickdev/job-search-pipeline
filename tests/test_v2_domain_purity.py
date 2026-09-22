@@ -30,6 +30,8 @@ COMPAT_DIR = REPO_ROOT / "backend" / "app" / "compat"
 DEPENDENCY_ORDER = (
     "base", "identifiers", "user", "common", "opportunity", "company", "candidate",
     "documents", "search", "geo", "matching", "eligibility", "policy", "decision",
+    "application_channel", "application_failure", "application_answer", "application",
+    "application_event", "execution_gate",
 )
 
 # Named explicitly rather than derived, so the list reads as the phase order's

@@ -31,7 +31,15 @@ from typing import NamedTuple, Protocol, runtime_checkable
 
 from pydantic import SecretStr
 
+from backend.app.domain.application import Application
+from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
 from backend.app.domain.candidate import CandidateProfile
+from backend.app.domain.chat import (
+    ChatActionExecution,
+    ChatActionProposal,
+    ChatMessage,
+    Conversation,
+)
 from backend.app.domain.common import GeoPoint, Location
 from backend.app.domain.company import (
     AtsPlatform,
@@ -42,10 +50,21 @@ from backend.app.domain.company import (
     CompanyLocation,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.decision import ApplicationDecision
+from backend.app.domain.documents import CandidateDocument, CandidateDocumentType
+from backend.app.domain.eligibility import EligibilityResult
 from backend.app.domain.geo import GeoSearchQuery, GeoStatus, RemoteScope
 from backend.app.domain.identifiers import (
+    ApplicationDecisionId,
+    ApplicationId,
+    ApplicationPolicyId,
+    CandidateDocumentId,
     CandidateProfileId,
+    ChatActionProposalId,
     CompanyId,
+    ConversationId,
+    EligibilityResultId,
+    LLMConnectionId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
@@ -54,8 +73,12 @@ from backend.app.domain.identifiers import (
 )
 from backend.app.domain.matching import MatchEvaluation
 from backend.app.domain.opportunity import Opportunity
+from backend.app.domain.policy import ApplicationPolicy
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserSession
+from backend.app.llm.connection import LLMConnection
+from backend.app.llm.sessions import ProviderSession
+from backend.app.llm.telemetry import LLMRun
 
 # Every list method is capped. An uncapped query is fine against the empty
 # development database and is an outage against a real one, and the caller that
@@ -395,6 +418,50 @@ class MatchEvaluationRepository(Protocol):
         ...
 
 
+@runtime_checkable
+class EligibilityResultRepository(Protocol):
+    """Eligibility verdicts — user-owned, and kept apart from matching on purpose.
+
+    A verdict is a *separate* record from a match score, never a field of one: the
+    two axes answer different questions ("may this application happen?" versus "how
+    well does it fit?"), a re-run of one must not disturb the other, and a list must
+    be able to filter by eligibility without loading a single dimension score. So
+    this is its own contract, mirroring `MatchEvaluationRepository` method for
+    method, and `user_id` is a parameter here for the same reason it is there.
+    """
+
+    async def get(self, user_id: UserId,
+                  result_id: EligibilityResultId) -> EligibilityResult | None:
+        """The verdict, or `None` — including when it belongs to somebody else.
+
+        Not found and not yours are indistinguishable, as in
+        `MatchEvaluationRepository.get`: a caller that could tell them apart could
+        enumerate another user's rows by id.
+        """
+        ...
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId) -> EligibilityResult | None:
+        """This profile's verdict on this posting, if it has been evaluated."""
+        ...
+
+    async def upsert(self, result: EligibilityResult) -> EligibilityResult:
+        """Write the verdict and reconcile its checks.
+
+        The owner comes from `result.user_id`, so there is no signature in which
+        the row's owner and the caller's intent can disagree. The denormalized
+        `status` column is written from the domain's derived aggregate, never a
+        second field a caller could set out of step with the checks.
+        """
+        ...
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[EligibilityResult, ...]:
+        """This user's verdicts, most recently determined first."""
+        ...
+
+
 # Phase 4. The four contracts below are what authentication and onboarding need,
 # and nothing more. Two of them break the "user first" convention, both for the
 # same reason: `UserRepository.get_by_email` and `SessionRepository.get_by_digest`
@@ -504,11 +571,11 @@ class CandidateProfileRepository(Protocol):
         ...
 
     async def upsert(self, profile: CandidateProfile) -> CandidateProfile:
-        """Write the profile and reconcile its languages, permits and slots.
+        """Write the profile and reconcile every child collection.
 
-        Raises `ValueError` if the profile carries evidence or claims: there is
-        nowhere to put them until Phase 10, and writing the profile without them
-        would silently break the claim-to-evidence link on the way back out.
+        Since Phase 10 that includes the evidence store and the claims that rest on
+        it: a claim and the evidence it cites are written in the one call, so the
+        claim-to-evidence link the aggregate guarantees survives the round trip.
         """
         ...
 
@@ -549,5 +616,492 @@ class SearchProfileRepository(Protocol):
         """
         ...
 
+
+@runtime_checkable
+class CandidateDocumentRepository(Protocol):
+    """Candidate documents — user-owned, so `user_id` comes first everywhere.
+
+    A document is the aggregate: it carries its whole version history, and an
+    upsert writes the parent and reconciles the versions in one call. Regeneration
+    is an upsert of the same document with one more version, keyed on the
+    `(candidate_profile_id, opportunity_id, document_type)` triple its id derives
+    from — the reason `get_for_pair` exists beside `get`.
+    """
+
+    async def get(self, user_id: UserId,
+                  document_id: CandidateDocumentId) -> CandidateDocument | None:
+        """The document, or `None` — including when it belongs to somebody else.
+
+        Not found and not yours are indistinguishable, as in
+        `MatchEvaluationRepository.get`: a caller that could tell them apart could
+        enumerate another user's rows by id.
+        """
+        ...
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId,
+                           document_type: CandidateDocumentType
+                           ) -> CandidateDocument | None:
+        """This profile's document of one type for one posting, if it exists.
+
+        The lookup a regeneration does before appending a version: it finds the
+        document to add to rather than deriving the id and hoping the upsert
+        reconciles, so the service can read `next_version_number()` from what is
+        actually stored.
+        """
+        ...
+
+    async def upsert(self, document: CandidateDocument) -> CandidateDocument:
+        """Write the document and reconcile its versions.
+
+        The owner comes from `document.user_id`, so there is no signature in which
+        the row's owner and the caller's intent can disagree. Appending a version
+        updates the parent and inserts one child; nothing already stored is
+        rewritten, which is what makes the audit trail the aggregate's own history.
+        """
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[CandidateDocument, ...]:
+        """This user's documents, most recently updated first."""
+        ...
+
+
+# Phase 11. The three contracts below are what the provider-neutral LLM platform
+# persists, and nothing more. A connection is user-owned and so takes `user_id`
+# first, exactly like the Phase 4 tables; a provider session is scoped the same way;
+# a telemetry run is written once at the start and updated once at the end, so its
+# store is an upsert like every other.
+
+
+@runtime_checkable
+class LLMConnectionRepository(Protocol):
+    """A user's stored LLM connections — user-owned, so `user_id` comes first (§4).
+
+    A connection carries a credential, so the isolation the other user-owned
+    repositories enforce matters most here: a `get` for another account reads as
+    absent, and there is no method that returns a connection without naming its owner.
+    The ciphertext moves through the mapper unread; nothing in this contract exposes a
+    decrypted key.
+    """
+
+    async def get(self, user_id: UserId,
+                  connection_id: LLMConnectionId) -> LLMConnection | None:
+        """The connection, or `None` — including when it belongs to somebody else.
+
+        Not found and not yours are indistinguishable, as in every user-owned
+        repository: a caller that could tell them apart could enumerate another user's
+        connections by id.
+        """
+        ...
+
+    async def get_default(self, user_id: UserId) -> LLMConnection | None:
+        """The connection this user marked default, if one is marked.
+
+        At most one exists — a partial unique index holds it — so this is a lookup by
+        owner rather than a choice among rows, the connection twin of
+        `CandidateProfileRepository.get_default`.
+        """
+        ...
+
+    async def list_for_user(self, user_id: UserId, *, enabled_only: bool = False,
+                            limit: int = DEFAULT_LIMIT) -> tuple[LLMConnection, ...]:
+        """This user's connections, by priority then id — the router's own order.
+
+        `enabled_only` is what the bootstrap of a user's live registry reads and what
+        a settings page filters on; it is a parameter rather than a separate method so
+        the `(user_id, priority)` shape serves one query.
+        """
+        ...
+
+    async def upsert(self, connection: LLMConnection) -> LLMConnection:
+        """Write the connection.
+
+        The owner comes from `connection.user_id`, so there is no signature in which
+        the row's owner and the caller's intent can disagree. Setting a connection
+        default is `clear_default` then this upsert, in that order: the partial unique
+        index refuses a second default, so the old one must be cleared first.
+        """
+        ...
+
+    async def clear_default(self, user_id: UserId) -> int:
+        """Unset the default flag on all of this user's connections; returns how many.
+
+        The first half of "make this one default": a single `UPDATE`, so promoting a
+        connection cannot momentarily leave two defaults and trip the unique index.
+        """
+        ...
+
+    async def delete(self, user_id: UserId, connection_id: LLMConnectionId) -> bool:
+        """Delete one of this user's connections; `True` if a row was removed.
+
+        Scoped by `user_id` so a delete cannot remove somebody else's connection by
+        id. Its provider sessions go with it by `ON DELETE CASCADE`; its telemetry
+        runs are kept, their `connection_id` set NULL, because a run is provenance
+        that outlives the connection it used.
+        """
+        ...
+
+
+@runtime_checkable
+class ProviderSessionRepository(Protocol):
+    """Provider-side sessions — user-owned, keyed by connection and conversation (§4)."""
+
+    async def get(self, user_id: UserId, connection_id: LLMConnectionId,
+                  conversation_key: str) -> ProviderSession | None:
+        """The session for this conversation on this connection, if one exists.
+
+        The lookup a resume does before a turn: it finds the row holding the
+        provider's `external_session_id` so the request can ask to continue. Scoped by
+        `user_id`, so one account cannot resume another's provider-side conversation.
+        """
+        ...
+
+    async def upsert(self, session: ProviderSession) -> ProviderSession:
+        """Write the session, or refresh the `external_session_id` a turn just issued.
+
+        Idempotent per `(connection_id, conversation_key)` — the pair the id derives
+        from — so continuing a conversation updates the one row rather than adding a
+        second.
+        """
+        ...
+
+
+@runtime_checkable
+class LLMRunRepository(Protocol):
+    """LLM telemetry runs — written once at the start, updated once at the end (§56).
+
+    Not scoped by `user_id` on write, because a run's owner is nullable: a healthcheck
+    probe has none. Reads that surface runs to a user *are* scoped, which is why
+    `list_for_user` takes one and there is no bare `get` that could return another
+    account's run by id.
+    """
+
+    async def upsert(self, run: LLMRun) -> LLMRun:
+        """Write the run, or move it from STARTED to its terminal state.
+
+        Keyed on the run's own id, so the same id written twice — once in flight, once
+        finished — updates the one row. A run that was never observed to start (a
+        synchronous call recorded whole) is a single upsert of a terminal row.
+        """
+        ...
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[LLMRun, ...]:
+        """This user's runs, most recently started first — the telemetry feed."""
+        ...
+
+
+# Phase 12. The five contracts below are what the application engine persists. A
+# policy, a decision and an application are all user-owned, so `user_id` comes first
+# on every read, exactly like the Phase 4/10 tables. The event trail and the
+# submission attempts are append-only: an event is inserted and never updated, an
+# attempt is written in flight and completed once, and neither is ever rewritten —
+# the trail can only grow (§41).
+
+
+@runtime_checkable
+class ApplicationPolicyRepository(Protocol):
+    """A user's standing application rules — user-owned, so `user_id` comes first.
+
+    A user has one active default policy (the cautious `MANUAL` one onboarding
+    creates) and may keep others. `get_default` is what the engine reads before every
+    submission, so a missing policy is a safe absence the service turns into "prepare
+    only", never an autonomous submission.
+    """
+
+    async def get(self, user_id: UserId,
+                  policy_id: ApplicationPolicyId) -> ApplicationPolicy | None:
+        """The policy, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def get_default(self, user_id: UserId) -> ApplicationPolicy | None:
+        """This account's active default policy, or `None` if it has none yet."""
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ApplicationPolicy, ...]:
+        """This user's policies, most recently updated first."""
+        ...
+
+    async def upsert(self, policy: ApplicationPolicy) -> ApplicationPolicy:
+        """Write the policy; the owner comes from `policy.user_id`."""
+        ...
+
+
+@runtime_checkable
+class ApplicationDecisionRepository(Protocol):
+    """Decisions of intent — user-owned, keyed for lookup by the pair they decide.
+
+    A decision is the record the matcher produced ("apply to this / skip this"); the
+    engine reads it back when an application is created. `get_for_pair` is how a
+    service finds the current decision for a (candidate, opportunity) pair without
+    holding its id.
+    """
+
+    async def get(self, user_id: UserId,
+                  decision_id: ApplicationDecisionId) -> ApplicationDecision | None:
+        """The decision, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def get_for_pair(
+            self, user_id: UserId, candidate_profile_id: CandidateProfileId,
+            opportunity_id: OpportunityId) -> ApplicationDecision | None:
+        """The current decision for one (candidate, opportunity) pair, if any."""
+        ...
+
+    async def upsert(self, decision: ApplicationDecision) -> ApplicationDecision:
+        """Write the decision; the owner comes from `decision.user_id`."""
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ApplicationDecision, ...]:
+        """This user's decisions, most recently decided first."""
+        ...
+
+
+@runtime_checkable
+class ApplicationRepository(Protocol):
+    """Applications — the execution aggregate, user-owned so `user_id` comes first.
+
+    The idempotency guarantee is physical: `application.id` is derived from the
+    idempotency key and the table's UNIQUE constraint covers the key (§36), so
+    `upsert` of a second application for the same target collides rather than opening
+    a duplicate. `count_active_submissions_since` backs the rate limit the gate reads
+    (§49), counted under `lock_submission_budget` so the count → decide → reserve
+    sequence is atomic against another worker of the same user; `list_in_flight` backs
+    startup recovery (§88), and is deliberately *not* user-scoped because recovery is a
+    system sweep across every account's stuck runs.
+    """
+
+    async def get(self, user_id: UserId,
+                  application_id: ApplicationId) -> Application | None:
+        """The application, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def get_by_idempotency_key(
+            self, user_id: UserId, idempotency_key: str) -> Application | None:
+        """The application for one target and channel, if this account has one.
+
+        The duplicate check a create does first: same key means same application, so
+        a hit is returned rather than a second one opened (§36).
+        """
+        ...
+
+    async def upsert(self, application: Application) -> Application:
+        """Write the application; the owner comes from `application.user_id`."""
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
+        """This user's applications, most recently updated first."""
+        ...
+
+    async def lock_submission_budget(self, user_id: UserId) -> None:
+        """Serialize this user's submission-budget check against other workers.
+
+        Taken at the top of a submission, before the count, and held to the end of the
+        caller's transaction: it makes `count_active_submissions_since` → gate decision
+        → reserve-as-SUBMITTING atomic for one account, so two workers racing the last
+        slot cannot both read the budget as free and both submit (§49-51). It is a
+        no-op ordering primitive — it guards nothing on its own; the count that follows
+        does. A DB implementation is a transaction-scoped advisory lock keyed on the
+        user, released automatically when the transaction commits or rolls back.
+        """
+        ...
+
+    async def count_active_submissions_since(self, user_id: UserId,
+                                             since: datetime) -> int:
+        """How many of this user's submissions have consumed a slot since an instant.
+
+        The count the rate-limit reservation reads (§49-51). It counts every state that
+        has *claimed* a slot — SUBMITTED plus the in-flight SUBMITTING and
+        SUBMISSION_STATE_UNKNOWN — so a slot a racing worker has just reserved (but not
+        yet confirmed) is already visible to the next, and the reservation cannot be
+        double-spent. Must be called under `lock_submission_budget`. The caller passes
+        the window start (start-of-day, start-of-week) computed against its own clock,
+        so this stays a pure query and the count → compare → reserve sequence happens
+        inside one transaction the caller controls.
+        """
+        ...
+
+    async def list_in_flight(self, *,
+                             limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
+        """Every application stuck mid-flight, across all accounts, for recovery.
+
+        The sweep §88 needs at startup: an application left in SUBMITTING by a worker
+        crash is neither this account's concern nor safe to leave, so recovery reads
+        them system-wide and resolves each to SUBMISSION_STATE_UNKNOWN.
+        """
+        ...
+
+
+@runtime_checkable
+class ApplicationEventRepository(Protocol):
+    """The append-only audit trail (§41). Events are inserted, never updated.
+
+    There is no `upsert` and no `update` on purpose: a correction is a new event, so
+    the store offers only `append` and reads. The list read is user-scoped through
+    the application it belongs to, so one account cannot read another's trail by id.
+    """
+
+    async def append(self, event: ApplicationEvent) -> ApplicationEvent:
+        """Insert one event. Its id is random and unique, so this only ever inserts."""
+        ...
+
+    async def list_for_application(
+            self, user_id: UserId, application_id: ApplicationId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ApplicationEvent, ...]:
+        """One application's events oldest-first, or empty if it is not this user's."""
+        ...
+
+
+@runtime_checkable
+class SubmissionAttemptRepository(Protocol):
+    """Submission attempts (§39). Written in flight, completed once, never rewritten.
+
+    Keyed on `(application_id, attempt_number)`, the pair the attempt's id derives
+    from, so the in-flight row written at SUBMISSION_STARTED and the completed row are
+    the same row — an `upsert` on the same id — not two. That is what leaves crash
+    evidence: an attempt with no `finished_at` is one a worker began and never
+    reported (§88).
+    """
+
+    async def upsert(self, attempt: SubmissionAttempt) -> SubmissionAttempt:
+        """Write the attempt, or complete an in-flight one; keyed on its own id."""
+        ...
+
+    async def get(self, application_id: ApplicationId,
+                  attempt_number: int) -> SubmissionAttempt | None:
+        """One attempt by its number, or `None`."""
+        ...
+
+    async def list_for_application(
+            self, user_id: UserId, application_id: ApplicationId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[SubmissionAttempt, ...]:
+        """One application's attempts oldest-first, or empty if not this user's."""
+        ...
+
+
+# Phase 13. The four contracts below are what the career chat persists. A
+# conversation and its messages are user-owned, so `user_id` comes first on every
+# read, exactly like the Phase 4/10/12 tables. Messages are written once per
+# `(conversation_id, sequence)` — a re-finalized turn upserts the same rows rather
+# than duplicating the exchange. A proposal is a *request* to act that only leaves
+# `PROPOSED` through an explicit confirm or dismiss, so it is an upsert on its own
+# derived id; an execution is written once per proposal, the executor's audit.
+
+
+@runtime_checkable
+class ConversationRepository(Protocol):
+    """Career-chat threads — user-owned, so `user_id` comes first on every read."""
+
+    async def get(self, user_id: UserId,
+                  conversation_id: ConversationId) -> Conversation | None:
+        """The conversation, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def upsert(self, conversation: Conversation) -> Conversation:
+        """Write the conversation; the owner comes from `conversation.user_id`."""
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *, include_archived: bool = False,
+            limit: int = DEFAULT_LIMIT) -> tuple[Conversation, ...]:
+        """This user's threads, most recently active first (archived hidden by default)."""
+        ...
+
+
+@runtime_checkable
+class ChatMessageRepository(Protocol):
+    """Chat turns — user-owned through the conversation they belong to.
+
+    Written once per `(conversation_id, sequence)`, the pair the message id derives
+    from, so re-finalizing a turn after a failed flush upserts the same row rather than
+    duplicating it. Reads are scoped to the owner through a join to the conversation,
+    so one account cannot read another's thread by id.
+    """
+
+    async def upsert(self, message: ChatMessage) -> ChatMessage:
+        """Write the turn, keyed on its own derived id."""
+        ...
+
+    async def latest_sequence(self, user_id: UserId,
+                              conversation_id: ConversationId) -> int | None:
+        """The highest sequence in this conversation, or `None` if it has no turns.
+
+        What the service adds to before appending a turn, so numbering is a query
+        rather than a count loaded into memory. `None` for an empty or not-this-user's
+        thread, which the service treats the same: the first turn is sequence 0.
+        """
+        ...
+
+    async def list_for_conversation(
+            self, user_id: UserId, conversation_id: ConversationId, *,
+            newest_first: bool = False,
+            limit: int = DEFAULT_LIMIT) -> tuple[ChatMessage, ...]:
+        """One conversation's turns, or empty if it is not this user's.
+
+        `newest_first` with a `limit` is how the context builder takes the last N turns
+        without loading the whole thread; the thread view reads oldest-first. Ordering
+        is by `sequence`, the conversation's own monotonic counter.
+        """
+        ...
+
+
+@runtime_checkable
+class ChatActionProposalRepository(Protocol):
+    """Typed action proposals — user-owned, the persisted "prose has zero authority".
+
+    A proposal is parsed and validated out of an assistant turn and changes nothing
+    until a human confirms it. It is an upsert on its own derived id — from
+    `(message_id, ordinal)` — so re-finalizing the turn lands on the same rows, and a
+    confirm or dismiss updates the one row's `status`.
+    """
+
+    async def get(self, user_id: UserId,
+                  proposal_id: ChatActionProposalId) -> ChatActionProposal | None:
+        """The proposal, or `None` — including when it belongs to somebody else.
+
+        What the executor loads before acting: it re-reads the proposal scoped by the
+        owner so a confirmation naming another account's proposal reads as absent and
+        is refused, never trusted because a request carried the id.
+        """
+        ...
+
+    async def upsert(self, proposal: ChatActionProposal) -> ChatActionProposal:
+        """Write the proposal, or move it off `PROPOSED`; keyed on its own id."""
+        ...
+
+    async def list_for_conversation(
+            self, user_id: UserId, conversation_id: ConversationId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ChatActionProposal, ...]:
+        """One conversation's proposals oldest-first, or empty if not this user's."""
+        ...
+
+
+@runtime_checkable
+class ChatActionExecutionRepository(Protocol):
+    """Execution audits — written once per proposal, the executor's own record.
+
+    Keyed on the proposal's id (the execution id derives from it alone), so a
+    double-confirmed proposal upserts the one row rather than recording two attempts —
+    the idempotency the executor rests on. Reads are user-scoped so one account cannot
+    read another's execution by proposal id.
+    """
+
+    async def get(self, user_id: UserId,
+                  proposal_id: ChatActionProposalId) -> ChatActionExecution | None:
+        """The execution recorded for this proposal, or `None` if it never ran."""
+        ...
+
+    async def upsert(self, execution: ChatActionExecution) -> ChatActionExecution:
+        """Write the audit, keyed on its own id derived from the proposal."""
+        ...
 
 

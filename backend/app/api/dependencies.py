@@ -33,6 +33,7 @@ built its own service would take that property away.
 """
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Final
 
 from fastapi import Depends, Request
@@ -40,27 +41,62 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.api.errors import csrf_failed, not_authenticated
+from backend.app.application_engine.bootstrap import build_application_registry
+from backend.app.chat.context import ChatContextBuilder
+from backend.app.chat.conversation import ChatConversationService
+from backend.app.chat.executor import ChatActionExecutor
+from backend.app.chat.validators import ProposalValidator
 from backend.app.companies.bootstrap import build_company_discovery
 from backend.app.companies.providers.manual_seed import (
     PROVIDER_KEY as MANUAL_SEED_PROVIDER,
 )
-from backend.app.core.settings import AuthSettings, DatabaseSettings
+from backend.app.core.settings import (
+    AuthSettings,
+    DatabaseSettings,
+    DocumentSettings,
+    LLMSecretSettings,
+)
 from backend.app.discovery.bootstrap import build_country_packs
+from backend.app.documents import (
+    DeterministicDocumentGenerator,
+    LocalDocumentArtifactStore,
+)
+from backend.app.documents.guard import CandidateEvidenceGuard
 from backend.app.infrastructure.database.engine import (
     create_async_database_engine,
     create_session_factory,
     session_scope,
 )
+from backend.app.llm.bootstrap import build_llm_provider_registry
+from backend.app.llm.recorder import LLMTelemetryRecorder
+from backend.app.llm.router import LLMRouter, PrivacyClass, RoutingPolicy
+from backend.app.llm.secrets import FernetSecretCipher, SecretCipher
 from backend.app.repositories.sqlalchemy_repositories import (
+    SqlAlchemyApplicationDecisionRepository,
+    SqlAlchemyApplicationEventRepository,
+    SqlAlchemyApplicationPolicyRepository,
+    SqlAlchemyApplicationRepository,
+    SqlAlchemyCandidateDocumentRepository,
     SqlAlchemyCandidateProfileRepository,
     SqlAlchemyCareerSiteRepository,
+    SqlAlchemyChatActionExecutionRepository,
+    SqlAlchemyChatActionProposalRepository,
+    SqlAlchemyChatMessageRepository,
     SqlAlchemyCompanyDiscoveryRepository,
     SqlAlchemyCompanyRepository,
+    SqlAlchemyConversationRepository,
+    SqlAlchemyEligibilityResultRepository,
+    SqlAlchemyLLMConnectionRepository,
+    SqlAlchemyLLMRunRepository,
+    SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
     SqlAlchemySearchProfileRepository,
     SqlAlchemySessionRepository,
+    SqlAlchemySubmissionAttemptRepository,
     SqlAlchemyUserRepository,
 )
+from backend.app.services.applications import ApplicationService
+from backend.app.services.assessment import AssessmentService
 from backend.app.services.authentication import (
     AuthenticatedSession,
     AuthenticationService,
@@ -71,7 +107,10 @@ from backend.app.services.company_discovery import (
     CompanyDiscoveryService,
     CompanyResolutionService,
 )
+from backend.app.services.documents import DocumentService
+from backend.app.services.evidence import CandidateEvidenceService
 from backend.app.services.geo_search import GeoSearchService
+from backend.app.services.llm_connections import LLMConnectionService
 from backend.app.services.onboarding import OnboardingService
 from country_packs.registry import CountryPackRegistry
 
@@ -88,9 +127,17 @@ SAFE_METHODS: Final[frozenset[str]] = frozenset({"GET", "HEAD", "OPTIONS"})
 # an engine.
 AUTH_SETTINGS_ATTRIBUTE: Final[str] = "v2_auth_settings"
 DATABASE_SETTINGS_ATTRIBUTE: Final[str] = "v2_database_settings"
+DOCUMENT_SETTINGS_ATTRIBUTE: Final[str] = "v2_document_settings"
+LLM_KEY_SETTINGS_ATTRIBUTE: Final[str] = "v2_llm_key_settings"
+LLM_CIPHER_ATTRIBUTE: Final[str] = "v2_llm_cipher"
 SESSION_FACTORY_ATTRIBUTE: Final[str] = "v2_session_factory"
 ENGINE_ATTRIBUTE: Final[str] = "v2_engine"
 COUNTRY_PACKS_ATTRIBUTE: Final[str] = "v2_country_packs"
+
+# The sentinel a cached `None` cipher is stored as, so "resolved to no cipher" is told
+# apart from "not resolved yet" — a deployment with no master key must not re-read the
+# environment on every request just because its resolved cipher is falsy.
+_NO_CIPHER: Final = "no-cipher"
 
 
 def now() -> datetime:
@@ -214,6 +261,138 @@ def geo_search_service(
                             SqlAlchemySearchProfileRepository(session))
 
 
+def document_settings(request: Request) -> DocumentSettings:
+    """Where rendered document artifacts live, resolved once and cached.
+
+    Cached on `app.state` like the auth and database settings, and for the same
+    reason: re-reading the environment per request would let a variable change
+    under a running process and split one deployment's artifacts across two roots.
+    """
+    settings = getattr(request.app.state, DOCUMENT_SETTINGS_ATTRIBUTE, None)
+    if isinstance(settings, DocumentSettings):
+        return settings
+    resolved = DocumentSettings.from_env()
+    setattr(request.app.state, DOCUMENT_SETTINGS_ATTRIBUTE, resolved)
+    return resolved
+
+
+def evidence_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> CandidateEvidenceService:
+    """The write side of the candidate evidence store: one repository, no clock.
+
+    The clock is handed to the methods that write, not the constructor, so a single
+    request's timestamps agree — the same convention `onboarding_service` follows.
+    """
+    return CandidateEvidenceService(SqlAlchemyCandidateProfileRepository(session))
+
+
+def document_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        settings: Annotated[DocumentSettings, Depends(document_settings)],
+) -> DocumentService:
+    """The generate-guard-render-store-version workflow, composed for this request.
+
+    Three repositories (the profile it builds from, the posting it targets, the
+    documents it versions), the deterministic reference generator, the pure evidence
+    guard, and the local artifact store rooted at the configured path. The generator
+    and the guard are cheap, stateless value objects built per request rather than
+    cached — the store resolves its root once here. No clock in the constructor; the
+    route hands `now` to `generate`, so a version's timestamps agree.
+
+    The reference generator is the Phase 10 default: it selects and reorders the
+    candidate's own evidence and passes the guard by construction. A model-backed
+    generator (Phase 11) would be swapped in here without the route or the service
+    changing (docs/LLM_PROVIDER_ARCHITECTURE.md §3).
+    """
+    return DocumentService(
+        SqlAlchemyCandidateProfileRepository(session),
+        SqlAlchemyOpportunityRepository(session),
+        SqlAlchemyCandidateDocumentRepository(session),
+        DeterministicDocumentGenerator(),
+        CandidateEvidenceGuard(),
+        LocalDocumentArtifactStore(Path(settings.artifact_root)))
+
+
+def llm_secret_settings(request: Request) -> LLMSecretSettings:
+    """The master key for encrypting stored LLM credentials, resolved once and cached.
+
+    Cached on `app.state` like the other settings, and for the same reason: re-reading
+    `JOBSEARCH_LLM_SECRET_KEY` per request would let the key change under a running
+    process and split a deployment's credentials across two ciphers, so a value stored
+    a moment ago could no longer decrypt.
+    """
+    settings = getattr(request.app.state, LLM_KEY_SETTINGS_ATTRIBUTE, None)
+    if isinstance(settings, LLMSecretSettings):
+        return settings
+    resolved = LLMSecretSettings.from_env()
+    setattr(request.app.state, LLM_KEY_SETTINGS_ATTRIBUTE, resolved)
+    return resolved
+
+
+def llm_cipher(
+        settings: Annotated[LLMSecretSettings, Depends(llm_secret_settings)],
+        request: Request,
+) -> SecretCipher | None:
+    """The Fernet cipher, or `None` when the deployment configured no master key.
+
+    Built once and cached on `app.state`: a `Fernet` compiles its key, and a
+    deployment that manages API credentials makes that cost once per process rather
+    than per request. `None` is a legitimate resolved value — a CLI-only deployment
+    encrypts nothing — so it is cached under a sentinel to tell "resolved to no cipher"
+    apart from "not resolved yet", and the connection service raises a clear
+    `LLMSecretKeyUnavailable` only if a credential must actually be stored without one.
+    """
+    cached = getattr(request.app.state, LLM_CIPHER_ATTRIBUTE, None)
+    if isinstance(cached, FernetSecretCipher):
+        return cached
+    if cached == _NO_CIPHER:
+        return None
+    resolved: SecretCipher | None = (
+        FernetSecretCipher(settings.master_key) if settings.master_key else None)
+    setattr(request.app.state, LLM_CIPHER_ATTRIBUTE,
+            resolved if resolved is not None else _NO_CIPHER)
+    return resolved
+
+
+def llm_connection_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        cipher: Annotated[SecretCipher | None, Depends(llm_cipher)],
+) -> LLMConnectionService:
+    """The write side of the LLM settings surface: one repository and the cipher.
+
+    The cipher is what encrypts a submitted credential before it is stored; a CLI-only
+    deployment passes `None` and the service refuses only the write that would need a
+    key it cannot make. No clock in the constructor — the route hands `now` to each
+    write, so a single request's `created_at`/`updated_at` agree. No `http_transport`:
+    a healthcheck opens a real client in production, and a test overrides this whole
+    dependency to inject a `MockTransport`-backed service rather than reach through it.
+    """
+    return LLMConnectionService(
+        SqlAlchemyLLMConnectionRepository(session), cipher=cipher)
+
+
+def assessment_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        packs: Annotated[CountryPackRegistry, Depends(country_packs)],
+) -> AssessmentService:
+    """The match-and-eligibility orchestrator, composed for this request.
+
+    Four repositories and the pack registry: the profile it scores, the posting it
+    scores against, and the two verdict stores it writes to — kept apart because the
+    two axes are separate records, not two fields of one. The country packs are the
+    cached, read-only registry every other service shares; the engines read from a
+    pack but never write one. No clock in the constructor — the route hands `now` to
+    `evaluate`, so a single request's timestamps agree.
+    """
+    return AssessmentService(
+        SqlAlchemyCandidateProfileRepository(session),
+        SqlAlchemyOpportunityRepository(session),
+        SqlAlchemyMatchEvaluationRepository(session),
+        SqlAlchemyEligibilityResultRepository(session),
+        packs)
+
+
 def company_discovery_service(
         session: Annotated[AsyncSession, Depends(database_session)],
         packs: Annotated[CountryPackRegistry, Depends(country_packs)],
@@ -302,6 +481,96 @@ def reject_cross_site_writes(request: Request) -> None:
         raise csrf_failed()
 
 
+def application_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> ApplicationService:
+    """The application lifecycle service, composed for this request.
+
+    Ten repositories and the adapter registry. The registry is built with only its
+    generic fallback (`build_application_registry` with no collaborators): the API
+    process prepares applications and routes them to a human, and it does not itself
+    drive a browser or send mail — that is a worker's job, and a worker deployment
+    composes a registry with a `TaskDispatcher` and an `EmailSender`. Preparing a
+    safe, fallback-only registry here is what keeps the default cautious (§13). No
+    clock in the constructor — each route hands `now` to the method it calls, so a
+    single request's timestamps and rate window agree.
+    """
+    return ApplicationService(
+        applications=SqlAlchemyApplicationRepository(session),
+        events=SqlAlchemyApplicationEventRepository(session),
+        attempts=SqlAlchemySubmissionAttemptRepository(session),
+        decisions=SqlAlchemyApplicationDecisionRepository(session),
+        policies=SqlAlchemyApplicationPolicyRepository(session),
+        matches=SqlAlchemyMatchEvaluationRepository(session),
+        eligibilities=SqlAlchemyEligibilityResultRepository(session),
+        profiles=SqlAlchemyCandidateProfileRepository(session),
+        opportunities=SqlAlchemyOpportunityRepository(session),
+        documents=SqlAlchemyCandidateDocumentRepository(session),
+        registry=build_application_registry())
+
+
+async def chat_conversation_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        current: Annotated[AuthenticatedSession, Depends(current_session)],
+        cipher: Annotated[SecretCipher | None, Depends(llm_cipher)],
+) -> ChatConversationService:
+    """The streaming career-chat service, composed per request for this account.
+
+    Async, and for one reason the other service factories are not: the provider registry
+    the turn streams through is built from *this account's* enabled LLM connections, so the
+    user's own connections are loaded here and handed to a router and a telemetry recorder
+    scoped to them. The context builder reads the same four user-scoped repositories the
+    rest of V2 uses, so the situation snapshot the model sees is this account's and carries
+    no secret. The privacy decision is made here, in wiring, and nowhere else
+    (docs/LLM_PROVIDER_ARCHITECTURE.md §…): `EXTERNAL_ALLOWED`, so a deployment whose only
+    connections are remote can still chat — a `LOCAL_ONLY` policy would make the chat
+    unusable for an API- or CLI-only account. No clock in the constructor; the route hands
+    `now` to each turn, so a single request's timestamps agree.
+    """
+    connections = await SqlAlchemyLLMConnectionRepository(session).list_for_user(
+        current.user.id, enabled_only=True)
+    registry = build_llm_provider_registry(connections, cipher=cipher)
+    return ChatConversationService(
+        conversations=SqlAlchemyConversationRepository(session),
+        messages=SqlAlchemyChatMessageRepository(session),
+        proposals=SqlAlchemyChatActionProposalRepository(session),
+        context=ChatContextBuilder(
+            profiles=SqlAlchemyCandidateProfileRepository(session),
+            searches=SqlAlchemySearchProfileRepository(session),
+            applications=SqlAlchemyApplicationRepository(session),
+            opportunities=SqlAlchemyOpportunityRepository(session)),
+        router=LLMRouter(registry),
+        recorder=LLMTelemetryRecorder(
+            runs=SqlAlchemyLLMRunRepository(session), connections=connections),
+        policy=RoutingPolicy(privacy=PrivacyClass.EXTERNAL_ALLOWED))
+
+
+def chat_action_executor(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        documents: Annotated[DocumentService, Depends(document_service)],
+        applications: Annotated[ApplicationService, Depends(application_service)],
+        onboarding: Annotated[OnboardingService, Depends(onboarding_service)],
+) -> ChatActionExecutor:
+    """The confirm/dismiss side of the chat: it runs a proposal onto the real services.
+
+    Composed from the *same* `DocumentService`, `ApplicationService` and `OnboardingService`
+    the HTTP routes use — the chat is one more caller of those boundaries, never a way
+    around them, so a submit a proposal confirms re-runs the Phase 12 gate exactly as
+    `POST /applications/{id}/submit` does. The `ProposalValidator` is the coarse
+    re-authorization the executor runs first; the chat proposal and execution repositories
+    are its audit. It reaches no provider and drives no browser, so it needs neither the
+    registry nor the cipher, and stays a plain synchronous factory.
+    """
+    return ChatActionExecutor(
+        proposals=SqlAlchemyChatActionProposalRepository(session),
+        executions=SqlAlchemyChatActionExecutionRepository(session),
+        validator=ProposalValidator(
+            opportunities=SqlAlchemyOpportunityRepository(session),
+            applications=SqlAlchemyApplicationRepository(session),
+            searches=SqlAlchemySearchProfileRepository(session)),
+        documents=documents, applications=applications, onboarding=onboarding)
+
+
 CurrentSession = Annotated[AuthenticatedSession, Depends(current_session)]
 Now = Annotated[datetime, Depends(now)]
 Auth = Annotated[AuthSettings, Depends(auth_settings)]
@@ -311,3 +580,11 @@ Companies = Annotated[CompanyDirectoryService, Depends(company_directory_service
 CompanyDiscovery = Annotated[CompanyDiscoveryService,
                              Depends(company_discovery_service)]
 GeoSearch = Annotated[GeoSearchService, Depends(geo_search_service)]
+Assessment = Annotated[AssessmentService, Depends(assessment_service)]
+Evidence = Annotated[CandidateEvidenceService, Depends(evidence_service)]
+Documents = Annotated[DocumentService, Depends(document_service)]
+LLMConnections = Annotated[LLMConnectionService, Depends(llm_connection_service)]
+Applications = Annotated[ApplicationService, Depends(application_service)]
+ChatConversations = Annotated[ChatConversationService,
+                              Depends(chat_conversation_service)]
+ChatActions = Annotated[ChatActionExecutor, Depends(chat_action_executor)]

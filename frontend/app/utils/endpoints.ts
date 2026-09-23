@@ -70,10 +70,25 @@ export function job(template: JobTemplate, jobId: number): string {
 // (docs/AUTHENTICATION.md). One merged table would hide that split behind an
 // alphabetical list.
 //
-// Fifteen paths, eighteen operations: `/me/profile` has a GET and a PUT,
-// `/me/search-profiles` a GET and a POST, and `{search_profile_id}` a PUT and a
-// DELETE; the three geo paths added in Phase 8 are GET-only reads that still need a
-// session but never a CSRF token. The `satisfies` clause is the same compile-time guard.
+// The table lists only the paths this app actually calls, which is why it is
+// smaller than the backend's V2 surface (the Phase 9 match routes have no UI yet,
+// so they are absent — the `satisfies` guard checks that every listed path is a
+// real backend path, not that every backend path is listed).
+//
+// `/me/profile` has a GET and a PUT, `/me/search-profiles` a GET and a POST, and
+// `{search_profile_id}` a PUT and a DELETE; the three geo paths added in Phase 8
+// are GET-only reads that still need a session but never a CSRF token. Phase 10
+// adds the evidence store (`/me/evidence` GET+POST, `/me/claims` POST), the two
+// document generators keyed by posting, and the document list, one document and
+// its PDF download. Phase 11 adds the LLM connection settings — the list and its
+// create (`/settings/llm/connections` GET+POST), one connection (GET+PATCH+DELETE),
+// and its enable, default and healthcheck sub-resources. Phase 12 adds the
+// application engine (`/applications` and its per-application lifecycle actions).
+// Phase 13 adds the career-chat control plane: the thread list and its create
+// (`/chat/conversations` GET+POST), one thread (GET), its messages (GET plus the
+// streaming POST that returns `text/event-stream`, not JSON) and its proposals
+// (GET), and the two proposal verbs keyed by proposal id (`/confirm`, `/dismiss`).
+// The `satisfies` clause is the same compile-time guard.
 export const V2_ENDPOINTS = {
   login: '/api/v2/auth/login',
   logout: '/api/v2/auth/logout',
@@ -90,6 +105,31 @@ export const V2_ENDPOINTS = {
   geoOpportunities: '/api/v2/geo/opportunities',
   geoCompanies: '/api/v2/geo/companies',
   searchProfileOpportunities: '/api/v2/me/search-profiles/{search_profile_id}/opportunities',
+  evidence: '/api/v2/me/evidence',
+  claims: '/api/v2/me/claims',
+  documents: '/api/v2/documents',
+  document: '/api/v2/documents/{document_id}',
+  documentDownload: '/api/v2/documents/{document_id}/download',
+  opportunityResume: '/api/v2/opportunities/{opportunity_id}/resume',
+  opportunityCoverLetter: '/api/v2/opportunities/{opportunity_id}/cover-letter',
+  llmConnections: '/api/v2/settings/llm/connections',
+  llmConnection: '/api/v2/settings/llm/connections/{connection_id}',
+  llmConnectionEnabled: '/api/v2/settings/llm/connections/{connection_id}/enabled',
+  llmConnectionDefault: '/api/v2/settings/llm/connections/{connection_id}/default',
+  llmConnectionHealthcheck: '/api/v2/settings/llm/connections/{connection_id}/healthcheck',
+  applications: '/api/v2/applications',
+  application: '/api/v2/applications/{application_id}',
+  applicationPrepare: '/api/v2/applications/{application_id}/prepare',
+  applicationApprove: '/api/v2/applications/{application_id}/approve',
+  applicationSubmit: '/api/v2/applications/{application_id}/submit',
+  applicationCancel: '/api/v2/applications/{application_id}/cancel',
+  applicationEvents: '/api/v2/applications/{application_id}/events',
+  chatConversations: '/api/v2/chat/conversations',
+  chatConversation: '/api/v2/chat/conversations/{conversation_id}',
+  chatMessages: '/api/v2/chat/conversations/{conversation_id}/messages',
+  chatProposals: '/api/v2/chat/conversations/{conversation_id}/proposals',
+  chatProposalConfirm: '/api/v2/chat/proposals/{proposal_id}/confirm',
+  chatProposalDismiss: '/api/v2/chat/proposals/{proposal_id}/dismiss',
 } as const satisfies Record<string, keyof paths>
 
 /**
@@ -128,4 +168,124 @@ export function company(companyId: string): string {
  */
 export function searchProfileOpportunities(searchProfileId: string): string {
   return V2_ENDPOINTS.searchProfileOpportunities.replace('{search_profile_id}', searchProfileId)
+}
+
+/** Every V2 endpoint whose template contains `{document_id}`. */
+type DocumentTemplate = Extract<
+  (typeof V2_ENDPOINTS)[keyof typeof V2_ENDPOINTS],
+  `${string}{document_id}${string}`
+>
+
+/**
+ * Resolve a `{document_id}` template — the document read or its PDF download.
+ *
+ * A document id is a UUID string and the owner is not in the path: a document is
+ * user-owned, so it is reached through the session, and asking for another
+ * account's document by id is a 404, not that account's PDF
+ * (docs/AUTHENTICATION.md §Authorization, docs/ATS_DOCUMENTS.md §Sharing).
+ *
+ * Named `documentUrl`, not `document`: every export under `app/utils/**` is a Nuxt
+ * auto-import, and a bare `document` would register a global binding that unimport
+ * injects into every file that references the DOM's `document` — shadowing it and
+ * breaking `document.cookie`, `document.createElement` and the rest app-wide.
+ */
+export function documentUrl(template: DocumentTemplate, documentId: string): string {
+  return template.replace('{document_id}', documentId)
+}
+
+/** Every V2 endpoint whose template contains `{opportunity_id}`. */
+type OpportunityTemplate = Extract<
+  (typeof V2_ENDPOINTS)[keyof typeof V2_ENDPOINTS],
+  `${string}{opportunity_id}${string}`
+>
+
+/**
+ * Resolve an `{opportunity_id}` template — the résumé or cover-letter generator.
+ *
+ * The opportunity is a shared fact, so its id is not owner-scoped; what the
+ * generated document rests on is the *caller's* own evidence, resolved from the
+ * session. The document type is in the path (`/resume` vs `/cover-letter`), not
+ * the body, so the two generators are two endpoints (docs/ATS_DOCUMENTS.md §API).
+ */
+export function opportunityDocument(template: OpportunityTemplate, opportunityId: string): string {
+  return template.replace('{opportunity_id}', opportunityId)
+}
+
+/** Every V2 endpoint whose template contains `{connection_id}`. */
+type ConnectionTemplate = Extract<
+  (typeof V2_ENDPOINTS)[keyof typeof V2_ENDPOINTS],
+  `${string}{connection_id}${string}`
+>
+
+/**
+ * Resolve a `{connection_id}` template — the read, edit, delete, enable, default or
+ * healthcheck of one stored LLM connection (Phase 11).
+ *
+ * A connection id is a UUID string and the owner is not in the path: a connection is
+ * user-owned, reached through the session, so asking for another account's connection
+ * by id is a 404 rather than its stored settings. The credential never travels in a
+ * URL — it is a write-only field of the body, surfaced back only as `has_api_key`
+ * (docs/AUTHENTICATION.md §Authorization, docs/LLM_CONNECTIONS.md §Sharing).
+ */
+export function llmConnection(template: ConnectionTemplate, connectionId: string): string {
+  return template.replace('{connection_id}', connectionId)
+}
+
+/** Every V2 endpoint whose template contains `{application_id}`. */
+type ApplicationTemplate = Extract<
+  (typeof V2_ENDPOINTS)[keyof typeof V2_ENDPOINTS],
+  `${string}{application_id}${string}`
+>
+
+/**
+ * Resolve an `{application_id}` template — the read, prepare, approve, submit, cancel
+ * or event trail of one application (Phase 12).
+ *
+ * An application id is a UUID string and the owner is not in the path: an application
+ * is user-owned, reached through the session, so asking for another account's
+ * application by id is a 404 rather than its state
+ * (docs/AUTHENTICATION.md §Authorization, docs/APPLICATION_ENGINE.md §Sharing).
+ */
+export function application(template: ApplicationTemplate, applicationId: string): string {
+  return template.replace('{application_id}', applicationId)
+}
+
+/** Every V2 endpoint whose template contains `{conversation_id}`. */
+type ConversationTemplate = Extract<
+  (typeof V2_ENDPOINTS)[keyof typeof V2_ENDPOINTS],
+  `${string}{conversation_id}${string}`
+>
+
+/**
+ * Resolve a `{conversation_id}` template — one thread's read, its messages (list or
+ * the streaming turn) or its proposals (Phase 13).
+ *
+ * A conversation id is a UUID string and the owner is not in the path: a thread is
+ * user-owned, reached through the session, so asking for another account's thread by
+ * id is a 404 rather than its transcript. The account is never a body or query field
+ * either — it is always the signed-in session's
+ * (docs/AUTHENTICATION.md §Authorization, docs/CAREER_CHAT.md §Sharing).
+ */
+export function conversation(template: ConversationTemplate, conversationId: string): string {
+  return template.replace('{conversation_id}', conversationId)
+}
+
+/** Every V2 endpoint whose template contains `{proposal_id}`. */
+type ProposalTemplate = Extract<
+  (typeof V2_ENDPOINTS)[keyof typeof V2_ENDPOINTS],
+  `${string}{proposal_id}${string}`
+>
+
+/**
+ * Resolve a `{proposal_id}` template — the confirm or dismiss of one chat proposal
+ * (Phase 13).
+ *
+ * A proposal id is a UUID string and the owner is not in the path: a proposal belongs
+ * to a thread that belongs to the session's account, so confirming another account's
+ * proposal by id is a 404, never its execution. Confirm re-runs every gate the action
+ * would face on its own route — a proposal is a request, not a permission
+ * (docs/CAREER_CHAT.md §Sharing, §The last gate).
+ */
+export function chatProposal(template: ProposalTemplate, proposalId: string): string {
+  return template.replace('{proposal_id}', proposalId)
 }

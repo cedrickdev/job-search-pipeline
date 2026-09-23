@@ -64,19 +64,55 @@ SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
                  "geocoding_cache", "opportunities", "opportunity_source_records")
 
 # Rows one user owns, named by the `user_id` Phase 4's authorization filter reads.
-USER_OWNED_TABLES = ("candidate_profiles", "match_evaluations", "search_profiles",
-                     "user_sessions")
+# `candidate_documents` (Phase 10) carries `user_id` denormalized beside its
+# `candidate_profile_id` for the same reason every user-owned table does: each
+# scoped read is `WHERE user_id = :current_user`.
+#
+# The four Phase 13 chat tables are all here, not in the parent-owned group, and the
+# reason is the query the control plane actually runs: "my open submit proposals" is
+# `WHERE user_id = :current_user AND status = 'PROPOSED'`, indexed on the proposal
+# row itself, not a three-table join up to `users`. A message, a proposal and an
+# execution each carries `user_id` denormalized beside its parent link for the same
+# reason `candidate_documents` does — and the cascade from `users` is what still makes
+# "delete my account" a single statement even though the parent cascade would already
+# reach them through `conversations`.
+USER_OWNED_TABLES = ("application_decisions", "application_policies", "applications",
+                     "candidate_documents", "candidate_profiles",
+                     "chat_action_executions", "chat_action_proposals",
+                     "chat_messages", "conversations", "eligibility_results",
+                     "llm_connections", "match_evaluations", "provider_sessions",
+                     "search_profiles", "user_sessions")
+
+# Telemetry rows: user-attributable, but not user-owned. `llm_runs` (Phase 11)
+# carries a `user_id` so a user can list their own calls, but it is *nullable* — a
+# healthcheck probe has no user — and its `connection_id` is `ON DELETE SET NULL`,
+# because a run is provenance that outlives the connection it used. That puts it in
+# neither the shared group (which carries no `user_id` at all) nor the user-owned one
+# (whose owner is NOT NULL), so it is its own small category with its own rule below.
+TELEMETRY_TABLES = ("llm_runs",)
 
 # Rows owned through a parent instead of directly: a language belongs to a profile,
 # an area to a search profile, a dimension score to an evaluation. They carry no
 # `user_id` on purpose — a second copy of the owner is a second thing that can be
 # wrong — so each one is listed with the parent it cascades from.
+#
+# `candidate_evidence` and `candidate_claims` (Phase 10) are the candidate's own,
+# reached only through the profile that holds them — `CandidateProfile` refuses
+# another user's records, so the owner is the profile's owner and a `user_id`
+# column would be that second, forgettable copy. `document_versions` reaches its
+# owner through the `candidate_documents` row, which carries the `user_id`.
 PARENT_OWNED_TABLES = {
+    "application_events": "applications",
+    "submission_attempts": "applications",
     "candidate_availability_slots": "candidate_profiles",
+    "candidate_claims": "candidate_profiles",
+    "candidate_evidence": "candidate_profiles",
     "candidate_languages": "candidate_profiles",
     "candidate_work_authorizations": "candidate_profiles",
     "company_aliases": "companies",
     "company_career_sites": "companies",
+    "document_versions": "candidate_documents",
+    "eligibility_checks": "eligibility_results",
     "match_dimension_scores": "match_evaluations",
     "search_areas": "search_profiles",
 }
@@ -105,17 +141,17 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_eighteen_v2_tables():
+def test_the_metadata_holds_exactly_the_thirty_six_v2_tables():
     """A tripwire on the shape of the schema itself.
 
-    `models.py` is the only place a V2 table may be declared, so the three
-    ownership groups plus `users` are the inventory. A new table has to be added to
-    one of them — which is the moment to ask whether it needs `user_id`, a cascade
-    and a migration.
+    `models.py` is the only place a V2 table may be declared, so the four ownership
+    groups plus `users` are the inventory. A new table has to be added to one of
+    them — which is the moment to ask whether it needs `user_id`, a cascade and a
+    migration.
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
-        PARENT_OWNED_TABLES) | {"users"}
-    assert len(TABLES) == 18
+        PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | {"users"}
+    assert len(TABLES) == 36
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
@@ -240,6 +276,27 @@ def test_parent_owned_rows_reach_their_owner_through_one_cascading_parent(table_
     assert table.columns[to_parent[0].parent.name].nullable is False
 
 
+@pytest.mark.parametrize("table_name", TELEMETRY_TABLES)
+def test_telemetry_rows_are_user_attributable_but_not_user_owned(table_name):
+    """A run names its user when it has one, and lets go of its connection.
+
+    `user_id` exists so a telemetry read can be scoped `WHERE user_id = :current_user`,
+    and cascades from `users` so deleting an account takes its runs. But it is
+    *nullable* — a healthcheck probe has no user — which is the line between this and
+    a user-owned table, whose owner may not be NULL. `connection_id` is `SET NULL` on
+    delete, because a run records what happened and must survive the connection it
+    used being removed (§56).
+    """
+    table = TABLES[table_name]
+    assert "user_id" in table.columns
+    assert table.columns["user_id"].nullable is True
+    to_users = [fk for fk in table.foreign_keys if fk.column.table.name == "users"]
+    assert [fk.ondelete for fk in to_users] == ["CASCADE"]
+    to_connections = [fk for fk in table.foreign_keys
+                      if fk.column.table.name == "llm_connections"]
+    assert [fk.ondelete for fk in to_connections] == ["SET NULL"]
+
+
 def test_every_foreign_key_states_what_happens_on_delete():
     """No implicit `NO ACTION`.
 
@@ -316,6 +373,7 @@ def test_free_text_columns_are_text_not_varchar():
                      ("candidate_languages", "language"),
                      ("candidate_profiles", "location_country"),
                      ("candidate_work_authorizations", "country"),
+                     ("document_versions", "language"),
                      ("companies", "country"),
                      ("companies", "ats_detected_by"),
                      ("companies", "spontaneous_observed_by"),
@@ -353,18 +411,33 @@ def test_every_geography_column_is_a_wgs84_point():
         assert column.type.get_col_spec() == "geography(Point,4326)", table
 
 
+# The one JSONB payload that is legitimately absent rather than empty.
+# `document_versions.guard_report` is NULL until the guard has run: a DRAFT or
+# VALIDATING version has been proposed but not yet judged, and `'{}'::jsonb` is not
+# a valid `DocumentGuardReport` (the model requires `ok`), so an empty default
+# would be a payload no reader could parse. "Not judged yet" and "judged, verdict
+# empty" are genuinely different states here, unlike the reason lists where an
+# empty array is the honest default — so this column is allowed to be nullable with
+# no server default, and the mapper writes NULL for a version that carries none.
+_NULLABLE_JSONB = {("document_versions", "guard_report")}
+
+
 def test_json_payloads_are_jsonb_with_an_empty_server_default():
-    """JSONB, and never NULL.
+    """JSONB, and never NULL — except the guard verdict, which may be unrun.
 
     `raw` and the reason lists are read with `->>` and may be indexed later, which
     rules out `JSON` (text re-parsed on every read). The server-side `'{}'::jsonb`
     means a row written by a migration or by psql is as valid as one written by
-    SQLAlchemy — a NULL payload would make every reader check for it.
+    SQLAlchemy — a NULL payload would make every reader check for it. The lone
+    exception is `_NULLABLE_JSONB`, where NULL is a meaningful "not yet judged".
     """
     payloads = [(table, column) for table, column in _columns()
                 if isinstance(column.type, JSONB)]
     assert len(payloads) >= 4
     for table, column in payloads:
+        if (table, column.name) in _NULLABLE_JSONB:
+            assert column.nullable is True, f"{table}.{column.name}"
+            continue
         assert column.nullable is False, f"{table}.{column.name}"
         assert column.server_default is not None, f"{table}.{column.name}"
 

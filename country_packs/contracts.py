@@ -35,7 +35,7 @@ from backend.app.domain.base import (
     NonEmptyStr,
 )
 from backend.app.domain.candidate import WorkAuthorizationStatus
-from backend.app.domain.eligibility import EligibilityRequirement
+from backend.app.domain.eligibility import EligibilityRequirement, RuleAuthority
 from backend.app.domain.opportunity import (
     ContractType,
     OpportunityType,
@@ -356,12 +356,20 @@ class PermitRule(DomainModel):
     not facts this repository asserts. docs/COUNTRY_PACKS.md §Eligibility says so
     in the same words, because a wrong number here would become a wrong
     eligibility verdict in Phase 9 with nothing in between to catch it.
+
+    `authority` is what stops that: it defaults to `OPERATOR_CONFIG`, and the
+    Phase 9 eligibility engine may not refuse an application on a rule that is not
+    `VERIFIED` (`backend.app.domain.eligibility.RuleAuthority` and the
+    `EligibilityCheck` invariant). An operator who has had a permit rule checked
+    against the actual legal source raises it to `VERIFIED` deliberately; until
+    then the cap informs and triggers review, it does not block.
     """
 
     code: NonEmptyStr
     display_name: NonEmptyStr
     status: WorkAuthorizationStatus
     weekly_hours_cap: Annotated[float, Field(gt=0.0, le=168.0)] | None = None
+    authority: RuleAuthority = RuleAuthority.OPERATOR_CONFIG
     reference_url: HttpUrlStr | None = None
     notes: NonEmptyStr | None = None
 

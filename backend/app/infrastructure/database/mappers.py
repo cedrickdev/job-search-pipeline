@@ -27,14 +27,39 @@ import insert a second child row for the same parent
 from typing import Any, Protocol
 from uuid import UUID, uuid5
 
-from pydantic import SecretStr
+from pydantic import SecretStr, TypeAdapter
+from sqlalchemy.orm.attributes import flag_modified
 
+from backend.app.domain.application import (
+    Application,
+    PinnedDocument,
+)
+from backend.app.domain.application_answer import ApplicationAnswer
+from backend.app.domain.application_event import (
+    ApplicationEvent,
+    SubmissionAttempt,
+)
 from backend.app.domain.candidate import (
     Availability,
+    CandidateClaim,
+    CandidateEvidence,
     CandidateProfile,
+    ClaimType,
+    EvidenceKind,
+    EvidenceProvenance,
     WeeklyAvailabilitySlot,
     WorkAuthorization,
     WorkAuthorizationStatus,
+)
+from backend.app.domain.chat import (
+    CHAT_ACTION_ADAPTER,
+    ChatActionExecution,
+    ChatActionExecutionOutcome,
+    ChatActionProposal,
+    ChatActionProposalStatus,
+    ChatMessage,
+    ChatMessageRole,
+    Conversation,
 )
 from backend.app.domain.common import (
     LanguageLevel,
@@ -58,17 +83,52 @@ from backend.app.domain.company import (
     Evidence,
     SpontaneousApplicationChannel,
 )
+from backend.app.domain.decision import ApplicationDecision
+from backend.app.domain.documents import (
+    CandidateDocument,
+    CandidateDocumentType,
+    DocumentArtifactRef,
+    DocumentContent,
+    DocumentGuardReport,
+    DocumentStatus,
+    DocumentVersion,
+)
+from backend.app.domain.eligibility import (
+    DeterminationSource,
+    EligibilityCheck,
+    EligibilityRequirement,
+    EligibilityResult,
+    EligibilityStatus,
+    RuleAuthority,
+)
 from backend.app.domain.identifiers import (
     SURROGATE_KEY_NAMESPACE,
+    ApplicationDecisionId,
+    ApplicationEventId,
+    ApplicationId,
+    ApplicationPolicyId,
+    CandidateDocumentId,
     CandidateProfileId,
     CareerSiteId,
+    ChatActionExecutionId,
+    ChatActionProposalId,
+    ChatMessageId,
+    ClaimId,
     CompanyAliasId,
     CompanyDiscoveryRecordId,
     CompanyId,
     CompanyLocationId,
+    ConversationId,
+    DocumentVersionId,
+    EligibilityResultId,
+    EvidenceId,
+    LLMConnectionId,
+    LLMRunId,
     MatchEvaluationId,
     OpportunityId,
+    ProviderSessionId,
     SearchProfileId,
+    SubmissionAttemptId,
     UserId,
     UserSessionId,
 )
@@ -80,6 +140,7 @@ from backend.app.domain.opportunity import (
     OpportunityType,
     WorkplaceMode,
 )
+from backend.app.domain.policy import ApplicationPolicy, DimensionThreshold
 from backend.app.domain.search import (
     CountrySearchArea,
     RadiusSearchArea,
@@ -90,25 +151,48 @@ from backend.app.domain.search import (
 )
 from backend.app.domain.user import User, UserSession, UserStatus
 from backend.app.infrastructure.database.models import (
+    ApplicationDecisionRow,
+    ApplicationEventRow,
+    ApplicationPolicyRow,
+    ApplicationRow,
     CandidateAvailabilitySlotRow,
+    CandidateClaimRow,
+    CandidateDocumentRow,
+    CandidateEvidenceRow,
     CandidateLanguageRow,
     CandidateProfileRow,
     CandidateWorkAuthorizationRow,
+    ChatActionExecutionRow,
+    ChatActionProposalRow,
+    ChatMessageRow,
     CompanyAliasRow,
     CompanyCareerSiteRow,
     CompanyDiscoveryRecordRow,
     CompanyLocationRow,
     CompanyRow,
+    ConversationRow,
+    DocumentVersionRow,
+    EligibilityCheckRow,
+    EligibilityResultRow,
+    LLMConnectionRow,
+    LLMRunRow,
     LocationColumnsMixin,
     MatchDimensionScoreRow,
     MatchEvaluationRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
+    ProviderSessionRow,
     SearchAreaRow,
     SearchProfileRow,
+    SubmissionAttemptRow,
     UserRow,
     UserSessionRow,
 )
+from backend.app.llm.connection import LLMConnection, LLMProviderType
+from backend.app.llm.contracts import TaskPurpose
+from backend.app.llm.failures import LLMFailureCode
+from backend.app.llm.sessions import ProviderSession
+from backend.app.llm.telemetry import LLMRun, LLMRunStatus
 
 """Namespace for primary keys the domain does not carry.
 
@@ -135,6 +219,20 @@ def dimension_score_row_id(evaluation_id: MatchEvaluationId,
     """
     return uuid5(SURROGATE_KEY_NAMESPACE,
                  f"match_dimension_score:{evaluation_id}:{dimension.value}")
+
+
+def eligibility_check_row_id(result_id: EligibilityResultId, ordinal: int) -> UUID:
+    """The stable key of one check of one eligibility result.
+
+    Keyed by `(result_id, ordinal)` — the pair the unique constraint covers — for
+    the reason `search_area_row_id` is keyed by position: a requirement can repeat
+    (two required languages are two `LANGUAGE_MINIMUM` gates), so the requirement
+    cannot identify a row and its ordinal is what is left. Re-evaluating a pair
+    therefore updates the existing rows in place, and a gate the re-run no longer
+    emits is deleted rather than duplicated.
+    """
+    return uuid5(SURROGATE_KEY_NAMESPACE,
+                 f"eligibility_check:{result_id}:{ordinal}")
 
 
 def candidate_language_row_id(profile_id: CandidateProfileId, language: str) -> UUID:
@@ -723,6 +821,98 @@ def match_evaluation_to_domain(row: MatchEvaluationRow) -> MatchEvaluation:
         evaluated_at=row.evaluated_at)
 
 
+def eligibility_check_to_row(
+        check: EligibilityCheck, result_id: EligibilityResultId, ordinal: int,
+        row: EligibilityCheckRow | None = None) -> EligibilityCheckRow:
+    """One `EligibilityCheck` onto its row, keyed by position within the result.
+
+    `evidence_ids` is stored as a `TEXT[]` since Phase 10 gave the evidence store a
+    home — the provenance of the candidate records a gate rested on. Every other
+    field is a plain projection, and the three `ck_eligibility_checks_*` constraints
+    police the combinations the domain validator does — so a caller cannot write a
+    refusal with no reason, an LLM-decided verdict or a pack-blocked one that is not
+    verified, whether or not the value came through the model.
+    """
+    target = (EligibilityCheckRow(id=eligibility_check_row_id(result_id, ordinal))
+              if row is None else row)
+    target.result_id = result_id
+    target.ordinal = ordinal
+    target.requirement = check.requirement
+    target.status = check.status
+    target.determined_by = check.determined_by
+    target.authority = check.authority
+    target.detail = check.detail
+    target.reasons = reasons_to_json(check.reasons)
+    target.evidence_ids = [str(evidence_id) for evidence_id in check.evidence_ids]
+    return target
+
+
+def eligibility_check_to_domain(row: EligibilityCheckRow) -> EligibilityCheck:
+    """A row as an `EligibilityCheck`, re-validated through the domain.
+
+    `evidence_ids` is read back from the `TEXT[]` column. Re-validating re-applies
+    `_verdict_is_accountable`, so a row that reached the table past the CHECKs (a
+    hand-built one in a test) still fails here rather than producing a check the
+    engine could never have built.
+    """
+    return EligibilityCheck(
+        requirement=EligibilityRequirement(row.requirement),
+        status=EligibilityStatus(row.status),
+        determined_by=DeterminationSource(row.determined_by),
+        authority=RuleAuthority(row.authority),
+        detail=row.detail,
+        reasons=reasons_from_json(row.reasons),
+        evidence_ids=_evidence_ids_from_strings(row.evidence_ids))
+
+
+def eligibility_result_to_row(result: EligibilityResult,
+                              row: EligibilityResultRow | None = None
+                              ) -> EligibilityResultRow:
+    """An `EligibilityResult` and its checks onto rows.
+
+    `status` is written from the domain's *derived* property, never a second field:
+    the denormalized column exists so a list can rank and filter without loading
+    every check, and the property is the one source of truth it copies. Existing
+    children are matched by `ordinal` — the natural key, because a requirement can
+    repeat — so re-evaluating a pair updates the rows already there and a gate the
+    re-run dropped is deleted by the cascade.
+    """
+    target = EligibilityResultRow(id=result.id) if row is None else row
+    target.user_id = result.user_id
+    target.candidate_profile_id = result.candidate_profile_id
+    target.opportunity_id = result.opportunity_id
+    target.status = result.status
+    target.policy_version = result.policy_version
+    target.determined_at = result.determined_at
+    # As in `match_evaluation_to_row`: the children hang from the row being written
+    # — the one found by (candidate_profile_id, opportunity_id) — not necessarily
+    # from `result.id`, so the id used to key them is the row's.
+    result_id = EligibilityResultId(target.id)
+    existing = ({} if row is None
+                else {child.ordinal: child for child in row.checks})
+    target.checks = [
+        eligibility_check_to_row(check, result_id, ordinal, existing.get(ordinal))
+        for ordinal, check in enumerate(result.checks)]
+    return target
+
+
+def eligibility_result_to_domain(row: EligibilityResultRow) -> EligibilityResult:
+    """A row and its loaded checks as an `EligibilityResult`.
+
+    `status` is *not* passed: it is a derived property, and the domain recomputes it
+    from the checks. The stored column is a denormalized copy for querying, never an
+    input the reconstruction could disagree with.
+    """
+    return EligibilityResult(
+        id=EligibilityResultId(row.id),
+        user_id=UserId(row.user_id),
+        candidate_profile_id=CandidateProfileId(row.candidate_profile_id),
+        opportunity_id=OpportunityId(row.opportunity_id),
+        checks=tuple(eligibility_check_to_domain(child) for child in row.checks),
+        policy_version=row.policy_version,
+        determined_at=row.determined_at)
+
+
 # Phase 4: identity, the candidate profile onboarding fills in, and saved searches.
 #
 # Three of the functions below unwrap a `SecretStr`, and they are the only ones in
@@ -832,6 +1022,8 @@ def _work_authorization_to_row(
     target.permit_label = authorization.permit_label
     target.valid_until = authorization.valid_until
     target.permit_hours_cap = authorization.permit_hours_cap
+    target.evidence_ids = [str(evidence_id)
+                           for evidence_id in authorization.evidence_ids]
     return target
 
 
@@ -846,6 +1038,52 @@ def _availability_slot_to_row(
     target.weekday = slot.weekday
     target.start_hour = slot.start_hour
     target.end_hour = slot.end_hour
+    return target
+
+
+def _evidence_to_row(evidence: CandidateEvidence, profile_id: CandidateProfileId,
+                     ordinal: int, row: CandidateEvidenceRow | None = None
+                     ) -> CandidateEvidenceRow:
+    """One `CandidateEvidence` onto its row.
+
+    Keyed by the evidence's own id, which the domain carries — no surrogate is
+    derived, unlike the language and slot rows, because an `EvidenceId` is a real
+    identity a claim points at. `user_id` is not written: the record's owner is the
+    profile's owner, and `CandidateProfile` refuses any other, so a column here
+    could only disagree.
+    """
+    target = CandidateEvidenceRow(id=evidence.id) if row is None else row
+    target.profile_id = profile_id
+    target.ordinal = ordinal
+    target.kind = evidence.kind
+    target.provenance = evidence.provenance
+    target.reference_key = evidence.reference_key
+    target.summary = evidence.summary
+    target.detail = evidence.detail
+    target.issued_on = evidence.issued_on
+    target.valid_until = evidence.valid_until
+    target.source_document = evidence.source_document
+    target.recorded_at = evidence.recorded_at
+    return target
+
+
+def _claim_to_row(claim: CandidateClaim, profile_id: CandidateProfileId,
+                  ordinal: int, row: CandidateClaimRow | None = None
+                  ) -> CandidateClaimRow:
+    """One `CandidateClaim` onto its row, its citations as a `TEXT[]` of ids.
+
+    Keyed by the claim's own `ClaimId`. The evidence ids are stored as strings, the
+    form the `TEXT[]` column and psycopg both take; `candidate_profile_to_domain`
+    turns them back into `EvidenceId`, and `CandidateProfile` re-checks the profile
+    holds each one.
+    """
+    target = CandidateClaimRow(id=claim.id) if row is None else row
+    target.profile_id = profile_id
+    target.ordinal = ordinal
+    target.claim_type = claim.claim_type
+    target.label = claim.label
+    target.detail = claim.detail
+    target.evidence_ids = [str(evidence_id) for evidence_id in claim.evidence_ids]
     return target
 
 
@@ -896,24 +1134,18 @@ def _read_availability(row: CandidateProfileRow) -> Availability | None:
 def candidate_profile_to_row(profile: CandidateProfile,
                              row: CandidateProfileRow | None = None
                              ) -> CandidateProfileRow:
-    """A `CandidateProfile` and its three child collections onto rows.
+    """A `CandidateProfile` and its five child collections onto rows.
 
-    Raises `ValueError` when the profile carries evidence or claims. Phase 10 owns
-    the evidence store, and there is no column for either here; writing the profile
-    and dropping them would break `_claims_rest_on_held_evidence` on the way back
-    out — a claim would return citing evidence the profile no longer holds. The
-    check lives in the mapper rather than in the repository because the mapper is
-    the layer every path goes through.
+    Evidence and claims are child tables since Phase 10, so a profile carrying
+    either is written whole — the gate that once refused them is gone. The claim's
+    `evidence_ids` travel as a `TEXT[]` on `candidate_claims`, and because the whole
+    profile is reconciled in one call, a claim and the evidence it cites are always
+    written together; `_claims_rest_on_held_evidence` re-checks the link on read.
 
     `updated_at` is written from the domain object and `created_at` is left to the
     server default, for the reason `user_session_to_row` gives: the domain models
     the field it actually has.
     """
-    if profile.evidence or profile.claims:
-        raise ValueError(
-            "candidate evidence and claims have no V2 persistence yet (Phase 10); "
-            f"profile {profile.id} carries {len(profile.evidence)} evidence records "
-            f"and {len(profile.claims)} claims")
     target = CandidateProfileRow(id=profile.id) if row is None else row
     target.user_id = profile.user_id
     target.display_name = profile.display_name
@@ -944,18 +1176,30 @@ def candidate_profile_to_row(profile: CandidateProfile,
                                   slots.get((slot.weekday, slot.start_hour)))
         for ordinal, slot in enumerate(
             () if availability is None else availability.weekly_slots)]
+    evidence = {child.id: child for child in (row.evidence if row else [])}
+    target.evidence = [
+        _evidence_to_row(item, profile_id, ordinal, evidence.get(item.id))
+        for ordinal, item in enumerate(profile.evidence)]
+    claims = {child.id: child for child in (row.claims if row else [])}
+    target.claims = [
+        _claim_to_row(claim, profile_id, ordinal, claims.get(claim.id))
+        for ordinal, claim in enumerate(profile.claims)]
     return target
 
 
 def candidate_profile_to_domain(row: CandidateProfileRow) -> CandidateProfile:
     """A row and its children as a `CandidateProfile`.
 
-    `evidence` and `claims` are left at their defaults — empty — which is the
-    truthful reading of a schema that has nowhere to store them.
+    Re-validating through the aggregate re-applies every invariant, including
+    `_claims_rest_on_held_evidence`: a stored claim citing an id no evidence row
+    carries fails here with a sentence rather than producing a profile the guard
+    would then trust. The `TEXT[]` citation columns hold strings, so each is turned
+    back into an `EvidenceId` (a `UUID`) on the way out.
     """
+    user_id = UserId(row.user_id)
     return CandidateProfile(
         id=CandidateProfileId(row.id),
-        user_id=UserId(row.user_id),
+        user_id=user_id,
         display_name=row.display_name,
         headline=row.headline,
         base_location=_read_location(row),
@@ -968,10 +1212,47 @@ def candidate_profile_to_domain(row: CandidateProfileRow) -> CandidateProfile:
                               status=WorkAuthorizationStatus(child.status),
                               permit_label=child.permit_label,
                               valid_until=child.valid_until,
-                              permit_hours_cap=child.permit_hours_cap)
+                              permit_hours_cap=child.permit_hours_cap,
+                              evidence_ids=_evidence_ids_from_strings(
+                                  child.evidence_ids))
             for child in row.work_authorizations),
         availability=_read_availability(row),
+        evidence=tuple(_evidence_to_domain(child, user_id) for child in row.evidence),
+        claims=tuple(_claim_to_domain(child, user_id) for child in row.claims),
         updated_at=row.updated_at)
+
+
+def _evidence_ids_from_strings(values: list[str]) -> tuple[EvidenceId, ...]:
+    """A stored `TEXT[]` of citation strings back into typed `EvidenceId`s."""
+    return tuple(EvidenceId(UUID(value)) for value in values)
+
+
+def _evidence_to_domain(row: CandidateEvidenceRow, user_id: UserId
+                        ) -> CandidateEvidence:
+    """One evidence row as a `CandidateEvidence`, its owner taken from the profile."""
+    return CandidateEvidence(
+        id=EvidenceId(row.id),
+        user_id=user_id,
+        kind=EvidenceKind(row.kind),
+        provenance=EvidenceProvenance(row.provenance),
+        reference_key=row.reference_key,
+        summary=row.summary,
+        detail=row.detail,
+        issued_on=row.issued_on,
+        valid_until=row.valid_until,
+        source_document=row.source_document,
+        recorded_at=row.recorded_at)
+
+
+def _claim_to_domain(row: CandidateClaimRow, user_id: UserId) -> CandidateClaim:
+    """One claim row as a `CandidateClaim`, its owner taken from the profile."""
+    return CandidateClaim(
+        id=ClaimId(row.id),
+        user_id=user_id,
+        claim_type=ClaimType(row.claim_type),
+        label=row.label,
+        detail=row.detail,
+        evidence_ids=_evidence_ids_from_strings(row.evidence_ids))
 
 
 def _area_to_row(area: SearchArea, search_profile_id: SearchProfileId, ordinal: int,
@@ -1091,10 +1372,669 @@ def search_profile_to_domain(row: SearchProfileRow) -> SearchProfile:
         updated_at=row.updated_at)
 
 
+# `DocumentContent` is a discriminated union, so a plain `model_validate` would not
+# know which member a stored dict is. A `TypeAdapter` over the annotated union reads
+# the `kind` discriminator and validates into the right shape, the same way the
+# field does inside `DocumentVersion`.
+_DOCUMENT_CONTENT_ADAPTER: TypeAdapter[DocumentContent] = TypeAdapter(DocumentContent)
+
+
+def _document_version_to_row(version: DocumentVersion,
+                             document_id: CandidateDocumentId,
+                             row: DocumentVersionRow | None = None
+                             ) -> DocumentVersionRow:
+    """One `DocumentVersion` onto its row.
+
+    Content and the guard report are stored as JSONB documents (`mode="json"` turns
+    the evidence-id UUIDs into strings psycopg will take), and `guard_ok` is lifted
+    out of the report so the status CHECKs can read the verdict without a JSONB path
+    expression. The artifact ref is flattened into the five `artifact_*` columns,
+    all NULL until the version is rendered.
+    """
+    target = DocumentVersionRow(id=version.id) if row is None else row
+    target.document_id = document_id
+    target.version = version.version
+    target.status = version.status
+    target.language = version.language
+    target.content = version.content.model_dump(mode="json")
+    report = version.guard_report
+    target.guard_report = None if report is None else report.model_dump(mode="json")
+    target.guard_ok = None if report is None else report.ok
+    target.generator_key = version.generator_key
+    target.created_at = version.created_at
+    artifact = version.artifact
+    target.artifact_storage_key = None if artifact is None else artifact.storage_key
+    target.artifact_media_type = None if artifact is None else artifact.media_type
+    target.artifact_byte_size = None if artifact is None else artifact.byte_size
+    target.artifact_page_count = None if artifact is None else artifact.page_count
+    target.artifact_rendered_at = None if artifact is None else artifact.rendered_at
+    return target
+
+
+def _document_version_to_domain(row: DocumentVersionRow) -> DocumentVersion:
+    """One version row back into a `DocumentVersion`, re-validated through the domain.
+
+    `_status_agrees_with_verdict_and_artifact` runs again here, so a row whose
+    status, verdict and artifact were made to disagree by hand fails with a sentence
+    rather than serving a rejected version as usable.
+    """
+    report = (None if row.guard_report is None
+              else DocumentGuardReport.model_validate(row.guard_report))
+    artifact = None
+    if row.artifact_storage_key is not None:
+        # The artifact columns are written and cleared as one group, gated by the
+        # `(status = 'RENDERED') = (artifact_storage_key IS NOT NULL)` constraint, so
+        # a row with a storage key always carries its `rendered_at`. Asserting it
+        # keeps the invariant legible rather than coercing a `None` into a bad ref.
+        assert row.artifact_rendered_at is not None, (
+            "a rendered version row must carry artifact_rendered_at")
+        artifact = DocumentArtifactRef(
+            storage_key=row.artifact_storage_key,
+            media_type=row.artifact_media_type or "application/pdf",
+            byte_size=row.artifact_byte_size or 0,
+            page_count=row.artifact_page_count,
+            rendered_at=row.artifact_rendered_at)
+    return DocumentVersion(
+        id=DocumentVersionId(row.id),
+        version=row.version,
+        status=DocumentStatus(row.status),
+        language=row.language,
+        content=_DOCUMENT_CONTENT_ADAPTER.validate_python(row.content),
+        guard_report=report,
+        artifact=artifact,
+        generator_key=row.generator_key,
+        created_at=row.created_at)
+
+
+def candidate_document_to_row(document: CandidateDocument,
+                              row: CandidateDocumentRow | None = None
+                              ) -> CandidateDocumentRow:
+    """A `CandidateDocument` and its versions onto rows.
+
+    The versions hang from the row being written and are matched by their version
+    number, so appending a version updates the parent and inserts one child rather
+    than rewriting the history. `updated_at` is written from the domain object;
+    `created_at` is left to the server default, as elsewhere.
+    """
+    target = CandidateDocumentRow(id=document.id) if row is None else row
+    target.user_id = document.user_id
+    target.candidate_profile_id = document.candidate_profile_id
+    target.opportunity_id = document.opportunity_id
+    target.document_type = document.document_type
+    target.updated_at = document.updated_at
+    document_id = CandidateDocumentId(target.id)
+    existing = {child.version: child for child in (row.versions if row else [])}
+    target.versions = [
+        _document_version_to_row(version, document_id, existing.get(version.version))
+        for version in document.versions]
+    return target
+
+
+def candidate_document_to_domain(row: CandidateDocumentRow) -> CandidateDocument:
+    """A document row and its versions as a `CandidateDocument`.
+
+    Re-validating through the aggregate re-applies `_versions_are_ordered_and_typed`
+    — strictly increasing numbers, unique ids, every version's content matching the
+    document's declared type — so a hand-built row that violated any of them fails
+    here rather than producing a document a surface would misrender.
+    """
+    return CandidateDocument(
+        id=CandidateDocumentId(row.id),
+        user_id=UserId(row.user_id),
+        candidate_profile_id=CandidateProfileId(row.candidate_profile_id),
+        opportunity_id=OpportunityId(row.opportunity_id),
+        document_type=CandidateDocumentType(row.document_type),
+        versions=tuple(_document_version_to_domain(child) for child in row.versions),
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+# Phase 11: the provider-neutral LLM platform's persisted values. Three plain
+# projections — a connection, a provider session, a telemetry run — each re-validated
+# through its model on the way out, so a row that reached the table past the CHECKs
+# (a hand-built one in a test) still fails here rather than producing a value the
+# router or the factory would then trust.
+#
+# The credential is the one field handled with care: `encrypted_api_key` is copied as
+# the opaque ciphertext it is, never decrypted here — decryption is the factory's job,
+# at the instant a provider is built (docs/LLM_PROVIDER_ARCHITECTURE.md §21). This
+# module only moves the ciphertext between the row and the value.
+
+
+def llm_connection_to_row(connection: LLMConnection,
+                          row: LLMConnectionRow | None = None) -> LLMConnectionRow:
+    """An `LLMConnection` onto its row.
+
+    `created_at` and `updated_at` are written from the domain object, as on `users`:
+    the caller owns the clock, so a test can store a connection created last week.
+    `custom_headers` is copied into a new dict rather than assigned, for the reason
+    `discovery_record_to_row` copies `raw`: the domain mapping is not frozen, and
+    handing the same object to SQLAlchemy would let a later mutation change what is
+    flushed.
+    """
+    target = LLMConnectionRow(id=connection.id) if row is None else row
+    target.user_id = connection.user_id
+    target.provider_type = connection.provider_type
+    target.display_name = connection.display_name
+    target.base_url = connection.base_url
+    target.model = connection.model
+    target.encrypted_api_key = connection.encrypted_api_key
+    target.secret_version = connection.secret_version
+    target.custom_headers = dict(connection.custom_headers)
+    target.enabled = connection.enabled
+    target.is_default = connection.is_default
+    target.priority = connection.priority
+    target.created_at = connection.created_at
+    target.updated_at = connection.updated_at
+    return target
+
+
+def llm_connection_to_domain(row: LLMConnectionRow) -> LLMConnection:
+    """An `llm_connections` row as an `LLMConnection`, re-validated through the model.
+
+    The transport-shape and secret-pair invariants run again here, so a row that
+    somehow reached the table with a CLI connection carrying a base URL fails with a
+    sentence rather than being handed to the factory.
+    """
+    return LLMConnection(
+        id=LLMConnectionId(row.id),
+        user_id=UserId(row.user_id),
+        provider_type=LLMProviderType(row.provider_type),
+        display_name=row.display_name,
+        base_url=row.base_url,
+        model=row.model,
+        encrypted_api_key=row.encrypted_api_key,
+        secret_version=row.secret_version,
+        custom_headers=dict(row.custom_headers),
+        enabled=row.enabled,
+        is_default=row.is_default,
+        priority=row.priority,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def provider_session_to_row(session: ProviderSession,
+                            row: ProviderSessionRow | None = None
+                            ) -> ProviderSessionRow:
+    """A `ProviderSession` onto its row.
+
+    `created_at`/`updated_at` are domain-supplied, as on the connection. The id is
+    already derived from `(connection_id, conversation_key)` by the domain, so this is
+    a plain projection with no key to compute.
+    """
+    target = ProviderSessionRow(id=session.id) if row is None else row
+    target.user_id = session.user_id
+    target.connection_id = session.connection_id
+    target.conversation_key = session.conversation_key
+    target.purpose = session.purpose
+    target.external_session_id = session.external_session_id
+    target.created_at = session.created_at
+    target.updated_at = session.updated_at
+    return target
+
+
+def provider_session_to_domain(row: ProviderSessionRow) -> ProviderSession:
+    """A `provider_sessions` row as a `ProviderSession`, re-validated on the way out.
+
+    `_id_is_derived_from_its_key` runs again, so a row whose id disagrees with its
+    `(connection_id, conversation_key)` — one a resume would never find — fails here.
+    """
+    return ProviderSession(
+        id=ProviderSessionId(row.id),
+        user_id=UserId(row.user_id),
+        connection_id=LLMConnectionId(row.connection_id),
+        conversation_key=row.conversation_key,
+        purpose=TaskPurpose(row.purpose),
+        external_session_id=row.external_session_id,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def llm_run_to_row(run: LLMRun, row: LLMRunRow | None = None) -> LLMRunRow:
+    """An `LLMRun` onto its row.
+
+    `started_at` and `finished_at` are domain facts (the call's own window), so they
+    are written from the object; `created_at`/`updated_at` are left to the server
+    defaults, the row-write bookkeeping. Every token, cost and latency field is copied
+    as-is, keeping the unknown as NULL (§58) rather than a fabricated 0.
+    """
+    target = LLMRunRow(id=run.id) if row is None else row
+    target.user_id = run.user_id
+    target.connection_id = run.connection_id
+    target.provider_key = run.provider_key
+    target.provider_type = run.provider_type
+    target.model = run.model
+    target.purpose = run.purpose
+    target.status = run.status
+    target.prompt_name = run.prompt_name
+    target.prompt_version = run.prompt_version
+    target.prompt_tokens = run.prompt_tokens
+    target.completion_tokens = run.completion_tokens
+    target.total_tokens = run.total_tokens
+    target.cost_usd = run.cost_usd
+    target.latency_ms = run.latency_ms
+    target.failure_code = run.failure_code
+    target.failure_detail = run.failure_detail
+    target.fallback_from = run.fallback_from
+    target.fallback_reason = run.fallback_reason
+    target.started_at = run.started_at
+    target.finished_at = run.finished_at
+    return target
+
+
+def llm_run_to_domain(row: LLMRunRow) -> LLMRun:
+    """An `llm_runs` row as an `LLMRun`, re-validated through the model.
+
+    `_status_agrees_with_shape` and `_fallback_pair_is_complete` run again, so a row
+    that reached the table past the CHECKs still cannot become a run claiming a
+    success with a failure code or a fallback with no reason.
+    """
+    return LLMRun(
+        id=LLMRunId(row.id),
+        user_id=None if row.user_id is None else UserId(row.user_id),
+        connection_id=(None if row.connection_id is None
+                       else LLMConnectionId(row.connection_id)),
+        provider_key=row.provider_key,
+        provider_type=(None if row.provider_type is None
+                       else LLMProviderType(row.provider_type)),
+        model=row.model,
+        purpose=TaskPurpose(row.purpose),
+        status=LLMRunStatus(row.status),
+        prompt_name=row.prompt_name,
+        prompt_version=row.prompt_version,
+        prompt_tokens=row.prompt_tokens,
+        completion_tokens=row.completion_tokens,
+        total_tokens=row.total_tokens,
+        cost_usd=row.cost_usd,
+        latency_ms=row.latency_ms,
+        failure_code=(None if row.failure_code is None
+                      else LLMFailureCode(row.failure_code)),
+        failure_detail=row.failure_detail,
+        fallback_from=row.fallback_from,
+        fallback_reason=(None if row.fallback_reason is None
+                         else LLMFailureCode(row.fallback_reason)),
+        started_at=row.started_at,
+        finished_at=row.finished_at)
 
 
 
 
 
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 — the application engine. A policy, a decision, an application and its
+# two append-only child records. `pinned_documents`, `answers`, `reasons` and
+# `dimension_thresholds` are JSONB carrying the domain value objects verbatim —
+# `model_dump(mode="json")` in, `model_validate` out — so a value that reached the
+# table is re-validated through the domain on the way back, never trusted raw.
+# The event and attempt rows are written one at a time by their own repositories
+# (the trail only grows), so unlike `match_evaluations` there is no wholesale
+# child reconciliation on the application row.
+# ---------------------------------------------------------------------------
+
+
+def application_policy_to_row(policy: ApplicationPolicy,
+                              row: ApplicationPolicyRow | None = None
+                              ) -> ApplicationPolicyRow:
+    target = ApplicationPolicyRow(id=policy.id) if row is None else row
+    target.user_id = policy.user_id
+    target.name = policy.name
+    target.is_active = policy.is_active
+    target.mode = policy.mode
+    target.require_approval_before_submission = \
+        policy.require_approval_before_submission
+    target.allowed_opportunity_types = [t.value for t in policy.allowed_opportunity_types]
+    target.minimum_overall_score = policy.minimum_overall_score
+    target.dimension_thresholds = [
+        threshold.model_dump(mode="json") for threshold in policy.dimension_thresholds]
+    target.allow_incomplete_eligibility = policy.allow_incomplete_eligibility
+    target.allow_spontaneous_applications = policy.allow_spontaneous_applications
+    target.max_applications_per_day = policy.max_applications_per_day
+    target.max_applications_per_week = policy.max_applications_per_week
+    target.created_at = policy.created_at
+    target.updated_at = policy.updated_at
+    return target
+
+
+def application_policy_to_domain(row: ApplicationPolicyRow) -> ApplicationPolicy:
+    return ApplicationPolicy(
+        id=ApplicationPolicyId(row.id),
+        user_id=UserId(row.user_id),
+        name=row.name,
+        is_active=row.is_active,
+        mode=row.mode,
+        require_approval_before_submission=row.require_approval_before_submission,
+        allowed_opportunity_types=tuple(
+            OpportunityType(value) for value in row.allowed_opportunity_types),
+        minimum_overall_score=row.minimum_overall_score,
+        dimension_thresholds=tuple(
+            DimensionThreshold.model_validate(entry)
+            for entry in row.dimension_thresholds),
+        allow_incomplete_eligibility=row.allow_incomplete_eligibility,
+        allow_spontaneous_applications=row.allow_spontaneous_applications,
+        max_applications_per_day=row.max_applications_per_day,
+        max_applications_per_week=row.max_applications_per_week,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def application_decision_to_row(decision: ApplicationDecision,
+                                row: ApplicationDecisionRow | None = None
+                                ) -> ApplicationDecisionRow:
+    """A decision onto its row. The embedded match/eligibility snapshots are not
+    persisted here — they live in their own tables and the engine re-reads them —
+    so a row is the intent plus the ids and reasons it is about."""
+    target = ApplicationDecisionRow(id=decision.id) if row is None else row
+    target.user_id = decision.user_id
+    target.candidate_profile_id = decision.candidate_profile_id
+    target.opportunity_id = decision.opportunity_id
+    target.company_id = decision.company_id
+    target.policy_id = decision.policy_id
+    target.kind = decision.kind
+    target.reasons = reasons_to_json(decision.reasons)
+    target.confidence = decision.confidence
+    target.requires_human_review = decision.requires_human_review
+    target.decided_by = decision.decided_by
+    target.decided_at = decision.decided_at
+    return target
+
+
+def application_decision_to_domain(row: ApplicationDecisionRow) -> ApplicationDecision:
+    return ApplicationDecision(
+        id=ApplicationDecisionId(row.id),
+        user_id=UserId(row.user_id),
+        candidate_profile_id=CandidateProfileId(row.candidate_profile_id),
+        opportunity_id=(None if row.opportunity_id is None
+                        else OpportunityId(row.opportunity_id)),
+        company_id=None if row.company_id is None else CompanyId(row.company_id),
+        policy_id=(None if row.policy_id is None
+                   else ApplicationPolicyId(row.policy_id)),
+        kind=row.kind,
+        reasons=reasons_from_json(row.reasons),
+        confidence=row.confidence,
+        requires_human_review=row.requires_human_review,
+        decided_by=row.decided_by,
+        decided_at=row.decided_at)
+
+
+def application_to_row(application: Application,
+                       row: ApplicationRow | None = None) -> ApplicationRow:
+    """An `Application` onto its row, columns only.
+
+    The `events` and `attempts` relationships are deliberately untouched: they are
+    append-only and written by their own repositories, so an application upsert must
+    not reconcile them (which, with `lazy="raise"`, it could not do without an eager
+    load anyway).
+    """
+    target = ApplicationRow(id=application.id) if row is None else row
+    target.user_id = application.user_id
+    target.candidate_profile_id = application.candidate_profile_id
+    target.decision_id = application.decision_id
+    target.channel = application.channel
+    target.state = application.state
+    target.idempotency_key = application.idempotency_key
+    target.opportunity_id = application.opportunity_id
+    target.company_id = application.company_id
+    target.policy_id = application.policy_id
+    target.pinned_documents = [
+        pin.model_dump(mode="json") for pin in application.pinned_documents]
+    target.answers = [answer.model_dump(mode="json") for answer in application.answers]
+    target.form_fingerprint = application.form_fingerprint
+    target.attempt_count = application.attempt_count
+    target.correlation_id = application.correlation_id
+    target.created_at = application.created_at
+    target.updated_at = application.updated_at
+    if row is not None:
+        # `updated_at` is domain-supplied here (the service controls the clock), but
+        # `TimestampedMixin` also carries `onupdate=func.now()`. Submission moves an
+        # application through SUBMITTING → SUBMITTED within one call at a single
+        # instant, so the second upsert leaves `updated_at` unchanged; without this
+        # flag SQLAlchemy would drop it from the SET clause, let the DB onupdate
+        # overwrite it, and then expire it — which under asyncio is a MissingGreenlet
+        # when the mapper reads it back. Forcing it into every UPDATE keeps the
+        # domain's value authoritative and the attribute loaded.
+        flag_modified(target, "updated_at")
+    return target
+
+
+def application_to_domain(row: ApplicationRow) -> Application:
+    return Application(
+        id=ApplicationId(row.id),
+        user_id=UserId(row.user_id),
+        candidate_profile_id=CandidateProfileId(row.candidate_profile_id),
+        decision_id=ApplicationDecisionId(row.decision_id),
+        channel=row.channel,
+        state=row.state,
+        idempotency_key=row.idempotency_key,
+        opportunity_id=(None if row.opportunity_id is None
+                        else OpportunityId(row.opportunity_id)),
+        company_id=None if row.company_id is None else CompanyId(row.company_id),
+        policy_id=(None if row.policy_id is None
+                   else ApplicationPolicyId(row.policy_id)),
+        pinned_documents=tuple(
+            PinnedDocument.model_validate(entry) for entry in row.pinned_documents),
+        answers=tuple(
+            ApplicationAnswer.model_validate(entry) for entry in row.answers),
+        form_fingerprint=row.form_fingerprint,
+        attempt_count=row.attempt_count,
+        correlation_id=row.correlation_id,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def application_event_to_row(event: ApplicationEvent,
+                             row: ApplicationEventRow | None = None
+                             ) -> ApplicationEventRow:
+    target = ApplicationEventRow(id=event.id) if row is None else row
+    target.application_id = event.application_id
+    target.event_type = event.event_type
+    target.actor = event.actor
+    target.from_state = event.from_state
+    target.to_state = event.to_state
+    target.detail = event.detail
+    target.reasons = reasons_to_json(event.reasons)
+    target.correlation_id = event.correlation_id
+    target.occurred_at = event.occurred_at
+    return target
+
+
+def application_event_to_domain(row: ApplicationEventRow) -> ApplicationEvent:
+    return ApplicationEvent(
+        id=ApplicationEventId(row.id),
+        application_id=ApplicationId(row.application_id),
+        event_type=row.event_type,
+        actor=row.actor,
+        from_state=row.from_state,
+        to_state=row.to_state,
+        detail=row.detail,
+        reasons=reasons_from_json(row.reasons),
+        correlation_id=row.correlation_id,
+        occurred_at=row.occurred_at)
+
+
+def submission_attempt_to_row(attempt: SubmissionAttempt,
+                              row: SubmissionAttemptRow | None = None
+                              ) -> SubmissionAttemptRow:
+    target = SubmissionAttemptRow(id=attempt.id) if row is None else row
+    target.application_id = attempt.application_id
+    target.attempt_number = attempt.attempt_number
+    target.adapter_key = attempt.adapter_key
+    target.outcome = attempt.outcome
+    target.detail = attempt.detail
+    target.confirmation_reference = attempt.confirmation_reference
+    target.human_required_reason = attempt.human_required_reason
+    target.failure_code = attempt.failure_code
+    target.correlation_id = attempt.correlation_id
+    target.started_at = attempt.started_at
+    target.finished_at = attempt.finished_at
+    return target
+
+
+def submission_attempt_to_domain(row: SubmissionAttemptRow) -> SubmissionAttempt:
+    return SubmissionAttempt(
+        id=SubmissionAttemptId(row.id),
+        application_id=ApplicationId(row.application_id),
+        attempt_number=row.attempt_number,
+        adapter_key=row.adapter_key,
+        outcome=row.outcome,
+        detail=row.detail,
+        confirmation_reference=row.confirmation_reference,
+        human_required_reason=row.human_required_reason,
+        failure_code=row.failure_code,
+        correlation_id=row.correlation_id,
+        started_at=row.started_at,
+        finished_at=row.finished_at)
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 — career chat as a control plane. A conversation, its messages, the
+# typed action proposals a turn parsed out of the assistant's fenced block, and the
+# audit of executing a confirmed one. The proposal's `action` is JSONB carrying the
+# validated `ChatAction` verbatim — dumped through `CHAT_ACTION_ADAPTER` in,
+# re-validated through it out — so a payload that reached the table is re-checked
+# against the closed action grammar on the way back, never trusted raw. `kind` is a
+# denormalised column so "my open submit proposals" is one indexed query; it always
+# equals `action["kind"]` because both come from the same validated object.
+# ---------------------------------------------------------------------------
+
+
+def conversation_to_row(conversation: Conversation,
+                        row: ConversationRow | None = None) -> ConversationRow:
+    """A `Conversation` onto its row.
+
+    `created_at`/`updated_at`/`last_message_at` are domain-supplied — the service owns
+    the clock — so `updated_at` is forced into every UPDATE for the reason
+    `application_to_row` documents: two writes at one instant would otherwise let the
+    DB `onupdate` overwrite it and expire the attribute under asyncio.
+    """
+    target = ConversationRow(id=conversation.id) if row is None else row
+    target.user_id = conversation.user_id
+    target.title = conversation.title
+    target.is_archived = conversation.is_archived
+    target.last_message_at = conversation.last_message_at
+    target.created_at = conversation.created_at
+    target.updated_at = conversation.updated_at
+    if row is not None:
+        flag_modified(target, "updated_at")
+    return target
+
+
+def conversation_to_domain(row: ConversationRow) -> Conversation:
+    return Conversation(
+        id=ConversationId(row.id),
+        user_id=UserId(row.user_id),
+        title=row.title,
+        is_archived=row.is_archived,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        last_message_at=row.last_message_at)
+
+
+def chat_message_to_row(message: ChatMessage,
+                        row: ChatMessageRow | None = None) -> ChatMessageRow:
+    """A `ChatMessage` onto its row. `created_at` is the domain fact; `updated_at` is
+    left to the server default, the row-write bookkeeping, as `llm_run_to_row` does —
+    a message is written once per `(conversation_id, sequence)` and never mutated."""
+    target = ChatMessageRow(id=message.id) if row is None else row
+    target.conversation_id = message.conversation_id
+    target.user_id = message.user_id
+    target.role = message.role
+    target.content = message.content
+    target.sequence = message.sequence
+    target.llm_run_id = message.llm_run_id
+    target.provider_key = message.provider_key
+    target.created_at = message.created_at
+    return target
+
+
+def chat_message_to_domain(row: ChatMessageRow) -> ChatMessage:
+    return ChatMessage(
+        id=ChatMessageId(row.id),
+        conversation_id=ConversationId(row.conversation_id),
+        user_id=UserId(row.user_id),
+        role=ChatMessageRole(row.role),
+        content=row.content,
+        sequence=row.sequence,
+        llm_run_id=None if row.llm_run_id is None else LLMRunId(row.llm_run_id),
+        provider_key=row.provider_key,
+        created_at=row.created_at)
+
+
+def chat_action_proposal_to_row(proposal: ChatActionProposal,
+                                row: ChatActionProposalRow | None = None
+                                ) -> ChatActionProposalRow:
+    """A `ChatActionProposal` onto its row.
+
+    `kind` is written from `action.kind` and `action` from the whole validated union,
+    dumped through the shared adapter so the JSONB is exactly what re-validation will
+    accept. `updated_at` is forced into every UPDATE (a confirm or dismiss moves
+    `status`) for the reason `application_to_row` states.
+    """
+    target = ChatActionProposalRow(id=proposal.id) if row is None else row
+    target.conversation_id = proposal.conversation_id
+    target.message_id = proposal.message_id
+    target.user_id = proposal.user_id
+    target.ordinal = proposal.ordinal
+    target.kind = proposal.action.kind
+    target.action = CHAT_ACTION_ADAPTER.dump_python(proposal.action, mode="json")
+    target.status = proposal.status
+    target.summary = proposal.summary
+    target.created_at = proposal.created_at
+    target.updated_at = proposal.updated_at
+    if row is not None:
+        flag_modified(target, "updated_at")
+    return target
+
+
+def chat_action_proposal_to_domain(row: ChatActionProposalRow) -> ChatActionProposal:
+    """A `chat_action_proposals` row as a domain proposal, its action re-validated.
+
+    `CHAT_ACTION_ADAPTER.validate_python` runs the closed union again, so a stored
+    payload that no longer parses — an action kind retired from the grammar, a field
+    the model since forbade — fails here rather than reaching an executor branch.
+    """
+    return ChatActionProposal(
+        id=ChatActionProposalId(row.id),
+        conversation_id=ConversationId(row.conversation_id),
+        message_id=ChatMessageId(row.message_id),
+        user_id=UserId(row.user_id),
+        ordinal=row.ordinal,
+        action=CHAT_ACTION_ADAPTER.validate_python(row.action),
+        status=ChatActionProposalStatus(row.status),
+        summary=row.summary,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def chat_action_execution_to_row(execution: ChatActionExecution,
+                                 row: ChatActionExecutionRow | None = None
+                                 ) -> ChatActionExecutionRow:
+    """A `ChatActionExecution` onto its row. Written once per proposal — the id is
+    derived from it — so `created_at` is the domain fact and `updated_at` is left to
+    the server default, as `chat_message_to_row` does."""
+    target = ChatActionExecutionRow(id=execution.id) if row is None else row
+    target.proposal_id = execution.proposal_id
+    target.user_id = execution.user_id
+    target.outcome = execution.outcome
+    target.detail = execution.detail
+    target.result_ref = execution.result_ref
+    target.created_at = execution.created_at
+    return target
+
+
+def chat_action_execution_to_domain(row: ChatActionExecutionRow) -> ChatActionExecution:
+    return ChatActionExecution(
+        id=ChatActionExecutionId(row.id),
+        proposal_id=ChatActionProposalId(row.proposal_id),
+        user_id=UserId(row.user_id),
+        outcome=ChatActionExecutionOutcome(row.outcome),
+        detail=row.detail,
+        result_ref=row.result_ref,
+        created_at=row.created_at)
 
 

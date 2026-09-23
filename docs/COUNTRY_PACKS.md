@@ -461,7 +461,8 @@ that wants hours has the pack and can call `weekly_hours_for_percent` itself.
 ## Eligibility
 
 Phase 5 provides **hooks and data only** — no engine, no verdict. Phase 9 owns
-matching and eligibility.
+matching and eligibility; see [Matching and
+Eligibility](./MATCHING_ELIGIBILITY.md) for how these values are consumed.
 
 `eligibility.yaml` declares `requirements_in_scope` (for CH:
 `WORK_AUTHORIZATION`, `PERMIT_HOURS_CAP`, `MINIMUM_AGE`, `LANGUAGE_MINIMUM`) and one
@@ -476,6 +477,21 @@ rules for.
 **These figures are operator-maintained configuration, not legal advice.** They are
 plausible defaults for the reference pack and must be reviewed against current
 cantonal and federal rules before anyone relies on them.
+
+### The Phase 9 legal-safety guarantee
+
+Because these are configuration and not verified law, the Phase 9 eligibility
+engine may never *refuse* an application on their word alone. Each `PermitRule`
+carries a `RuleAuthority` that defaults to `OPERATOR_CONFIG`, and the engine routes
+every blocking decision through `permitted_block_status`: only `VERIFIED` authority
+may reach `INELIGIBLE`, and everything weaker raises `REVIEW_REQUIRED` so a human
+confirms it. The `EligibilityCheck` domain model enforces the same rule a second
+time — a `COUNTRY_PACK_RULE` that is `INELIGIBLE` without `VERIFIED` authority is a
+construction-time error. The `B_STUDENT` 15h/week cap is the canonical case and has
+a named regression (`test_operator_config_permit_cap_cannot_by_itself_produce_ineligible`)
+proving it cannot, by itself, block. An operator who has checked a rule against the
+actual legal source raises its authority to `VERIFIED` deliberately; until then the
+cap informs and triggers review, it does not refuse.
 
 ## Switzerland, the reference pack
 

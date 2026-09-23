@@ -41,6 +41,7 @@ from pydantic import (
     model_validator,
 )
 
+from backend.app.chat.conversation import ChatStreamEvent, ChatStreamEventType
 from backend.app.companies.contracts import (
     MAX_COMPANIES_PER_PROVIDER,
     CompanyDiscoveryRequest,
@@ -54,8 +55,36 @@ from backend.app.discovery.contracts import (
     SourceHealth,
     SourceHealthStatus,
 )
+from backend.app.domain.application import (
+    Application,
+    ApplicationState,
+    PinnedDocument,
+)
+from backend.app.domain.application_channel import ApplicationChannel
+from backend.app.domain.application_event import (
+    ApplicationEvent,
+    ApplicationEventActor,
+    ApplicationEventType,
+)
 from backend.app.domain.base import CountryCode, LanguageCode
-from backend.app.domain.candidate import CandidateProfile
+from backend.app.domain.candidate import (
+    CandidateClaim,
+    CandidateEvidence,
+    CandidateProfile,
+    ClaimType,
+    EvidenceKind,
+    EvidenceProvenance,
+)
+from backend.app.domain.chat import (
+    ChatAction,
+    ChatActionExecution,
+    ChatActionExecutionOutcome,
+    ChatActionProposal,
+    ChatActionProposalStatus,
+    ChatMessage,
+    ChatMessageRole,
+    Conversation,
+)
 from backend.app.domain.common import (
     GeoBounds,
     GeocodingConfidence,
@@ -64,6 +93,8 @@ from backend.app.domain.common import (
     Location,
     LocationPrecision,
     LocationProvenance,
+    Reason,
+    ReasonImpact,
 )
 from backend.app.domain.company import (
     AtsPlatform,
@@ -81,6 +112,23 @@ from backend.app.domain.company import (
     SpontaneousApplicationChannel,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.documents import (
+    CandidateDocument,
+    CandidateDocumentType,
+    DocumentArtifactRef,
+    DocumentContent,
+    DocumentGuardReport,
+    DocumentStatus,
+    DocumentVersion,
+)
+from backend.app.domain.eligibility import (
+    DeterminationSource,
+    EligibilityCheck,
+    EligibilityRequirement,
+    EligibilityResult,
+    EligibilityStatus,
+    RuleAuthority,
+)
 from backend.app.domain.geo import (
     DEFAULT_GEO_LIMIT,
     MAX_GEO_LIMIT,
@@ -91,15 +139,45 @@ from backend.app.domain.geo import (
     RemoteScope,
 )
 from backend.app.domain.identifiers import (
+    ApplicationId,
+    CandidateDocumentId,
     CandidateProfileId,
+    ChatActionExecutionId,
+    ChatActionProposalId,
+    ChatMessageId,
+    ClaimId,
     CompanyId,
+    ConversationId,
+    DocumentVersionId,
+    EvidenceId,
+    LLMConnectionId,
+    LLMRunId,
     OpportunityId,
     SearchProfileId,
     UserId,
 )
-from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
+from backend.app.domain.matching import (
+    DEFAULT_MATCH_PROFILE,
+    DimensionScore,
+    MatchClassification,
+    MatchDimension,
+    MatchEvaluation,
+    to_percent,
+)
+from backend.app.domain.opportunity import (
+    ContractType,
+    Opportunity,
+    OpportunityType,
+    WorkplaceMode,
+)
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserStatus
+from backend.app.llm.connection import (
+    DEFAULT_CONNECTION_PRIORITY,
+    LLMConnection,
+    LLMProviderType,
+)
+from backend.app.llm.contracts import ProviderHealth, ProviderHealthStatus
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
     CompanyGeoResult,
@@ -107,6 +185,7 @@ from backend.app.repositories.contracts import (
     MatchedRadius,
     OpportunityGeoResult,
 )
+from backend.app.services.assessment import Assessment
 from backend.app.services.company_directory import CompanyDetail
 from backend.app.services.company_discovery import (
     CompanyDiscoveryOutcome,
@@ -989,3 +1068,870 @@ class GeoSavedSearchParams(ApiModel):
     def bounds_box(self) -> GeoBounds | None:
         """The parsed viewport, or `None` when the caller sent no `bounds`."""
         return self._bounds
+
+
+# --- Phase 9: matching and eligibility ---------------------------------------
+#
+# The first endpoints to carry both a score and a verdict, and the models below
+# keep the two apart on the wire exactly as the domain keeps them apart in memory.
+# Two conventions run through all of them:
+#
+# - **A percentage never travels without passing through `to_percent`.** Each score
+#   is emitted on both scales: the canonical `0.0–1.0` a client may want to compare,
+#   and the half-up `0–100` integer a UI shows. Rounding lives in one function, so
+#   two surfaces cannot disagree about whether 0.715 is 71% or 72%.
+# - **A classification is served, never re-derived.** The band ("EXCELLENT", …) is
+#   computed here through the same `MatchProfile.classify` the engine used, so a
+#   client never re-implements a `score > 0.85` threshold that would drift.
+
+
+class ReasonResponse(ApiModel):
+    """One typed reason behind a score or a verdict.
+
+    A `code` a client branches on, a `detail` a human reads, and the `impact` that
+    says whether it helped or hurt. Never a serialized exception and never a secret:
+    the reasons the engines emit are drawn from a closed vocabulary
+    (docs/MATCHING_ELIGIBILITY.md §Reasons), so this model cannot carry a stack
+    trace or an environment value into a UI.
+    """
+
+    code: str
+    detail: str | None
+    impact: ReasonImpact
+
+    @classmethod
+    def of(cls, reason: Reason) -> "ReasonResponse":
+        return cls(code=reason.code, detail=reason.detail, impact=reason.impact)
+
+
+class DimensionScoreResponse(ApiModel):
+    """One axis of a match, on both scales, with the reasons behind it.
+
+    `score_percent` is the axis rendered for a UI; `score` and `weight` are the
+    canonical values an audit or a re-weighting would want. A dimension that appears
+    here was evaluated — an axis the engine could not assess is *absent* from the
+    match rather than present with a zero (docs/MATCHING_ELIGIBILITY.md §Coverage).
+    """
+
+    dimension: MatchDimension
+    score: float
+    score_percent: int
+    weight: float
+    reasons: tuple[ReasonResponse, ...]
+
+    @classmethod
+    def of(cls, dimension: DimensionScore) -> "DimensionScoreResponse":
+        return cls(dimension=dimension.dimension, score=dimension.score,
+                   score_percent=to_percent(dimension.score),
+                   weight=dimension.weight,
+                   reasons=tuple(ReasonResponse.of(reason)
+                                 for reason in dimension.reasons))
+
+
+class MatchResponse(ApiModel):
+    """How well one candidate fits one posting — the compatibility axis alone.
+
+    Nothing here reflects eligibility: a blocked application can still be a 92%
+    match, and this model is where that number lives untouched. `classification` is
+    the band the score falls in, and `evidence_confidence` is the *separate* "how
+    much could we even assess?" axis — a high score over one evaluable dimension is
+    a confident-looking number with low coverage, and the two fields say so
+    independently (docs/MATCHING_ELIGIBILITY.md §Coverage).
+    """
+
+    overall: float
+    overall_percent: int
+    classification: MatchClassification
+    evidence_confidence: float | None
+    evidence_confidence_percent: int | None
+    dimensions: tuple[DimensionScoreResponse, ...]
+    evaluator_key: str | None
+    evaluated_at: datetime
+
+    @classmethod
+    def of(cls, evaluation: MatchEvaluation) -> "MatchResponse":
+        confidence = evaluation.evidence_confidence
+        return cls(
+            overall=evaluation.overall,
+            overall_percent=to_percent(evaluation.overall),
+            classification=DEFAULT_MATCH_PROFILE.classify(evaluation.overall),
+            evidence_confidence=confidence,
+            evidence_confidence_percent=(None if confidence is None
+                                         else to_percent(confidence)),
+            dimensions=tuple(DimensionScoreResponse.of(dimension)
+                             for dimension in evaluation.dimensions),
+            evaluator_key=evaluation.evaluator_key,
+            evaluated_at=evaluation.evaluated_at)
+
+
+class EligibilityCheckResponse(ApiModel):
+    """One gate, evaluated — with who decided it and on what authority.
+
+    `determined_by` and `authority` are the audit facts §Legal-policy safety rests
+    on: an operator-maintained pack value carries `OPERATOR_CONFIG`, which the
+    engine can only ever turn into REVIEW_REQUIRED, never a refusal. `reasons` is
+    empty for a passing gate and non-empty for every other verdict, mirroring the
+    domain invariant.
+    """
+
+    requirement: EligibilityRequirement
+    status: EligibilityStatus
+    determined_by: DeterminationSource
+    authority: RuleAuthority
+    detail: str | None
+    reasons: tuple[ReasonResponse, ...]
+
+    @classmethod
+    def of(cls, check: EligibilityCheck) -> "EligibilityCheckResponse":
+        return cls(requirement=check.requirement, status=check.status,
+                   determined_by=check.determined_by, authority=check.authority,
+                   detail=check.detail,
+                   reasons=tuple(ReasonResponse.of(reason)
+                                 for reason in check.reasons))
+
+
+class EligibilityResponse(ApiModel):
+    """May this application happen at all — the binary axis alone.
+
+    `status` is the worst-of aggregate the domain derives from the checks, and
+    `is_blocking` is true only for a definite INELIGIBLE: the two honest middles
+    (INCOMPLETE, REVIEW_REQUIRED) route to human review rather than refusing. The
+    checks travel with it so a UI can explain the verdict gate by gate rather than
+    reducing it to a single word.
+    """
+
+    status: EligibilityStatus
+    is_blocking: bool
+    checks: tuple[EligibilityCheckResponse, ...]
+    policy_version: str | None
+    determined_at: datetime
+
+    @classmethod
+    def of(cls, result: EligibilityResult) -> "EligibilityResponse":
+        return cls(status=result.status, is_blocking=result.is_blocking,
+                   checks=tuple(EligibilityCheckResponse.of(check)
+                                for check in result.checks),
+                   policy_version=result.policy_version,
+                   determined_at=result.determined_at)
+
+
+class AssessedOpportunityResponse(ApiModel):
+    """The posting an assessment is about, as much of it as a list card needs.
+
+    A summary rather than the whole `Opportunity` — no description, salary or source
+    snapshot — because the assessment endpoints answer "how does this pair look?",
+    not "show me the posting". It is the same shape whether it arrives from an
+    evaluate call or a list, so a client holds one opportunity model here.
+    """
+
+    id: OpportunityId
+    title: str
+    company_name: str
+    company_id: CompanyId | None
+    opportunity_type: OpportunityType | None
+    workplace_mode: WorkplaceMode | None
+    location_country: str | None
+    location_city: str | None
+
+    @classmethod
+    def of(cls, opportunity: Opportunity) -> "AssessedOpportunityResponse":
+        location = opportunity.location
+        return cls(
+            id=opportunity.id, title=opportunity.title,
+            company_name=opportunity.company_name,
+            company_id=opportunity.company_id,
+            opportunity_type=opportunity.opportunity_type,
+            workplace_mode=opportunity.workplace_mode,
+            location_country=None if location is None else location.country,
+            location_city=None if location is None else location.city)
+
+
+class AssessmentResponse(ApiModel):
+    """One opportunity, assessed on both axes for one candidate.
+
+    The two verdicts sit side by side and neither derives from the other: `match`
+    is `null` when no dimension was scorable (rendered as the UNKNOWN band, never a
+    zero), while `eligibility` is always present. This is the shape both the
+    evaluate endpoint and the single-pair read return, so a client learns it once.
+    """
+
+    opportunity: AssessedOpportunityResponse
+    match: MatchResponse | None
+    eligibility: EligibilityResponse
+
+    @classmethod
+    def of(cls, assessment: "Assessment") -> "AssessmentResponse":
+        return cls(
+            opportunity=AssessedOpportunityResponse.of(assessment.opportunity),
+            match=None if assessment.match is None
+            else MatchResponse.of(assessment.match),
+            eligibility=EligibilityResponse.of(assessment.eligibility))
+
+
+class AssessmentListResponse(ApiModel):
+    """A user's assessed pairs, newest first, wrapped rather than bare.
+
+    A wrapper for the same reason `SearchProfileListResponse` is one: a top-level
+    array cannot grow a field, and the day this needs a cursor or a count it would
+    otherwise be a breaking change. The order is chronological, not a ranking — an
+    INELIGIBLE pair is not pushed down by faking a low score
+    (docs/MATCHING_ELIGIBILITY.md §Ranking).
+    """
+
+    assessments: tuple[AssessmentResponse, ...]
+
+    @classmethod
+    def of(cls, assessments: "tuple[Assessment, ...]") -> "AssessmentListResponse":
+        return cls(assessments=tuple(AssessmentResponse.of(assessment)
+                                     for assessment in assessments))
+
+
+class EvaluateMatchRequest(ApiModel):
+    """Ask for one posting to be assessed for the signed-in account's profile.
+
+    The body names the *opportunity* and nothing else. There is no `candidate_profile_id`
+    and no `user_id`: the candidate is the account's own profile, resolved from the
+    session, so a request cannot ask for someone else's profile to be scored against
+    a posting (docs/ENGINEERING_STANDARDS.md §Security).
+    """
+
+    opportunity_id: OpportunityId
+
+
+# --- Phase 10: candidate evidence, claims and generated documents -----------
+
+class AddEvidenceRequest(ApiModel):
+    """One evidence record as submitted: what it attests and where it came from.
+
+    No `id`, no `user_id`, no `recorded_at` — the service supplies the id and the
+    owner from the session and stamps the instant, so there is no field for a body
+    to file evidence under another account (docs/ENGINEERING_STANDARDS.md §Security).
+    `provenance` names a real source of candidate-supplied facts; there is no
+    `LLM_GENERATED` member to choose, because a generated sentence is never evidence.
+    """
+
+    kind: EvidenceKind
+    provenance: EvidenceProvenance
+    summary: str = Field(min_length=1)
+    reference_key: str | None = Field(default=None, min_length=1)
+    detail: str | None = Field(default=None, min_length=1)
+    issued_on: date | None = None
+    valid_until: date | None = None
+    source_document: str | None = Field(default=None, min_length=1)
+
+
+class AddClaimRequest(ApiModel):
+    """One claim as submitted, citing evidence the profile already holds.
+
+    `evidence_ids` must name at least one record — a claim resting on nothing is
+    unconstructible (§the truth guarantee) — and every id must be one the account's
+    profile holds, or the service refuses it with a 422 rather than a 500.
+    """
+
+    claim_type: ClaimType
+    label: str = Field(min_length=1)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1)
+    detail: str | None = Field(default=None, min_length=1)
+
+
+class CandidateEvidenceResponse(ApiModel):
+    """One stored evidence record, echoed back with the id it was filed under.
+
+    That id is what a later claim, or a generated document line, cites. The
+    `source_document` is a label (a path or a URL), never the file's bytes — the
+    domain describes where proof lives, it does not carry it.
+    """
+
+    id: EvidenceId
+    kind: EvidenceKind
+    provenance: EvidenceProvenance
+    summary: str
+    reference_key: str | None
+    detail: str | None
+    issued_on: date | None
+    valid_until: date | None
+    source_document: str | None
+    recorded_at: datetime
+
+    @classmethod
+    def of(cls, evidence: CandidateEvidence) -> "CandidateEvidenceResponse":
+        return cls(
+            id=evidence.id, kind=evidence.kind, provenance=evidence.provenance,
+            summary=evidence.summary, reference_key=evidence.reference_key,
+            detail=evidence.detail, issued_on=evidence.issued_on,
+            valid_until=evidence.valid_until,
+            source_document=evidence.source_document,
+            recorded_at=evidence.recorded_at)
+
+
+class CandidateClaimResponse(ApiModel):
+    """One stored claim and the evidence ids it rests on.
+
+    `evidence_ids` is never empty: the aggregate refuses a claim that cites nothing,
+    so a client can rely on every claim here pointing at real evidence it can look
+    up in the same profile.
+    """
+
+    id: ClaimId
+    claim_type: ClaimType
+    label: str
+    detail: str | None
+    evidence_ids: tuple[EvidenceId, ...]
+
+    @classmethod
+    def of(cls, claim: CandidateClaim) -> "CandidateClaimResponse":
+        return cls(id=claim.id, claim_type=claim.claim_type, label=claim.label,
+                   detail=claim.detail, evidence_ids=claim.evidence_ids)
+
+
+class CandidateEvidenceListResponse(ApiModel):
+    """The account's whole attested record: its evidence and its claims.
+
+    Wrapped rather than two bare arrays for the reason every list response here is:
+    a top-level object can grow a field, a top-level array cannot. The two travel
+    together because a profile page shows the claims and lets a reader trace each to
+    the evidence behind it.
+    """
+
+    evidence: tuple[CandidateEvidenceResponse, ...]
+    claims: tuple[CandidateClaimResponse, ...]
+
+    @classmethod
+    def of(cls, profile: CandidateProfile) -> "CandidateEvidenceListResponse":
+        return cls(
+            evidence=tuple(CandidateEvidenceResponse.of(item)
+                           for item in profile.evidence),
+            claims=tuple(CandidateClaimResponse.of(claim)
+                         for claim in profile.claims))
+
+
+class GenerateDocumentRequest(ApiModel):
+    """Ask for a document to be generated for a posting, for this account's profile.
+
+    The opportunity and the document type are in the path; the body carries only an
+    optional `language` override. Left unset, the service writes the document in the
+    posting's own language, falling back to the candidate's first declared one — it
+    never guesses a language the candidate did not state. There is no profile or
+    owner field, for the same reason `EvaluateMatchRequest` has none.
+    """
+
+    language: LanguageCode | None = None
+
+
+class DocumentArtifactResponse(ApiModel):
+    """Where a rendered PDF lives, as much of it as a download UI needs.
+
+    The opaque `storage_key` is deliberately absent: a client downloads through the
+    document id, and a storage locator in a response body is an internal path a UI
+    has no use for and an attacker might. `byte_size` and `page_count` let a list
+    show "2 pages, 48 KB" without fetching the file.
+    """
+
+    media_type: str
+    byte_size: int
+    page_count: int | None
+    rendered_at: datetime
+
+    @classmethod
+    def of(cls, artifact: DocumentArtifactRef) -> "DocumentArtifactResponse":
+        return cls(media_type=artifact.media_type, byte_size=artifact.byte_size,
+                   page_count=artifact.page_count, rendered_at=artifact.rendered_at)
+
+
+class DocumentVersionResponse(ApiModel):
+    """One attempt at a document: its content, the guard's verdict, and its artifact.
+
+    `content` is the structured document (a discriminated union told apart by
+    `kind`), never a blob — the same shape the guard checked, so a UI renders the
+    exact thing that was validated. `guard_report` is present once the guard has
+    run and carries every violation of a rejected attempt, because an auditable
+    refusal is the point (§45). `artifact` is present only for a RENDERED version.
+    """
+
+    id: DocumentVersionId
+    version: int
+    status: DocumentStatus
+    language: str
+    content: DocumentContent
+    guard_report: DocumentGuardReport | None
+    artifact: DocumentArtifactResponse | None
+    generator_key: str | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, version: DocumentVersion) -> "DocumentVersionResponse":
+        return cls(
+            id=version.id, version=version.version, status=version.status,
+            language=version.language, content=version.content,
+            guard_report=version.guard_report,
+            artifact=None if version.artifact is None
+            else DocumentArtifactResponse.of(version.artifact),
+            generator_key=version.generator_key, created_at=version.created_at)
+
+
+class CandidateDocumentResponse(ApiModel):
+    """A candidate's document for one posting, with its whole version history.
+
+    The versions travel newest-last, their numbers strictly increasing, so a client
+    reads the history in order and takes the last usable one as "the document".
+    `latest_usable_version` names the number of the newest version fit to be shown
+    as the candidate's — `null` when every attempt is a draft or was rejected, which
+    a UI renders as "not generated yet" rather than showing an unchecked draft.
+    """
+
+    id: CandidateDocumentId
+    candidate_profile_id: CandidateProfileId
+    opportunity_id: OpportunityId
+    document_type: CandidateDocumentType
+    versions: tuple[DocumentVersionResponse, ...]
+    latest_usable_version: int | None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, document: CandidateDocument) -> "CandidateDocumentResponse":
+        usable = document.latest_usable()
+        return cls(
+            id=document.id, candidate_profile_id=document.candidate_profile_id,
+            opportunity_id=document.opportunity_id,
+            document_type=document.document_type,
+            versions=tuple(DocumentVersionResponse.of(version)
+                           for version in document.versions),
+            latest_usable_version=None if usable is None else usable.version,
+            created_at=document.created_at, updated_at=document.updated_at)
+
+
+class CandidateDocumentListResponse(ApiModel):
+    """This account's documents, most recently updated first, wrapped."""
+
+    documents: tuple[CandidateDocumentResponse, ...]
+
+    @classmethod
+    def of(cls, documents: "tuple[CandidateDocument, ...]"
+           ) -> "CandidateDocumentListResponse":
+        return cls(documents=tuple(CandidateDocumentResponse.of(document)
+                                   for document in documents))
+
+
+# --- LLM connections (settings surface) --------------------------------------
+
+class CreateLLMConnectionRequest(ApiModel):
+    """A new LLM connection as the settings form submits it (§4, §13).
+
+    No `id`, `user_id`, or timestamps — the service supplies them from the session and
+    the request clock, so there is no field to file a connection under another account.
+    `api_key` is write-only: it is accepted here and never echoed, and a connection
+    response reports only `has_api_key`. The `provider_type` decides which of the other
+    fields are meaningful, and the `LLMConnection` model — not this schema — is the one
+    that refuses an incoherent shape (a CLI carrying a key, an API without a base URL),
+    so the rule lives in one place.
+    """
+
+    provider_type: LLMProviderType
+    display_name: str = Field(min_length=1, max_length=120)
+    base_url: str | None = Field(default=None, min_length=1, max_length=2000)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key: SecretStr | None = None
+    custom_headers: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
+    is_default: bool = False
+    priority: int = Field(default=DEFAULT_CONNECTION_PRIORITY, ge=0)
+
+
+class UpdateLLMConnectionRequest(ApiModel):
+    """A partial edit to a connection — every field optional, an unset one untouched.
+
+    The credential needs three states, not two: `api_key` set rotates it,
+    `remove_api_key` clears it, and neither leaves it as stored — so a user edits a
+    gateway's model without re-typing its key, or drops the key without touching the
+    rest. `api_key` and `remove_api_key` together is contradictory and refused here, so
+    the service is never handed an ambiguous instruction.
+    """
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    base_url: str | None = Field(default=None, min_length=1, max_length=2000)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key: SecretStr | None = None
+    remove_api_key: bool = False
+    custom_headers: dict[str, str] | None = None
+    priority: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _key_change_is_unambiguous(self) -> Self:
+        if self.api_key is not None and self.remove_api_key:
+            raise ValueError(
+                "set api_key to rotate the credential or remove_api_key to clear it, "
+                "not both")
+        return self
+
+
+class SetLLMConnectionEnabledRequest(ApiModel):
+    """The on/off a settings page toggles, without deleting the row or its key."""
+
+    enabled: bool
+
+
+class LLMConnectionResponse(ApiModel):
+    """One stored connection, echoed back with the credential reduced to a boolean.
+
+    `has_api_key` is the only thing said about a credential — never its value, never
+    its ciphertext (§13). `provider_type`, `base_url` and `model` describe where and as
+    what the connection reaches its model; `is_default`, `enabled` and `priority` are
+    how a task chooses among a user's connections. `custom_headers` is echoed because a
+    header is a route hint, not a secret — an API key must never be put in one, which
+    the connection model does not police, so the settings UI keeps that field for
+    non-secret headers only.
+    """
+
+    id: LLMConnectionId
+    provider_type: LLMProviderType
+    display_name: str
+    base_url: str | None
+    model: str | None
+    has_api_key: bool
+    custom_headers: dict[str, str]
+    enabled: bool
+    is_default: bool
+    priority: int
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, connection: LLMConnection) -> "LLMConnectionResponse":
+        return cls(
+            id=connection.id,
+            provider_type=connection.provider_type,
+            display_name=connection.display_name,
+            base_url=connection.base_url,
+            model=connection.model,
+            has_api_key=connection.has_api_key,
+            custom_headers=dict(connection.custom_headers),
+            enabled=connection.enabled,
+            is_default=connection.is_default,
+            priority=connection.priority,
+            created_at=connection.created_at,
+            updated_at=connection.updated_at)
+
+
+class LLMConnectionListResponse(ApiModel):
+    """This account's connections, in the router's priority-then-id order, wrapped."""
+
+    connections: tuple[LLMConnectionResponse, ...]
+
+    @classmethod
+    def of(cls, connections: "tuple[LLMConnection, ...]"
+           ) -> "LLMConnectionListResponse":
+        return cls(connections=tuple(LLMConnectionResponse.of(c) for c in connections))
+
+
+class LLMConnectionHealthResponse(ApiModel):
+    """The result of probing a connection's live provider — data, never an exception.
+
+    `status` is the runtime answer to "can this serve a request now?" and `detail` is a
+    secret-free sentence produced by the platform's own redaction, never a raw provider
+    message. A provider being down is an `UNAVAILABLE` status a settings page renders,
+    not an error it must catch.
+    """
+
+    status: ProviderHealthStatus
+    detail: str | None
+    latency_ms: int | None
+
+    @classmethod
+    def of(cls, health: ProviderHealth) -> "LLMConnectionHealthResponse":
+        return cls(status=health.status, detail=health.detail,
+                   latency_ms=health.latency_ms)
+
+
+# --- Phase 12: the application engine ---------------------------------------
+
+class CreateApplicationRequest(ApiModel):
+    """Open an application for one posting from its current decision.
+
+    The body names the *opportunity* and nothing else: the candidate is the
+    account's own profile and the intent is the decision already stored for the pair,
+    both resolved server-side, so a request cannot open an application against
+    someone else's profile or invent an intent (§2-3, §Security).
+    """
+
+    opportunity_id: OpportunityId
+
+
+class PinnedDocumentResponse(ApiModel):
+    """One exact document version an application will submit (§14-16)."""
+
+    document_id: CandidateDocumentId
+    version_id: DocumentVersionId
+    version: int
+    document_type: CandidateDocumentType
+
+    @classmethod
+    def of(cls, pinned: PinnedDocument) -> "PinnedDocumentResponse":
+        return cls(document_id=pinned.document_id, version_id=pinned.version_id,
+                   version=pinned.version, document_type=pinned.document_type)
+
+
+class ApplicationResponse(ApiModel):
+    """One application's current state, target and pinned materials.
+
+    The lifecycle `state` is what a UI renders and acts on — READY_FOR_REVIEW shows
+    an "Approve & Submit" control, REQUIRES_HUMAN a hand-off, SUBMITTED a receipt.
+    `answers` and the correlation id are deliberately not exposed: the answers can
+    carry personal values a list view has no need for, and the trail is the audited
+    place to see what happened.
+    """
+
+    id: ApplicationId
+    state: ApplicationState
+    channel: ApplicationChannel
+    opportunity_id: OpportunityId | None
+    company_id: CompanyId | None
+    pinned_documents: tuple[PinnedDocumentResponse, ...]
+    attempt_count: int
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, application: Application) -> "ApplicationResponse":
+        return cls(
+            id=application.id, state=application.state, channel=application.channel,
+            opportunity_id=application.opportunity_id,
+            company_id=application.company_id,
+            pinned_documents=tuple(PinnedDocumentResponse.of(pin)
+                                   for pin in application.pinned_documents),
+            attempt_count=application.attempt_count,
+            created_at=application.created_at, updated_at=application.updated_at)
+
+
+class ApplicationListResponse(ApiModel):
+    """This account's applications, newest first, wrapped so it can grow a field."""
+
+    applications: tuple[ApplicationResponse, ...]
+
+    @classmethod
+    def of(cls, applications: tuple[Application, ...]) -> "ApplicationListResponse":
+        return cls(applications=tuple(ApplicationResponse.of(app)
+                                      for app in applications))
+
+
+class ApplicationEventResponse(ApiModel):
+    """One immutable entry in an application's audit trail (§41).
+
+    `reasons` reuse the closed-vocabulary `ReasonResponse`, so the "why" behind a
+    gate decision or a refusal renders identically to everywhere else and can never
+    carry a stack trace or a secret.
+    """
+
+    event_type: ApplicationEventType
+    actor: ApplicationEventActor
+    from_state: ApplicationState | None
+    to_state: ApplicationState | None
+    detail: str | None
+    reasons: tuple[ReasonResponse, ...]
+    occurred_at: datetime
+
+    @classmethod
+    def of(cls, event: ApplicationEvent) -> "ApplicationEventResponse":
+        return cls(
+            event_type=event.event_type, actor=event.actor,
+            from_state=event.from_state, to_state=event.to_state,
+            detail=event.detail,
+            reasons=tuple(ReasonResponse.of(reason) for reason in event.reasons),
+            occurred_at=event.occurred_at)
+
+
+class ApplicationEventListResponse(ApiModel):
+    """One application's events, oldest first — the trail as it grew."""
+
+    events: tuple[ApplicationEventResponse, ...]
+
+    @classmethod
+    def of(cls, events: tuple[ApplicationEvent, ...]) -> "ApplicationEventListResponse":
+        return cls(events=tuple(ApplicationEventResponse.of(event)
+                                for event in events))
+
+
+# --- career chat (Phase 13) ------------------------------------------------------------
+#
+# The chat is a control plane, and its schemas keep the phase's one rule visible at the
+# boundary: prose leaves as a message, a *typed* proposal leaves as a proposal, and the
+# two never mix. A `ChatActionProposalResponse` exposes the domain `ChatAction` union
+# directly — it is secret-free by construction (only ids, enums, floats and keyword
+# tuples), so the client and the generated TypeScript get the exact discriminated variants
+# rather than an opaque bag, and there is nothing on it a response must strip. No request
+# body carries an owner: the account is the session's, resolved server-side.
+
+
+class StartConversationRequest(ApiModel):
+    """Open a new chat thread, optionally captioned from the user's opening words.
+
+    `title` is a caption the service truncates, never authority the model or the client
+    grants itself; an absent or blank one falls back to a fixed default. There is no
+    `user_id` field — the owner is the session's account (§Security).
+    """
+
+    title: str | None = None
+
+
+class SendMessageRequest(ApiModel):
+    """One user turn: the words to send. The reply streams back as SSE events."""
+
+    text: str
+
+
+class ConversationResponse(ApiModel):
+    """One chat thread's caption and activity — never its messages inline."""
+
+    id: ConversationId
+    title: str
+    is_archived: bool
+    created_at: datetime
+    updated_at: datetime
+    last_message_at: datetime | None
+
+    @classmethod
+    def of(cls, conversation: Conversation) -> "ConversationResponse":
+        return cls(id=conversation.id, title=conversation.title,
+                   is_archived=conversation.is_archived,
+                   created_at=conversation.created_at,
+                   updated_at=conversation.updated_at,
+                   last_message_at=conversation.last_message_at)
+
+
+class ConversationListResponse(ApiModel):
+    """This account's threads, most recent activity first, wrapped so it can grow."""
+
+    conversations: tuple[ConversationResponse, ...]
+
+    @classmethod
+    def of(cls, conversations: tuple[Conversation, ...]) -> "ConversationListResponse":
+        return cls(conversations=tuple(ConversationResponse.of(conversation)
+                                       for conversation in conversations))
+
+
+class ChatMessageResponse(ApiModel):
+    """One stored turn: its prose and, for an assistant turn, its telemetry provenance.
+
+    `content` is the prose only — the fenced proposal block was parsed out into proposals
+    and is never stored here. A user turn carries no `llm_run_id`/`provider_key`; an
+    assistant turn carries both, so a turn is traceable to the run that produced it.
+    """
+
+    id: ChatMessageId
+    conversation_id: ConversationId
+    role: ChatMessageRole
+    content: str
+    sequence: int
+    llm_run_id: LLMRunId | None
+    provider_key: str | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, message: ChatMessage) -> "ChatMessageResponse":
+        return cls(id=message.id, conversation_id=message.conversation_id,
+                   role=message.role, content=message.content,
+                   sequence=message.sequence, llm_run_id=message.llm_run_id,
+                   provider_key=message.provider_key, created_at=message.created_at)
+
+
+class ChatMessageListResponse(ApiModel):
+    """One thread's turns, oldest first — the transcript as it grew."""
+
+    messages: tuple[ChatMessageResponse, ...]
+
+    @classmethod
+    def of(cls, messages: tuple[ChatMessage, ...]) -> "ChatMessageListResponse":
+        return cls(messages=tuple(ChatMessageResponse.of(message)
+                                  for message in messages))
+
+
+class ChatActionProposalResponse(ApiModel):
+    """One typed action the model proposed, awaiting a human's confirm or dismiss.
+
+    `action` is the domain `ChatAction` union verbatim: secret-free by construction, so the
+    client receives the exact discriminated variant to render and to confirm. `status`
+    starts `PROPOSED` and only an explicit confirm or dismiss moves it — the response is how
+    a UI knows whether a card is still actionable.
+    """
+
+    id: ChatActionProposalId
+    conversation_id: ConversationId
+    message_id: ChatMessageId
+    ordinal: int
+    action: ChatAction
+    status: ChatActionProposalStatus
+    summary: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, proposal: ChatActionProposal) -> "ChatActionProposalResponse":
+        return cls(id=proposal.id, conversation_id=proposal.conversation_id,
+                   message_id=proposal.message_id, ordinal=proposal.ordinal,
+                   action=proposal.action, status=proposal.status,
+                   summary=proposal.summary, created_at=proposal.created_at,
+                   updated_at=proposal.updated_at)
+
+
+class ChatActionProposalListResponse(ApiModel):
+    """One thread's proposals, oldest first, wrapped so it can grow a field."""
+
+    proposals: tuple[ChatActionProposalResponse, ...]
+
+    @classmethod
+    def of(cls, proposals: tuple[ChatActionProposal, ...]
+           ) -> "ChatActionProposalListResponse":
+        return cls(proposals=tuple(ChatActionProposalResponse.of(proposal)
+                                   for proposal in proposals))
+
+
+class ChatActionExecutionResponse(ApiModel):
+    """The audited record of one confirmed proposal's execution.
+
+    `outcome` says whether the action was refused at validation (`REJECTED`), permitted but
+    failed (`FAILED`), or ran (`SUCCEEDED`); `result_ref` carries the id or handle it
+    produced (an application's new state, a document id, a navigation target) and `detail`
+    a secret-free note — both composed by the executor from typed, domain-safe values,
+    never a raw provider or driver message.
+    """
+
+    id: ChatActionExecutionId
+    proposal_id: ChatActionProposalId
+    outcome: ChatActionExecutionOutcome
+    detail: str | None
+    result_ref: str | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, execution: ChatActionExecution) -> "ChatActionExecutionResponse":
+        return cls(id=execution.id, proposal_id=execution.proposal_id,
+                   outcome=execution.outcome, detail=execution.detail,
+                   result_ref=execution.result_ref, created_at=execution.created_at)
+
+
+class ChatStreamEventResponse(ApiModel):
+    """The SSE wire shape of one `ChatStreamEvent` a streaming turn emits.
+
+    Deliberately the *service* event serialized, never the raw provider `LLMStreamEvent`: a
+    `TOKEN` carries a chunk of prose to append, `COMPLETED` the persisted assistant message
+    and its proposals, and `ERROR` a typed, secret-free code and note. The client reads the
+    stream to render prose live, then renders the proposals from the terminal `COMPLETED`
+    (or the failure from `ERROR`) — the same rows a later `GET` of the thread returns.
+    """
+
+    type: ChatStreamEventType
+    text: str | None
+    message: ChatMessageResponse | None
+    proposals: tuple[ChatActionProposalResponse, ...]
+    error_code: str | None
+    error_detail: str | None
+
+    @classmethod
+    def of(cls, event: ChatStreamEvent) -> "ChatStreamEventResponse":
+        return cls(
+            type=event.type, text=event.text,
+            message=(ChatMessageResponse.of(event.message)
+                     if event.message is not None else None),
+            proposals=tuple(ChatActionProposalResponse.of(proposal)
+                            for proposal in event.proposals),
+            error_code=event.error_code, error_detail=event.error_detail)

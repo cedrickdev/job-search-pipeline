@@ -62,6 +62,33 @@ class EvidenceKind(StrEnum):
     SELF_DECLARATION = "SELF_DECLARATION"
 
 
+class EvidenceProvenance(StrEnum):
+    """Where an evidence record was ingested from (Phase 10 §3).
+
+    Orthogonal to `EvidenceKind`: the kind says *what sort of record* backs a
+    fact, and the provenance says *which pipeline put it in the store*. The two
+    together are what make an accepted document auditable (§45) — a résumé bullet
+    can say not only "this rests on an employment record" but "that record was
+    imported from the operator's base CV" versus "the candidate typed it in".
+
+    Every member names a real source of *candidate-supplied* facts. There is,
+    pointedly, no `LLM_GENERATED` member: a generated sentence is never evidence
+    (§3), so a document pipeline that wanted to promote its own output into the
+    store would find no provenance to file it under. `SYSTEM_DERIVED` is the one
+    machine origin, and it is deterministic derivation from other stored facts —
+    a language proficiency turned into a `LANGUAGE` claim — never generation.
+    """
+
+    CANDIDATE_PROFILE = "CANDIDATE_PROFILE"
+    BASE_CV = "BASE_CV"
+    MANUAL_USER_INPUT = "MANUAL_USER_INPUT"
+    IMPORTED_CV = "IMPORTED_CV"
+    PROJECT = "PROJECT"
+    EMPLOYMENT_RECORD = "EMPLOYMENT_RECORD"
+    EDUCATION_RECORD = "EDUCATION_RECORD"
+    SYSTEM_DERIVED = "SYSTEM_DERIVED"
+
+
 class CandidateEvidence(DomainModel):
     """One record attesting something about the candidate.
 
@@ -76,6 +103,7 @@ class CandidateEvidence(DomainModel):
     id: EvidenceId
     user_id: UserId
     kind: EvidenceKind
+    provenance: EvidenceProvenance
     reference_key: NonEmptyStr | None = None
     summary: NonEmptyStr
     detail: NonEmptyStr | None = None

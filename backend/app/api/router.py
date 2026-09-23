@@ -13,7 +13,18 @@ from fastapi import APIRouter, Depends
 
 from backend.app.api import API_V2_PREFIX
 from backend.app.api.dependencies import reject_cross_site_writes
-from backend.app.api.routes import auth, companies, geo, me, onboarding
+from backend.app.api.routes import (
+    applications,
+    auth,
+    chat,
+    companies,
+    documents,
+    geo,
+    llm,
+    matches,
+    me,
+    onboarding,
+)
 
 
 def create_v2_router() -> APIRouter:
@@ -26,4 +37,9 @@ def create_v2_router() -> APIRouter:
     router.include_router(companies.router)
     router.include_router(companies.discovery_router)
     router.include_router(geo.router)
+    router.include_router(matches.router)
+    router.include_router(documents.router)
+    router.include_router(llm.router)
+    router.include_router(applications.router)
+    router.include_router(chat.router)
     return router

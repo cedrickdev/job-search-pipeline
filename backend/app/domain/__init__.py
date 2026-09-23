@@ -17,10 +17,18 @@ The modules, in dependency order:
 - `opportunity` — the central abstraction and its source record;
 - `company` — employers and their physical sites;
 - `candidate` — profile, evidence and claims;
+- `documents` — the ATS résumé and cover letter, their versions and truth guard;
 - `search` — saved searches and geographic areas;
 - `geo` — geographic search, geocoding and remote semantics;
 - `matching` — multidimensional compatibility scoring;
 - `eligibility` — binary gates, kept apart from scoring on purpose;
 - `policy` — the user's standing rules about applying;
-- `decision` — where fit, legality and policy meet.
+- `decision` — where fit, legality and policy meet;
+- `application_channel` — the route an application takes and how far it is trusted;
+- `application_failure` — normalized, secret-free execution failure codes;
+- `application_answer` — form questions, proposed answers and their resolution;
+- `application` — the execution aggregate and its lifecycle state machine;
+- `application_event` — the append-only audit trail and submission attempts;
+- `execution_gate` — the deterministic gate that authorizes a submission;
+- `chat` — the career chat's typed action grammar and its persisted turns.
 """

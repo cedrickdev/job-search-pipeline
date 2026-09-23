@@ -42,7 +42,20 @@ CompanyDiscoveryRecordId = NewType("CompanyDiscoveryRecordId", UUID)
 OpportunityId = NewType("OpportunityId", UUID)
 GeocodingCacheEntryId = NewType("GeocodingCacheEntryId", UUID)
 MatchEvaluationId = NewType("MatchEvaluationId", UUID)
+EligibilityResultId = NewType("EligibilityResultId", UUID)
 ApplicationDecisionId = NewType("ApplicationDecisionId", UUID)
+CandidateDocumentId = NewType("CandidateDocumentId", UUID)
+DocumentVersionId = NewType("DocumentVersionId", UUID)
+LLMConnectionId = NewType("LLMConnectionId", UUID)
+ProviderSessionId = NewType("ProviderSessionId", UUID)
+LLMRunId = NewType("LLMRunId", UUID)
+ApplicationId = NewType("ApplicationId", UUID)
+ApplicationEventId = NewType("ApplicationEventId", UUID)
+SubmissionAttemptId = NewType("SubmissionAttemptId", UUID)
+ConversationId = NewType("ConversationId", UUID)
+ChatMessageId = NewType("ChatMessageId", UUID)
+ChatActionProposalId = NewType("ChatActionProposalId", UUID)
+ChatActionExecutionId = NewType("ChatActionExecutionId", UUID)
 
 
 def new_user_id() -> UserId:
@@ -198,5 +211,217 @@ def new_match_evaluation_id() -> MatchEvaluationId:
     return MatchEvaluationId(uuid4())
 
 
+def match_evaluation_id(candidate_profile_id: CandidateProfileId,
+                        opportunity_id: OpportunityId) -> MatchEvaluationId:
+    """The id of the match verdict for one (profile, opportunity) pair.
+
+    Derived rather than random, and for the same reason as its eligibility twin
+    `eligibility_result_id`: `match_evaluations` keys its upsert on
+    `(candidate_profile_id, opportunity_id)`, so re-scoring a pair must replace the
+    previous evaluation instead of accumulating a row per run. A deterministic
+    engine that meets the same pair twice therefore writes the same key, and a
+    retried write after a failed flush is idempotent by construction rather than by
+    the unique constraint catching it. `new_match_evaluation_id` stays for a caller
+    that genuinely wants a fresh, unrelated evaluation.
+    """
+    return MatchEvaluationId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"match_evaluation:{candidate_profile_id}:{opportunity_id}"))
+
+
+def eligibility_result_id(candidate_profile_id: CandidateProfileId,
+                          opportunity_id: OpportunityId) -> EligibilityResultId:
+    """The id of the eligibility verdict for one (profile, opportunity) pair.
+
+    Derived rather than random, for the same reason `match_evaluations` keys its
+    upsert on `(candidate_profile_id, opportunity_id)`: re-evaluating a pair must
+    replace the previous verdict, not accumulate a new row every run. A permit
+    that changes or a pack that is corrected produces a fresh evaluation under the
+    same id, so the latest answer is always the one at that key. The per-check
+    rows underneath it are keyed off this id in the mapper, so a re-evaluation
+    that drops a gate drops its row too.
+    """
+    return EligibilityResultId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"eligibility_result:{candidate_profile_id}:{opportunity_id}"))
+
+
 def new_application_decision_id() -> ApplicationDecisionId:
     return ApplicationDecisionId(uuid4())
+
+
+def candidate_document_id(candidate_profile_id: CandidateProfileId,
+                          opportunity_id: OpportunityId,
+                          document_type: str) -> CandidateDocumentId:
+    """The id of the document a candidate keeps for one posting, of one type.
+
+    Derived rather than random, for the reason `match_evaluation_id` is: a
+    `candidate_documents` row is keyed on `(candidate_profile_id, opportunity_id,
+    document_type)`, so regenerating a résumé for a posting must reuse the same
+    document — accruing a new *version* under it — rather than leaving a second,
+    orphaned document behind. `document_type` is the `CandidateDocumentType`
+    value, so a résumé and a cover letter for the same posting are two documents,
+    which is exactly what they are.
+
+    `new_candidate_document_id` is not offered: a document is always about a
+    (profile, opportunity, type) triple, and a random one would be a document with
+    no way to be found again.
+    """
+    return CandidateDocumentId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"candidate_document:{candidate_profile_id}:{opportunity_id}"
+              f":{document_type}"))
+
+
+def document_version_id(document_id: CandidateDocumentId,
+                        version: int) -> DocumentVersionId:
+    """The id of one version of one document.
+
+    Keyed by `(document_id, version)` — the pair the unique constraint covers — so
+    a retried write of version 3 after a failed flush lands on the same row rather
+    than inserting a fourth. The version number is the document's own monotonic
+    counter, assigned by the service that appends it; this only turns that pair
+    into a stable key.
+    """
+    return DocumentVersionId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"document_version:{document_id}:{version}"))
+
+
+def new_llm_connection_id() -> LLMConnectionId:
+    """The id of a user's configured way to reach an LLM provider (Phase 11).
+
+    Random, not derived: a user legitimately keeps two connections of the same
+    provider type — a work OpenAI-compatible gateway and a personal one — so
+    nothing about the pair `(user, provider_type)` identifies one, and a derived
+    key would make the second overwrite the first.
+    """
+    return LLMConnectionId(uuid4())
+
+
+def provider_session_id(connection_id: LLMConnectionId,
+                        conversation_key: str) -> ProviderSessionId:
+    """The id of one connection's session for one logical conversation.
+
+    Derived rather than random, for the reason `default_candidate_profile_id` is:
+    a conversation continued against the same connection must reuse — and refresh —
+    the one session row that holds the provider's `external_session_id`, not append
+    a second every time it resumes. `conversation_key` is the caller's stable handle
+    for the exchange (a chat id, a prep session key); `connection_id` scopes it,
+    because the same conversation resumed against a different provider is a genuinely
+    different provider-side session.
+    """
+    return ProviderSessionId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"provider_session:{connection_id}:{conversation_key}"))
+
+
+def new_llm_run_id() -> LLMRunId:
+    """The id of one telemetry record of one LLM call (Phase 11).
+
+    Random: a run is an event, not an entity a retry should collapse onto — two
+    calls for the same purpose are two rows, which is the whole point of the
+    telemetry (docs/LLM_PROVIDER_ARCHITECTURE.md §12).
+    """
+    return LLMRunId(uuid4())
+
+
+def application_id(idempotency_key: str) -> ApplicationId:
+    """The id of one application, derived from its idempotency key (Phase 12 §36).
+
+    Derived rather than random, and this is the load-bearing decision of the
+    duplicate-prevention story: the id *is* a function of the idempotency key, so
+    two independent attempts to open an application for the same
+    `(candidate_profile, target, channel)` compute the same id and collide on the
+    primary key instead of opening a second application against the same posting.
+    The database's UNIQUE constraint on the key (`rev_0009`) is the second half —
+    it catches a hand-written row that bypassed this function — but the derivation
+    is what makes the common path idempotent by construction rather than by a
+    caught error (docs/APPLICATION_ENGINE.md §36-40).
+
+    `idempotency_key` is the value `Application.build_idempotency_key` composes; it
+    is passed in rather than recomputed here for the same reason `company_alias_id`
+    takes a normalized alias: this module knows about UUIDs and must not grow a
+    dependency on the rules that shape the key.
+    """
+    return ApplicationId(uuid5(SURROGATE_KEY_NAMESPACE, f"application:{idempotency_key}"))
+
+
+def new_application_event_id() -> ApplicationEventId:
+    """The id of one entry in an application's append-only audit trail (§41).
+
+    Random: an event is a fact that happened at an instant, never an entity a
+    retry should collapse onto. Two "submission started" events are two facts, and
+    the trail is the aggregate's own history, so each row stands on its own.
+    """
+    return ApplicationEventId(uuid4())
+
+
+def submission_attempt_id(application: ApplicationId,
+                          attempt_number: int) -> SubmissionAttemptId:
+    """The id of one submission attempt against one application (§39).
+
+    Derived from `(application, attempt_number)` — the pair the unique constraint
+    covers — so a retried write of attempt 2 after a failed flush lands on the same
+    row rather than inserting a third. The attempt number is the application's own
+    monotonic counter, assigned by the submission service; this only turns that
+    pair into a stable key, exactly as `document_version_id` does for a document's
+    versions.
+    """
+    return SubmissionAttemptId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"submission_attempt:{application}:{attempt_number}"))
+
+
+def new_conversation_id() -> ConversationId:
+    """The id of one career-chat conversation (Phase 13 §…).
+
+    Random: a conversation is an entity a user opens, not something recomputable
+    from what it holds — two "New chat" clicks are two conversations, and the
+    provider-side session that resumes it keys on this id, not the other way round.
+    """
+    return ConversationId(uuid4())
+
+
+def chat_message_id(conversation_id: ConversationId, sequence: int) -> ChatMessageId:
+    """The id of the message at one position in one conversation.
+
+    Derived from `(conversation_id, sequence)` — the pair the unique constraint
+    covers — so a turn that is finalized twice after a failed flush writes the same
+    message rows rather than duplicating the exchange. `sequence` is the
+    conversation's own monotonic counter, assigned by the chat service as it appends;
+    this only turns that pair into a stable key, exactly as `document_version_id`
+    does for a document's versions.
+    """
+    return ChatMessageId(
+        uuid5(SURROGATE_KEY_NAMESPACE, f"chat_message:{conversation_id}:{sequence}"))
+
+
+def chat_action_proposal_id(message_id: ChatMessageId,
+                            ordinal: int) -> ChatActionProposalId:
+    """The id of the nth typed action a single assistant turn proposed.
+
+    Derived from `(message_id, ordinal)`, for the reason `chat_message_id` is derived:
+    re-finalizing the turn that produced them must land on the same proposal rows, not
+    append a second copy of every proposal. `ordinal` is the action's position in the
+    turn's fenced proposal block (0-based); the message it belongs to scopes it, so two
+    turns proposing "submit" are two distinct proposals rather than one overwritten.
+    """
+    return ChatActionProposalId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"chat_action_proposal:{message_id}:{ordinal}"))
+
+
+def chat_action_execution_id(
+        proposal_id: ChatActionProposalId) -> ChatActionExecutionId:
+    """The id of the record of executing one proposal.
+
+    Derived from the proposal, and this is the load-bearing half of the idempotency
+    story the executor rests on: a proposal executed twice — a double-clicked
+    "Confirm", a retried request — computes the same execution id and collides on the
+    primary key instead of running the underlying service action a second time. The
+    executor still guards on the proposal's status, but the derived id is what makes
+    the common path idempotent by construction rather than by a caught race.
+    """
+    return ChatActionExecutionId(
+        uuid5(SURROGATE_KEY_NAMESPACE, f"chat_action_execution:{proposal_id}"))

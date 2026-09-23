@@ -51,14 +51,19 @@ V2_TABLES = frozenset({
     "companies", "company_aliases", "company_career_sites",
     "company_discovery_records", "company_locations", "users", "user_sessions",
     "candidate_profiles", "candidate_languages", "candidate_work_authorizations",
-    "candidate_availability_slots", "search_profiles", "search_areas",
+    "candidate_availability_slots", "candidate_evidence", "candidate_claims",
+    "search_profiles", "search_areas",
     "opportunities", "opportunity_source_records", "match_evaluations",
-    "match_dimension_scores", "geocoding_cache",
+    "match_dimension_scores", "geocoding_cache", "eligibility_results",
+    "eligibility_checks", "candidate_documents", "document_versions",
+    "llm_connections", "provider_sessions", "llm_runs",
+    "conversations", "chat_messages", "chat_action_proposals",
+    "chat_action_executions",
 })
 
 # The revision `alembic upgrade head` is expected to stop at. A revision added
 # without updating this line is a revision nobody decided to ship.
-HEAD_REVISION = "0005"
+HEAD_REVISION = "0010"
 
 # Every `geography(Point,4326)` column, by the table that holds it. One radius
 # query has to run against any of them, so they are declared identically and
@@ -566,3 +571,102 @@ def test_downgrading_0005_keeps_the_coordinates_it_annotated(schema_engine):
     assert "geocoding_cache" not in remaining
     assert not columns & PHASE_7_PROVENANCE_COLUMNS
     assert "location_point" in columns
+
+
+# The revision Phase 9 upgrades *from*, and the one it must be reversible to. A
+# database at 0005 is a Phase 7/8 database: it holds accounts, profiles, postings
+# and match evaluations, and neither of the two eligibility tables.
+PRE_PHASE_9_REVISION = "0005"
+
+# The two tables revision 0006 adds and nothing before it had.
+PHASE_9_TABLES = frozenset({"eligibility_results", "eligibility_checks"})
+
+# A scored pair and the account behind it, addressed by fixed ids so the seed and
+# the assertions agree. Not RFC-4122 versioned, which PostgreSQL's `uuid` type does
+# not require — the same shortcut the Phase 6 seed rows take.
+_PHASE_9_USER = "77777777-7777-7777-7777-777777777777"
+_PHASE_9_PROFILE = "88888888-8888-8888-8888-888888888888"
+_PHASE_9_OPPORTUNITY = "99999999-9999-9999-9999-999999999999"
+_PHASE_9_EVALUATION = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+_PHASE_9_RESULT = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+_PHASE_9_CHECK = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+
+def _seed_a_scored_pair(connection):
+    """A user, a profile, a posting and a match evaluation, all at head.
+
+    Phase 9 runs no backfill — it only adds tables — so unlike the Phase 6 and 7
+    seeds there is nothing to insert at the older revision, and these rows go in at
+    head. They exist so the downgrade has data from *before* 0006 to preserve, and a
+    match evaluation is among them because it is the neighbour whose survival proves
+    the downgrade dropped only what 0006 created and did not reach across the two
+    axes the schema keeps apart.
+    """
+    connection.execute(
+        text("INSERT INTO users (id, email, password_hash)"
+             " VALUES (:id, :email, :password_hash)"),
+        {"id": _PHASE_9_USER, "email": "owner@example.test", "password_hash": "x"})
+    connection.execute(
+        text("INSERT INTO candidate_profiles (id, user_id, display_name)"
+             " VALUES (:id, :user_id, :display_name)"),
+        {"id": _PHASE_9_PROFILE, "user_id": _PHASE_9_USER, "display_name": "Owner"})
+    connection.execute(
+        text("INSERT INTO opportunities (id, company_name, title, discovered_at)"
+             " VALUES (:id, :company_name, :title, now())"),
+        {"id": _PHASE_9_OPPORTUNITY, "company_name": "Fixture SA",
+         "title": "Ingénieur logiciel"})
+    connection.execute(
+        text("INSERT INTO match_evaluations (id, user_id, candidate_profile_id,"
+             " opportunity_id, overall, evaluated_at)"
+             " VALUES (:id, :user_id, :candidate_profile_id, :opportunity_id,"
+             " 0.9, now())"),
+        {"id": _PHASE_9_EVALUATION, "user_id": _PHASE_9_USER,
+         "candidate_profile_id": _PHASE_9_PROFILE,
+         "opportunity_id": _PHASE_9_OPPORTUNITY})
+
+
+def _seed_an_eligibility_verdict(connection):
+    """One result and one check, so the downgrade has eligibility rows to drop."""
+    connection.execute(
+        text("INSERT INTO eligibility_results (id, user_id, candidate_profile_id,"
+             " opportunity_id, status, determined_at)"
+             " VALUES (:id, :user_id, :candidate_profile_id, :opportunity_id,"
+             " 'ELIGIBLE', now())"),
+        {"id": _PHASE_9_RESULT, "user_id": _PHASE_9_USER,
+         "candidate_profile_id": _PHASE_9_PROFILE,
+         "opportunity_id": _PHASE_9_OPPORTUNITY})
+    connection.execute(
+        text("INSERT INTO eligibility_checks (id, result_id, ordinal, requirement,"
+             " status, determined_by) VALUES (:id, :result_id, 0,"
+             " 'WORK_AUTHORIZATION', 'ELIGIBLE', 'DETERMINISTIC_RULE')"),
+        {"id": _PHASE_9_CHECK, "result_id": _PHASE_9_RESULT})
+
+
+def test_downgrading_0006_keeps_the_evaluation_it_left_alone(schema_engine):
+    """Reversibility, with the data that makes it mean something.
+
+    The two eligibility tables and their rows are dropped — that is what the
+    downgrade of an additive revision does — but the account, profile, posting and
+    match evaluation from before 0006 survive untouched. A downgrade that took the
+    match evaluation with it would be conflating the two axes the schema exists to
+    keep apart, in the one direction a downgrade could still do it.
+    """
+    reset_schema(schema_engine)
+    with schema_engine.begin() as connection:
+        _seed_a_scored_pair(connection)
+        _seed_an_eligibility_verdict(connection)
+    with schema_engine.begin() as connection:
+        command.downgrade(alembic_config(connection), PRE_PHASE_9_REVISION)
+    with schema_engine.connect() as connection:
+        version = connection.execute(
+            text("SELECT version_num FROM alembic_version")).scalar_one()
+        remaining = set(inspect(connection).get_table_names())
+        evaluation = connection.execute(
+            text("SELECT overall FROM match_evaluations")).scalar_one()
+    assert version == PRE_PHASE_9_REVISION
+    assert not remaining & PHASE_9_TABLES
+    # Everything the dropped tables referenced is still here — the downgrade reached
+    # its own two tables and stopped.
+    assert {"users", "candidate_profiles", "opportunities",
+            "match_evaluations"} <= remaining
+    assert evaluation == 0.9

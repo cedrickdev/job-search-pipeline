@@ -67,6 +67,8 @@ const emit = defineEmits<{ close: [] }>()
     >
       Open posting ↗
     </a>
+
+    <DocumentGenerateActions :opportunity-id="opportunity.id" />
   </article>
 
   <article v-else-if="company" class="map-card" data-testid="map-card">

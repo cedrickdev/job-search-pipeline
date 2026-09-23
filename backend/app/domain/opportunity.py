@@ -28,6 +28,7 @@ from backend.app.domain.common import (
     LanguageRequirement,
     Location,
     SalaryRange,
+    SkillRequirement,
     WorkloadRange,
 )
 from backend.app.domain.identifiers import CompanyId, OpportunityId
@@ -138,6 +139,12 @@ class Opportunity(DomainModel):
     # "French required" requirement.
     posting_language: LanguageCode | None = None
     language_requirements: tuple[LanguageRequirement, ...] = ()
+    # Structured skills the posting asks for (Phase 10 §26). Empty by default and
+    # for almost every posting: discovery does not parse skills, and the matcher
+    # activates SKILLS_FIT only when this is non-empty *and* the candidate has
+    # SKILL claims, so an empty tuple means "no structured skill data", never "the
+    # posting wants nothing". A demand on the candidate, never candidate evidence.
+    skill_requirements: tuple[SkillRequirement, ...] = ()
     posted_at: date | None = None
     discovered_at: UtcDatetime
     application_url: HttpUrlStr | None = None
@@ -151,6 +158,15 @@ class Opportunity(DomainModel):
         languages = [r.language for r in self.language_requirements]
         if len(languages) != len(set(languages)):
             raise ValueError("language_requirements must not repeat a language")
+        return self
+
+    @model_validator(mode="after")
+    def _one_requirement_per_skill(self) -> Self:
+        # Case-folded, because "Python" and "python" name one skill and listing
+        # both would double-count it in the SKILLS_FIT mean.
+        skills = [r.skill.casefold() for r in self.skill_requirements]
+        if len(skills) != len(set(skills)):
+            raise ValueError("skill_requirements must not repeat a skill")
         return self
 
     @property

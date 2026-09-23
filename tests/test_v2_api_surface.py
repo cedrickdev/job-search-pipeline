@@ -13,11 +13,24 @@ document is exactly what `scripts/dump_openapi.py` hands the frontend's type
 generator. A route added without a test fails the first assertion in this module,
 which is the point of pinning a count that a normal change has no reason to touch.
 
-The counts moved once at Phase 6 — the three company operations — and again at
+The counts moved once at Phase 6 — the three company operations — again at
 Phase 7, which adds the three geo reads: postings near a place, employers near a
-place, and one saved search run as a geo query. All six are held to the same four
-rules the Phase 4 twelve are — under the prefix, authenticated, safe where they read,
-and carrying no credential field.
+place, and one saved search run as a geo query, again at Phase 9, which adds the
+three assessment routes: evaluate a pair, read one pair, list a user's pairs,
+again at Phase 10, which adds eight: the two evidence writes and the evidence read
+under `/me`, the two document generators keyed by posting, and the list, read and
+download of a generated document, and again at Phase 11, which adds eight for the
+LLM connection settings surface: list and create, read, edit (`PATCH`), enable and
+default, delete, and a healthcheck probe. All of them are held to the same rules the
+Phase 4 twelve are — under the prefix, authenticated, safe where they read, and
+carrying no credential field. Phase 11 is where the last rule earns its keep: the
+create and edit bodies accept an `api_key`, and no response schema may echo it.
+
+Phase 13 adds eight for the career-chat control plane: four reads (the conversation
+list, one thread, its messages, its proposals) and four writes (open a thread, the one
+streaming-turn `POST .../messages`, and confirm/dismiss a proposal). The chat obeys the
+same last rule — a `ChatAction` and every chat response is secret-free by construction —
+so nothing here can echo a credential.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -25,7 +38,21 @@ from datetime import timedelta
 import pytest
 
 from backend.app.api import API_V2_PREFIX
-from backend.app.domain.identifiers import CompanyId, SearchProfileId
+from backend.app.documents import LocalDocumentArtifactStore
+from backend.app.domain.application import Application, build_idempotency_key
+from backend.app.domain.application_channel import ApplicationChannel
+from backend.app.domain.identifiers import (
+    ApplicationId,
+    CandidateDocumentId,
+    CompanyId,
+    ConversationId,
+    LLMConnectionId,
+    OpportunityId,
+    SearchProfileId,
+    default_candidate_profile_id,
+    document_version_id,
+    eligibility_result_id,
+)
 from backend.app.services.authentication import SESSION_TOUCH_INTERVAL
 from tests.v2_api import (
     PLACEHOLDER_ID,
@@ -34,29 +61,73 @@ from tests.v2_api import (
     operations,
     schema_property_names,
 )
-from tests.v2_builders import a_company, a_search_profile
+from tests.v2_builders import (
+    a_company,
+    a_conversation,
+    a_decision,
+    a_rendered_document,
+    a_search_profile,
+    an_eligibility_result,
+    an_llm_connection,
+    an_opportunity,
+)
 
-# The whole V2 surface as of Phase 7, spelled out. Written as a literal on purpose:
+# The whole V2 surface as of Phase 13, spelled out. Written as a literal on purpose:
 # a test that derived it from the application would agree with any change.
 V2_OPERATIONS = (
     ("DELETE", "/api/v2/me/search-profiles/{search_profile_id}"),
+    ("DELETE", "/api/v2/settings/llm/connections/{connection_id}"),
+    ("GET", "/api/v2/applications"),
+    ("GET", "/api/v2/applications/{application_id}"),
+    ("GET", "/api/v2/applications/{application_id}/events"),
     ("GET", "/api/v2/auth/session"),
+    ("GET", "/api/v2/chat/conversations"),
+    ("GET", "/api/v2/chat/conversations/{conversation_id}"),
+    ("GET", "/api/v2/chat/conversations/{conversation_id}/messages"),
+    ("GET", "/api/v2/chat/conversations/{conversation_id}/proposals"),
     ("GET", "/api/v2/companies"),
     ("GET", "/api/v2/companies/{company_id}"),
+    ("GET", "/api/v2/documents"),
+    ("GET", "/api/v2/documents/{document_id}"),
+    ("GET", "/api/v2/documents/{document_id}/download"),
     ("GET", "/api/v2/geo/companies"),
     ("GET", "/api/v2/geo/opportunities"),
+    ("GET", "/api/v2/matches"),
+    ("GET", "/api/v2/me/evidence"),
     ("GET", "/api/v2/me/profile"),
     ("GET", "/api/v2/me/search-profiles"),
     ("GET", "/api/v2/me/search-profiles/{search_profile_id}/opportunities"),
     ("GET", "/api/v2/onboarding"),
+    ("GET", "/api/v2/opportunities/{opportunity_id}/match"),
+    ("GET", "/api/v2/settings/llm/connections"),
+    ("GET", "/api/v2/settings/llm/connections/{connection_id}"),
+    ("PATCH", "/api/v2/settings/llm/connections/{connection_id}"),
+    ("POST", "/api/v2/applications"),
+    ("POST", "/api/v2/applications/{application_id}/approve"),
+    ("POST", "/api/v2/applications/{application_id}/cancel"),
+    ("POST", "/api/v2/applications/{application_id}/prepare"),
+    ("POST", "/api/v2/applications/{application_id}/submit"),
     ("POST", "/api/v2/auth/login"),
     ("POST", "/api/v2/auth/logout"),
     ("POST", "/api/v2/auth/register"),
+    ("POST", "/api/v2/chat/conversations"),
+    ("POST", "/api/v2/chat/conversations/{conversation_id}/messages"),
+    ("POST", "/api/v2/chat/proposals/{proposal_id}/confirm"),
+    ("POST", "/api/v2/chat/proposals/{proposal_id}/dismiss"),
     ("POST", "/api/v2/company-discovery/run"),
+    ("POST", "/api/v2/matches/evaluate"),
+    ("POST", "/api/v2/me/claims"),
+    ("POST", "/api/v2/me/evidence"),
     ("POST", "/api/v2/me/search-profiles"),
     ("POST", "/api/v2/onboarding/complete"),
+    ("POST", "/api/v2/opportunities/{opportunity_id}/cover-letter"),
+    ("POST", "/api/v2/opportunities/{opportunity_id}/resume"),
+    ("POST", "/api/v2/settings/llm/connections"),
+    ("POST", "/api/v2/settings/llm/connections/{connection_id}/healthcheck"),
     ("PUT", "/api/v2/me/profile"),
     ("PUT", "/api/v2/me/search-profiles/{search_profile_id}"),
+    ("PUT", "/api/v2/settings/llm/connections/{connection_id}/default"),
+    ("PUT", "/api/v2/settings/llm/connections/{connection_id}/enabled"),
 )
 
 # The two operations a caller reaches without a session, because their purpose is to
@@ -93,7 +164,7 @@ def _get_with_scope(path: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_the_v2_surface_is_exactly_the_eighteen_operations_phases_4_6_and_7_define(
+async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_define(
         tmp_path):
     """The inventory, and every path scoped under the one prefix.
 
@@ -106,34 +177,59 @@ async def test_the_v2_surface_is_exactly_the_eighteen_operations_phases_4_6_and_
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 15
+        assert len({path for _, path in published}) == 43
 
 
 @pytest.mark.asyncio
 async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path):
     """The inventory half of "no GET mutates state".
 
-    Nine `GET`s, all of them reports. `POST /onboarding/complete` exists precisely so
-    that the screen displaying progress does not have to be the thing that records
+    Twenty-four `GET`s, all of them reports. `POST /onboarding/complete` exists precisely
+    so that the screen displaying progress does not have to be the thing that records
     it, and `POST /company-discovery/run` is the same split for the directory: reading
     it is safe, filling it is a write an operator triggers. The three Phase 7 reads
-    join the reports — a map is a view, and viewing it writes nothing.
+    join the reports — a map is a view, and viewing it writes nothing — and so do the
+    two Phase 9 assessment reads. Phase 10 adds four more reads: the evidence store
+    (`GET /me/evidence`), the document list and one document (`GET /documents`,
+    `GET /documents/{id}`), and the PDF download — a stream is still a read, and the
+    two document generators (`POST .../resume`, `POST .../cover-letter`) are the
+    writes that produce what it streams. Phase 13 adds four chat reads — the
+    conversation list, one thread, its messages and its proposals — all views; the
+    streaming turn (`POST .../messages`) and the confirm/dismiss are its writes.
     """
     async with api_harness(tmp_path) as api:
         published = operations(api.app, under=API_V2_PREFIX)
 
         assert {path for method, path in published if method == "GET"} == {
+            "/api/v2/applications",
+            "/api/v2/applications/{application_id}",
+            "/api/v2/applications/{application_id}/events",
             "/api/v2/auth/session",
+            "/api/v2/chat/conversations",
+            "/api/v2/chat/conversations/{conversation_id}",
+            "/api/v2/chat/conversations/{conversation_id}/messages",
+            "/api/v2/chat/conversations/{conversation_id}/proposals",
             "/api/v2/companies",
             "/api/v2/companies/{company_id}",
+            "/api/v2/documents",
+            "/api/v2/documents/{document_id}",
+            "/api/v2/documents/{document_id}/download",
             "/api/v2/geo/companies",
             "/api/v2/geo/opportunities",
+            "/api/v2/matches",
+            "/api/v2/me/evidence",
             "/api/v2/me/profile",
             "/api/v2/me/search-profiles",
             "/api/v2/me/search-profiles/{search_profile_id}/opportunities",
-            "/api/v2/onboarding"}
+            "/api/v2/onboarding",
+            "/api/v2/opportunities/{opportunity_id}/match",
+            "/api/v2/settings/llm/connections",
+            "/api/v2/settings/llm/connections/{connection_id}"}
+        # `HEAD`/`OPTIONS`/`TRACE` are never published. `PATCH` now is — the one
+        # partial edit the surface has, on an LLM connection — so it is not forbidden,
+        # only absent from the safe-method (`GET`) set asserted above.
         assert not [method for method, _ in published
-                    if method in {"HEAD", "OPTIONS", "TRACE", "PATCH"}]
+                    if method in {"HEAD", "OPTIONS", "TRACE"}]
 
 
 @pytest.mark.asyncio
@@ -160,12 +256,68 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                                              locations=()))
         await api.searches.upsert(a_search_profile(
             id=SearchProfileId(PLACEHOLDER_ID), user_id=user_id))
+        # `GET /opportunities/{id}/match` reads a stored verdict, so the sweep only
+        # exercises its 200 path when the pair has one: a posting under the
+        # placeholder id and an eligibility keyed on this account's default profile
+        # and that posting. Both are seeded so the read is real, not a 404.
+        posting_id = OpportunityId(PLACEHOLDER_ID)
+        profile_id = default_candidate_profile_id(user_id)
+        await api.postings.upsert(an_opportunity(id=posting_id))
+        await api.eligibilities.upsert(an_eligibility_result(
+            id=eligibility_result_id(profile_id, posting_id),
+            user_id=user_id, candidate_profile_id=profile_id,
+            opportunity_id=posting_id))
+        # `GET /documents/{id}` and its `/download` read a stored document, so the
+        # sweep only exercises their 200 path when one exists under the placeholder
+        # id. A RENDERED version is seeded, and its PDF is written under the same
+        # storage key the harness's artifact store uses, so the download streams
+        # real bytes rather than raising `ArtifactNotFound` on the way to a 500.
+        document_id = CandidateDocumentId(PLACEHOLDER_ID)
+        store = LocalDocumentArtifactStore(tmp_path / "document_artifacts")
+        storage_key = store.key_for(document_id,
+                                    document_version_id(document_id, 1))
+        store.put(storage_key, b"%PDF-1.7\n%stub\n")
+        await api.documents.upsert(a_rendered_document(
+            id=document_id, user_id=user_id, candidate_profile_id=profile_id,
+            opportunity_id=posting_id, storage_key=storage_key))
+        # `GET /settings/llm/connections/{id}` reads a stored connection, so the sweep
+        # exercises its 200 path only when one exists under the placeholder id and this
+        # account. The list read beside it needs no seed — an empty list is a 200.
+        await api.llm_connections.upsert(an_llm_connection(
+            id=LLMConnectionId(PLACEHOLDER_ID), user_id=user_id))
+        # `GET /applications/{id}` and its `/events` read a stored application, so the
+        # sweep exercises their 200 path only when one exists under the placeholder id
+        # and this account. The id is the placeholder rather than the derived one — the
+        # read is by id — and the idempotency key is the real one for the pair, which is
+        # all the aggregate's validator requires.
+        decision = await api.application_decisions.upsert(a_decision(
+            candidate_profile_id=profile_id, opportunity_id=posting_id,
+            user_id=user_id))
+        key = build_idempotency_key(candidate_profile_id=profile_id,
+                                    channel=ApplicationChannel.BROWSER,
+                                    opportunity_id=posting_id)
+        await api.applications.upsert(Application(
+            id=ApplicationId(PLACEHOLDER_ID), user_id=user_id,
+            candidate_profile_id=profile_id, decision_id=decision.id,
+            channel=ApplicationChannel.BROWSER, idempotency_key=key,
+            opportunity_id=posting_id, created_at=api.clock.instant,
+            updated_at=api.clock.instant))
+        # The three chat reads keyed by conversation — detail, messages, proposals —
+        # 404 before the service unless a thread exists under the placeholder id for
+        # this account, so one is seeded. The conversation *list* read needs no seed;
+        # an empty list is a 200.
+        await api.conversations.upsert(a_conversation(
+            id=ConversationId(PLACEHOLDER_ID), user_id=user_id))
         reads = [_get_with_scope(concrete(path)) for method, path in operations(
             api.app, under=API_V2_PREFIX) if method == "GET"]
         before = deepcopy((api.users.users, api.sessions.sessions,
                            api.profiles.profiles, api.searches.searches,
                            api.companies.companies, api.career_sites.sites,
-                           api.discoveries.records, api.postings.opportunities))
+                           api.discoveries.records, api.postings.opportunities,
+                           api.matches.evaluations, api.eligibilities.results,
+                           api.documents.documents, api.llm_connections.connections,
+                           api.conversations.conversations, api.chat_messages.messages,
+                           api.chat_proposals.proposals))
 
         for path in reads:
             for _ in range(2):
@@ -175,7 +327,10 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
         assert (api.users.users, api.sessions.sessions, api.profiles.profiles,
                 api.searches.searches, api.companies.companies,
                 api.career_sites.sites, api.discoveries.records,
-                api.postings.opportunities) == before
+                api.postings.opportunities, api.matches.evaluations,
+                api.eligibilities.results, api.documents.documents,
+                api.llm_connections.connections, api.conversations.conversations,
+                api.chat_messages.messages, api.chat_proposals.proposals) == before
 
 
 @pytest.mark.asyncio
@@ -207,7 +362,7 @@ async def test_the_one_write_a_get_performs_is_last_seen_at_and_it_cannot_extend
 @pytest.mark.asyncio
 async def test_every_operation_but_register_and_login_refuses_an_anonymous_caller(
         tmp_path):
-    """401 from all sixteen, with no body sent and nothing created.
+    """401 from all fifty-one, with no body sent and nothing created.
 
     No payload is needed because FastAPI resolves the session dependency before it
     validates a body, so the refusal happens before the request is read — which is
@@ -224,7 +379,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
         protected = [(method, path) for method, path in operations(
             api.app, under=API_V2_PREFIX) if (method, path) not in PUBLIC_OPERATIONS]
 
-        assert len(protected) == 16
+        assert len(protected) == 51
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

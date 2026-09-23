@@ -29,11 +29,36 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 
 from backend.app.api import API_V2_PREFIX
+from backend.app.chat.conversation import ConversationNotFound, EmptyChatMessage
+from backend.app.chat.executor import ChatProposalNotActionable, ChatProposalNotFound
+from backend.app.documents import ArtifactNotFound
+from backend.app.documents.generator import InsufficientEvidence
+from backend.app.domain.application_failure import ApplicationError, ApplicationFailureCode
+from backend.app.llm.failures import LLMError, LLMFailureCode
+from backend.app.services.applications import (
+    ApplicationDecisionMissing,
+    ApplicationNotActionable,
+    ApplicationNotFound,
+)
+from backend.app.services.assessment import (
+    CandidateProfileNotFound,
+    OpportunityNotFound,
+)
 from backend.app.services.authentication import (
     AccountDisabled,
     AccountLocked,
     EmailAlreadyRegistered,
     InvalidCredentials,
+)
+from backend.app.services.documents import (
+    DocumentArtifactMissing,
+    DocumentNotFound,
+)
+from backend.app.services.evidence import ClaimCitesUnknownEvidence
+from backend.app.services.llm_connections import (
+    LLMConnectionInvalid,
+    LLMConnectionNotFound,
+    LLMSecretKeyUnavailable,
 )
 from backend.app.services.onboarding import OnboardingIncomplete, SearchProfileNotFound
 
@@ -50,6 +75,35 @@ DATABASE_UNAVAILABLE: Final[str] = "database_unavailable"
 # is the one form that is correct on both, and 422 is what FastAPI's own validation
 # handler returns — this handler only changes the body.
 UNPROCESSABLE_CONTENT: Final[int] = 422
+
+# Which HTTP status each LLM failure becomes when one surfaces to a client. The LLM is
+# an upstream dependency, so an unmapped failure is a 502 (`_llm_error` defaults there):
+# from the caller's side a provider fault is a bad answer from a gateway, not a fault of
+# the request. The mapped ones are the failures a client can act on differently — a bad
+# credential or a missing capability is the operator's to fix (409, not a retry), a rate
+# limit is retryable after a wait (429), a timeout or an outage is a transient upstream
+# state (504/503). `STRUCTURED_OUTPUT_INVALID` stays a 502: the model misbehaved, which
+# is the gateway's problem to the caller, not the request's.
+_LLM_STATUS: Final[dict[LLMFailureCode, int]] = {
+    LLMFailureCode.PROVIDER_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
+    LLMFailureCode.PROVIDER_TIMEOUT: status.HTTP_504_GATEWAY_TIMEOUT,
+    LLMFailureCode.PROVIDER_AUTH_REQUIRED: status.HTTP_409_CONFLICT,
+    LLMFailureCode.PROVIDER_RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
+    LLMFailureCode.PROVIDER_MISCONFIGURED: status.HTTP_409_CONFLICT,
+    LLMFailureCode.CAPABILITY_NOT_SUPPORTED: status.HTTP_409_CONFLICT,
+}
+
+# Which HTTP status each application-execution failure becomes. A duplicate is the
+# idempotency guard surfacing (409, not a retry); an exhausted rate budget is
+# retryable after a wait (429); everything else is a 409 — a well-formed request the
+# engine refused on a state the caller must resolve (a document not ready, a form
+# that changed), not a fault of the request's shape. An unmapped code defaults to 409
+# in the handler. The body's `error` is the failure code lowercased, so a client
+# branches on the same closed vocabulary the engine uses (§80-82).
+_APPLICATION_STATUS: Final[dict[ApplicationFailureCode, int]] = {
+    ApplicationFailureCode.APPLICATION_DUPLICATE: status.HTTP_409_CONFLICT,
+    ApplicationFailureCode.APPLICATION_RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
+}
 
 
 class ApiError(Exception):
@@ -161,6 +215,182 @@ def install_v2_error_handlers(app: FastAPI) -> None:
                      "saved search",
                      has_profile=exc.has_profile,
                      active_search_profiles=exc.active_searches)
+
+    @app.exception_handler(CandidateProfileNotFound)
+    async def _no_candidate_profile(request: Request,
+                                    exc: CandidateProfileNotFound) -> JSONResponse:
+        # Its own code, and the same one `GET /me/profile` uses for the same state:
+        # a client reads it as "onboarding is not finished" and sends the user to
+        # the profile form, not as "that posting does not exist".
+        return _json(status.HTTP_404_NOT_FOUND, "candidate_profile_not_found",
+                     "this account has not saved a candidate profile yet")
+
+    @app.exception_handler(OpportunityNotFound)
+    async def _no_opportunity(request: Request,
+                              exc: OpportunityNotFound) -> JSONResponse:
+        # A posting is a shared fact with no owner, so "no such posting" is the only
+        # reason this fires — there is no "not yours" to keep indistinguishable from
+        # it, unlike a user-owned assessment read.
+        return _json(status.HTTP_404_NOT_FOUND, "opportunity_not_found",
+                     "no opportunity is stored under that id")
+
+    @app.exception_handler(DocumentNotFound)
+    async def _document_missing(request: Request,
+                                exc: DocumentNotFound) -> JSONResponse:
+        # 404 for "no such document" and "not yours" alike — the service raises one
+        # exception for both so a caller cannot enumerate other users' document ids.
+        return _json(status.HTTP_404_NOT_FOUND, "document_not_found",
+                     "no such document")
+
+    @app.exception_handler(DocumentArtifactMissing)
+    async def _document_not_rendered(request: Request,
+                                     exc: DocumentArtifactMissing) -> JSONResponse:
+        # 409, not 404: the document is real and this account's, but no version has
+        # cleared the guard and been rendered, so there is nothing to download yet.
+        return _json(status.HTTP_409_CONFLICT, "document_not_rendered",
+                     "this document has no rendered version to download yet")
+
+    @app.exception_handler(ArtifactNotFound)
+    async def _artifact_gone(request: Request,
+                             exc: ArtifactNotFound) -> JSONResponse:
+        # The row references an artifact the store no longer holds. A server-side
+        # fault, not a client error — 500 rather than a 404 that would tell the
+        # caller to regenerate over what is really a storage problem. The key is
+        # not echoed: it is an internal locator.
+        return _json(status.HTTP_500_INTERNAL_SERVER_ERROR, "artifact_unavailable",
+                     "the stored document artifact could not be read")
+
+    @app.exception_handler(InsufficientEvidence)
+    async def _insufficient_evidence(request: Request,
+                                     exc: InsufficientEvidence) -> JSONResponse:
+        # 409, and the sentence is the generator's own: a candidate with no evidence
+        # on file cannot have a document built from evidence, and the honest reply is
+        # to say so rather than invent content or fail opaquely. `str(exc)` is safe —
+        # `InsufficientEvidence.detail` is a fixed explanation, never user input.
+        return _json(status.HTTP_409_CONFLICT, "insufficient_evidence", str(exc))
+
+    @app.exception_handler(ClaimCitesUnknownEvidence)
+    async def _claim_unknown_evidence(request: Request,
+                                      exc: ClaimCitesUnknownEvidence) -> JSONResponse:
+        # 422: the claim is well-formed but cites evidence the profile does not hold.
+        # The offending ids are named so a client fixes the citation; they are the
+        # client's own ids, not a secret.
+        return _json(UNPROCESSABLE_CONTENT, "claim_cites_unknown_evidence",
+                     "the claim cites evidence that is not on your profile",
+                     evidence_ids=[str(eid) for eid in exc.evidence_ids])
+
+    @app.exception_handler(LLMConnectionNotFound)
+    async def _llm_connection_missing(request: Request,
+                                      exc: LLMConnectionNotFound) -> JSONResponse:
+        # 404 for "no such connection" and "not yours" alike — the service raises one
+        # exception for both so a caller cannot enumerate other users' connection ids.
+        # `str(exc)` is not returned: it carries the requested id, which is the client's
+        # own but need not be echoed to say "not found".
+        return _json(status.HTTP_404_NOT_FOUND, "llm_connection_not_found",
+                     "no such LLM connection")
+
+    @app.exception_handler(LLMConnectionInvalid)
+    async def _llm_connection_invalid(request: Request,
+                                      exc: LLMConnectionInvalid) -> JSONResponse:
+        # 422: the fields are well-formed individually but do not make a coherent
+        # connection (a CLI carrying a base URL, an API missing one). The `messages`
+        # are the model's own validator sentences, not the rejected input, so a form
+        # can show which rule failed without a value being echoed back.
+        return _json(UNPROCESSABLE_CONTENT, "llm_connection_invalid",
+                     "the connection fields do not form a valid connection",
+                     messages=list(exc.messages))
+
+    @app.exception_handler(LLMSecretKeyUnavailable)
+    async def _llm_secret_unavailable(request: Request,
+                                      exc: LLMSecretKeyUnavailable) -> JSONResponse:
+        # 409, not 422: the request is well-formed, but storing its credential would
+        # need a master key the deployment never configured. The honest answer is that
+        # the platform cannot hold a secret, not to store the key in the clear. The
+        # sentence is the service's own fixed explanation, never user input.
+        return _json(status.HTTP_409_CONFLICT, "llm_secret_key_unavailable",
+                     "this deployment is not configured to store an API credential")
+
+    @app.exception_handler(ApplicationNotFound)
+    async def _application_missing(request: Request,
+                                   exc: ApplicationNotFound) -> JSONResponse:
+        # 404 for "no such application" and "not yours" alike — the service raises one
+        # exception for both so a caller cannot enumerate other users' application ids.
+        return _json(status.HTTP_404_NOT_FOUND, "application_not_found",
+                     "no such application")
+
+    @app.exception_handler(ApplicationDecisionMissing)
+    async def _application_decision_missing(
+            request: Request, exc: ApplicationDecisionMissing) -> JSONResponse:
+        # 409, not 404: the posting exists, but no decision of intent has been made for
+        # it, so there is nothing to open an application from — decide first, then apply.
+        return _json(status.HTTP_409_CONFLICT, "application_decision_missing",
+                     "no decision has been made for this opportunity yet")
+
+    @app.exception_handler(ApplicationNotActionable)
+    async def _application_not_actionable(
+            request: Request, exc: ApplicationNotActionable) -> JSONResponse:
+        # 409: the application is real and this account's, but the operation does not
+        # apply in its current state (approving one never prepared, submitting one not
+        # approved). The state is named so a UI can re-render, not as a secret.
+        return _json(status.HTTP_409_CONFLICT, "application_not_actionable",
+                     f"cannot {exc.operation} an application in state {exc.state.value}",
+                     state=exc.state.value, operation=exc.operation)
+
+    @app.exception_handler(ApplicationError)
+    async def _application_error(request: Request,
+                                 exc: ApplicationError) -> JSONResponse:
+        # A typed, secret-free execution failure (the detail is composed from a fixed
+        # table, never an adapter's own message — see
+        # `backend.app.domain.application_failure`). The status comes from the code; the
+        # body's `error` is the code lowercased, the same closed vocabulary the engine
+        # branches on.
+        status_code = _APPLICATION_STATUS.get(exc.code, status.HTTP_409_CONFLICT)
+        return _json(status_code, exc.code.value.lower(), exc.detail)
+
+    @app.exception_handler(ConversationNotFound)
+    async def _conversation_missing(request: Request,
+                                    exc: ConversationNotFound) -> JSONResponse:
+        # 404 for "no such conversation" and "not yours" alike — the service raises one
+        # exception for both, so a caller cannot learn another account holds a thread by
+        # asking for it. The id it carries is the client's own but is not echoed.
+        return _json(status.HTTP_404_NOT_FOUND, "conversation_not_found",
+                     "no such conversation")
+
+    @app.exception_handler(EmptyChatMessage)
+    async def _empty_chat_message(request: Request,
+                                  exc: EmptyChatMessage) -> JSONResponse:
+        # 422: the request is well-formed but its message is empty or whitespace, so there
+        # is no turn to run. The fixed sentence is the service's own, never echoed input.
+        return _json(UNPROCESSABLE_CONTENT, "empty_chat_message",
+                     "a chat message must not be empty")
+
+    @app.exception_handler(ChatProposalNotFound)
+    async def _chat_proposal_missing(request: Request,
+                                     exc: ChatProposalNotFound) -> JSONResponse:
+        # 404 for "no such proposal" and "not yours" alike — one exception for both, so a
+        # confirm or dismiss naming another account's proposal reads as absent.
+        return _json(status.HTTP_404_NOT_FOUND, "chat_proposal_not_found",
+                     "no such proposal")
+
+    @app.exception_handler(ChatProposalNotActionable)
+    async def _chat_proposal_not_actionable(
+            request: Request, exc: ChatProposalNotActionable) -> JSONResponse:
+        # 409: the proposal is real and this account's, but it is no longer open — it was
+        # already executed, rejected, failed or dismissed. The status is named so a UI can
+        # re-render the card, not as a secret.
+        return _json(status.HTTP_409_CONFLICT, "chat_proposal_not_actionable",
+                     f"a proposal in status {exc.status.value} cannot be acted on",
+                     state=exc.status.value)
+
+    @app.exception_handler(LLMError)
+    async def _llm_error(request: Request, exc: LLMError) -> JSONResponse:
+        # A provider failure, normalized upstream to a typed, secret-free `LLMError`
+        # (the detail is composed from a fixed table, never a provider's own message —
+        # see `backend.app.llm.failures`). The status comes from the code; the body's
+        # `error` is the failure code lowercased, so a client branches on the same
+        # closed vocabulary the LLM layer uses (§61) rather than parsing the sentence.
+        status_code = _LLM_STATUS.get(exc.code, status.HTTP_502_BAD_GATEWAY)
+        return _json(status_code, exc.code.value.lower(), exc.detail)
 
     @app.exception_handler(IntegrityError)
     async def _integrity(request: Request, exc: IntegrityError) -> JSONResponse:

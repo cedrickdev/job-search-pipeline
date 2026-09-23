@@ -16,9 +16,38 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID
 
+from backend.app.domain.candidate import (
+    Availability,
+    CandidateEvidence,
+    CandidateProfile,
+    EvidenceKind,
+    EvidenceProvenance,
+    WorkAuthorization,
+    WorkAuthorizationStatus,
+)
+from backend.app.domain.chat import (
+    ChatActionExecution,
+    ChatActionExecutionOutcome,
+    ChatActionProposal,
+    ChatMessage,
+    ChatMessageRole,
+    Conversation,
+    SubmitApplicationAction,
+)
+from backend.app.domain.documents import (
+    CandidateDocument,
+    CandidateDocumentType,
+    DocumentArtifactRef,
+    DocumentGuardReport,
+    DocumentStatus,
+    DocumentVersion,
+    EvidenceBackedText,
+    ResumeDocument,
+)
 from backend.app.domain.common import (
     GeoPoint,
     LanguageLevel,
+    LanguageProficiency,
     LanguageRequirement,
     Location,
     Reason,
@@ -37,16 +66,34 @@ from backend.app.domain.eligibility import (
 )
 from backend.app.domain.identifiers import (
     ApplicationDecisionId,
+    ApplicationId,
     ApplicationPolicyId,
+    CandidateDocumentId,
     CandidateProfileId,
     CompanyId,
     CompanyLocationId,
+    ConversationId,
+    EligibilityResultId,
+    EvidenceId,
+    LLMConnectionId,
+    LLMRunId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
     UserId,
+    candidate_document_id,
+    chat_action_execution_id,
+    chat_action_proposal_id,
+    chat_message_id,
+    document_version_id,
+    provider_session_id,
+)
+from backend.app.domain.decision import (
+    ApplicationDecision,
+    ApplicationDecisionKind,
 )
 from backend.app.domain.matching import DimensionScore, MatchDimension, MatchEvaluation
+from backend.app.domain.policy import ApplicationPolicy, AutomationMode
 from backend.app.domain.opportunity import (
     ContractType,
     Opportunity,
@@ -55,6 +102,10 @@ from backend.app.domain.opportunity import (
     WorkplaceMode,
 )
 from backend.app.domain.search import CountrySearchArea, SearchProfile
+from backend.app.llm.connection import LLMConnection, LLMProviderType
+from backend.app.llm.contracts import TaskPurpose
+from backend.app.llm.sessions import ProviderSession
+from backend.app.llm.telemetry import LLMRun, LLMRunStatus
 
 NOW = datetime(2026, 3, 1, 9, 30, tzinfo=UTC)
 LATER = datetime(2026, 3, 2, 9, 30, tzinfo=UTC)
@@ -69,10 +120,19 @@ COMPANY = CompanyId(UUID("00000000-0000-4000-8000-000000000031"))
 OTHER_COMPANY = CompanyId(UUID("00000000-0000-4000-8000-000000000032"))
 COMPANY_LOCATION = CompanyLocationId(UUID("00000000-0000-4000-8000-000000000035"))
 EVALUATION = MatchEvaluationId(UUID("00000000-0000-4000-8000-000000000041"))
+ELIGIBILITY = EligibilityResultId(UUID("00000000-0000-4000-8000-000000000045"))
 POLICY = ApplicationPolicyId(UUID("00000000-0000-4000-8000-000000000051"))
 DECISION = ApplicationDecisionId(UUID("00000000-0000-4000-8000-000000000061"))
 SEARCH_PROFILE = SearchProfileId(UUID("00000000-0000-4000-8000-000000000071"))
 OTHER_SEARCH_PROFILE = SearchProfileId(UUID("00000000-0000-4000-8000-000000000072"))
+EVIDENCE = EvidenceId(UUID("00000000-0000-4000-8000-000000000081"))
+DOCUMENT = CandidateDocumentId(UUID("00000000-0000-4000-8000-000000000091"))
+CONNECTION = LLMConnectionId(UUID("00000000-0000-4000-8000-0000000000a1"))
+OTHER_CONNECTION = LLMConnectionId(UUID("00000000-0000-4000-8000-0000000000a2"))
+RUN = LLMRunId(UUID("00000000-0000-4000-8000-0000000000b1"))
+CONVERSATION = ConversationId(UUID("00000000-0000-4000-8000-0000000000c1"))
+OTHER_CONVERSATION = ConversationId(UUID("00000000-0000-4000-8000-0000000000c2"))
+APPLICATION = ApplicationId(UUID("00000000-0000-4000-8000-0000000000d1"))
 
 # Somewhere real, so a distance a test asserts on can be checked against a map.
 LAUSANNE = GeoPoint(latitude=46.5197, longitude=6.6323)
@@ -113,6 +173,7 @@ def a_check(requirement=EligibilityRequirement.WORK_AUTHORIZATION,
 def an_eligibility_result(*checks, **overrides):
     """A result over `checks`, defaulting to a single passing gate."""
     fields = {
+        "id": ELIGIBILITY,
         "user_id": USER,
         "candidate_profile_id": PROFILE,
         "opportunity_id": OPPORTUNITY,
@@ -121,6 +182,93 @@ def an_eligibility_result(*checks, **overrides):
     }
     fields.update(overrides)
     return EligibilityResult(**fields)
+
+
+def a_policy(**overrides):
+    """An application policy owned by `USER`.
+
+    Defaults to the cautious `MANUAL` policy onboarding would create — brake on, no
+    autonomy — so a test that wants an autonomous one opts in explicitly with
+    `mode=AutomationMode.AUTOPILOT, require_approval_before_submission=False`.
+    """
+    fields = {
+        "id": POLICY,
+        "user_id": USER,
+        "name": "Default policy",
+        "mode": AutomationMode.MANUAL,
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return ApplicationPolicy(**fields)
+
+
+def an_autopilot_policy(**overrides):
+    """A policy that permits unattended submission: AUTOPILOT with the brake off."""
+    fields = {
+        "mode": AutomationMode.AUTOPILOT,
+        "require_approval_before_submission": False,
+    }
+    fields.update(overrides)
+    return a_policy(**fields)
+
+
+def a_decision(**overrides):
+    """An AUTO_APPLY decision for the fixture pair, with a positive reason.
+
+    Carries no `match`/`eligibility` by default so a test can supply exactly the
+    verdicts it is exercising; a submitting kind with an INELIGIBLE eligibility would
+    be refused by the domain, which is the point of keeping them separate here.
+    """
+    fields = {
+        "id": DECISION,
+        "user_id": USER,
+        "candidate_profile_id": PROFILE,
+        "opportunity_id": OPPORTUNITY,
+        "policy_id": POLICY,
+        "kind": ApplicationDecisionKind.AUTO_APPLY,
+        "reasons": (a_reason(code="MEETS_POLICY", impact=ReasonImpact.POSITIVE),),
+        "decided_at": NOW,
+    }
+    fields.update(overrides)
+    return ApplicationDecision(**fields)
+
+
+def a_candidate_profile(**overrides):
+    """A candidate owned by `USER`, based in Lausanne.
+
+    Deliberately sparse where Phase 9 has no data — no evidence, no claims — and
+    populated where the engines actually read: a base location, one declared
+    language, one work authorization and an availability band. A test that needs
+    the empty case passes `languages=()`, `work_authorizations=()` or
+    `availability=None`; one that needs a different owner passes `user_id=OTHER_USER`
+    with `id=OTHER_PROFILE`.
+    """
+    fields = {
+        "id": PROFILE,
+        "user_id": USER,
+        "display_name": "Fixture Candidate",
+        "base_location": Location(country="CH", region="Vaud", city="Lausanne",
+                                  point=LAUSANNE, raw="Lausanne, Suisse"),
+        "languages": (LanguageProficiency(language="fr", level=LanguageLevel.C2),),
+        "work_authorizations": (
+            WorkAuthorization(country="CH",
+                              status=WorkAuthorizationStatus.CITIZEN),),
+        "availability": Availability(min_weekly_hours=20.0, max_weekly_hours=42.0),
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return CandidateProfile(**fields)
+
+
+def a_work_authorization(**overrides):
+    """A single-country right to work, CH/CITIZEN unless overridden."""
+    fields = {
+        "country": "CH",
+        "status": WorkAuthorizationStatus.CITIZEN,
+    }
+    fields.update(overrides)
+    return WorkAuthorization(**fields)
 
 
 def a_source_record(**overrides):
@@ -201,6 +349,85 @@ def a_company(*locations, **overrides):
     return Company(**fields)
 
 
+def an_evidence_record(**overrides):
+    """One `CandidateEvidence` owned by `USER`, a plain CV bullet by default.
+
+    Enough to back a claim or a résumé line: a test that needs a diploma or a
+    permit document passes `kind=` and `provenance=`, and one that needs another
+    owner passes `user_id=OTHER_USER`.
+    """
+    fields = {
+        "id": EVIDENCE,
+        "user_id": USER,
+        "kind": EvidenceKind.CV_BULLET,
+        "provenance": EvidenceProvenance.MANUAL_USER_INPUT,
+        "summary": "Led the checkout rewrite that cut latency by 30%",
+        "recorded_at": NOW,
+    }
+    fields.update(overrides)
+    return CandidateEvidence(**fields)
+
+
+def a_resume_content(*, evidence_id=EVIDENCE, **overrides):
+    """Minimal `ResumeDocument` content whose one summary line cites `evidence_id`.
+
+    A résumé with a single evidence-backed summary — enough for a version to be
+    valid and to render — leaving the heavier composition to the generator the
+    document tests exercise directly.
+    """
+    fields = {
+        "full_name": "Fixture Candidate",
+        "headline": "Backend engineer",
+        "summary": EvidenceBackedText(
+            text="Led the checkout rewrite that cut latency by 30%",
+            evidence_ids=(evidence_id,)),
+    }
+    fields.update(overrides)
+    return ResumeDocument(**fields)
+
+
+def a_rendered_document(*, storage_key, content=None, user_id=USER,
+                        candidate_profile_id=PROFILE, opportunity_id=OPPORTUNITY,
+                        document_type=CandidateDocumentType.RESUME,
+                        id=None, **overrides):
+    """A `CandidateDocument` with one RENDERED version pointing at `storage_key`.
+
+    The version carries a passing guard report and an artifact reference, which is
+    what a download needs. `storage_key` must be a key the caller has actually
+    written bytes under in the artifact store, or the download will raise
+    `ArtifactNotFound` — the builder describes the locator, it does not create the
+    file. The id defaults to the derived `candidate_document_id`, so a test that
+    seeds under a placeholder passes `id=` explicitly.
+    """
+    resolved_id = id if id is not None else candidate_document_id(
+        candidate_profile_id, opportunity_id, document_type.value)
+    content = content if content is not None else a_resume_content()
+    version = DocumentVersion(
+        id=document_version_id(resolved_id, 1),
+        version=1,
+        status=DocumentStatus.RENDERED,
+        language="fr",
+        content=content,
+        guard_report=DocumentGuardReport(ok=True),
+        artifact=DocumentArtifactRef(
+            storage_key=storage_key, media_type="application/pdf",
+            byte_size=1024, page_count=1, rendered_at=NOW),
+        generator_key="deterministic-reference/1",
+        created_at=NOW)
+    fields = {
+        "id": resolved_id,
+        "user_id": user_id,
+        "candidate_profile_id": candidate_profile_id,
+        "opportunity_id": opportunity_id,
+        "document_type": document_type,
+        "versions": (version,),
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return CandidateDocument(**fields)
+
+
 def a_search_profile(*areas, **overrides):
     """A saved search owned by `USER`, over the areas given.
 
@@ -219,3 +446,174 @@ def a_search_profile(*areas, **overrides):
     }
     fields.update(overrides)
     return SearchProfile(**fields)
+
+
+def an_llm_connection(**overrides):
+    """A user's OpenAI-compatible connection, with a stored (placeholder) credential.
+
+    Defaults to the shape that carries the most columns — a remote API connection
+    with a base URL, a model and an encrypted key — so a mapper that dropped one
+    fails a round-trip test. `encrypted_api_key` is an opaque placeholder ciphertext,
+    never a real key; a test that wants a CLI connection passes
+    `provider_type=LLMProviderType.CLAUDE_CODE, base_url=None, encrypted_api_key=None,
+    secret_version=None`, and one that wants another owner passes `user_id=OTHER_USER`.
+    """
+    fields = {
+        "id": CONNECTION,
+        "user_id": USER,
+        "provider_type": LLMProviderType.OPENAI_COMPATIBLE,
+        "display_name": "Work gateway",
+        "base_url": "https://gateway.example.invalid/v1",
+        "model": "external-model",
+        "encrypted_api_key": "gAAAAAB-placeholder-ciphertext-not-a-real-key",
+        "secret_version": 1,
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return LLMConnection(**fields)
+
+
+def a_provider_session(*, connection_id=CONNECTION, conversation_key="chat-1",
+                       **overrides):
+    """A provider session for one conversation on one connection.
+
+    The id derives from `(connection_id, conversation_key)` — the same rule the
+    domain enforces — so overriding either through the keyword parameters keeps the
+    id it would actually be stored under.
+    """
+    fields = {
+        "id": provider_session_id(connection_id, conversation_key),
+        "user_id": USER,
+        "connection_id": connection_id,
+        "conversation_key": conversation_key,
+        "purpose": TaskPurpose.CAREER_CHAT,
+        "external_session_id": "provider-session-abc",
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return ProviderSession(**fields)
+
+
+def an_llm_run(**overrides):
+    """A succeeded telemetry run with every measured field populated.
+
+    Deliberately full — tokens, cost, latency, a connection and a model — so a
+    round-trip proves the mapper carried each. A test that needs the unknown-is-null
+    case passes `prompt_tokens=None` (and so on); one that needs a failure passes
+    `status=LLMRunStatus.FAILED, failure_code=...`.
+    """
+    fields = {
+        "id": RUN,
+        "user_id": USER,
+        "connection_id": CONNECTION,
+        "provider_key": "openai_compatible",
+        "provider_type": LLMProviderType.OPENAI_COMPATIBLE,
+        "model": "external-model",
+        "purpose": TaskPurpose.RESUME_TAILORING,
+        "status": LLMRunStatus.SUCCEEDED,
+        "prompt_tokens": 1200,
+        "completion_tokens": 300,
+        "total_tokens": 1500,
+        "cost_usd": 0.012,
+        "latency_ms": 840,
+        "started_at": NOW,
+        "finished_at": LATER,
+    }
+    fields.update(overrides)
+    return LLMRun(**fields)
+
+
+def a_conversation(**overrides):
+    """A career-chat thread owned by `USER`, with one turn's worth of activity.
+
+    Defaults to an active (non-archived) thread whose `last_message_at` is set, so a
+    round trip proves every column carried. A test that needs the just-created empty
+    thread passes `last_message_at=None`; one that needs another owner passes
+    `user_id=OTHER_USER` with `id=OTHER_CONVERSATION`.
+    """
+    fields = {
+        "id": CONVERSATION,
+        "user_id": USER,
+        "title": "Postuler chez Fixture SA",
+        "created_at": NOW,
+        "updated_at": NOW,
+        "last_message_at": LATER,
+    }
+    fields.update(overrides)
+    return Conversation(**fields)
+
+
+def a_chat_message(*, conversation_id=CONVERSATION, sequence=0,
+                   role=ChatMessageRole.USER, **overrides):
+    """One turn in a conversation, a user message at sequence 0 by default.
+
+    The id derives from `(conversation_id, sequence)` — the rule the service applies — so
+    re-finalizing the same turn writes the same row rather than duplicating it. A user
+    message carries no LLM provenance; an assistant one opts in with
+    `role=ChatMessageRole.ASSISTANT, llm_run_id=RUN, provider_key="openai_compatible"`,
+    which is the only shape the `user_has_no_run` CHECK permits to hold telemetry.
+    """
+    fields = {
+        "id": chat_message_id(conversation_id, sequence),
+        "conversation_id": conversation_id,
+        "user_id": USER,
+        "role": role,
+        "content": "Peux-tu preparer ma candidature ?",
+        "sequence": sequence,
+        "created_at": NOW,
+    }
+    fields.update(overrides)
+    return ChatMessage(**fields)
+
+
+def a_chat_action_proposal(*, conversation_id=CONVERSATION, message_id=None,
+                           sequence=1, ordinal=0, action=None, **overrides):
+    """One typed action proposed in a turn, `PROPOSED` and awaiting confirmation.
+
+    Defaults to a `SubmitApplicationAction` — the heaviest-weight action, so a round trip
+    proves the JSONB payload and the denormalized `kind` column agree. The id derives from
+    `(message_id, ordinal)`; `message_id` defaults to the assistant turn at `sequence`
+    (1 by default, since the assistant answers the user's opening turn).
+    """
+    resolved_message_id = (message_id if message_id is not None
+                           else chat_message_id(conversation_id, sequence))
+    resolved_action = (action if action is not None
+                       else SubmitApplicationAction(application_id=APPLICATION))
+    fields = {
+        "id": chat_action_proposal_id(resolved_message_id, ordinal),
+        "conversation_id": conversation_id,
+        "message_id": resolved_message_id,
+        "user_id": USER,
+        "ordinal": ordinal,
+        "action": resolved_action,
+        "summary": "Soumettre la candidature",
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return ChatActionProposal(**fields)
+
+
+def a_chat_action_execution(*, proposal_id=None, **overrides):
+    """The audit of one confirmed proposal, a `SUCCEEDED` outcome by default.
+
+    The id derives from the proposal, so a double-confirm collapses onto one row rather
+    than running the action twice. `proposal_id` defaults to the derived id of the default
+    proposal above; a test that seeds a different proposal passes its id explicitly.
+    """
+    resolved_proposal_id = (
+        proposal_id if proposal_id is not None
+        else chat_action_proposal_id(chat_message_id(CONVERSATION, 1), 0))
+    fields = {
+        "id": chat_action_execution_id(resolved_proposal_id),
+        "proposal_id": resolved_proposal_id,
+        "user_id": USER,
+        "outcome": ChatActionExecutionOutcome.SUCCEEDED,
+        "detail": "Candidature soumise",
+        "result_ref": "SUBMITTED",
+        "created_at": NOW,
+    }
+    fields.update(overrides)
+    return ChatActionExecution(**fields)

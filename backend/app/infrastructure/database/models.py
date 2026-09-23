@@ -39,6 +39,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     SmallInteger,
     String,
@@ -50,7 +51,28 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql.elements import TextClause
 
-from backend.app.domain.candidate import WorkAuthorizationStatus
+from backend.app.domain.application import ApplicationState, SubmissionOutcome
+from backend.app.domain.application_channel import (
+    ApplicationChannel,
+    HumanRequiredReason,
+)
+from backend.app.domain.application_event import (
+    ApplicationEventActor,
+    ApplicationEventType,
+)
+from backend.app.domain.application_failure import ApplicationFailureCode
+from backend.app.domain.candidate import (
+    ClaimType,
+    EvidenceKind,
+    EvidenceProvenance,
+    WorkAuthorizationStatus,
+)
+from backend.app.domain.chat import (
+    ChatActionExecutionOutcome,
+    ChatActionKind,
+    ChatActionProposalStatus,
+    ChatMessageRole,
+)
 from backend.app.domain.common import (
     GeocodingConfidence,
     GeoPoint,
@@ -68,12 +90,28 @@ from backend.app.domain.company import (
     DetectionStatus,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.decision import ApplicationDecisionKind
+from backend.app.domain.documents import (
+    CandidateDocumentType,
+    DocumentStatus,
+)
+from backend.app.domain.eligibility import (
+    DeterminationSource,
+    EligibilityRequirement,
+    EligibilityStatus,
+    RuleAuthority,
+)
 from backend.app.domain.geo import GeocodingOutcome
 from backend.app.domain.matching import MatchDimension
 from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
+from backend.app.domain.policy import AutomationMode
 from backend.app.domain.search import SearchAreaKind
 from backend.app.domain.user import UserStatus
 from backend.app.infrastructure.database.base import Base, TimestampedMixin
+from backend.app.llm.connection import LLMProviderType
+from backend.app.llm.contracts import TaskPurpose
+from backend.app.llm.failures import LLMFailureCode
+from backend.app.llm.telemetry import LLMRunStatus
 
 # Advertised pay. `NUMERIC`, never a float: 4500.10 has to come back as 4500.10.
 # Two decimals is what postings quote, and 12 integer digits covers a yearly
@@ -414,10 +452,13 @@ class CandidateProfileRow(LocationColumnsMixin, TimestampedMixin, Base):
     double-submitted onboarding collides on the primary key instead of producing
     two profiles; a second profile would be an explicit act with a fresh id.
 
-    `evidence` and `claims` are absent, and their absence is enforced rather than
-    tolerated: the evidence store is Phase 10's, and
-    `SqlAlchemyCandidateProfileRepository` refuses a profile carrying either
-    instead of silently dropping records a claim depends on.
+    `evidence` and `claims` are child tables since Phase 10: the evidence store
+    the truth guard rests on. Each `candidate_claims` row cites the evidence it
+    rests on as a `TEXT[]` of evidence ids rather than a link table — the citation
+    is read and written whole with the claim, never joined across, and
+    `CandidateProfile._claims_rest_on_held_evidence` re-checks on the way back out
+    that every cited id is one this profile holds, so a dangling citation surfaces
+    as a loud construction error rather than a silent orphan.
 
     Availability is flattened into five columns plus a child table for the weekly
     slots, and all five are nullable: an all-NULL group with no slots reads back as
@@ -474,6 +515,14 @@ class CandidateProfileRow(LocationColumnsMixin, TimestampedMixin, Base):
         back_populates="profile", cascade="all, delete-orphan",
         passive_deletes=True, lazy="raise",
         order_by="CandidateAvailabilitySlotRow.ordinal")
+    evidence: Mapped[list["CandidateEvidenceRow"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="CandidateEvidenceRow.ordinal")
+    claims: Mapped[list["CandidateClaimRow"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="CandidateClaimRow.ordinal")
 
 
 # The domain's collections are tuples, and tuple order is information the candidate
@@ -528,9 +577,12 @@ class CandidateWorkAuthorizationRow(TimestampedMixin, Base):
     *ineligible* rather than a poor schedule fit. It is a legal fact a Country Pack
     supplies in Phase 5; this table only carries it.
 
-    `evidence_ids` from the domain object is not stored. Phase 10 owns the evidence
-    table, and a column holding ids with no table to point at would be a foreign key
-    that cannot be declared.
+    `evidence_ids` is a `TEXT[]` of the evidence records that attest the permit
+    (Phase 10 gave the store a home). It is not a foreign-key array — PostgreSQL
+    has none — but the ids all belong to the same profile's `candidate_evidence`,
+    and `CandidateProfile._claims_rest_on_held_evidence` re-checks that on read, so
+    a citation the profile does not hold fails loudly rather than dangling. Empty is
+    the honest default: a status can be recorded before its permit document is.
     """
 
     __tablename__ = "candidate_work_authorizations"
@@ -539,6 +591,7 @@ class CandidateWorkAuthorizationRow(TimestampedMixin, Base):
         _code_format("country", "^[A-Z]{2}$"),
         CheckConstraint("permit_hours_cap > 0 AND permit_hours_cap <= 168",
                         name="permit_hours_cap_range"),
+        _text_array_elements_present("evidence_ids"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -551,6 +604,8 @@ class CandidateWorkAuthorizationRow(TimestampedMixin, Base):
     permit_label: Mapped[str | None]
     valid_until: Mapped[date | None]
     permit_hours_cap: Mapped[float | None]
+    evidence_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
 
     profile: Mapped["CandidateProfileRow"] = relationship(
         back_populates="work_authorizations", lazy="raise")
@@ -587,6 +642,88 @@ class CandidateAvailabilitySlotRow(TimestampedMixin, Base):
 
     profile: Mapped["CandidateProfileRow"] = relationship(
         back_populates="availability_slots", lazy="raise")
+
+
+class CandidateEvidenceRow(TimestampedMixin, Base):
+    """One record attesting something about the candidate (Phase 10).
+
+    The V2 form of a V1 base-library bullet, and the store the truth guard rests
+    on: every claim and every generated document line cites the id of a row here.
+    `reference_key` keeps the V1 bullet id ("acme-checkout"), so importing the base
+    CV loses no link back to the YAML.
+
+    No `user_id` column: an evidence record is owned by exactly the profile it
+    hangs from, and `CandidateProfile` refuses to aggregate another user's records,
+    so the owner is the profile's owner and a second copy on the row could only
+    disagree. `source_document` is a label (a path, a URL), never file bytes — the
+    domain describes where proof lives, it does not carry it.
+    """
+
+    __tablename__ = "candidate_evidence"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "ordinal"),
+        CheckConstraint("issued_on <= valid_until", name="validity_window_ordered"),
+        Index("ix_candidate_evidence_profile_id", "profile_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey(_PROFILE_FK, ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(SmallInteger, doc=_ORDINAL_DOC)
+    kind: Mapped[EvidenceKind] = mapped_column(
+        enum_column(EvidenceKind, "evidence_kind"))
+    provenance: Mapped[EvidenceProvenance] = mapped_column(
+        enum_column(EvidenceProvenance, "evidence_provenance"))
+    reference_key: Mapped[str | None]
+    summary: Mapped[str]
+    detail: Mapped[str | None]
+    issued_on: Mapped[date | None]
+    valid_until: Mapped[date | None]
+    source_document: Mapped[str | None]
+    recorded_at: Mapped[datetime]
+
+    profile: Mapped["CandidateProfileRow"] = relationship(
+        back_populates="evidence", lazy="raise")
+
+
+class CandidateClaimRow(TimestampedMixin, Base):
+    """Something the platform will say on the candidate's behalf, and its backing.
+
+    `evidence_ids` is a `TEXT[]` and is CHECK-constrained to at least one element,
+    which is `CandidateClaim.evidence_ids`' `min_length=1` made physical: an
+    unsupported claim cannot reach the table any more than it can be constructed.
+    The ids point into the same profile's `candidate_evidence`; that they are held
+    is re-checked by `CandidateProfile` on read rather than by a foreign key, for
+    the reason the column comment on `candidate_work_authorizations.evidence_ids`
+    gives.
+
+    No `user_id` column, for the same reason `candidate_evidence` has none.
+    """
+
+    __tablename__ = "candidate_claims"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "ordinal"),
+        _text_array_elements_present("evidence_ids"),
+        # `CandidateClaim.evidence_ids` — `Field(min_length=1)` — as a CHECK, so a
+        # claim resting on nothing cannot be written even outside the model.
+        CheckConstraint("array_length(evidence_ids, 1) >= 1",
+                        name="evidence_ids_present"),
+        Index("ix_candidate_claims_profile_id", "profile_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey(_PROFILE_FK, ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(SmallInteger, doc=_ORDINAL_DOC)
+    claim_type: Mapped[ClaimType] = mapped_column(
+        enum_column(ClaimType, "claim_type"))
+    label: Mapped[str]
+    detail: Mapped[str | None]
+    evidence_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
+
+    profile: Mapped["CandidateProfileRow"] = relationship(
+        back_populates="claims", lazy="raise")
 
 
 
@@ -1368,7 +1505,918 @@ class GeocodingCacheRow(TimestampedMixin, Base):
     expires_at: Mapped[datetime | None]
 
 
+# `EligibilityCheck._verdict_is_accountable`, as three CHECKs. The domain refuses
+# to *construct* a check that trips any of them; restating them here is what keeps
+# a row written by a migration, a backfill or psql from asserting a verdict the
+# engine could never have produced — most consequentially the legal-safety rule,
+# below, that operator-maintained pack data may not refuse an application on its
+# own (docs/COUNTRY_PACKS.md §Eligibility, §59). Each is written as the implication
+# it is — `NOT antecedent OR consequent` — because that is the form a CHECK, which
+# fails only on FALSE, evaluates the way the prose reads.
+_ELIGIBILITY_REASONS_PRESENT: Final[str] = (
+    f"status = '{EligibilityStatus.ELIGIBLE.value}'"
+    " OR jsonb_array_length(reasons) >= 1"
+)
 
+_ELIGIBILITY_LLM_IS_INCOMPLETE: Final[str] = (
+    f"determined_by <> '{DeterminationSource.LLM_EXTRACTION.value}'"
+    f" OR status = '{EligibilityStatus.INCOMPLETE.value}'"
+)
+
+_ELIGIBILITY_PACK_BLOCKS_ONLY_WHEN_VERIFIED: Final[str] = (
+    f"determined_by <> '{DeterminationSource.COUNTRY_PACK_RULE.value}'"
+    f" OR status <> '{EligibilityStatus.INELIGIBLE.value}'"
+    f" OR authority = '{RuleAuthority.VERIFIED.value}'"
+)
+
+
+class EligibilityResultRow(TimestampedMixin, Base):
+    """Whether one candidate may apply to one opportunity — the second, separate axis.
+
+    Deliberately its own table beside `match_evaluations`, never a column on it:
+    docs/V2_SPECIFICATION.md §13 and CLAUDE.md make eligibility a different question
+    from fit, with a different verdict type, and a schema that folded the two would
+    invite exactly the averaging the phase order forbids. A pair can score 92% and
+    be INELIGIBLE, or 61% and ELIGIBLE; two tables is what keeps those independent.
+
+    `status` is stored even though `EligibilityResult.status` is *derived* from the
+    checks. The duplication is the same trade `MatchEvaluationRow.overall` makes: a
+    list that ranks and filters by verdict must not load every child row of every
+    result to do it. The mapper writes the derived value and never a second opinion,
+    and `ck_eligibility_checks_*` keep the checks it is derived from honest, so the
+    denormalized copy cannot assert a pass over a failed gate.
+
+    `UNIQUE (candidate_profile_id, opportunity_id)` makes re-evaluation an upsert,
+    and the foreign keys cascade from `users` so a deleted account leaves no verdict
+    behind. `user_id` is carried for the same authorization reason it is on
+    `match_evaluations`: every scoped read is `WHERE user_id = ?`, and a policy that
+    needed a join to know the owner is one that will be written without it.
+    """
+
+    __tablename__ = "eligibility_results"
+    __table_args__ = (
+        UniqueConstraint("candidate_profile_id", "opportunity_id"),
+        # The shape of every authorization-scoped read: this user's verdicts,
+        # newest first.
+        Index("ix_eligibility_results_user_id_determined_at",
+              "user_id", "determined_at"),
+        Index("ix_eligibility_results_opportunity_id", "opportunity_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    candidate_profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    opportunity_id: Mapped[UUID] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"))
+    status: Mapped[EligibilityStatus] = mapped_column(
+        enum_column(EligibilityStatus, "eligibility_result_status"))
+    # The engine and policy that produced this verdict, for audit — the eligibility
+    # twin of `match_evaluations.evaluator_key`, kept a plain string for the same
+    # provider-neutral reason.
+    policy_version: Mapped[str | None]
+    determined_at: Mapped[datetime]
+
+    checks: Mapped[list["EligibilityCheckRow"]] = relationship(
+        back_populates="result", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="EligibilityCheckRow.ordinal")
+
+
+class EligibilityCheckRow(TimestampedMixin, Base):
+    """One gate of one eligibility result, with the reasons that closed it.
+
+    A child table rather than a JSONB array on the result, and for a sharper reason
+    than `match_dimension_scores` has: the three CHECKs below are the domain's
+    accountability invariants, and PostgreSQL can only police them per row. Folding
+    the checks into a document column would move `EligibilityCheck._verdict_is_
+    accountable` back into Python alone, where the first write that skipped the model
+    would be free to store an unexplained refusal or an LLM-decided one.
+
+    `ordinal` is the natural key. Unlike a dimension score, a requirement may repeat
+    — two required languages are two `LANGUAGE_MINIMUM` gates — so the requirement
+    cannot identify a row and position is what is left. `UNIQUE (result_id, ordinal)`
+    is therefore what makes re-evaluating a pair update the rows already there, and a
+    gate that a re-run no longer emits is deleted by the `delete-orphan` cascade.
+
+    `evidence_ids` is a `TEXT[]` of the candidate evidence a gate rested on, stored
+    since Phase 10 gave the evidence store a home. Not a foreign-key array —
+    PostgreSQL has none — and unlike a claim's citation it is not re-checked against
+    a held set here, because an eligibility check belongs to a verdict, not to the
+    profile whose evidence it names; it is provenance for why the gate closed the
+    way it did. Empty is the default: a deterministic gate often rests on a permit
+    field rather than on a discrete evidence record.
+    """
+
+    __tablename__ = "eligibility_checks"
+    __table_args__ = (
+        UniqueConstraint("result_id", "ordinal"),
+        # `EligibilityCheck._verdict_is_accountable`, restated so a non-model write
+        # cannot slip past it. Order matches the domain validator.
+        CheckConstraint(_ELIGIBILITY_REASONS_PRESENT,
+                        name="reasons_present_unless_eligible"),
+        CheckConstraint(_ELIGIBILITY_LLM_IS_INCOMPLETE,
+                        name="llm_extraction_is_incomplete"),
+        CheckConstraint(_ELIGIBILITY_PACK_BLOCKS_ONLY_WHEN_VERIFIED,
+                        name="pack_rule_blocks_only_when_verified"),
+        _text_array_elements_present("evidence_ids"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    # Short FK column name on purpose: the convention derives
+    # `fk_eligibility_checks_result_id_eligibility_results` (51 chars) from it, and
+    # `eligibility_result_id` would push that past PostgreSQL's 63-char limit into a
+    # silently truncated name a migration cannot reliably drop — the same reason the
+    # candidate child tables say `profile_id`.
+    result_id: Mapped[UUID] = mapped_column(
+        ForeignKey("eligibility_results.id", ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(SmallInteger, doc=_ORDINAL_DOC)
+    requirement: Mapped[EligibilityRequirement] = mapped_column(
+        enum_column(EligibilityRequirement, "eligibility_requirement"))
+    status: Mapped[EligibilityStatus] = mapped_column(
+        enum_column(EligibilityStatus, "eligibility_check_status"))
+    determined_by: Mapped[DeterminationSource] = mapped_column(
+        enum_column(DeterminationSource, "eligibility_determination_source"))
+    authority: Mapped[RuleAuthority] = mapped_column(
+        enum_column(RuleAuthority, "eligibility_rule_authority"),
+        server_default=text(f"'{RuleAuthority.UNKNOWN.value}'"))
+    detail: Mapped[str | None]
+    reasons: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    evidence_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=_EMPTY_TEXT_ARRAY)
+
+    result: Mapped["EligibilityResultRow"] = relationship(
+        back_populates="checks", lazy="raise")
+
+
+# `DocumentVersion._status_agrees_with_verdict_and_artifact`, as CHECK expressions.
+# The status is a summary of the guard's verdict and of whether a PDF was rendered,
+# and a row where the three disagree would let a rejected version be served as
+# usable — exactly the silent failure the guard exists to prevent. Each clause is
+# the implication the domain validator states, in the `NOT antecedent OR
+# consequent` form a CHECK (which fails only on FALSE) reads as written. `guard_ok`
+# is the extracted boolean the mapper writes from `guard_report.ok`, because a
+# CHECK cannot reach inside a JSONB document and stay legible.
+_DOCUMENT_VERSION_VERDICT_AGREES: Final[str] = (
+    "(status NOT IN ('VALIDATED', 'RENDERED') OR guard_ok IS TRUE)"
+    " AND (status <> 'REJECTED' OR guard_ok IS FALSE)"
+)
+# A RENDERED version references its artifact; no other status carries one. Written
+# against `artifact_storage_key` as the presence witness, the column the artifact
+# group cannot be missing when it exists.
+_DOCUMENT_VERSION_ARTIFACT_MATCHES_STATUS: Final[str] = (
+    "(status = 'RENDERED') = (artifact_storage_key IS NOT NULL)"
+)
+
+
+class CandidateDocumentRow(TimestampedMixin, Base):
+    """A document a candidate keeps for one posting, across its versions (Phase 10).
+
+    User-owned and scoped to a `(candidate_profile_id, opportunity_id,
+    document_type)` triple — the triple `candidate_document_id` derives from — so
+    regenerating a résumé for a posting reuses this row and appends a *version*
+    rather than leaving a second, orphaned document behind. `UNIQUE` on that triple
+    is what makes the regeneration an upsert.
+
+    `user_id` is carried alongside `candidate_profile_id` for the authorization
+    reason every user-owned table states: each scoped read is `WHERE user_id = ?`,
+    one indexed predicate rather than a join a policy could forget. All three
+    foreign keys cascade from their parents, so a deleted account, profile or
+    posting leaves no document behind.
+    """
+
+    __tablename__ = "candidate_documents"
+    __table_args__ = (
+        # Named explicitly: the convention would derive
+        # `uq_candidate_documents_candidate_profile_id_opportunity_id_document_type`
+        # at 72 characters, which PostgreSQL silently truncates to 63 — a name a
+        # migration then cannot address. The short name is a pure function of the
+        # columns just as the generated one is, only within the limit.
+        UniqueConstraint("candidate_profile_id", "opportunity_id", "document_type",
+                         name="uq_candidate_documents_profile_opportunity_type"),
+        Index("ix_candidate_documents_user_id_updated_at", "user_id", "updated_at"),
+        Index("ix_candidate_documents_opportunity_id", "opportunity_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    candidate_profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    opportunity_id: Mapped[UUID] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"))
+    document_type: Mapped[CandidateDocumentType] = mapped_column(
+        enum_column(CandidateDocumentType, "candidate_document_type"))
+
+    versions: Mapped[list["DocumentVersionRow"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="DocumentVersionRow.version")
+
+
+class DocumentVersionRow(TimestampedMixin, Base):
+    """One attempt at a document: content, the guard's verdict, and its artifact.
+
+    `content` and `guard_report` are JSONB documents validated back through the
+    domain on read, the same trade `match_evaluations.reasons` makes: they are read
+    and written whole and never queried into, so a child table per bullet would buy
+    nothing. `guard_ok` is the one field lifted out of `guard_report`, because the
+    three status/verdict CHECKs must be able to read the verdict without reaching
+    inside a JSONB document.
+
+    The artifact reference is flattened into five nullable columns, present exactly
+    when `status = 'RENDERED'` (`ck_document_versions_artifact_matches_status`). The
+    bytes themselves live in a `DocumentArtifactStore`, not here — the table carries
+    the locator, for the reason `CandidateEvidence.source_document` is a label.
+
+    `created_at` from `TimestampedMixin` is the row-write instant; the domain's own
+    `DocumentVersion.created_at` is written into it by the mapper and preserved
+    across the in-place status transitions a version goes through (DRAFT →
+    VALIDATED → RENDERED), so it keeps meaning "when this attempt was made".
+    """
+
+    __tablename__ = "document_versions"
+    __table_args__ = (
+        UniqueConstraint("document_id", "version"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint("artifact_byte_size >= 0", name="artifact_byte_size_non_negative"),
+        CheckConstraint("artifact_page_count >= 1", name="artifact_page_count_positive"),
+        _code_format("language", "^[a-z]{2}$"),
+        CheckConstraint(_DOCUMENT_VERSION_VERDICT_AGREES,
+                        name="status_agrees_with_verdict"),
+        CheckConstraint(_DOCUMENT_VERSION_ARTIFACT_MATCHES_STATUS,
+                        name="artifact_matches_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("candidate_documents.id", ondelete="CASCADE"))
+    version: Mapped[int] = mapped_column(SmallInteger)
+    status: Mapped[DocumentStatus] = mapped_column(
+        enum_column(DocumentStatus, "document_status"))
+    language: Mapped[str] = mapped_column(String(2))
+    content: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
+    guard_report: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # Lifted out of `guard_report` so the status CHECKs can read the verdict
+    # without a JSONB path expression. NULL when the version has not been guarded
+    # yet (a DRAFT); the mapper keeps it in step with `guard_report.ok`.
+    guard_ok: Mapped[bool | None]
+    generator_key: Mapped[str | None]
+    created_at: Mapped[datetime]
+
+    artifact_storage_key: Mapped[str | None]
+    artifact_media_type: Mapped[str | None]
+    artifact_byte_size: Mapped[int | None]
+    artifact_page_count: Mapped[int | None] = mapped_column(SmallInteger)
+    artifact_rendered_at: Mapped[datetime | None]
+
+    document: Mapped["CandidateDocumentRow"] = relationship(
+        back_populates="versions", lazy="raise")
+
+
+# `LLMConnection._transport_shape_is_coherent`, as a CHECK. A CLI connection carries
+# no base URL, no stored credential and no custom headers — the data-layer half of
+# the §1 rule that the platform never injects a credential into a self-authenticating
+# CLI — while an API connection must name the endpoint it speaks to (§5 forbids
+# assuming the hostname, so it is required, never defaulted). The two provider-type
+# lists are the `_CLI_TYPES` split in `backend.app.llm.connection`, restated so a
+# non-model write cannot store a connection the factory could not build.
+_LLM_CONNECTION_TRANSPORT_SHAPE: Final[str] = (
+    f"(provider_type IN ('{LLMProviderType.CLAUDE_CODE.value}',"
+    f" '{LLMProviderType.CODEX.value}')"
+    " AND base_url IS NULL AND encrypted_api_key IS NULL"
+    " AND custom_headers = '{}'::jsonb)"
+    f" OR (provider_type IN ('{LLMProviderType.OPENAI_COMPATIBLE.value}',"
+    f" '{LLMProviderType.LOCAL_OPENAI_COMPATIBLE.value}')"
+    " AND base_url IS NOT NULL)"
+)
+
+# `LLMConnection._secret_pair_is_complete`: the ciphertext and the version tag naming
+# the key that made it are stored together or not at all, so a row can never carry a
+# ciphertext no version can decrypt or a version with nothing to decrypt.
+_LLM_CONNECTION_SECRET_PAIR: Final[str] = (
+    "(encrypted_api_key IS NULL) = (secret_version IS NULL)"  # noqa: S105 — a SQL CHECK
+)
+
+# `LLMRun._status_agrees_with_shape`, as two CHECKs. A STARTED run is in flight and
+# has no `finished_at`; a terminal run has one. A failure (FAILED or TIMEOUT) carries
+# a code; every other status carries none — so a stored row cannot claim a success
+# with a failure code or a failure with none.
+_LLM_RUN_STARTED_HAS_NO_FINISH: Final[str] = (
+    f"(status = '{LLMRunStatus.STARTED.value}') = (finished_at IS NULL)"
+)
+_LLM_RUN_FAILURE_CARRIES_CODE: Final[str] = (
+    f"(status IN ('{LLMRunStatus.FAILED.value}', '{LLMRunStatus.TIMEOUT.value}'))"
+    " = (failure_code IS NOT NULL)"
+)
+# `LLMRun._fallback_pair_is_complete`: the provider given way from and the reason it
+# gave are recorded together, so a run cannot name a fallback origin with no reason.
+_LLM_RUN_FALLBACK_PAIR: Final[str] = (
+    "(fallback_from IS NULL) = (fallback_reason IS NULL)"
+)
+
+# A provider key as `LLMProviderMetadata.provider_key` validates it. Distinct from
+# `_PROVENANCE_KEY_LENGTH`'s `^[a-z][a-z0-9_]*$` because a provider key may carry a
+# hyphen; the trailing `-` in the class is a literal.
+_PROVIDER_KEY_PATTERN: Final[str] = "^[a-z][a-z0-9_-]*$"
+
+
+class LLMConnectionRow(TimestampedMixin, Base):
+    """A user's stored connection to an LLM provider (Phase 11 §4).
+
+    User-owned: `user_id` cascades from `users`, and every read is `WHERE user_id = ?`
+    so one account cannot see another's connections or the keys they hold. The
+    credential is `encrypted_api_key` — the ciphertext `SecretCipher` produced, never
+    the plaintext — beside `secret_version`, the tag naming the key that made it; the
+    two are both-or-neither (`ck_llm_connections_secret_pair`), and the master key that
+    decrypts them is never a column (§21).
+
+    `is_default` marks the connection a task uses when the user stated no preference,
+    and a partial unique index allows at most one per account — the connection twin of
+    `company_locations`' single-headquarters rule. `custom_headers` is JSONB rather
+    than a child table for the reason `ats_evidence` is: it is read and written whole
+    with the connection and never queried into.
+    """
+
+    __tablename__ = "llm_connections"
+    __table_args__ = (
+        CheckConstraint(_LLM_CONNECTION_SECRET_PAIR, name="secret_pair_complete"),
+        CheckConstraint(_LLM_CONNECTION_TRANSPORT_SHAPE,
+                        name="transport_shape_coherent"),
+        CheckConstraint("secret_version >= 1", name="secret_version_positive"),
+        CheckConstraint("priority >= 0", name="priority_non_negative"),
+        # Scoped reads list a user's connections by priority; one index serves them.
+        Index("ix_llm_connections_user_id", "user_id"),
+        # At most one default per account, said to the database the way the single
+        # headquarters is: a partial unique index, free on the non-default rows.
+        Index("uq_llm_connections_user_id_default", "user_id",
+              unique=True, postgresql_where=text("is_default")),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    provider_type: Mapped[LLMProviderType] = mapped_column(
+        enum_column(LLMProviderType, "llm_provider_type"))
+    display_name: Mapped[str]
+    base_url: Mapped[str | None]
+    model: Mapped[str | None]
+    encrypted_api_key: Mapped[str | None]
+    secret_version: Mapped[int | None] = mapped_column(SmallInteger)
+    custom_headers: Mapped[dict[str, str]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
+    enabled: Mapped[bool] = mapped_column(server_default=text("true"))
+    is_default: Mapped[bool] = mapped_column(server_default=text("false"))
+    priority: Mapped[int] = mapped_column(SmallInteger, server_default=text("100"))
+
+    sessions: Mapped[list["ProviderSessionRow"]] = relationship(
+        back_populates="connection", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="ProviderSessionRow.conversation_key")
+
+
+class ProviderSessionRow(TimestampedMixin, Base):
+    """The provider-side handle for one conversation on one connection (§4).
+
+    Replaces V1's provider-specific `claude_session_id` column with a neutral
+    `external_session_id`, so a resumable exchange keeps its handle without a generic
+    table learning a provider's vocabulary. `UNIQUE (connection_id, conversation_key)`
+    is the natural key `provider_session_id` derives the primary key from, so resuming
+    a conversation refreshes the one row rather than inserting a second.
+
+    `user_id` is carried for the authorization reason every user-owned table states —
+    a session is read for its owner — and cascades from `users`; the connection
+    cascade takes a session with the connection it belongs to.
+    """
+
+    __tablename__ = "provider_sessions"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "conversation_key"),
+        Index("ix_provider_sessions_user_id", "user_id"),
+        Index("ix_provider_sessions_connection_id", "connection_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    connection_id: Mapped[UUID] = mapped_column(
+        ForeignKey("llm_connections.id", ondelete="CASCADE"))
+    conversation_key: Mapped[str]
+    purpose: Mapped[TaskPurpose] = mapped_column(
+        enum_column(TaskPurpose, "provider_session_purpose"),
+        server_default=text(f"'{TaskPurpose.GENERIC.value}'"))
+    external_session_id: Mapped[str | None]
+
+    connection: Mapped["LLMConnectionRow"] = relationship(
+        back_populates="sessions", lazy="raise")
+
+
+class LLMRunRow(TimestampedMixin, Base):
+    """One telemetry record of one LLM call (§12, §56).
+
+    `user_id` and `connection_id` are nullable: a healthcheck probe has no user, and a
+    provider built by `bootstrap` rather than from a stored connection has no
+    connection. `connection_id` is `ON DELETE SET NULL`, not CASCADE — a run is
+    provenance and outlives the connection it used, the same trade
+    `company_discovery_records` makes — while `user_id` cascades, so deleting an
+    account takes its runs with it.
+
+    The token, cost and latency columns are all nullable because the unknown is null,
+    never zero (§58): a CLI that reports no usage leaves them NULL, and a telemetry sum
+    skips them rather than counting a fabricated 0. The three CHECKs restate
+    `LLMRun`'s validators, so a row written outside the model still cannot claim a
+    success with a failure code, a STARTED run that finished, or a fallback with no
+    reason.
+    """
+
+    __tablename__ = "llm_runs"
+    __table_args__ = (
+        CheckConstraint(_LLM_RUN_STARTED_HAS_NO_FINISH,
+                        name="started_has_no_finish"),
+        CheckConstraint(_LLM_RUN_FAILURE_CARRIES_CODE, name="failure_carries_code"),
+        CheckConstraint(_LLM_RUN_FALLBACK_PAIR, name="fallback_pair_complete"),
+        CheckConstraint("prompt_tokens >= 0 AND completion_tokens >= 0"
+                        " AND total_tokens >= 0", name="token_counts_non_negative"),
+        CheckConstraint("cost_usd >= 0.0", name="cost_non_negative"),
+        CheckConstraint("latency_ms >= 0", name="latency_non_negative"),
+        CheckConstraint(f"provider_key ~ '{_PROVIDER_KEY_PATTERN}'",
+                        name="provider_key_format"),
+        # "My runs, newest first" and "this provider's runs, newest first" — the two
+        # questions a telemetry screen and a status page ask.
+        Index("ix_llm_runs_user_id_started_at", "user_id", "started_at"),
+        Index("ix_llm_runs_provider_key_started_at", "provider_key", "started_at"),
+        Index("ix_llm_runs_connection_id", "connection_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    connection_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("llm_connections.id", ondelete="SET NULL"))
+    provider_key: Mapped[str]
+    provider_type: Mapped[LLMProviderType | None] = mapped_column(
+        enum_column(LLMProviderType, "llm_run_provider_type"))
+    model: Mapped[str | None]
+    purpose: Mapped[TaskPurpose] = mapped_column(
+        enum_column(TaskPurpose, "llm_run_purpose"),
+        server_default=text(f"'{TaskPurpose.GENERIC.value}'"))
+    status: Mapped[LLMRunStatus] = mapped_column(
+        enum_column(LLMRunStatus, "llm_run_status"))
+
+    prompt_name: Mapped[str | None]
+    prompt_version: Mapped[str | None]
+
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer)
+    total_tokens: Mapped[int | None] = mapped_column(Integer)
+    cost_usd: Mapped[float | None]
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+
+    failure_code: Mapped[LLMFailureCode | None] = mapped_column(
+        enum_column(LLMFailureCode, "llm_run_failure_code"))
+    failure_detail: Mapped[str | None]
+
+    fallback_from: Mapped[str | None]
+    fallback_reason: Mapped[LLMFailureCode | None] = mapped_column(
+        enum_column(LLMFailureCode, "llm_run_fallback_reason"))
+
+    started_at: Mapped[datetime]
+    finished_at: Mapped[datetime | None]
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 — the application engine. Five tables: the user's policy, the
+# decision of intent, the execution aggregate, its append-only event trail, and
+# its submission attempts. Every CHECK below restates a domain validator, so a
+# row written by a migration or by psql cannot assert a state the engine could
+# never have produced (§17-18, §36-41).
+# ---------------------------------------------------------------------------
+
+# `ApplicationPolicy._brakes_and_limits_are_coherent`: only AUTOPILOT may switch
+# the approval brake off. Written as the implication it is, so the CHECK reads the
+# way the prose does.
+_POLICY_BRAKE_COHERENT: Final[str] = (
+    f"mode = '{AutomationMode.AUTOPILOT.value}'"
+    " OR require_approval_before_submission"
+)
+
+# `ApplicationDecision._target_matches_the_kind`: a spontaneous application names a
+# company, everything else names an opportunity.
+_DECISION_TARGET_MATCHES_KIND: Final[str] = (
+    f"(kind = '{ApplicationDecisionKind.SPONTANEOUS_APPLICATION.value}'"
+    " AND company_id IS NOT NULL)"
+    f" OR (kind <> '{ApplicationDecisionKind.SPONTANEOUS_APPLICATION.value}'"
+    " AND opportunity_id IS NOT NULL)"
+)
+
+# `Application._target_is_singular_and_keyed`: exactly one of the two targets.
+_APPLICATION_TARGET_SINGULAR: Final[str] = (
+    "(opportunity_id IS NULL) <> (company_id IS NULL)"
+)
+
+# `SubmissionResult._fields_match_the_outcome`, applied only once an outcome is
+# recorded — an in-flight attempt (outcome NULL) carries none of these yet (§88).
+_ATTEMPT_REQUIRES_HUMAN_HAS_REASON: Final[str] = (
+    f"outcome IS NULL OR outcome <> '{SubmissionOutcome.REQUIRES_HUMAN.value}'"
+    " OR human_required_reason IS NOT NULL"
+)
+_ATTEMPT_HUMAN_REASON_ONLY_ON_HUMAN: Final[str] = (
+    "human_required_reason IS NULL"
+    f" OR outcome = '{SubmissionOutcome.REQUIRES_HUMAN.value}'"
+)
+_ATTEMPT_FAILED_HAS_CODE: Final[str] = (
+    f"outcome IS NULL OR outcome <> '{SubmissionOutcome.FAILED.value}'"
+    " OR failure_code IS NOT NULL"
+)
+_ATTEMPT_CODE_ONLY_ON_FAILED: Final[str] = (
+    f"failure_code IS NULL OR outcome = '{SubmissionOutcome.FAILED.value}'"
+)
+_ATTEMPT_CONFIRMATION_ONLY_ON_SUBMITTED: Final[str] = (
+    "confirmation_reference IS NULL"
+    f" OR outcome = '{SubmissionOutcome.SUBMITTED.value}'"
+)
+
+
+class ApplicationPolicyRow(TimestampedMixin, Base):
+    """A user's standing rules about applying (§2, §70).
+
+    User-owned; `created_at`/`updated_at` are domain-supplied and written by the
+    mapper, as on `users`. The brake CHECK is the data-layer half of "only AUTOPILOT
+    may submit unattended" — a lesser mode with the approval brake off is a row the
+    engine could never have built, and the CHECK refuses it.
+    """
+
+    __tablename__ = "application_policies"
+    __table_args__ = (
+        _unit_interval("minimum_overall_score"),
+        _enum_array_members("allowed_opportunity_types", OpportunityType),
+        CheckConstraint(_POLICY_BRAKE_COHERENT, name="brake_coherent"),
+        CheckConstraint(
+            "max_applications_per_day IS NULL OR max_applications_per_day >= 0",
+            name="max_per_day_non_negative"),
+        CheckConstraint(
+            "max_applications_per_week IS NULL OR max_applications_per_week >= 0",
+            name="max_per_week_non_negative"),
+        CheckConstraint(
+            "max_applications_per_day IS NULL OR max_applications_per_week IS NULL"
+            " OR max_applications_per_day <= max_applications_per_week",
+            name="day_within_week"),
+        Index("ix_application_policies_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    name: Mapped[str]
+    is_active: Mapped[bool] = mapped_column(server_default=text("true"))
+    mode: Mapped[AutomationMode] = mapped_column(
+        enum_column(AutomationMode, "application_automation_mode"))
+    require_approval_before_submission: Mapped[bool] = mapped_column(
+        server_default=text("true"))
+    allowed_opportunity_types: Mapped[list[str]] = mapped_column(
+        ARRAY(Text()), server_default=_EMPTY_TEXT_ARRAY)
+    minimum_overall_score: Mapped[float | None]
+    dimension_thresholds: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    allow_incomplete_eligibility: Mapped[bool] = mapped_column(
+        server_default=text("false"))
+    allow_spontaneous_applications: Mapped[bool] = mapped_column(
+        server_default=text("false"))
+    max_applications_per_day: Mapped[int | None] = mapped_column(Integer)
+    max_applications_per_week: Mapped[int | None] = mapped_column(Integer)
+
+
+class ApplicationDecisionRow(TimestampedMixin, Base):
+    """One decision of intent about one target (§2-3).
+
+    `created_at`/`updated_at` are the row's own bookkeeping (server default);
+    `decided_at` is the domain fact. The embedded match and eligibility snapshots are
+    *not* stored here — they live in their own tables and the engine re-reads them at
+    gate time, so a decision row is the intent plus the ids it is about. The target
+    CHECK mirrors the domain: a spontaneous decision names a company, all others an
+    opportunity.
+    """
+
+    __tablename__ = "application_decisions"
+    __table_args__ = (
+        _unit_interval("confidence"),
+        CheckConstraint(_DECISION_TARGET_MATCHES_KIND, name="target_matches_kind"),
+        CheckConstraint("jsonb_array_length(reasons) >= 1", name="reasons_present"),
+        Index("ix_application_decisions_user_id_decided_at", "user_id", "decided_at"),
+        Index("ix_application_decisions_candidate_profile_id_opportunity_id",
+              "candidate_profile_id", "opportunity_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    # Explicitly named: the convention's
+    # `fk_application_decisions_candidate_profile_id_candidate_profiles` is 64
+    # characters, one past PostgreSQL's 63-char limit, so it is shortened here the
+    # way `eligibility_checks.result_id` shortens its column for the same reason.
+    candidate_profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE",
+                   name="fk_application_decisions_candidate_profile"))
+    opportunity_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"))
+    company_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"))
+    policy_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("application_policies.id", ondelete="SET NULL"))
+    kind: Mapped[ApplicationDecisionKind] = mapped_column(
+        enum_column(ApplicationDecisionKind, "application_decision_kind"))
+    reasons: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    confidence: Mapped[float | None]
+    requires_human_review: Mapped[bool] = mapped_column(server_default=text("false"))
+    decided_by: Mapped[str | None]
+    decided_at: Mapped[datetime]
+
+
+class ApplicationRow(TimestampedMixin, Base):
+    """The execution aggregate for one (candidate, target, channel) application (§17).
+
+    `created_at`/`updated_at` are domain-supplied and written by the mapper. The
+    UNIQUE on `idempotency_key` is the data-layer half of the duplicate-prevention
+    story (§36): the id is derived from the key, so a second application for the same
+    target collides on the key even if it bypassed the derivation. `pinned_documents`
+    and `answers` are JSONB — read and written whole with the aggregate, never joined.
+    """
+
+    __tablename__ = "applications"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key"),
+        CheckConstraint(_APPLICATION_TARGET_SINGULAR, name="target_singular"),
+        CheckConstraint("attempt_count >= 0", name="attempt_count_non_negative"),
+        Index("ix_applications_user_id_updated_at", "user_id", "updated_at"),
+        Index("ix_applications_state", "state"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    candidate_profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    decision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("application_decisions.id", ondelete="CASCADE"))
+    channel: Mapped[ApplicationChannel] = mapped_column(
+        enum_column(ApplicationChannel, "application_channel"))
+    state: Mapped[ApplicationState] = mapped_column(
+        enum_column(ApplicationState, "application_state"))
+    idempotency_key: Mapped[str]
+    opportunity_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"))
+    company_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"))
+    policy_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("application_policies.id", ondelete="SET NULL"))
+    pinned_documents: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    answers: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    form_fingerprint: Mapped[str | None]
+    attempt_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    correlation_id: Mapped[str | None]
+
+    events: Mapped[list["ApplicationEventRow"]] = relationship(
+        back_populates="application", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="ApplicationEventRow.occurred_at")
+    attempts: Mapped[list["SubmissionAttemptRow"]] = relationship(
+        back_populates="application", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="SubmissionAttemptRow.attempt_number")
+
+
+class ApplicationEventRow(TimestampedMixin, Base):
+    """One immutable entry in an application's history (§41).
+
+    Append-only: nothing updates a row here, so `updated_at` never moves off its
+    server default. `from_state`/`to_state` are nullable because a `GATE_EVALUATED`
+    or `DUPLICATE_BLOCKED` event changes no state. `occurred_at` is the domain fact;
+    `created_at` is when the row was written.
+    """
+
+    __tablename__ = "application_events"
+    __table_args__ = (
+        Index("ix_application_events_application_id_occurred_at",
+              "application_id", "occurred_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    application_id: Mapped[UUID] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"))
+    event_type: Mapped[ApplicationEventType] = mapped_column(
+        enum_column(ApplicationEventType, "application_event_type"))
+    actor: Mapped[ApplicationEventActor] = mapped_column(
+        enum_column(ApplicationEventActor, "application_event_actor"),
+        server_default=text(f"'{ApplicationEventActor.SYSTEM.value}'"))
+    from_state: Mapped[ApplicationState | None] = mapped_column(
+        enum_column(ApplicationState, "application_event_from_state"))
+    to_state: Mapped[ApplicationState | None] = mapped_column(
+        enum_column(ApplicationState, "application_event_to_state"))
+    detail: Mapped[str | None]
+    reasons: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    correlation_id: Mapped[str | None]
+    occurred_at: Mapped[datetime]
+
+    application: Mapped["ApplicationRow"] = relationship(
+        back_populates="events", lazy="raise")
+
+
+class SubmissionAttemptRow(TimestampedMixin, Base):
+    """One try at the irreversible act, recorded whole (§39, §88).
+
+    `UNIQUE (application_id, attempt_number)` matches the pair the attempt's id
+    derives from, so the in-flight row written at SUBMISSION_STARTED and its
+    completion are one row. The qualifier CHECKs restate `SubmissionResult`'s
+    validators, but each passes while `outcome` is NULL — the in-flight row that is
+    the crash evidence §88 wants.
+    """
+
+    __tablename__ = "submission_attempts"
+    __table_args__ = (
+        UniqueConstraint("application_id", "attempt_number"),
+        CheckConstraint("attempt_number >= 1", name="attempt_number_positive"),
+        CheckConstraint(_ATTEMPT_REQUIRES_HUMAN_HAS_REASON,
+                        name="requires_human_has_reason"),
+        CheckConstraint(_ATTEMPT_HUMAN_REASON_ONLY_ON_HUMAN,
+                        name="human_reason_only_on_human"),
+        CheckConstraint(_ATTEMPT_FAILED_HAS_CODE, name="failed_has_code"),
+        CheckConstraint(_ATTEMPT_CODE_ONLY_ON_FAILED, name="code_only_on_failed"),
+        CheckConstraint(_ATTEMPT_CONFIRMATION_ONLY_ON_SUBMITTED,
+                        name="confirmation_only_on_submitted"),
+        CheckConstraint("finished_at IS NULL OR finished_at >= started_at",
+                        name="finished_after_started"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    application_id: Mapped[UUID] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"))
+    attempt_number: Mapped[int] = mapped_column(SmallInteger)
+    adapter_key: Mapped[str]
+    outcome: Mapped[SubmissionOutcome | None] = mapped_column(
+        enum_column(SubmissionOutcome, "submission_attempt_outcome"))
+    detail: Mapped[str | None]
+    confirmation_reference: Mapped[str | None]
+    human_required_reason: Mapped[HumanRequiredReason | None] = mapped_column(
+        enum_column(HumanRequiredReason, "submission_attempt_human_reason"))
+    failure_code: Mapped[ApplicationFailureCode | None] = mapped_column(
+        enum_column(ApplicationFailureCode, "submission_attempt_failure_code"))
+    correlation_id: Mapped[str | None]
+    started_at: Mapped[datetime]
+    finished_at: Mapped[datetime | None]
+
+    application: Mapped["ApplicationRow"] = relationship(
+        back_populates="attempts", lazy="raise")
+
+
+# A `USER` turn is the candidate's own prose: it never carries the telemetry of an
+# LLM call, because the account, not a provider, produced it. The CHECK restates
+# `ChatMessage`'s provenance rule so a row written outside the mapper cannot attribute
+# a run to a human turn (docs/CAREER_CHAT.md §…).
+_CHAT_MESSAGE_USER_HAS_NO_RUN: Final[str] = (
+    "role <> 'USER' OR (llm_run_id IS NULL AND provider_key IS NULL)")
+
+
+class ConversationRow(TimestampedMixin, Base):
+    """One career-chat thread, owned by exactly one account (§…).
+
+    User-owned like every Phase 4+ entity: `user_id` cascades from `users`, so deleting
+    an account takes its conversations — and, through the cascades below, their messages,
+    proposals and executions — with it. `last_message_at` is nullable (a freshly opened
+    thread has no turn yet) and pairs with `user_id` in the one index the conversation
+    list reads: "my threads, most recently active first".
+    """
+
+    __tablename__ = "conversations"
+    __table_args__ = (
+        Index("ix_conversations_user_id_last_message_at",
+              "user_id", "last_message_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    title: Mapped[str]
+    is_archived: Mapped[bool] = mapped_column(server_default=text("false"))
+    last_message_at: Mapped[datetime | None]
+
+    messages: Mapped[list["ChatMessageRow"]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise", order_by="ChatMessageRow.sequence")
+    proposals: Mapped[list["ChatActionProposalRow"]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise", order_by="ChatActionProposalRow.created_at")
+
+
+class ChatMessageRow(TimestampedMixin, Base):
+    """One turn in a conversation — the prose and the provenance of who produced it (§…).
+
+    `UNIQUE (conversation_id, sequence)` is the natural key `chat_message_id` derives the
+    primary key from, so re-finalizing a turn writes the same row rather than duplicating
+    the exchange. `content` is the prose only: the fenced proposal block is parsed out
+    into `chat_action_proposals` and never stored here. `llm_run_id` is `SET NULL` — a
+    message outlives the telemetry row it points at, the same trade `llm_runs` makes with
+    its connection — and the CHECK forbids a `USER` turn from carrying one.
+    """
+
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "sequence"),
+        CheckConstraint("sequence >= 0", name="sequence_non_negative"),
+        CheckConstraint(_CHAT_MESSAGE_USER_HAS_NO_RUN, name="user_has_no_run"),
+        Index("ix_chat_messages_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    role: Mapped[ChatMessageRole] = mapped_column(
+        enum_column(ChatMessageRole, "chat_message_role"))
+    content: Mapped[str]
+    sequence: Mapped[int] = mapped_column(Integer)
+    llm_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("llm_runs.id", ondelete="SET NULL"))
+    provider_key: Mapped[str | None]
+
+    conversation: Mapped["ConversationRow"] = relationship(
+        back_populates="messages", lazy="raise")
+
+
+class ChatActionProposalRow(TimestampedMixin, Base):
+    """One typed action the model proposed in a turn, awaiting a human's confirmation (§…).
+
+    The persisted heart of "prose has zero authority": a row here is a *request* to act,
+    parsed and validated out of the assistant's fenced block, that changes nothing until a
+    human confirms it and the executor re-authorizes it. `UNIQUE (message_id, ordinal)` is
+    the natural key `chat_action_proposal_id` derives from, so re-finalizing the turn lands
+    on the same proposals. `kind` is stored as its own column so "my open submit proposals"
+    is one indexed query, while `action` holds the whole validated `ChatAction` as JSONB —
+    read back through `CHAT_ACTION_ADAPTER`, never trusted as free-form.
+    """
+
+    __tablename__ = "chat_action_proposals"
+    __table_args__ = (
+        UniqueConstraint("message_id", "ordinal"),
+        CheckConstraint("ordinal >= 0", name="ordinal_non_negative"),
+        Index("ix_chat_action_proposals_user_id_status", "user_id", "status"),
+        Index("ix_chat_action_proposals_conversation_id", "conversation_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"))
+    message_id: Mapped[UUID] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[ChatActionKind] = mapped_column(
+        enum_column(ChatActionKind, "chat_action_kind"))
+    action: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
+    status: Mapped[ChatActionProposalStatus] = mapped_column(
+        enum_column(ChatActionProposalStatus, "chat_action_proposal_status"),
+        server_default=text(f"'{ChatActionProposalStatus.PROPOSED.value}'"))
+    summary: Mapped[str]
+
+    conversation: Mapped["ConversationRow"] = relationship(
+        back_populates="proposals", lazy="raise")
+
+
+class ChatActionExecutionRow(TimestampedMixin, Base):
+    """The record of one attempt to execute a confirmed proposal — the executor's audit (§…).
+
+    `UNIQUE (proposal_id)` matches the derivation `chat_action_execution_id` performs from
+    the proposal alone, so a double-confirmed proposal collides on this row rather than
+    running the underlying service action twice — the idempotency the executor rests on.
+    `outcome` records whether the action was refused at validation (`REJECTED`), permitted
+    but failed (`FAILED`), or ran (`SUCCEEDED`); `result_ref` and `detail` are secret-free
+    handles the chat shows without re-deriving what happened.
+    """
+
+    __tablename__ = "chat_action_executions"
+    __table_args__ = (
+        UniqueConstraint("proposal_id"),
+        Index("ix_chat_action_executions_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    proposal_id: Mapped[UUID] = mapped_column(
+        ForeignKey("chat_action_proposals.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    outcome: Mapped[ChatActionExecutionOutcome] = mapped_column(
+        enum_column(ChatActionExecutionOutcome, "chat_action_execution_outcome"))
+    detail: Mapped[str | None]
+    result_ref: Mapped[str | None]
 
 
 

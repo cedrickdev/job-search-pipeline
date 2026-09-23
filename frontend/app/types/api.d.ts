@@ -490,6 +490,171 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/applications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Applications
+         * @description This account's applications, most recently updated first.
+         */
+        get: operations["list_applications_api_v2_applications_get"];
+        put?: never;
+        /**
+         * Create Application
+         * @description Open an application for a posting from its stored decision (§2-3, §36).
+         *
+         *     Idempotent: opening one twice for the same target returns the first rather than a
+         *     second (the id is derived from the target and channel). A 409 comes back only when
+         *     the decision is missing (decide first) or the target was already submitted (a
+         *     genuine duplicate); otherwise the current application is returned.
+         */
+        post: operations["create_application_api_v2_applications_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/applications/{application_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Application
+         * @description One application, or 404 if it is not this account's.
+         */
+        get: operations["read_application_api_v2_applications__application_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/applications/{application_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Application
+         * @description A human's approval of a prepared application (§52).
+         *
+         *     Only a READY_FOR_REVIEW application can be approved; anything else is a 409.
+         */
+        post: operations["approve_application_api_v2_applications__application_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/applications/{application_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Application
+         * @description Abandon an application before it reaches the employer.
+         *
+         *     Refused with a 409 once an application is submitted — that is a withdrawal, a
+         *     different act — or already terminal.
+         */
+        post: operations["cancel_application_api_v2_applications__application_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/applications/{application_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Application Events
+         * @description One application's append-only audit trail, oldest first (§41).
+         *
+         *     404 when the application is not this account's — the ownership check is the same
+         *     read the other endpoints use, so the trail cannot be read by guessing an id.
+         */
+        get: operations["list_application_events_api_v2_applications__application_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/applications/{application_id}/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare Application
+         * @description Prepare materials and route by the gate (auto-approve, review, human, block).
+         *
+         *     Reversible and safe to retry (§33) — it never submits. The returned state says
+         *     what happens next.
+         */
+        post: operations["prepare_application_api_v2_applications__application_id__prepare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/applications/{application_id}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit Application
+         * @description Submit an approved application — the irreversible boundary (§1, §5, §80-88).
+         *
+         *     The gate is re-evaluated against the current policy first, so an application
+         *     approved this morning is refused this afternoon if the policy became MANUAL. An
+         *     exhausted rate budget is a 429; a duplicate is a 409; an ambiguous send comes back
+         *     as SUBMISSION_STATE_UNKNOWN rather than a false success.
+         */
+        post: operations["submit_application_api_v2_applications__application_id__submit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/auth/login": {
         parameters: {
             query?: never;
@@ -585,6 +750,159 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/chat/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Conversations
+         * @description This account's chat threads, most recent activity first.
+         */
+        get: operations["list_conversations_api_v2_chat_conversations_get"];
+        put?: never;
+        /**
+         * Start Conversation
+         * @description Open a new, empty chat thread for this account (§Security).
+         *
+         *     201, because it creates a resource. `title` is a caption the service truncates, never
+         *     authority; an absent or blank one falls back to a default. The thread has no turns yet.
+         */
+        post: operations["start_conversation_api_v2_chat_conversations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/chat/conversations/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Conversation
+         * @description One thread's caption and activity, or 404 if it is not this account's.
+         */
+        get: operations["read_conversation_api_v2_chat_conversations__conversation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/chat/conversations/{conversation_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Messages
+         * @description One thread's turns, oldest first. 404 when the thread is not this account's.
+         */
+        get: operations["list_messages_api_v2_chat_conversations__conversation_id__messages_get"];
+        put?: never;
+        /**
+         * Send Message
+         * @description Send one user turn and stream the assistant's reply as Server-Sent Events.
+         *
+         *     Ownership and empty-message checks run *before* the stream is returned, so a thread
+         *     that is not this account's is a 404 and an empty message a 422 — an ordinary JSON error,
+         *     not an event mid-stream. Once past them the user's message is persisted and the reply
+         *     streams: `TOKEN` events as prose arrives, then a terminal `COMPLETED` carrying the
+         *     stored assistant message and its `PROPOSED` proposals, or `ERROR` for a turn that
+         *     reached a provider and failed. Nothing here executes a proposal — that is `confirm`.
+         */
+        post: operations["send_message_api_v2_chat_conversations__conversation_id__messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/chat/conversations/{conversation_id}/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Proposals
+         * @description One thread's proposals, oldest first. 404 when the thread is not this account's.
+         *
+         *     The current status of each proposal is on the response, so a UI knows which cards are
+         *     still open to confirm or dismiss and which are already terminal.
+         */
+        get: operations["list_proposals_api_v2_chat_conversations__conversation_id__proposals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/chat/proposals/{proposal_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Proposal
+         * @description Execute one confirmed proposal — the last gate, and the only place it runs.
+         *
+         *     The proposal is re-authorized (ownership, coarse domain state) and then handed to the
+         *     same service the HTTP routes call, which runs its own authoritative checks — a submit
+         *     re-runs the whole Phase 12 gate. Idempotent by the proposal's id: a double-confirm
+         *     returns the recorded execution rather than running twice. The response is the audited
+         *     outcome (`SUCCEEDED`, `REJECTED` or `FAILED`); a 404 when the proposal is not this
+         *     account's, a 409 when it is no longer open.
+         */
+        post: operations["confirm_proposal_api_v2_chat_proposals__proposal_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/chat/proposals/{proposal_id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Proposal
+         * @description Decline an open proposal without running it — `PROPOSED` → `DISMISSED`.
+         *
+         *     Writes no execution because nothing was attempted; it only moves the proposal out of
+         *     the open set so it cannot later be confirmed. A 404 when the proposal is not this
+         *     account's, a 409 when it is no longer open (already executed, rejected, failed or
+         *     dismissed). Returns the proposal in its new status.
+         */
+        post: operations["dismiss_proposal_api_v2_chat_proposals__proposal_id__dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/companies": {
         parameters: {
             query?: never;
@@ -668,6 +986,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Documents
+         * @description This account's documents, most recently updated first.
+         */
+        get: operations["list_documents_api_v2_documents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Document
+         * @description One document with its whole version history.
+         *
+         *     404 for "no such document" and "not yours" alike: the service raises one error
+         *     for both, so a caller cannot enumerate another account's documents by id.
+         */
+        get: operations["read_document_api_v2_documents__document_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/documents/{document_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Document
+         * @description Stream the newest rendered PDF of a document.
+         *
+         *     A binary response, not JSON: the bytes are read from the artifact store and
+         *     returned with the stored media type and a `Content-Disposition` naming the
+         *     file. 404 when the document is not this account's; 409
+         *     (`document_not_rendered`) when it exists but no version has cleared the guard
+         *     and been rendered yet — the resource is real, the state is temporary.
+         */
+        get: operations["download_document_api_v2_documents__document_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/geo/companies": {
         parameters: {
             query?: never;
@@ -711,6 +1098,118 @@ export interface paths {
         get: operations["search_opportunities_api_v2_geo_opportunities_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/matches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Matches
+         * @description This account's assessed pairs, most recently determined first.
+         *
+         *     Chronological, not ranked: both axes travel untouched and an INELIGIBLE pair is
+         *     never pushed down by pretending its match is low. A UI that wants to rank by fit
+         *     or filter by eligibility has both numbers and does so itself
+         *     (docs/MATCHING_ELIGIBILITY.md §Ranking).
+         */
+        get: operations["list_matches_api_v2_matches_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/matches/evaluate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Evaluate Match
+         * @description Assess one posting for this account's profile, on both axes.
+         *
+         *     Runs the deterministic match engine and the eligibility engine independently
+         *     and stores each verdict in its own record. Not a 201: the pair's verdicts are
+         *     keyed on `(profile, opportunity)`, so a re-evaluation replaces the previous
+         *     answer rather than creating a resource, and `200` with the fresh assessment is
+         *     the honest status.
+         *
+         *     404 when the account has no profile yet (go to onboarding) or when no posting
+         *     is stored under the id — two distinct error codes, because the frontend acts on
+         *     them differently.
+         */
+        post: operations["evaluate_match_api_v2_matches_evaluate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/claims": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Claim
+         * @description Assert one claim, citing evidence the profile already holds.
+         *
+         *     422 when a cited id names no evidence record on the profile: the service
+         *     refuses it rather than writing a claim that rests on nothing, and the error
+         *     names the ids that were not found so a client fixes the citation.
+         */
+        post: operations["add_claim_api_v2_me_claims_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Evidence
+         * @description The account's whole attested record: its evidence and its claims.
+         *
+         *     Read through the document service's profile view so one dependency answers the
+         *     profile-backed reads. 404 when onboarding has not saved a profile — the same
+         *     state `GET /me/profile` reports, so a client sends the user to onboarding.
+         */
+        get: operations["list_evidence_api_v2_me_evidence_get"];
+        put?: never;
+        /**
+         * Add Evidence
+         * @description Record one attested fact on the account's profile.
+         *
+         *     201, because it creates a resource: the response carries the id the record was
+         *     filed under, which a later claim or a generated document line cites. 404 when
+         *     onboarding has not saved a profile yet — evidence hangs off a profile, and
+         *     there is nothing to hang it on.
+         */
+        post: operations["add_evidence_api_v2_me_evidence_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -864,6 +1363,229 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/opportunities/{opportunity_id}/cover-letter": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate Cover Letter
+         * @description Generate a cover letter for a posting, from this account's evidence.
+         *
+         *     The persuasive counterpart to the résumé, versioned the same way and subject to
+         *     the same guard: every body paragraph cites the candidate evidence it draws on.
+         *     Same error codes as the résumé endpoint.
+         */
+        post: operations["generate_cover_letter_api_v2_opportunities__opportunity_id__cover_letter_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/opportunities/{opportunity_id}/match": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Match
+         * @description The stored assessment for one pair, or 404 if it has not been evaluated.
+         *
+         *     A pure read — it never runs an engine. The 404 covers "not evaluated yet", "no
+         *     profile yet" and "not this account's posting-run" without distinguishing them:
+         *     the service answers `None` for all three, so a caller cannot learn that another
+         *     user has assessed a posting by asking about it (§Security: ids must not be
+         *     enumerable).
+         */
+        get: operations["read_match_api_v2_opportunities__opportunity_id__match_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/opportunities/{opportunity_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate Resume
+         * @description Generate an ATS résumé for a posting, from this account's evidence.
+         *
+         *     Appends a version to the résumé document for the `(profile, opportunity,
+         *     RESUME)` triple, returning the whole document so a client sees the new attempt
+         *     in its history. 404 when the account has no profile or no such posting; 409
+         *     (`insufficient_evidence`) when the profile carries too little evidence to build
+         *     a truthful résumé — the honest answer is to say so, not to invent content.
+         */
+        post: operations["generate_resume_api_v2_opportunities__opportunity_id__resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/settings/llm/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Connections
+         * @description This account's connections, in the router's priority-then-id order.
+         *
+         *     Every credential is reduced to `has_api_key`; the values never leave the service.
+         */
+        get: operations["list_connections_api_v2_settings_llm_connections_get"];
+        put?: never;
+        /**
+         * Create Connection
+         * @description Store a new connection for this account, encrypting any credential first.
+         *
+         *     201, because it creates a resource: the response carries the id the connection was
+         *     filed under, which a later edit, probe or default targets. 422 when the shape is
+         *     incoherent (a CLI carrying a key, an API missing a base URL) — the `LLMConnection`
+         *     model decides that once, for every writer. 409 (`llm_secret_key_unavailable`) when
+         *     a credential is submitted but the deployment configured no master key to encrypt
+         *     it: the honest answer, rather than storing the key in the clear.
+         */
+        post: operations["create_connection_api_v2_settings_llm_connections_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/settings/llm/connections/{connection_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Connection
+         * @description One connection, credential reduced to `has_api_key`.
+         *
+         *     404 for "no such connection" and "not yours" alike — the service raises one error
+         *     for both, so a caller cannot enumerate another account's connections by id.
+         */
+        get: operations["read_connection_api_v2_settings_llm_connections__connection_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Connection
+         * @description Delete one connection, and its stored credential with it.
+         *
+         *     Not idempotent, on purpose: a second `DELETE` answers 404 rather than 204, so a
+         *     client working from a stale list is told rather than misled. Scoped to the owner —
+         *     a delete of an id that is not this account's removes nothing and 404s, the same as
+         *     a never-created id, so a caller cannot probe another account by trying to delete.
+         */
+        delete: operations["delete_connection_api_v2_settings_llm_connections__connection_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Connection
+         * @description Apply a partial edit, re-encrypting or clearing the credential on request.
+         *
+         *     A `PATCH`, not a `PUT`: an unset field is left as stored, and the credential has
+         *     three states — `api_key` rotates it, `remove_api_key` clears it, neither leaves it.
+         *     Sending both is a 422, refused before the service is called. 404 when the id is not
+         *     this account's; 422 when the edit would leave an incoherent shape; 409 when a new
+         *     credential is given but no master key is configured.
+         */
+        patch: operations["update_connection_api_v2_settings_llm_connections__connection_id__patch"];
+        trace?: never;
+    };
+    "/api/v2/settings/llm/connections/{connection_id}/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Connection Default
+         * @description Make one connection the account's default, clearing the flag on the rest.
+         *
+         *     The invariant "at most one default" holds after the write: the service clears every
+         *     other default first, then marks this one. 404 when not this account's.
+         */
+        put: operations["set_connection_default_api_v2_settings_llm_connections__connection_id__default_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/settings/llm/connections/{connection_id}/enabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Connection Enabled
+         * @description Turn a connection on or off without deleting it or its stored key.
+         *
+         *     A disabled connection keeps its row and its credential and is simply filtered out
+         *     of the router's candidates until it is turned back on. 404 when not this account's.
+         */
+        put: operations["set_connection_enabled_api_v2_settings_llm_connections__connection_id__enabled_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/settings/llm/connections/{connection_id}/healthcheck": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Healthcheck Connection
+         * @description Probe one connection's live provider and return its health (not stored).
+         *
+         *     A `POST` because it does work — it builds the provider and reaches out — even
+         *     though it stores nothing. The result is data: a provider that is down is an
+         *     `UNAVAILABLE` status the settings page renders, and its `detail` is a secret-free
+         *     sentence the platform composed, never a raw provider message. 404 when the id is
+         *     not this account's.
+         */
+        post: operations["healthcheck_connection_api_v2_settings_llm_connections__connection_id__healthcheck_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -894,6 +1616,189 @@ export interface components {
             onboarding_completed_at: string | null;
             status: components["schemas"]["UserStatus"];
         };
+        /**
+         * AddClaimRequest
+         * @description One claim as submitted, citing evidence the profile already holds.
+         *
+         *     `evidence_ids` must name at least one record — a claim resting on nothing is
+         *     unconstructible (§the truth guarantee) — and every id must be one the account's
+         *     profile holds, or the service refuses it with a 422 rather than a 500.
+         */
+        AddClaimRequest: {
+            claim_type: components["schemas"]["ClaimType"];
+            /** Detail */
+            detail?: string | null;
+            /** Evidence Ids */
+            evidence_ids: string[];
+            /** Label */
+            label: string;
+        };
+        /**
+         * AddEvidenceRequest
+         * @description One evidence record as submitted: what it attests and where it came from.
+         *
+         *     No `id`, no `user_id`, no `recorded_at` — the service supplies the id and the
+         *     owner from the session and stamps the instant, so there is no field for a body
+         *     to file evidence under another account (docs/ENGINEERING_STANDARDS.md §Security).
+         *     `provenance` names a real source of candidate-supplied facts; there is no
+         *     `LLM_GENERATED` member to choose, because a generated sentence is never evidence.
+         */
+        AddEvidenceRequest: {
+            /** Detail */
+            detail?: string | null;
+            /** Issued On */
+            issued_on?: string | null;
+            kind: components["schemas"]["EvidenceKind"];
+            provenance: components["schemas"]["EvidenceProvenance"];
+            /** Reference Key */
+            reference_key?: string | null;
+            /** Source Document */
+            source_document?: string | null;
+            /** Summary */
+            summary: string;
+            /** Valid Until */
+            valid_until?: string | null;
+        };
+        /**
+         * ApplicationChannel
+         * @description The route an application takes to an employer (§8-10).
+         *
+         *     Named once so the registry dispatches on a typed member rather than a platform
+         *     string scattered through business code (§8: no `if platform == "greenhouse"`).
+         *     The channels are ordered loosely from most machine-friendly to least:
+         *
+         *     - `ATS_API` — a first-class API the ATS publishes; the safest to automate;
+         *     - `ATS_FORM` — a known ATS's web form (Greenhouse, Lever, Ashby, Umantis…);
+         *     - `DIRECT_FORM` — an employer's own hosted application form;
+         *     - `BROWSER` — a page only a browser can drive (LinkedIn, WTJ, Migros…);
+         *     - `EMAIL` — an application sent to a stated recipient address (§62);
+         *     - `MANUAL` — the platform prepares, the human submits; the honest default when
+         *       nothing above fits;
+         *     - `UNSUPPORTED` — the platform has no way to apply here at all, so it says so
+         *       rather than pretending a `MANUAL` hand-off it cannot even set up.
+         * @enum {string}
+         */
+        ApplicationChannel: "ATS_API" | "ATS_FORM" | "DIRECT_FORM" | "BROWSER" | "EMAIL" | "MANUAL" | "UNSUPPORTED";
+        /**
+         * ApplicationEventActor
+         * @description Who caused an event, which is itself an audit fact.
+         *
+         *     - `SYSTEM` — the deterministic engine (a gate evaluation, an automatic transition);
+         *     - `USER` — the account holder (an approval, a cancellation from the UI);
+         *     - `WORKER` — the isolated browser/submission worker reporting an outcome.
+         * @enum {string}
+         */
+        ApplicationEventActor: "SYSTEM" | "USER" | "WORKER";
+        /**
+         * ApplicationEventListResponse
+         * @description One application's events, oldest first — the trail as it grew.
+         */
+        ApplicationEventListResponse: {
+            /** Events */
+            events: components["schemas"]["ApplicationEventResponse"][];
+        };
+        /**
+         * ApplicationEventResponse
+         * @description One immutable entry in an application's audit trail (§41).
+         *
+         *     `reasons` reuse the closed-vocabulary `ReasonResponse`, so the "why" behind a
+         *     gate decision or a refusal renders identically to everywhere else and can never
+         *     carry a stack trace or a secret.
+         */
+        ApplicationEventResponse: {
+            actor: components["schemas"]["ApplicationEventActor"];
+            /** Detail */
+            detail: string | null;
+            event_type: components["schemas"]["ApplicationEventType"];
+            from_state: components["schemas"]["ApplicationState"] | null;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Reasons */
+            reasons: components["schemas"]["ReasonResponse"][];
+            to_state: components["schemas"]["ApplicationState"] | null;
+        };
+        /**
+         * ApplicationEventType
+         * @description What happened, as a stable code a dashboard groups on (§41).
+         *
+         *     The vocabulary of the trail. Most correspond to a state change, but a few record
+         *     a *decision the engine made* without a state change — a gate evaluation, a
+         *     duplicate blocked at creation — because those are exactly the facts an audit of
+         *     "why did (didn't) this apply?" needs and a bare state history would lose.
+         * @enum {string}
+         */
+        ApplicationEventType: "CREATED" | "PREPARATION_STARTED" | "PREPARED" | "GATE_EVALUATED" | "HUMAN_REQUIRED" | "APPROVED" | "SUBMISSION_STARTED" | "SUBMITTED" | "SUBMISSION_STATE_UNKNOWN" | "FAILED" | "CANCELLED" | "WITHDRAWN" | "DUPLICATE_BLOCKED" | "RATE_LIMITED";
+        /**
+         * ApplicationListResponse
+         * @description This account's applications, newest first, wrapped so it can grow a field.
+         */
+        ApplicationListResponse: {
+            /** Applications */
+            applications: components["schemas"]["ApplicationResponse"][];
+        };
+        /**
+         * ApplicationResponse
+         * @description One application's current state, target and pinned materials.
+         *
+         *     The lifecycle `state` is what a UI renders and acts on — READY_FOR_REVIEW shows
+         *     an "Approve & Submit" control, REQUIRES_HUMAN a hand-off, SUBMITTED a receipt.
+         *     `answers` and the correlation id are deliberately not exposed: the answers can
+         *     carry personal values a list view has no need for, and the trail is the audited
+         *     place to see what happened.
+         */
+        ApplicationResponse: {
+            /** Attempt Count */
+            attempt_count: number;
+            channel: components["schemas"]["ApplicationChannel"];
+            /** Company Id */
+            company_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Opportunity Id */
+            opportunity_id: string | null;
+            /** Pinned Documents */
+            pinned_documents: components["schemas"]["PinnedDocumentResponse"][];
+            state: components["schemas"]["ApplicationState"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * ApplicationState
+         * @description Every state one application can be in (§17-18).
+         *
+         *     The happy path runs `PLANNED → PREPARING → READY_FOR_REVIEW → APPROVED →
+         *     SUBMITTING → SUBMITTED`; the branches are the honest ways it can leave that path.
+         *
+         *     - `PLANNED` — created from a decision, nothing prepared yet;
+         *     - `PREPARING` — an adapter is drafting materials and reading the form;
+         *     - `READY_FOR_REVIEW` — prepared and filled, waiting for a human to approve (§52);
+         *     - `REQUIRES_HUMAN` — stopped on something only a person can resolve (§19-27);
+         *     - `APPROVED` — cleared to submit, by a human or an autopilot policy;
+         *     - `SUBMITTING` — a submission attempt is in flight;
+         *     - `SUBMITTED` — confirmed to have reached the employer;
+         *     - `SUBMISSION_STATE_UNKNOWN` — it left the platform but no confirmation could be
+         *       read, so whether it landed is genuinely unknown; never retried automatically,
+         *       because a blind retry could double-submit (§38, §84, §88);
+         *     - `FAILED` — an execution failure that a fresh preparation could retry;
+         *     - `CANCELLED` — abandoned before it ever reached the employer;
+         *     - `WITHDRAWN` — retracted after it was submitted.
+         * @enum {string}
+         */
+        ApplicationState: "PLANNED" | "PREPARING" | "READY_FOR_REVIEW" | "REQUIRES_HUMAN" | "APPROVED" | "SUBMITTING" | "SUBMITTED" | "SUBMISSION_STATE_UNKNOWN" | "FAILED" | "CANCELLED" | "WITHDRAWN";
         /** AppliedBody */
         AppliedBody: {
             /**
@@ -901,6 +1806,78 @@ export interface components {
              * @default manual
              */
             channel: string;
+        };
+        /**
+         * ApproveApplicationAction
+         * @description Record a human's approval of a prepared application (§52).
+         */
+        ApproveApplicationAction: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "APPROVE_APPLICATION";
+        };
+        /**
+         * AssessedOpportunityResponse
+         * @description The posting an assessment is about, as much of it as a list card needs.
+         *
+         *     A summary rather than the whole `Opportunity` — no description, salary or source
+         *     snapshot — because the assessment endpoints answer "how does this pair look?",
+         *     not "show me the posting". It is the same shape whether it arrives from an
+         *     evaluate call or a list, so a client holds one opportunity model here.
+         */
+        AssessedOpportunityResponse: {
+            /** Company Id */
+            company_id: string | null;
+            /** Company Name */
+            company_name: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Location City */
+            location_city: string | null;
+            /** Location Country */
+            location_country: string | null;
+            opportunity_type: components["schemas"]["OpportunityType"] | null;
+            /** Title */
+            title: string;
+            workplace_mode: components["schemas"]["WorkplaceMode"] | null;
+        };
+        /**
+         * AssessmentListResponse
+         * @description A user's assessed pairs, newest first, wrapped rather than bare.
+         *
+         *     A wrapper for the same reason `SearchProfileListResponse` is one: a top-level
+         *     array cannot grow a field, and the day this needs a cursor or a count it would
+         *     otherwise be a breaking change. The order is chronological, not a ranking — an
+         *     INELIGIBLE pair is not pushed down by faking a low score
+         *     (docs/MATCHING_ELIGIBILITY.md §Ranking).
+         */
+        AssessmentListResponse: {
+            /** Assessments */
+            assessments: components["schemas"]["AssessmentResponse"][];
+        };
+        /**
+         * AssessmentResponse
+         * @description One opportunity, assessed on both axes for one candidate.
+         *
+         *     The two verdicts sit side by side and neither derives from the other: `match`
+         *     is `null` when no dimension was scorable (rendered as the UNKNOWN band, never a
+         *     zero), while `eligibility` is always present. This is the shape both the
+         *     evaluate endpoint and the single-pair read return, so a client learns it once.
+         */
+        AssessmentResponse: {
+            eligibility: components["schemas"]["EligibilityResponse"];
+            match: components["schemas"]["MatchResponse"] | null;
+            opportunity: components["schemas"]["AssessedOpportunityResponse"];
         };
         /**
          * AtsPlatform
@@ -942,6 +1919,155 @@ export interface components {
         Body_post_transcribe_api_transcribe_post: {
             /** File */
             file: string;
+        };
+        /**
+         * CancelApplicationAction
+         * @description Abandon an application before it reaches the employer.
+         */
+        CancelApplicationAction: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "CANCEL_APPLICATION";
+        };
+        /**
+         * CandidateClaimResponse
+         * @description One stored claim and the evidence ids it rests on.
+         *
+         *     `evidence_ids` is never empty: the aggregate refuses a claim that cites nothing,
+         *     so a client can rely on every claim here pointing at real evidence it can look
+         *     up in the same profile.
+         */
+        CandidateClaimResponse: {
+            claim_type: components["schemas"]["ClaimType"];
+            /** Detail */
+            detail: string | null;
+            /** Evidence Ids */
+            evidence_ids: string[];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Label */
+            label: string;
+        };
+        /**
+         * CandidateDocumentListResponse
+         * @description This account's documents, most recently updated first, wrapped.
+         */
+        CandidateDocumentListResponse: {
+            /** Documents */
+            documents: components["schemas"]["CandidateDocumentResponse"][];
+        };
+        /**
+         * CandidateDocumentResponse
+         * @description A candidate's document for one posting, with its whole version history.
+         *
+         *     The versions travel newest-last, their numbers strictly increasing, so a client
+         *     reads the history in order and takes the last usable one as "the document".
+         *     `latest_usable_version` names the number of the newest version fit to be shown
+         *     as the candidate's — `null` when every attempt is a draft or was rejected, which
+         *     a UI renders as "not generated yet" rather than showing an unchecked draft.
+         */
+        CandidateDocumentResponse: {
+            /**
+             * Candidate Profile Id
+             * Format: uuid
+             */
+            candidate_profile_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            document_type: components["schemas"]["CandidateDocumentType"];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Latest Usable Version */
+            latest_usable_version: number | null;
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Versions */
+            versions: components["schemas"]["DocumentVersionResponse"][];
+        };
+        /**
+         * CandidateDocumentType
+         * @description The kinds of document Phase 10 produces.
+         *
+         *     A résumé and a cover letter for the same posting are two documents, not two
+         *     faces of one, because they have independent version histories: a candidate
+         *     may regenerate the letter after an interview without touching the résumé. The
+         *     value is part of a `candidate_document_id`, so the split is also what keeps
+         *     their rows distinct.
+         * @enum {string}
+         */
+        CandidateDocumentType: "RESUME" | "COVER_LETTER";
+        /**
+         * CandidateEvidenceListResponse
+         * @description The account's whole attested record: its evidence and its claims.
+         *
+         *     Wrapped rather than two bare arrays for the reason every list response here is:
+         *     a top-level object can grow a field, a top-level array cannot. The two travel
+         *     together because a profile page shows the claims and lets a reader trace each to
+         *     the evidence behind it.
+         */
+        CandidateEvidenceListResponse: {
+            /** Claims */
+            claims: components["schemas"]["CandidateClaimResponse"][];
+            /** Evidence */
+            evidence: components["schemas"]["CandidateEvidenceResponse"][];
+        };
+        /**
+         * CandidateEvidenceResponse
+         * @description One stored evidence record, echoed back with the id it was filed under.
+         *
+         *     That id is what a later claim, or a generated document line, cites. The
+         *     `source_document` is a label (a path or a URL), never the file's bytes — the
+         *     domain describes where proof lives, it does not carry it.
+         */
+        CandidateEvidenceResponse: {
+            /** Detail */
+            detail: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Issued On */
+            issued_on: string | null;
+            kind: components["schemas"]["EvidenceKind"];
+            provenance: components["schemas"]["EvidenceProvenance"];
+            /**
+             * Recorded At
+             * Format: date-time
+             */
+            recorded_at: string;
+            /** Reference Key */
+            reference_key: string | null;
+            /** Source Document */
+            source_document: string | null;
+            /** Summary */
+            summary: string;
+            /** Valid Until */
+            valid_until: string | null;
         };
         /**
          * CandidateProfileDraft
@@ -1033,6 +2159,112 @@ export interface components {
             url: string;
             verification_status: components["schemas"]["DetectionStatus"];
         };
+        /**
+         * ChatActionExecutionOutcome
+         * @description How one attempt to execute a confirmed proposal ended.
+         *
+         *     Told apart from the proposal's status because an execution is the *event* and the
+         *     status is the proposal's resulting *state*: a `REJECTED` outcome is a proposal the
+         *     executor would not permit, a `FAILED` outcome is one it permitted but whose service
+         *     call raised, and `SUCCEEDED` is the action having run.
+         * @enum {string}
+         */
+        ChatActionExecutionOutcome: "SUCCEEDED" | "REJECTED" | "FAILED";
+        /**
+         * ChatActionExecutionResponse
+         * @description The audited record of one confirmed proposal's execution.
+         *
+         *     `outcome` says whether the action was refused at validation (`REJECTED`), permitted but
+         *     failed (`FAILED`), or ran (`SUCCEEDED`); `result_ref` carries the id or handle it
+         *     produced (an application's new state, a document id, a navigation target) and `detail`
+         *     a secret-free note — both composed by the executor from typed, domain-safe values,
+         *     never a raw provider or driver message.
+         */
+        ChatActionExecutionResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Detail */
+            detail: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            outcome: components["schemas"]["ChatActionExecutionOutcome"];
+            /**
+             * Proposal Id
+             * Format: uuid
+             */
+            proposal_id: string;
+            /** Result Ref */
+            result_ref: string | null;
+        };
+        /**
+         * ChatActionProposalListResponse
+         * @description One thread's proposals, oldest first, wrapped so it can grow a field.
+         */
+        ChatActionProposalListResponse: {
+            /** Proposals */
+            proposals: components["schemas"]["ChatActionProposalResponse"][];
+        };
+        /**
+         * ChatActionProposalResponse
+         * @description One typed action the model proposed, awaiting a human's confirm or dismiss.
+         *
+         *     `action` is the domain `ChatAction` union verbatim: secret-free by construction, so the
+         *     client receives the exact discriminated variant to render and to confirm. `status`
+         *     starts `PROPOSED` and only an explicit confirm or dismiss moves it — the response is how
+         *     a UI knows whether a card is still actionable.
+         */
+        ChatActionProposalResponse: {
+            /** Action */
+            action: components["schemas"]["GenerateResumeAction"] | components["schemas"]["GenerateCoverLetterAction"] | components["schemas"]["CreateApplicationAction"] | components["schemas"]["PrepareApplicationAction"] | components["schemas"]["ApproveApplicationAction"] | components["schemas"]["SubmitApplicationAction"] | components["schemas"]["CancelApplicationAction"] | components["schemas"]["SetSearchRadiusAction"] | components["schemas"]["UpdateSearchKeywordsAction"] | components["schemas"]["NavigateAction"] | components["schemas"]["OpenInterviewPrepAction"];
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Message Id
+             * Format: uuid
+             */
+            message_id: string;
+            /** Ordinal */
+            ordinal: number;
+            status: components["schemas"]["ChatActionProposalStatus"];
+            /** Summary */
+            summary: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * ChatActionProposalStatus
+         * @description Where one proposal is in its life from "offered" to "done".
+         *
+         *     A proposal is born `PROPOSED`. A human confirming it that succeeds moves it to
+         *     `EXECUTED`; one that the executor refuses at validation moves it to `REJECTED`
+         *     (it was never permitted); one whose underlying service action failed moves it to
+         *     `FAILED` (it was permitted but did not complete). `DISMISSED` is the user declining
+         *     it. Only a `PROPOSED` proposal may be executed or dismissed — the others are terminal.
+         * @enum {string}
+         */
+        ChatActionProposalStatus: "PROPOSED" | "EXECUTED" | "REJECTED" | "FAILED" | "DISMISSED";
         /** ChatBody */
         ChatBody: {
             /** Message */
@@ -1048,6 +2280,100 @@ export interface components {
              */
             scope_id: number;
         };
+        /**
+         * ChatMessageListResponse
+         * @description One thread's turns, oldest first — the transcript as it grew.
+         */
+        ChatMessageListResponse: {
+            /** Messages */
+            messages: components["schemas"]["ChatMessageResponse"][];
+        };
+        /**
+         * ChatMessageResponse
+         * @description One stored turn: its prose and, for an assistant turn, its telemetry provenance.
+         *
+         *     `content` is the prose only — the fenced proposal block was parsed out into proposals
+         *     and is never stored here. A user turn carries no `llm_run_id`/`provider_key`; an
+         *     assistant turn carries both, so a turn is traceable to the run that produced it.
+         */
+        ChatMessageResponse: {
+            /** Content */
+            content: string;
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Llm Run Id */
+            llm_run_id: string | null;
+            /** Provider Key */
+            provider_key: string | null;
+            role: components["schemas"]["ChatMessageRole"];
+            /** Sequence */
+            sequence: number;
+        };
+        /**
+         * ChatMessageRole
+         * @description Who authored one stored chat message.
+         *
+         *     Only two roles are ever persisted, and that is deliberate. `SYSTEM` is the prompt,
+         *     which lives in the versioned `PromptRegistry` and is never a row a user could read or
+         *     replay; `TOOL` results do not exist here because the chat never lets the *provider*
+         *     run a tool — the application executes confirmed actions, out of band, and records the
+         *     outcome as its own audit rather than feeding it back as a message role.
+         * @enum {string}
+         */
+        ChatMessageRole: "USER" | "ASSISTANT";
+        /**
+         * ChatStreamEventResponse
+         * @description The SSE wire shape of one `ChatStreamEvent` a streaming turn emits.
+         *
+         *     Deliberately the *service* event serialized, never the raw provider `LLMStreamEvent`: a
+         *     `TOKEN` carries a chunk of prose to append, `COMPLETED` the persisted assistant message
+         *     and its proposals, and `ERROR` a typed, secret-free code and note. The client reads the
+         *     stream to render prose live, then renders the proposals from the terminal `COMPLETED`
+         *     (or the failure from `ERROR`) — the same rows a later `GET` of the thread returns.
+         */
+        ChatStreamEventResponse: {
+            /** Error Code */
+            error_code: string | null;
+            /** Error Detail */
+            error_detail: string | null;
+            message: components["schemas"]["ChatMessageResponse"] | null;
+            /** Proposals */
+            proposals: components["schemas"]["ChatActionProposalResponse"][];
+            /** Text */
+            text: string | null;
+            type: components["schemas"]["ChatStreamEventType"];
+        };
+        /**
+         * ChatStreamEventType
+         * @description The three shapes a chat turn streams to its caller.
+         *
+         *     A service-level event, deliberately distinct from the provider's `LLMStreamEvent`, so
+         *     the API layer serializes *these* to SSE and never the raw LLM contract: a `TOKEN` is a
+         *     chunk of prose to append, `COMPLETED` carries the persisted assistant message and its
+         *     proposals, and `ERROR` carries a typed, secret-free code and note for a turn that
+         *     reached a provider and did not succeed.
+         * @enum {string}
+         */
+        ChatStreamEventType: "TOKEN" | "COMPLETED" | "ERROR";
+        /**
+         * ClaimType
+         * @description The kind of assertion a claim makes.
+         * @enum {string}
+         */
+        ClaimType: "SKILL" | "EXPERIENCE" | "EDUCATION" | "CERTIFICATION" | "LANGUAGE" | "AVAILABILITY" | "WORK_AUTHORIZATION" | "ACHIEVEMENT";
         /**
          * CompanyAliasResponse
          * @description A name an employer is also known by, and who called it that.
@@ -1362,6 +2688,41 @@ export interface components {
          */
         ContractType: "PERMANENT" | "FIXED_TERM" | "TEMPORARY_AGENCY" | "SERVICE_CONTRACT";
         /**
+         * ConversationListResponse
+         * @description This account's threads, most recent activity first, wrapped so it can grow.
+         */
+        ConversationListResponse: {
+            /** Conversations */
+            conversations: components["schemas"]["ConversationResponse"][];
+        };
+        /**
+         * ConversationResponse
+         * @description One chat thread's caption and activity — never its messages inline.
+         */
+        ConversationResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Archived */
+            is_archived: boolean;
+            /** Last Message At */
+            last_message_at: string | null;
+            /** Title */
+            title: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
          * CountrySearchArea
          * @description An entire country.
          */
@@ -1375,6 +2736,109 @@ export interface components {
             kind: "COUNTRY";
             /** Label */
             label?: string | null;
+        };
+        /**
+         * CoverLetterDocument
+         * @description The structured cover letter (§33).
+         *
+         *     The persuasive counterpart to the résumé, and the looser surface: its body is
+         *     prose. So the same invariant is applied where it bites — every `body`
+         *     paragraph is an `EvidenceBackedText` and must cite the candidate evidence it
+         *     draws on, and the guard checks its numbers and skill-terms just as it does the
+         *     résumé's. `recipient`, `greeting`, `closing` and `signature` are the letter's
+         *     frame: the recipient and greeting name the *employer* (a fact about the
+         *     opportunity, not the candidate), and the signature is the candidate's own name.
+         */
+        CoverLetterDocument: {
+            /** Body */
+            body: components["schemas"]["EvidenceBackedText"][];
+            /** Closing */
+            closing?: string | null;
+            /** Greeting */
+            greeting?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "COVER_LETTER";
+            /** Recipient */
+            recipient?: string | null;
+            /** Signature */
+            signature: string;
+        };
+        /**
+         * CreateApplicationAction
+         * @description Open an application for a posting from its stored decision (§2-3, §36).
+         */
+        CreateApplicationAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "CREATE_APPLICATION";
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+        };
+        /**
+         * CreateApplicationRequest
+         * @description Open an application for one posting from its current decision.
+         *
+         *     The body names the *opportunity* and nothing else: the candidate is the
+         *     account's own profile and the intent is the decision already stored for the pair,
+         *     both resolved server-side, so a request cannot open an application against
+         *     someone else's profile or invent an intent (§2-3, §Security).
+         */
+        CreateApplicationRequest: {
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+        };
+        /**
+         * CreateLLMConnectionRequest
+         * @description A new LLM connection as the settings form submits it (§4, §13).
+         *
+         *     No `id`, `user_id`, or timestamps — the service supplies them from the session and
+         *     the request clock, so there is no field to file a connection under another account.
+         *     `api_key` is write-only: it is accepted here and never echoed, and a connection
+         *     response reports only `has_api_key`. The `provider_type` decides which of the other
+         *     fields are meaningful, and the `LLMConnection` model — not this schema — is the one
+         *     that refuses an incoherent shape (a CLI carrying a key, an API without a base URL),
+         *     so the rule lives in one place.
+         */
+        CreateLLMConnectionRequest: {
+            /** Api Key */
+            api_key?: string | null;
+            /** Base Url */
+            base_url?: string | null;
+            /** Custom Headers */
+            custom_headers?: {
+                [key: string]: string;
+            };
+            /** Display Name */
+            display_name: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Is Default
+             * @default false
+             */
+            is_default: boolean;
+            /** Model */
+            model?: string | null;
+            /**
+             * Priority
+             * @default 100
+             */
+            priority: number;
+            provider_type: components["schemas"]["LLMProviderType"];
         };
         /**
          * DetectedAtsResponse
@@ -1408,6 +2872,304 @@ export interface components {
          */
         DetectionStatus: "CONFIRMED" | "LIKELY" | "UNKNOWN";
         /**
+         * DeterminationSource
+         * @description Who decided a check, which is an audit fact, not a detail.
+         *
+         *     `LLM_EXTRACTION` is deliberately the weakest: see the module docstring and
+         *     the `EligibilityCheck` validator below.
+         * @enum {string}
+         */
+        DeterminationSource: "DETERMINISTIC_RULE" | "COUNTRY_PACK_RULE" | "CANDIDATE_DECLARATION" | "HUMAN_REVIEW" | "LLM_EXTRACTION";
+        /**
+         * DimensionScoreResponse
+         * @description One axis of a match, on both scales, with the reasons behind it.
+         *
+         *     `score_percent` is the axis rendered for a UI; `score` and `weight` are the
+         *     canonical values an audit or a re-weighting would want. A dimension that appears
+         *     here was evaluated — an axis the engine could not assess is *absent* from the
+         *     match rather than present with a zero (docs/MATCHING_ELIGIBILITY.md §Coverage).
+         */
+        DimensionScoreResponse: {
+            dimension: components["schemas"]["MatchDimension"];
+            /** Reasons */
+            reasons: components["schemas"]["ReasonResponse"][];
+            /** Score */
+            score: number;
+            /** Score Percent */
+            score_percent: number;
+            /** Weight */
+            weight: number;
+        };
+        /**
+         * DocumentArtifactResponse
+         * @description Where a rendered PDF lives, as much of it as a download UI needs.
+         *
+         *     The opaque `storage_key` is deliberately absent: a client downloads through the
+         *     document id, and a storage locator in a response body is an internal path a UI
+         *     has no use for and an attacker might. `byte_size` and `page_count` let a list
+         *     show "2 pages, 48 KB" without fetching the file.
+         */
+        DocumentArtifactResponse: {
+            /** Byte Size */
+            byte_size: number;
+            /** Media Type */
+            media_type: string;
+            /** Page Count */
+            page_count: number | null;
+            /**
+             * Rendered At
+             * Format: date-time
+             */
+            rendered_at: string;
+        };
+        /**
+         * DocumentGuardReport
+         * @description The guard's verdict on one version.
+         *
+         *     `ok` is not free to disagree with `violations`: a report that claimed to pass
+         *     while carrying a violation would be the exact silent-failure the guard exists
+         *     to prevent, so the validator ties them together. An empty, `ok=True` report is
+         *     a version that cleared every gate.
+         */
+        DocumentGuardReport: {
+            /** Ok */
+            ok: boolean;
+            /**
+             * Violations
+             * @default []
+             */
+            violations: components["schemas"]["DocumentGuardViolation"][];
+        };
+        /**
+         * DocumentGuardViolation
+         * @description One reason a version failed the `CandidateEvidenceGuard`.
+         *
+         *     `evidence_ids` names the records the offending text *should* have rested on
+         *     (empty when the problem is that it cited nothing), and `offending_text` quotes
+         *     the fragment that tripped the rule, so a reviewer sees the sentence rather than
+         *     a section number. Kept as a value: it is a finding, not an entity.
+         */
+        DocumentGuardViolation: {
+            code: components["schemas"]["DocumentViolationCode"];
+            /** Detail */
+            detail: string;
+            /**
+             * Evidence Ids
+             * @default []
+             */
+            evidence_ids: string[];
+            /** Offending Text */
+            offending_text?: string | null;
+        };
+        /**
+         * DocumentStatus
+         * @description Where one `DocumentVersion` sits in its lifecycle (§7).
+         *
+         *     The path is deliberately one-way through the guard: a version is `DRAFT` when
+         *     a generator has proposed content, `VALIDATING` while the guard runs, and then
+         *     either `VALIDATED` (cleared the guard) or `REJECTED` (a fabrication was
+         *     caught). Only a `VALIDATED` version may be `RENDERED` to a PDF, and only a
+         *     rendered or validated one may be `ARCHIVED` when a newer version supersedes
+         *     it. A `REJECTED` version is kept, not discarded — the whole point of the guard
+         *     is auditable, so the rejected attempt and *why* it was rejected are part of the
+         *     record (§45).
+         * @enum {string}
+         */
+        DocumentStatus: "DRAFT" | "VALIDATING" | "VALIDATED" | "REJECTED" | "RENDERED" | "ARCHIVED";
+        /**
+         * DocumentVersionResponse
+         * @description One attempt at a document: its content, the guard's verdict, and its artifact.
+         *
+         *     `content` is the structured document (a discriminated union told apart by
+         *     `kind`), never a blob — the same shape the guard checked, so a UI renders the
+         *     exact thing that was validated. `guard_report` is present once the guard has
+         *     run and carries every violation of a rejected attempt, because an auditable
+         *     refusal is the point (§45). `artifact` is present only for a RENDERED version.
+         */
+        DocumentVersionResponse: {
+            artifact: components["schemas"]["DocumentArtifactResponse"] | null;
+            /** Content */
+            content: components["schemas"]["ResumeDocument"] | components["schemas"]["CoverLetterDocument"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Generator Key */
+            generator_key: string | null;
+            guard_report: components["schemas"]["DocumentGuardReport"] | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Language */
+            language: string;
+            status: components["schemas"]["DocumentStatus"];
+            /** Version */
+            version: number;
+        };
+        /**
+         * DocumentViolationCode
+         * @description Why the guard refused a version (§12-16).
+         *
+         *     These are the V2 form of V1's `truth_violations` categories
+         *     (`pipeline/tailor_io.py`), named so a surface and an analytics query group on a
+         *     code rather than parse prose. Every one describes a way generated content
+         *     would state something the candidate's evidence does not support.
+         *
+         *     There is deliberately no `MISSING_CITATION`: an uncited line is not something
+         *     the guard has to *catch*, because `EvidenceBackedText` and `ResumeEntry` cannot
+         *     be constructed without at least one evidence id (`Field(min_length=1)`). The
+         *     guard's job is the harder question the type cannot answer — whether the cited
+         *     evidence *exists* (`UNKNOWN_EVIDENCE`) and whether the *words* are supported.
+         * @enum {string}
+         */
+        DocumentViolationCode: "UNKNOWN_EVIDENCE" | "INVENTED_NUMBER" | "UNSUPPORTED_SKILL" | "INVENTED_TERM" | "ALTERED_IDENTITY";
+        /**
+         * EligibilityCheckResponse
+         * @description One gate, evaluated — with who decided it and on what authority.
+         *
+         *     `determined_by` and `authority` are the audit facts §Legal-policy safety rests
+         *     on: an operator-maintained pack value carries `OPERATOR_CONFIG`, which the
+         *     engine can only ever turn into REVIEW_REQUIRED, never a refusal. `reasons` is
+         *     empty for a passing gate and non-empty for every other verdict, mirroring the
+         *     domain invariant.
+         */
+        EligibilityCheckResponse: {
+            authority: components["schemas"]["RuleAuthority"];
+            /** Detail */
+            detail: string | null;
+            determined_by: components["schemas"]["DeterminationSource"];
+            /** Reasons */
+            reasons: components["schemas"]["ReasonResponse"][];
+            requirement: components["schemas"]["EligibilityRequirement"];
+            status: components["schemas"]["EligibilityStatus"];
+        };
+        /**
+         * EligibilityRequirement
+         * @description The gates an opportunity can put in front of a candidate.
+         *
+         *     Every member is binary by nature. Nothing here is "how good is the match" —
+         *     that is `MatchDimension`. Country-specific rules (which permit allows what,
+         *     what the local minimum working age is) are Country Pack knowledge (Phase 5);
+         *     this enum only names the *kind* of gate so the verdict has a stable code.
+         * @enum {string}
+         */
+        EligibilityRequirement: "WORK_AUTHORIZATION" | "PERMIT_HOURS_CAP" | "MINIMUM_AGE" | "LANGUAGE_MINIMUM" | "EDUCATION_LEVEL" | "CERTIFICATION" | "DRIVING_LICENCE" | "AVAILABILITY_WINDOW" | "LOCATION_REACHABLE";
+        /**
+         * EligibilityResponse
+         * @description May this application happen at all — the binary axis alone.
+         *
+         *     `status` is the worst-of aggregate the domain derives from the checks, and
+         *     `is_blocking` is true only for a definite INELIGIBLE: the two honest middles
+         *     (INCOMPLETE, REVIEW_REQUIRED) route to human review rather than refusing. The
+         *     checks travel with it so a UI can explain the verdict gate by gate rather than
+         *     reducing it to a single word.
+         */
+        EligibilityResponse: {
+            /** Checks */
+            checks: components["schemas"]["EligibilityCheckResponse"][];
+            /**
+             * Determined At
+             * Format: date-time
+             */
+            determined_at: string;
+            /** Is Blocking */
+            is_blocking: boolean;
+            /** Policy Version */
+            policy_version: string | null;
+            status: components["schemas"]["EligibilityStatus"];
+        };
+        /**
+         * EligibilityStatus
+         * @description Four values, because fewer would lie.
+         *
+         *     Two of them are the honest middle the phase order insists on, and they are
+         *     not interchangeable:
+         *
+         *     - `INCOMPLETE` means the platform does not yet know — evidence is missing.
+         *       Reading it as eligible produces applications that waste everyone's time;
+         *       reading it as ineligible silently hides opportunities. It pairs with the
+         *       `ELIGIBILITY_INCOMPLETE` reason code docs/ENGINEERING_STANDARDS.md
+         *       §Observability asks for.
+         *     - `REVIEW_REQUIRED` means the platform found something a human must confirm
+         *       before it counts against the candidate — most importantly an eligibility
+         *       rule that is operator-maintained rather than legally verified (see
+         *       `RuleAuthority`). It is *not* a refusal: it is the platform refusing to
+         *       refuse on an unverified basis.
+         *
+         *     A value that is not `ELIGIBLE` never submits an application on its own;
+         *     `INELIGIBLE` blocks and the two middles route to human review
+         *     (`is_blocking`).
+         * @enum {string}
+         */
+        EligibilityStatus: "ELIGIBLE" | "INCOMPLETE" | "REVIEW_REQUIRED" | "INELIGIBLE";
+        /**
+         * EvaluateMatchRequest
+         * @description Ask for one posting to be assessed for the signed-in account's profile.
+         *
+         *     The body names the *opportunity* and nothing else. There is no `candidate_profile_id`
+         *     and no `user_id`: the candidate is the account's own profile, resolved from the
+         *     session, so a request cannot ask for someone else's profile to be scored against
+         *     a posting (docs/ENGINEERING_STANDARDS.md §Security).
+         */
+        EvaluateMatchRequest: {
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+        };
+        /**
+         * EvidenceBackedText
+         * @description A sentence the platform is willing to write, and what it rests on.
+         *
+         *     This is the atom of the truth guarantee: any line that makes a claim about the
+         *     candidate — a summary sentence, an experience bullet, a cover-letter paragraph
+         *     — is one of these, and it cannot exist without at least one `EvidenceId`. The
+         *     guard then checks that the *words* are supported too (no invented number, no
+         *     skill absent from the cited evidence), but the citation itself is a
+         *     type-level invariant, mirroring `CandidateClaim.evidence_ids`.
+         */
+        EvidenceBackedText: {
+            /** Evidence Ids */
+            evidence_ids: string[];
+            /** Text */
+            text: string;
+        };
+        /**
+         * EvidenceKind
+         * @description What sort of record backs a claim.
+         *
+         *     `SELF_DECLARATION` is the weakest member and is not a loophole: a candidate
+         *     stating a fact about themselves is a legitimate, *attributed* source. What the
+         *     platform may never do is manufacture evidence — no member of this enum means
+         *     "an LLM inferred it", and Phase 10's extraction pipeline must attach the
+         *     document it read, not its own conclusion.
+         * @enum {string}
+         */
+        EvidenceKind: "CV_BULLET" | "CV_SUMMARY" | "EMPLOYMENT_RECORD" | "DIPLOMA" | "CERTIFICATE" | "LANGUAGE_ASSESSMENT" | "PORTFOLIO_ITEM" | "REFERENCE" | "PERMIT_DOCUMENT" | "SELF_DECLARATION";
+        /**
+         * EvidenceProvenance
+         * @description Where an evidence record was ingested from (Phase 10 §3).
+         *
+         *     Orthogonal to `EvidenceKind`: the kind says *what sort of record* backs a
+         *     fact, and the provenance says *which pipeline put it in the store*. The two
+         *     together are what make an accepted document auditable (§45) — a résumé bullet
+         *     can say not only "this rests on an employment record" but "that record was
+         *     imported from the operator's base CV" versus "the candidate typed it in".
+         *
+         *     Every member names a real source of *candidate-supplied* facts. There is,
+         *     pointedly, no `LLM_GENERATED` member: a generated sentence is never evidence
+         *     (§3), so a document pipeline that wanted to promote its own output into the
+         *     store would find no provenance to file it under. `SYSTEM_DERIVED` is the one
+         *     machine origin, and it is deterministic derivation from other stored facts —
+         *     a language proficiency turned into a `LANGUAGE` claim — never generation.
+         * @enum {string}
+         */
+        EvidenceProvenance: "CANDIDATE_PROFILE" | "BASE_CV" | "MANUAL_USER_INPUT" | "IMPORTED_CV" | "PROJECT" | "EMPLOYMENT_RECORD" | "EDUCATION_RECORD" | "SYSTEM_DERIVED";
+        /**
          * EvidenceResponse
          * @description Why the backend believes one thing about a company.
          *
@@ -1425,6 +3187,56 @@ export interface components {
             observed_at: string | null;
             /** Source Url */
             source_url: string | null;
+        };
+        /**
+         * GenerateCoverLetterAction
+         * @description Draft the candidate's cover letter for one posting (executes `DocumentService`).
+         */
+        GenerateCoverLetterAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "GENERATE_COVER_LETTER";
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+            /** Target Language */
+            target_language?: string | null;
+        };
+        /**
+         * GenerateDocumentRequest
+         * @description Ask for a document to be generated for a posting, for this account's profile.
+         *
+         *     The opportunity and the document type are in the path; the body carries only an
+         *     optional `language` override. Left unset, the service writes the document in the
+         *     posting's own language, falling back to the candidate's first declared one — it
+         *     never guesses a language the candidate did not state. There is no profile or
+         *     owner field, for the same reason `EvaluateMatchRequest` has none.
+         */
+        GenerateDocumentRequest: {
+            /** Language */
+            language?: string | null;
+        };
+        /**
+         * GenerateResumeAction
+         * @description Tailor the candidate's résumé to one posting (executes `DocumentService`).
+         */
+        GenerateResumeAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "GENERATE_RESUME";
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+            /** Target Language */
+            target_language?: string | null;
         };
         /**
          * GeoLocationResponse
@@ -1538,6 +3350,90 @@ export interface components {
             scheduled_for?: string | null;
         };
         /**
+         * LLMConnectionHealthResponse
+         * @description The result of probing a connection's live provider — data, never an exception.
+         *
+         *     `status` is the runtime answer to "can this serve a request now?" and `detail` is a
+         *     secret-free sentence produced by the platform's own redaction, never a raw provider
+         *     message. A provider being down is an `UNAVAILABLE` status a settings page renders,
+         *     not an error it must catch.
+         */
+        LLMConnectionHealthResponse: {
+            /** Detail */
+            detail: string | null;
+            /** Latency Ms */
+            latency_ms: number | null;
+            status: components["schemas"]["ProviderHealthStatus"];
+        };
+        /**
+         * LLMConnectionListResponse
+         * @description This account's connections, in the router's priority-then-id order, wrapped.
+         */
+        LLMConnectionListResponse: {
+            /** Connections */
+            connections: components["schemas"]["LLMConnectionResponse"][];
+        };
+        /**
+         * LLMConnectionResponse
+         * @description One stored connection, echoed back with the credential reduced to a boolean.
+         *
+         *     `has_api_key` is the only thing said about a credential — never its value, never
+         *     its ciphertext (§13). `provider_type`, `base_url` and `model` describe where and as
+         *     what the connection reaches its model; `is_default`, `enabled` and `priority` are
+         *     how a task chooses among a user's connections. `custom_headers` is echoed because a
+         *     header is a route hint, not a secret — an API key must never be put in one, which
+         *     the connection model does not police, so the settings UI keeps that field for
+         *     non-secret headers only.
+         */
+        LLMConnectionResponse: {
+            /** Base Url */
+            base_url: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Custom Headers */
+            custom_headers: {
+                [key: string]: string;
+            };
+            /** Display Name */
+            display_name: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Has Api Key */
+            has_api_key: boolean;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Default */
+            is_default: boolean;
+            /** Model */
+            model: string | null;
+            /** Priority */
+            priority: number;
+            provider_type: components["schemas"]["LLMProviderType"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * LLMProviderType
+         * @description Which adapter a connection is built into — the closed set Phase 11 implements.
+         *
+         *     Dispatched on by `backend.app.llm.factory` alone, and nowhere else: the factory is
+         *     the one place allowed to know a provider type maps to a concrete adapter, which is
+         *     what keeps the "no `if provider == …` in business code" rule (§3) true. Later
+         *     phases add native Anthropic/Gemini adapters here (§105); Phase 11 ships the CLI
+         *     pair and the two OpenAI-compatible transports.
+         * @enum {string}
+         */
+        LLMProviderType: "CLAUDE_CODE" | "CODEX" | "OPENAI_COMPATIBLE" | "LOCAL_OPENAI_COMPATIBLE";
+        /**
          * LanguageLevel
          * @description CEFR levels plus NATIVE.
          *
@@ -1637,6 +3533,62 @@ export interface components {
             password: string;
         };
         /**
+         * MatchClassification
+         * @description The band a match falls in, named once so no surface invents its own.
+         *
+         *     docs/V2_SPECIFICATION.md §9 and the phase order both refuse scattered
+         *     `if score > 0.8` literals: a threshold that lives in five components drifts
+         *     into five different products. The bands live on `MatchProfile` and this enum
+         *     is their vocabulary.
+         *
+         *     `UNKNOWN` is not a low score — it is the honest answer when no dimension
+         *     could be evaluated at all, and it must never be rendered as WEAK. "We could
+         *     not assess this" and "this is a poor fit" are different facts.
+         * @enum {string}
+         */
+        MatchClassification: "EXCELLENT" | "STRONG" | "MODERATE" | "WEAK" | "UNKNOWN";
+        /**
+         * MatchDimension
+         * @description The axes a candidate/opportunity pair is scored on.
+         *
+         *     All six are *compatibility* axes: each answers "how well does this fit?" and
+         *     each is legitimately a matter of degree. Anything that answers "is this
+         *     allowed?" belongs to eligibility, not here.
+         * @enum {string}
+         */
+        MatchDimension: "SKILLS_FIT" | "EXPERIENCE_FIT" | "EDUCATION_FIT" | "LANGUAGE_FIT" | "LOCATION_FIT" | "SCHEDULE_FIT";
+        /**
+         * MatchResponse
+         * @description How well one candidate fits one posting — the compatibility axis alone.
+         *
+         *     Nothing here reflects eligibility: a blocked application can still be a 92%
+         *     match, and this model is where that number lives untouched. `classification` is
+         *     the band the score falls in, and `evidence_confidence` is the *separate* "how
+         *     much could we even assess?" axis — a high score over one evaluable dimension is
+         *     a confident-looking number with low coverage, and the two fields say so
+         *     independently (docs/MATCHING_ELIGIBILITY.md §Coverage).
+         */
+        MatchResponse: {
+            classification: components["schemas"]["MatchClassification"];
+            /** Dimensions */
+            dimensions: components["schemas"]["DimensionScoreResponse"][];
+            /**
+             * Evaluated At
+             * Format: date-time
+             */
+            evaluated_at: string;
+            /** Evaluator Key */
+            evaluator_key: string | null;
+            /** Evidence Confidence */
+            evidence_confidence: number | null;
+            /** Evidence Confidence Percent */
+            evidence_confidence_percent: number | null;
+            /** Overall */
+            overall: number;
+            /** Overall Percent */
+            overall_percent: number;
+        };
+        /**
          * MatchedRadiusResponse
          * @description Which radius branch admitted a result, by its index and its label.
          */
@@ -1646,6 +3598,31 @@ export interface components {
             /** Radius Index */
             radius_index: number;
         };
+        /**
+         * NavigateAction
+         * @description Point the client at a screen — a hint that mutates nothing on the server.
+         */
+        NavigateAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "NAVIGATE";
+            /** Opportunity Id */
+            opportunity_id?: string | null;
+            target: components["schemas"]["NavigationTarget"];
+        };
+        /**
+         * NavigationTarget
+         * @description A screen a `NAVIGATE` action may point the client at.
+         *
+         *     Closed on purpose: navigation is a client-side hint, but letting the model name an
+         *     arbitrary path would be an open redirect dressed as a chat action. The client maps
+         *     each member to a route it owns; a target the client does not recognise is simply
+         *     ignored, never followed.
+         * @enum {string}
+         */
+        NavigationTarget: "OPPORTUNITIES" | "APPLICATIONS" | "DOCUMENTS" | "MATCHES" | "COMPANIES" | "INTERVIEW_PREP" | "SETTINGS";
         /** NotesBody */
         NotesBody: {
             /** Notes Md */
@@ -1671,6 +3648,26 @@ export interface components {
             may_complete: boolean;
             /** Search Profiles */
             search_profiles: number;
+        };
+        /**
+         * OpenInterviewPrepAction
+         * @description Open the existing V1 interview-prep view for a posting (client-side, no mutation).
+         *
+         *     The only interview capability the chat exposes, and deliberately so: the adaptive
+         *     simulator, scoring and readiness are Phase 14 and out of scope (§19). This is a
+         *     navigation hint to a view V1 already ships, nothing more.
+         */
+        OpenInterviewPrepAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "OPEN_INTERVIEW_PREP";
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
         };
         /**
          * OpportunityGeoItemResponse
@@ -1764,6 +3761,41 @@ export interface components {
          */
         OpportunityType: "FULL_TIME" | "PART_TIME" | "STUDENT_JOB" | "INTERNSHIP" | "APPRENTICESHIP" | "WORK_STUDY" | "GRADUATE" | "TEMPORARY" | "FREELANCE";
         /**
+         * PinnedDocumentResponse
+         * @description One exact document version an application will submit (§14-16).
+         */
+        PinnedDocumentResponse: {
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            document_type: components["schemas"]["CandidateDocumentType"];
+            /** Version */
+            version: number;
+            /**
+             * Version Id
+             * Format: uuid
+             */
+            version_id: string;
+        };
+        /**
+         * PrepareApplicationAction
+         * @description Prepare an application and route it by the gate — reversible, never submits.
+         */
+        PrepareApplicationAction: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "PREPARE_APPLICATION";
+        };
+        /**
          * ProviderHealthResponse
          * @description What one company discovery provider last said about itself.
          *
@@ -1792,6 +3824,17 @@ export interface components {
             status: components["schemas"]["SourceHealthStatus"];
         };
         /**
+         * ProviderHealthStatus
+         * @description The runtime answer to "can this provider serve a request now?" (§37).
+         *
+         *     Separate from `Capability` on purpose (see `backend.app.llm.capabilities`): a
+         *     provider can be fully capable and momentarily `UNAVAILABLE`, or capable and
+         *     `AUTH_REQUIRED` until a key is set. `UNKNOWN` is the honest state before anything
+         *     has probed it — distinct from `UNAVAILABLE`, which is a probe that failed.
+         * @enum {string}
+         */
+        ProviderHealthStatus: "UNKNOWN" | "HEALTHY" | "DEGRADED" | "UNAVAILABLE" | "AUTH_REQUIRED" | "MISCONFIGURED";
+        /**
          * RadiusSearchArea
          * @description Everything within `radius_km` of `center`.
          *
@@ -1811,6 +3854,29 @@ export interface components {
             label?: string | null;
             /** Radius Km */
             radius_km: number;
+        };
+        /**
+         * ReasonImpact
+         * @description Whether a reason argues for a candidate/opportunity pair or against it.
+         * @enum {string}
+         */
+        ReasonImpact: "POSITIVE" | "NEGATIVE" | "NEUTRAL";
+        /**
+         * ReasonResponse
+         * @description One typed reason behind a score or a verdict.
+         *
+         *     A `code` a client branches on, a `detail` a human reads, and the `impact` that
+         *     says whether it helped or hurt. Never a serialized exception and never a secret:
+         *     the reasons the engines emit are drawn from a closed vocabulary
+         *     (docs/MATCHING_ELIGIBILITY.md §Reasons), so this model cannot carry a stack
+         *     trace or an environment value into a UI.
+         */
+        ReasonResponse: {
+            /** Code */
+            code: string;
+            /** Detail */
+            detail: string | null;
+            impact: components["schemas"]["ReasonImpact"];
         };
         /** RegenBody */
         RegenBody: {
@@ -1886,6 +3952,119 @@ export interface components {
          * @enum {string}
          */
         RemoteSelection: "exclude" | "include" | "only";
+        /**
+         * ResumeDocument
+         * @description The structured, ATS-oriented résumé (§28-32).
+         *
+         *     `full_name` is identity, not a claim — it is the candidate's own
+         *     `CandidateProfile.display_name`, and rewriting it would be altering identity,
+         *     which the guard forbids (`ALTERED_IDENTITY`). `headline` is likewise carried
+         *     from the profile. Everything that asserts a *fact* — the summary, every
+         *     experience bullet, every skill — is evidence-backed. `languages` renders the
+         *     profile's `LanguageProficiency` lines, which are facts the profile already
+         *     holds rather than anything the generator composed.
+         *
+         *     The structure is intentionally flat and label-driven: an ATS parser
+         *     (§28) reads plain sections, so the renderer emits headings and bullet lists,
+         *     never multi-column tables or text boxes.
+         */
+        ResumeDocument: {
+            /**
+             * Education
+             * @default []
+             */
+            education: components["schemas"]["ResumeEntry"][];
+            /**
+             * Experience
+             * @default []
+             */
+            experience: components["schemas"]["ResumeEntry"][];
+            /** Full Name */
+            full_name: string;
+            /** Headline */
+            headline?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "RESUME";
+            /**
+             * Languages
+             * @default []
+             */
+            languages: string[];
+            /**
+             * Skill Groups
+             * @default []
+             */
+            skill_groups: components["schemas"]["ResumeSkillGroup"][];
+            summary?: components["schemas"]["EvidenceBackedText"] | null;
+        };
+        /**
+         * ResumeEntry
+         * @description One experience, education or project block.
+         *
+         *     `heading` and `subheading` are the block's factual frame ("Software Engineer —
+         *     Acme", "2021–2024, Lausanne"). Those are facts too, so the entry as a whole
+         *     cites the employment or education evidence it summarizes; each bullet then
+         *     cites its own evidence on top. A block with no bullets is allowed — an
+         *     education line is often just its heading — but a block that cites no evidence
+         *     is not, because then its heading would be an unsupported fact.
+         */
+        ResumeEntry: {
+            /**
+             * Bullets
+             * @default []
+             */
+            bullets: components["schemas"]["EvidenceBackedText"][];
+            /** Evidence Ids */
+            evidence_ids: string[];
+            /** Heading */
+            heading: string;
+            /** Subheading */
+            subheading?: string | null;
+        };
+        /**
+         * ResumeSkillGroup
+         * @description A labelled cluster of skills on the résumé.
+         *
+         *     Each entry in `skills` must be backed by a candidate `SKILL` claim — the guard
+         *     checks it against the normalized skill ontology, so "Node" and "Node.js" are
+         *     one skill and an unclaimed one is a `UNSUPPORTED_SKILL` violation. The group
+         *     `name` ("Languages", "Cloud") is presentation and carries no claim.
+         */
+        ResumeSkillGroup: {
+            /** Name */
+            name?: string | null;
+            /** Skills */
+            skills: string[];
+        };
+        /**
+         * RuleAuthority
+         * @description How much a rule behind a check is entitled to close a gate.
+         *
+         *     The distinction has legal teeth. A Country Pack's permit table, its minimum
+         *     working age and its language thresholds are *operator-maintained
+         *     configuration*, not law this repository asserts — docs/COUNTRY_PACKS.md
+         *     §Eligibility and the `PermitRule` docstring say so in the same words. A wrong
+         *     number in a YAML file must never become an automatic "you may not apply".
+         *
+         *     So authority is carried on the check and enforced by the domain: only a
+         *     `VERIFIED` rule may produce `INELIGIBLE`. Anything less can inform, can lower
+         *     a match score elsewhere, and can raise `REVIEW_REQUIRED` so a human looks —
+         *     but it cannot refuse on its own. The four levels, weakest last:
+         *
+         *     - `VERIFIED` — reviewed against the actual legal source and signed off; the
+         *       only authority permitted to block.
+         *     - `SOURCE_DECLARED` — the opportunity or employer stated the requirement
+         *       itself (e.g. a posting that says "EU work permit required"). Strong, but a
+         *       posting is not the law and can be wrong, so it informs and reviews.
+         *     - `OPERATOR_CONFIG` — a value an operator maintains in a Country Pack. The
+         *       default for pack-supplied rules, and deliberately not blocking.
+         *     - `UNKNOWN` — no provenance stated; treated as the weakest.
+         * @enum {string}
+         */
+        RuleAuthority: "VERIFIED" | "SOURCE_DECLARED" | "OPERATOR_CONFIG" | "UNKNOWN";
         /**
          * SearchProfileDraft
          * @description A saved search as submitted: no id, no owner, no timestamps.
@@ -1987,6 +4166,14 @@ export interface components {
             user_id: string;
         };
         /**
+         * SendMessageRequest
+         * @description One user turn: the words to send. The reply streams back as SSE events.
+         */
+        SendMessageRequest: {
+            /** Text */
+            text: string;
+        };
+        /**
          * SessionResponse
          * @description The current session's window — issued, expires — and nothing identifying it.
          *
@@ -2009,6 +4196,32 @@ export interface components {
              * Format: date-time
              */
             last_seen_at: string;
+        };
+        /**
+         * SetLLMConnectionEnabledRequest
+         * @description The on/off a settings page toggles, without deleting the row or its key.
+         */
+        SetLLMConnectionEnabledRequest: {
+            /** Enabled */
+            enabled: boolean;
+        };
+        /**
+         * SetSearchRadiusAction
+         * @description Change the radius of a saved search's radius area(s) (executes `OnboardingService`).
+         */
+        SetSearchRadiusAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "SET_SEARCH_RADIUS";
+            /** Radius Km */
+            radius_km: number;
+            /**
+             * Search Profile Id
+             * Format: uuid
+             */
+            search_profile_id: string;
         };
         /** SettingsBody */
         SettingsBody: {
@@ -2124,12 +4337,101 @@ export interface components {
          * @enum {string}
          */
         SpontaneousApplicationSupport: "SUPPORTED" | "NOT_SUPPORTED" | "UNKNOWN";
+        /**
+         * StartConversationRequest
+         * @description Open a new chat thread, optionally captioned from the user's opening words.
+         *
+         *     `title` is a caption the service truncates, never authority the model or the client
+         *     grants itself; an absent or blank one falls back to a fixed default. There is no
+         *     `user_id` field — the owner is the session's account (§Security).
+         */
+        StartConversationRequest: {
+            /** Title */
+            title?: string | null;
+        };
         /** StatusBody */
         StatusBody: {
             /** Detail */
             detail?: string | null;
             /** Status */
             status: string;
+        };
+        /**
+         * SubmitApplicationAction
+         * @description Submit an approved application — the irreversible boundary (§1, §5, §80-88).
+         *
+         *     Carries no override of any kind: the executor hands this to `ApplicationService.submit`,
+         *     which re-evaluates the Phase 12 gate (policy, eligibility, rate budget, the
+         *     concurrency-safe reservation) exactly as the HTTP route does. The chat is one more
+         *     caller of that boundary, never a way around it.
+         */
+        SubmitApplicationAction: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "SUBMIT_APPLICATION";
+        };
+        /**
+         * UpdateLLMConnectionRequest
+         * @description A partial edit to a connection — every field optional, an unset one untouched.
+         *
+         *     The credential needs three states, not two: `api_key` set rotates it,
+         *     `remove_api_key` clears it, and neither leaves it as stored — so a user edits a
+         *     gateway's model without re-typing its key, or drops the key without touching the
+         *     rest. `api_key` and `remove_api_key` together is contradictory and refused here, so
+         *     the service is never handed an ambiguous instruction.
+         */
+        UpdateLLMConnectionRequest: {
+            /** Api Key */
+            api_key?: string | null;
+            /** Base Url */
+            base_url?: string | null;
+            /** Custom Headers */
+            custom_headers?: {
+                [key: string]: string;
+            } | null;
+            /** Display Name */
+            display_name?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Priority */
+            priority?: number | null;
+            /**
+             * Remove Api Key
+             * @default false
+             */
+            remove_api_key: boolean;
+        };
+        /**
+         * UpdateSearchKeywordsAction
+         * @description Replace a saved search's title and/or excluded keyword lists.
+         *
+         *     Both fields are optional and default to "leave unchanged" (`None`); an empty tuple is
+         *     a real value that clears a list, which matches the domain's convention that an empty
+         *     allow-list restricts nothing. A field the model omits is not touched, so a proposal to
+         *     change the title keywords cannot silently wipe the exclusions.
+         */
+        UpdateSearchKeywordsAction: {
+            /** Excluded Keywords */
+            excluded_keywords?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "UPDATE_SEARCH_KEYWORDS";
+            /**
+             * Search Profile Id
+             * Format: uuid
+             */
+            search_profile_id: string;
+            /** Title Keywords */
+            title_keywords?: string[] | null;
         };
         /**
          * UserStatus
@@ -3141,6 +5443,245 @@ export interface operations {
             };
         };
     };
+    list_applications_api_v2_applications_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationListResponse"];
+                };
+            };
+        };
+    };
+    create_application_api_v2_applications_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateApplicationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_application_api_v2_applications__application_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_application_api_v2_applications__application_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_application_api_v2_applications__application_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_application_events_api_v2_applications__application_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationEventListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepare_application_api_v2_applications__application_id__prepare_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_application_api_v2_applications__application_id__submit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     log_in_api_v2_auth_login_post: {
         parameters: {
             query?: never;
@@ -3241,6 +5782,249 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SignedInResponse"];
+                };
+            };
+        };
+    };
+    list_conversations_api_v2_chat_conversations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationListResponse"];
+                };
+            };
+        };
+    };
+    start_conversation_api_v2_chat_conversations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartConversationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_conversation_api_v2_chat_conversations__conversation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_messages_api_v2_chat_conversations__conversation_id__messages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatMessageListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    send_message_api_v2_chat_conversations__conversation_id__messages_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description A Server-Sent Events stream: one ChatStreamEventResponse per `data:` line — TOKEN chunks, then a terminal COMPLETED or ERROR. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatStreamEventResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_proposals_api_v2_chat_conversations__conversation_id__proposals_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatActionProposalListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_proposal_api_v2_chat_proposals__proposal_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatActionExecutionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dismiss_proposal_api_v2_chat_proposals__proposal_id__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatActionProposalResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3346,6 +6130,88 @@ export interface operations {
             };
         };
     };
+    list_documents_api_v2_documents_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateDocumentListResponse"];
+                };
+            };
+        };
+    };
+    read_document_api_v2_documents__document_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateDocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_document_api_v2_documents__document_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     search_companies_api_v2_geo_companies_get: {
         parameters: {
             query?: {
@@ -3411,6 +6277,145 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OpportunityGeoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_matches_api_v2_matches_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssessmentListResponse"];
+                };
+            };
+        };
+    };
+    evaluate_match_api_v2_matches_evaluate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvaluateMatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssessmentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_claim_api_v2_me_claims_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateClaimResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_evidence_api_v2_me_evidence_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateEvidenceListResponse"];
+                };
+            };
+        };
+    };
+    add_evidence_api_v2_me_evidence_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddEvidenceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateEvidenceResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3677,6 +6682,352 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AccountResponse"];
+                };
+            };
+        };
+    };
+    generate_cover_letter_api_v2_opportunities__opportunity_id__cover_letter_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateDocumentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateDocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_match_api_v2_opportunities__opportunity_id__match_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssessmentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_resume_api_v2_opportunities__opportunity_id__resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateDocumentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateDocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_connections_api_v2_settings_llm_connections_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionListResponse"];
+                };
+            };
+        };
+    };
+    create_connection_api_v2_settings_llm_connections_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateLLMConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_connection_api_v2_settings_llm_connections__connection_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_connection_api_v2_settings_llm_connections__connection_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_connection_api_v2_settings_llm_connections__connection_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateLLMConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_connection_default_api_v2_settings_llm_connections__connection_id__default_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_connection_enabled_api_v2_settings_llm_connections__connection_id__enabled_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetLLMConnectionEnabledRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    healthcheck_connection_api_v2_settings_llm_connections__connection_id__healthcheck_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMConnectionHealthResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -27,17 +27,43 @@ from backend.app.domain.common import (
     SalaryRange,
     WorkloadRange,
 )
+from backend.app.domain.eligibility import (
+    DeterminationSource,
+    EligibilityCheck,
+    EligibilityRequirement,
+    EligibilityStatus,
+    RuleAuthority,
+)
+from backend.app.domain.chat import (
+    ChatActionProposalStatus,
+    ChatMessageRole,
+    NavigateAction,
+    NavigationTarget,
+    SetSearchRadiusAction,
+)
 from backend.app.domain.identifiers import (
     CompanyLocationId,
+    EligibilityResultId,
     EvidenceId,
     MatchEvaluationId,
 )
 from backend.app.domain.matching import DimensionScore, MatchDimension
 from backend.app.infrastructure.database.mappers import (
+    chat_action_execution_to_domain,
+    chat_action_execution_to_row,
+    chat_action_proposal_to_domain,
+    chat_action_proposal_to_row,
+    chat_message_to_domain,
+    chat_message_to_row,
     company_location_to_domain,
     company_to_domain,
     company_to_row,
+    conversation_to_domain,
+    conversation_to_row,
     dimension_score_row_id,
+    eligibility_check_row_id,
+    eligibility_result_to_domain,
+    eligibility_result_to_row,
     match_evaluation_to_domain,
     match_evaluation_to_row,
     opportunity_to_domain,
@@ -46,21 +72,36 @@ from backend.app.infrastructure.database.mappers import (
     reasons_to_json,
     source_record_row_id,
 )
-from backend.app.infrastructure.database.models import CompanyLocationRow, OpportunityRow
+from backend.app.infrastructure.database.models import (
+    CompanyLocationRow,
+    OpportunityRow,
+)
 from tests.v2_builders import (
+    APPLICATION,
     COMPANY,
     COMPANY_LOCATION,
+    ELIGIBILITY,
     EVALUATION,
     OPPORTUNITY,
     OTHER_OPPORTUNITY,
+    RUN,
+    SEARCH_PROFILE,
+    a_chat_action_execution,
+    a_chat_action_proposal,
+    a_chat_message,
+    a_check,
     a_company,
     a_company_location,
+    a_conversation,
+    a_reason,
+    an_eligibility_result,
     an_evaluation,
     an_opportunity,
 )
 
 EVIDENCE = EvidenceId(UUID("00000000-0000-4000-8000-000000000071"))
 SECOND_EVALUATION = MatchEvaluationId(UUID("00000000-0000-4000-8000-000000000042"))
+SECOND_RESULT = EligibilityResultId(UUID("00000000-0000-4000-8000-000000000046"))
 SECOND_SITE = CompanyLocationId(UUID("00000000-0000-4000-8000-000000000036"))
 
 
@@ -295,6 +336,89 @@ def test_a_stored_reason_with_an_unexpected_key_is_refused():
         reasons_from_json([{"code": "OLD", "detail": "why", "severity": "high"}])
 
 
+def test_an_eligibility_result_survives_the_trip_to_the_rows_and_back():
+    """The whole verdict, including an unverified pack rule's authority and detail.
+
+    Equality over the entire object, for the reason the posting round trip is: a
+    field added to `EligibilityCheck` and forgotten in the mapper fails here. The
+    second check is the §59 case — a Country Pack's operator-maintained hours cap,
+    REVIEW_REQUIRED rather than a refusal — so `authority`, `detail` and the reason a
+    non-ELIGIBLE gate must carry are all on the path this asserts.
+    """
+    result = an_eligibility_result(
+        a_check(),
+        EligibilityCheck(
+            requirement=EligibilityRequirement.PERMIT_HOURS_CAP,
+            status=EligibilityStatus.REVIEW_REQUIRED,
+            determined_by=DeterminationSource.COUNTRY_PACK_RULE,
+            authority=RuleAuthority.OPERATOR_CONFIG,
+            detail="Swiss student permit caps paid work at 15h/week.",
+            reasons=(a_reason(code="PERMIT_HOURS_CAP_REVIEW",
+                              impact=ReasonImpact.NEGATIVE),)))
+    assert eligibility_result_to_domain(eligibility_result_to_row(result)) == result
+
+
+def test_the_stored_status_is_the_worst_of_the_checks_the_domain_recomputes():
+    """The denormalized column is the derived verdict; the read-back ignores it.
+
+    The column exists so a list can rank and filter without loading every check,
+    and worst-of aggregation means one closed gate closes the result — so a passing
+    gate beside an ineligible one still stores INELIGIBLE. Corrupting the column and
+    reading the row back still yields the verdict the checks imply, because
+    `eligibility_result_to_domain` never passes `status`: the copy and the source
+    cannot drift.
+    """
+    row = eligibility_result_to_row(an_eligibility_result(
+        a_check(status=EligibilityStatus.ELIGIBLE),
+        a_check(requirement=EligibilityRequirement.LANGUAGE_MINIMUM,
+                status=EligibilityStatus.INELIGIBLE)))
+    assert row.status is EligibilityStatus.INELIGIBLE
+    row.status = EligibilityStatus.ELIGIBLE
+    assert eligibility_result_to_domain(row).status is EligibilityStatus.INELIGIBLE
+
+
+def test_an_eligibility_check_key_is_derived_from_its_position():
+    """`(result, ordinal)` — the same pair the unique constraint covers.
+
+    Pinned to a literal for the reason `dimension_score_row_id` is: two calls
+    agreeing with each other would also hold for `uuid4`, and what has to be stable
+    across runs is the value itself, so a change to the namespace or the seed string
+    is a deliberate migration rather than a silent orphaning of every check already
+    written.
+    """
+    assert eligibility_check_row_id(ELIGIBILITY, 0) == \
+        UUID("7dd6b214-29f7-5086-b05a-41ebe7aff799")
+    assert eligibility_check_row_id(ELIGIBILITY, 0) != \
+        eligibility_check_row_id(ELIGIBILITY, 1)
+    assert eligibility_check_row_id(ELIGIBILITY, 0) != \
+        eligibility_check_row_id(SECOND_RESULT, 0)
+
+
+def test_re_evaluating_reuses_the_check_row_at_each_position():
+    """Checks are matched by `ordinal`, not by list identity and not by requirement.
+
+    A requirement can repeat — two required languages are two LANGUAGE_MINIMUM gates
+    — so position is the natural key a re-evaluation reconciles on: the row at
+    ordinal 0 is updated in place, keeping its surrogate key, even though its
+    requirement changed, and a position the re-run no longer produces is dropped for
+    the delete-orphan cascade. This is the one behaviour that differs from the
+    dimension mapper, which keys on the dimension itself.
+    """
+    row = eligibility_result_to_row(an_eligibility_result(
+        a_check(status=EligibilityStatus.INELIGIBLE),
+        a_check(requirement=EligibilityRequirement.LANGUAGE_MINIMUM,
+                status=EligibilityStatus.INELIGIBLE)))
+    kept = row.checks[0]
+
+    updated = eligibility_result_to_row(an_eligibility_result(
+        a_check(requirement=EligibilityRequirement.LANGUAGE_MINIMUM,
+                status=EligibilityStatus.REVIEW_REQUIRED)), row)
+    assert len(updated.checks) == 1
+    assert updated.checks[0] is kept
+    assert kept.requirement is EligibilityRequirement.LANGUAGE_MINIMUM
+    assert kept.status is EligibilityStatus.REVIEW_REQUIRED
+
+
 def test_a_company_survives_the_trip_with_all_of_its_sites():
     """The parent and its child collection, including which site is the head office.
 
@@ -342,3 +466,123 @@ def test_a_site_row_that_locates_nothing_is_refused_by_name():
     with pytest.raises(ValueError, match=str(COMPANY_LOCATION)):
         company_location_to_domain(CompanyLocationRow(id=COMPANY_LOCATION,
                                                       company_id=COMPANY))
+
+
+def test_a_conversation_survives_the_trip_to_the_row_and_back():
+    """Every column, including the nullable `last_message_at` a live thread carries."""
+    conversation = a_conversation()
+    assert conversation_to_domain(conversation_to_row(conversation)) == conversation
+
+
+def test_a_conversation_with_no_turns_yet_keeps_its_null_last_message():
+    """`last_message_at` is `None` until the first turn, and must read back as `None`
+    rather than as the `created_at` a coalescing mapper might substitute."""
+    conversation = a_conversation(last_message_at=None)
+    read_back = conversation_to_domain(conversation_to_row(conversation))
+    assert read_back == conversation
+    assert read_back.last_message_at is None
+
+
+def test_a_user_turn_carries_no_llm_provenance_and_an_assistant_turn_does():
+    """The two message shapes the `user_has_no_run` CHECK draws a line between.
+
+    A user turn has no run and no provider key; an assistant turn names both, because
+    it is traceable to the telemetry of the call that produced it. Both must survive the
+    trip as the exact shape written, or a UI could not tell an authored turn from a
+    generated one.
+    """
+    user_turn = a_chat_message()
+    assert chat_message_to_domain(chat_message_to_row(user_turn)) == user_turn
+    assert user_turn.llm_run_id is None and user_turn.provider_key is None
+
+    assistant_turn = a_chat_message(
+        sequence=1, role=ChatMessageRole.ASSISTANT, content="Voici votre CV tailored.",
+        llm_run_id=RUN, provider_key="openai_compatible")
+    read_back = chat_message_to_domain(chat_message_to_row(assistant_turn))
+    assert read_back == assistant_turn
+    assert read_back.llm_run_id == RUN and read_back.provider_key == "openai_compatible"
+
+
+def test_a_proposal_survives_the_trip_with_its_action_re_validated():
+    """The whole point of the proposal mapper: the typed action must round-trip.
+
+    Equality over the entire object, so a field added to `ChatActionProposal` and
+    forgotten fails here. The action is a `SubmitApplicationAction` — the heaviest — so
+    the `application_id` UUID has to survive JSONB, which has no UUID type.
+    """
+    proposal = a_chat_action_proposal()
+    read_back = chat_action_proposal_to_domain(chat_action_proposal_to_row(proposal))
+    assert read_back == proposal
+    assert read_back.action.application_id == APPLICATION
+
+
+def test_the_denormalised_kind_column_always_equals_the_action_kind():
+    """`kind` is a column so "my open submit proposals" is one indexed query, and it
+    is written from the same validated object as the JSONB — so the two cannot drift,
+    which this asserts across three different action families."""
+    for action in (SetSearchRadiusAction(search_profile_id=SEARCH_PROFILE,
+                                          radius_km=25.0),
+                   NavigateAction(target=NavigationTarget.APPLICATIONS)):
+        row = chat_action_proposal_to_row(a_chat_action_proposal(action=action))
+        assert row.kind is action.kind
+        assert row.action["kind"] == action.kind.value
+
+
+def test_confirming_a_proposal_writes_onto_the_row_and_forces_updated_at():
+    """A confirm moves `status` off `PROPOSED`; the mapper must mutate the row in place.
+
+    `row is target` is what makes the repository an upsert rather than an insert of a
+    second proposal, and `updated_at` has to be forced into the UPDATE — a status change
+    at the same instant as the insert would otherwise be lost under asyncio.
+    """
+    row = chat_action_proposal_to_row(a_chat_action_proposal())
+    assert row.status is ChatActionProposalStatus.PROPOSED
+    executed = a_chat_action_proposal(status=ChatActionProposalStatus.EXECUTED)
+    updated = chat_action_proposal_to_row(executed, row)
+    assert updated is row
+    assert updated.status is ChatActionProposalStatus.EXECUTED
+
+
+def test_a_stored_action_whose_kind_left_the_grammar_is_refused_on_the_way_back():
+    """JSONB accepts any shape, so the read-back re-validates against the closed union.
+
+    A payload an older version wrote whose `kind` is no longer a member must fail here,
+    loudly, beside the row that has it — never reach an executor branch that no longer
+    exists and be run as a half-understood command.
+    """
+    row = chat_action_proposal_to_row(a_chat_action_proposal())
+    row.action = {"kind": "DELETE_EVERYTHING", "application_id": str(APPLICATION)}
+    with pytest.raises(ValidationError):
+        chat_action_proposal_to_domain(row)
+
+
+def test_a_hand_built_proposal_row_reconstructs_from_its_stored_kind():
+    """The union is selected by the `kind` inside the JSONB, not by the column.
+
+    The column is the denormalised copy for querying; the reconstruction reads the
+    payload. A row built by hand with a navigate payload comes back a `NavigateAction`,
+    which is what proves the mapper trusts the validated payload over the column.
+    """
+    proposal = a_chat_action_proposal(
+        action=NavigateAction(target=NavigationTarget.MATCHES,
+                              opportunity_id=OPPORTUNITY))
+    read_back = chat_action_proposal_to_domain(chat_action_proposal_to_row(proposal))
+    assert isinstance(read_back.action, NavigateAction)
+    assert read_back.action.target is NavigationTarget.MATCHES
+    assert read_back.action.opportunity_id == OPPORTUNITY
+
+
+def test_an_execution_survives_the_trip_to_the_row_and_back():
+    """The executor's audit, including the optional `detail` and `result_ref`."""
+    execution = a_chat_action_execution()
+    assert chat_action_execution_to_domain(
+        chat_action_execution_to_row(execution)) == execution
+
+
+def test_an_execution_with_no_detail_reads_back_with_none():
+    """A refused-at-validation outcome may carry neither a detail nor a result, and the
+    absent columns must read back as `None` rather than empty strings."""
+    execution = a_chat_action_execution(detail=None, result_ref=None)
+    read_back = chat_action_execution_to_domain(chat_action_execution_to_row(execution))
+    assert read_back == execution
+    assert read_back.detail is None and read_back.result_ref is None

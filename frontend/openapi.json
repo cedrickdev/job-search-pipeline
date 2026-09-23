@@ -58,6 +58,372 @@
         "title": "AccountResponse",
         "type": "object"
       },
+      "AddClaimRequest": {
+        "additionalProperties": false,
+        "description": "One claim as submitted, citing evidence the profile already holds.\n\n`evidence_ids` must name at least one record — a claim resting on nothing is\nunconstructible (§the truth guarantee) — and every id must be one the account's\nprofile holds, or the service refuses it with a 422 rather than a 500.",
+        "properties": {
+          "claim_type": {
+            "$ref": "#/components/schemas/ClaimType"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "evidence_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "label": {
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_type",
+          "label",
+          "evidence_ids"
+        ],
+        "title": "AddClaimRequest",
+        "type": "object"
+      },
+      "AddEvidenceRequest": {
+        "additionalProperties": false,
+        "description": "One evidence record as submitted: what it attests and where it came from.\n\nNo `id`, no `user_id`, no `recorded_at` — the service supplies the id and the\nowner from the session and stamps the instant, so there is no field for a body\nto file evidence under another account (docs/ENGINEERING_STANDARDS.md §Security).\n`provenance` names a real source of candidate-supplied facts; there is no\n`LLM_GENERATED` member to choose, because a generated sentence is never evidence.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "issued_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issued On"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EvidenceKind"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/EvidenceProvenance"
+          },
+          "reference_key": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Key"
+          },
+          "source_document": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Document"
+          },
+          "summary": {
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          }
+        },
+        "required": [
+          "kind",
+          "provenance",
+          "summary"
+        ],
+        "title": "AddEvidenceRequest",
+        "type": "object"
+      },
+      "ApplicationChannel": {
+        "description": "The route an application takes to an employer (§8-10).\n\nNamed once so the registry dispatches on a typed member rather than a platform\nstring scattered through business code (§8: no `if platform == \"greenhouse\"`).\nThe channels are ordered loosely from most machine-friendly to least:\n\n- `ATS_API` — a first-class API the ATS publishes; the safest to automate;\n- `ATS_FORM` — a known ATS's web form (Greenhouse, Lever, Ashby, Umantis…);\n- `DIRECT_FORM` — an employer's own hosted application form;\n- `BROWSER` — a page only a browser can drive (LinkedIn, WTJ, Migros…);\n- `EMAIL` — an application sent to a stated recipient address (§62);\n- `MANUAL` — the platform prepares, the human submits; the honest default when\n  nothing above fits;\n- `UNSUPPORTED` — the platform has no way to apply here at all, so it says so\n  rather than pretending a `MANUAL` hand-off it cannot even set up.",
+        "enum": [
+          "ATS_API",
+          "ATS_FORM",
+          "DIRECT_FORM",
+          "BROWSER",
+          "EMAIL",
+          "MANUAL",
+          "UNSUPPORTED"
+        ],
+        "title": "ApplicationChannel",
+        "type": "string"
+      },
+      "ApplicationEventActor": {
+        "description": "Who caused an event, which is itself an audit fact.\n\n- `SYSTEM` — the deterministic engine (a gate evaluation, an automatic transition);\n- `USER` — the account holder (an approval, a cancellation from the UI);\n- `WORKER` — the isolated browser/submission worker reporting an outcome.",
+        "enum": [
+          "SYSTEM",
+          "USER",
+          "WORKER"
+        ],
+        "title": "ApplicationEventActor",
+        "type": "string"
+      },
+      "ApplicationEventListResponse": {
+        "additionalProperties": false,
+        "description": "One application's events, oldest first — the trail as it grew.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/ApplicationEventResponse"
+            },
+            "title": "Events",
+            "type": "array"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "title": "ApplicationEventListResponse",
+        "type": "object"
+      },
+      "ApplicationEventResponse": {
+        "additionalProperties": false,
+        "description": "One immutable entry in an application's audit trail (§41).\n\n`reasons` reuse the closed-vocabulary `ReasonResponse`, so the \"why\" behind a\ngate decision or a refusal renders identically to everywhere else and can never\ncarry a stack trace or a secret.",
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/ApplicationEventActor"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "event_type": {
+            "$ref": "#/components/schemas/ApplicationEventType"
+          },
+          "from_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApplicationState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ReasonResponse"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "to_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApplicationState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "event_type",
+          "actor",
+          "from_state",
+          "to_state",
+          "detail",
+          "reasons",
+          "occurred_at"
+        ],
+        "title": "ApplicationEventResponse",
+        "type": "object"
+      },
+      "ApplicationEventType": {
+        "description": "What happened, as a stable code a dashboard groups on (§41).\n\nThe vocabulary of the trail. Most correspond to a state change, but a few record\na *decision the engine made* without a state change — a gate evaluation, a\nduplicate blocked at creation — because those are exactly the facts an audit of\n\"why did (didn't) this apply?\" needs and a bare state history would lose.",
+        "enum": [
+          "CREATED",
+          "PREPARATION_STARTED",
+          "PREPARED",
+          "GATE_EVALUATED",
+          "HUMAN_REQUIRED",
+          "APPROVED",
+          "SUBMISSION_STARTED",
+          "SUBMITTED",
+          "SUBMISSION_STATE_UNKNOWN",
+          "FAILED",
+          "CANCELLED",
+          "WITHDRAWN",
+          "DUPLICATE_BLOCKED",
+          "RATE_LIMITED"
+        ],
+        "title": "ApplicationEventType",
+        "type": "string"
+      },
+      "ApplicationListResponse": {
+        "additionalProperties": false,
+        "description": "This account's applications, newest first, wrapped so it can grow a field.",
+        "properties": {
+          "applications": {
+            "items": {
+              "$ref": "#/components/schemas/ApplicationResponse"
+            },
+            "title": "Applications",
+            "type": "array"
+          }
+        },
+        "required": [
+          "applications"
+        ],
+        "title": "ApplicationListResponse",
+        "type": "object"
+      },
+      "ApplicationResponse": {
+        "additionalProperties": false,
+        "description": "One application's current state, target and pinned materials.\n\nThe lifecycle `state` is what a UI renders and acts on — READY_FOR_REVIEW shows\nan \"Approve & Submit\" control, REQUIRES_HUMAN a hand-off, SUBMITTED a receipt.\n`answers` and the correlation id are deliberately not exposed: the answers can\ncarry personal values a list view has no need for, and the trail is the audited\nplace to see what happened.",
+        "properties": {
+          "attempt_count": {
+            "title": "Attempt Count",
+            "type": "integer"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/ApplicationChannel"
+          },
+          "company_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "opportunity_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opportunity Id"
+          },
+          "pinned_documents": {
+            "items": {
+              "$ref": "#/components/schemas/PinnedDocumentResponse"
+            },
+            "title": "Pinned Documents",
+            "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ApplicationState"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "channel",
+          "opportunity_id",
+          "company_id",
+          "pinned_documents",
+          "attempt_count",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ApplicationResponse",
+        "type": "object"
+      },
+      "ApplicationState": {
+        "description": "Every state one application can be in (§17-18).\n\nThe happy path runs `PLANNED → PREPARING → READY_FOR_REVIEW → APPROVED →\nSUBMITTING → SUBMITTED`; the branches are the honest ways it can leave that path.\n\n- `PLANNED` — created from a decision, nothing prepared yet;\n- `PREPARING` — an adapter is drafting materials and reading the form;\n- `READY_FOR_REVIEW` — prepared and filled, waiting for a human to approve (§52);\n- `REQUIRES_HUMAN` — stopped on something only a person can resolve (§19-27);\n- `APPROVED` — cleared to submit, by a human or an autopilot policy;\n- `SUBMITTING` — a submission attempt is in flight;\n- `SUBMITTED` — confirmed to have reached the employer;\n- `SUBMISSION_STATE_UNKNOWN` — it left the platform but no confirmation could be\n  read, so whether it landed is genuinely unknown; never retried automatically,\n  because a blind retry could double-submit (§38, §84, §88);\n- `FAILED` — an execution failure that a fresh preparation could retry;\n- `CANCELLED` — abandoned before it ever reached the employer;\n- `WITHDRAWN` — retracted after it was submitted.",
+        "enum": [
+          "PLANNED",
+          "PREPARING",
+          "READY_FOR_REVIEW",
+          "REQUIRES_HUMAN",
+          "APPROVED",
+          "SUBMITTING",
+          "SUBMITTED",
+          "SUBMISSION_STATE_UNKNOWN",
+          "FAILED",
+          "CANCELLED",
+          "WITHDRAWN"
+        ],
+        "title": "ApplicationState",
+        "type": "string"
+      },
       "AppliedBody": {
         "properties": {
           "channel": {
@@ -67,6 +433,160 @@
           }
         },
         "title": "AppliedBody",
+        "type": "object"
+      },
+      "ApproveApplicationAction": {
+        "additionalProperties": false,
+        "description": "Record a human's approval of a prepared application (§52).",
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "APPROVE_APPLICATION",
+            "default": "APPROVE_APPLICATION",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id"
+        ],
+        "title": "ApproveApplicationAction",
+        "type": "object"
+      },
+      "AssessedOpportunityResponse": {
+        "additionalProperties": false,
+        "description": "The posting an assessment is about, as much of it as a list card needs.\n\nA summary rather than the whole `Opportunity` — no description, salary or source\nsnapshot — because the assessment endpoints answer \"how does this pair look?\",\nnot \"show me the posting\". It is the same shape whether it arrives from an\nevaluate call or a list, so a client holds one opportunity model here.",
+        "properties": {
+          "company_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Id"
+          },
+          "company_name": {
+            "title": "Company Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "location_city": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location City"
+          },
+          "location_country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Country"
+          },
+          "opportunity_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpportunityType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "workplace_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkplaceMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "company_name",
+          "company_id",
+          "opportunity_type",
+          "workplace_mode",
+          "location_country",
+          "location_city"
+        ],
+        "title": "AssessedOpportunityResponse",
+        "type": "object"
+      },
+      "AssessmentListResponse": {
+        "additionalProperties": false,
+        "description": "A user's assessed pairs, newest first, wrapped rather than bare.\n\nA wrapper for the same reason `SearchProfileListResponse` is one: a top-level\narray cannot grow a field, and the day this needs a cursor or a count it would\notherwise be a breaking change. The order is chronological, not a ranking — an\nINELIGIBLE pair is not pushed down by faking a low score\n(docs/MATCHING_ELIGIBILITY.md §Ranking).",
+        "properties": {
+          "assessments": {
+            "items": {
+              "$ref": "#/components/schemas/AssessmentResponse"
+            },
+            "title": "Assessments",
+            "type": "array"
+          }
+        },
+        "required": [
+          "assessments"
+        ],
+        "title": "AssessmentListResponse",
+        "type": "object"
+      },
+      "AssessmentResponse": {
+        "additionalProperties": false,
+        "description": "One opportunity, assessed on both axes for one candidate.\n\nThe two verdicts sit side by side and neither derives from the other: `match`\nis `null` when no dimension was scorable (rendered as the UNKNOWN band, never a\nzero), while `eligibility` is always present. This is the shape both the\nevaluate endpoint and the single-pair read return, so a client learns it once.",
+        "properties": {
+          "eligibility": {
+            "$ref": "#/components/schemas/EligibilityResponse"
+          },
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatchResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "opportunity": {
+            "$ref": "#/components/schemas/AssessedOpportunityResponse"
+          }
+        },
+        "required": [
+          "opportunity",
+          "match",
+          "eligibility"
+        ],
+        "title": "AssessmentResponse",
         "type": "object"
       },
       "AtsPlatform": {
@@ -169,6 +689,288 @@
           "file"
         ],
         "title": "Body_post_transcribe_api_transcribe_post",
+        "type": "object"
+      },
+      "CancelApplicationAction": {
+        "additionalProperties": false,
+        "description": "Abandon an application before it reaches the employer.",
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "CANCEL_APPLICATION",
+            "default": "CANCEL_APPLICATION",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id"
+        ],
+        "title": "CancelApplicationAction",
+        "type": "object"
+      },
+      "CandidateClaimResponse": {
+        "additionalProperties": false,
+        "description": "One stored claim and the evidence ids it rests on.\n\n`evidence_ids` is never empty: the aggregate refuses a claim that cites nothing,\nso a client can rely on every claim here pointing at real evidence it can look\nup in the same profile.",
+        "properties": {
+          "claim_type": {
+            "$ref": "#/components/schemas/ClaimType"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "evidence_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "claim_type",
+          "label",
+          "detail",
+          "evidence_ids"
+        ],
+        "title": "CandidateClaimResponse",
+        "type": "object"
+      },
+      "CandidateDocumentListResponse": {
+        "additionalProperties": false,
+        "description": "This account's documents, most recently updated first, wrapped.",
+        "properties": {
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateDocumentResponse"
+            },
+            "title": "Documents",
+            "type": "array"
+          }
+        },
+        "required": [
+          "documents"
+        ],
+        "title": "CandidateDocumentListResponse",
+        "type": "object"
+      },
+      "CandidateDocumentResponse": {
+        "additionalProperties": false,
+        "description": "A candidate's document for one posting, with its whole version history.\n\nThe versions travel newest-last, their numbers strictly increasing, so a client\nreads the history in order and takes the last usable one as \"the document\".\n`latest_usable_version` names the number of the newest version fit to be shown\nas the candidate's — `null` when every attempt is a draft or was rejected, which\na UI renders as \"not generated yet\" rather than showing an unchecked draft.",
+        "properties": {
+          "candidate_profile_id": {
+            "format": "uuid",
+            "title": "Candidate Profile Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "document_type": {
+            "$ref": "#/components/schemas/CandidateDocumentType"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "latest_usable_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Usable Version"
+          },
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentVersionResponse"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "candidate_profile_id",
+          "opportunity_id",
+          "document_type",
+          "versions",
+          "latest_usable_version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CandidateDocumentResponse",
+        "type": "object"
+      },
+      "CandidateDocumentType": {
+        "description": "The kinds of document Phase 10 produces.\n\nA résumé and a cover letter for the same posting are two documents, not two\nfaces of one, because they have independent version histories: a candidate\nmay regenerate the letter after an interview without touching the résumé. The\nvalue is part of a `candidate_document_id`, so the split is also what keeps\ntheir rows distinct.",
+        "enum": [
+          "RESUME",
+          "COVER_LETTER"
+        ],
+        "title": "CandidateDocumentType",
+        "type": "string"
+      },
+      "CandidateEvidenceListResponse": {
+        "additionalProperties": false,
+        "description": "The account's whole attested record: its evidence and its claims.\n\nWrapped rather than two bare arrays for the reason every list response here is:\na top-level object can grow a field, a top-level array cannot. The two travel\ntogether because a profile page shows the claims and lets a reader trace each to\nthe evidence behind it.",
+        "properties": {
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateClaimResponse"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateEvidenceResponse"
+            },
+            "title": "Evidence",
+            "type": "array"
+          }
+        },
+        "required": [
+          "evidence",
+          "claims"
+        ],
+        "title": "CandidateEvidenceListResponse",
+        "type": "object"
+      },
+      "CandidateEvidenceResponse": {
+        "additionalProperties": false,
+        "description": "One stored evidence record, echoed back with the id it was filed under.\n\nThat id is what a later claim, or a generated document line, cites. The\n`source_document` is a label (a path or a URL), never the file's bytes — the\ndomain describes where proof lives, it does not carry it.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "issued_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issued On"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EvidenceKind"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/EvidenceProvenance"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "title": "Recorded At",
+            "type": "string"
+          },
+          "reference_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Key"
+          },
+          "source_document": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Document"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "provenance",
+          "summary",
+          "reference_key",
+          "detail",
+          "issued_on",
+          "valid_until",
+          "source_document",
+          "recorded_at"
+        ],
+        "title": "CandidateEvidenceResponse",
         "type": "object"
       },
       "CandidateProfileDraft": {
@@ -333,6 +1135,211 @@
         "title": "CareerSiteResponse",
         "type": "object"
       },
+      "ChatActionExecutionOutcome": {
+        "description": "How one attempt to execute a confirmed proposal ended.\n\nTold apart from the proposal's status because an execution is the *event* and the\nstatus is the proposal's resulting *state*: a `REJECTED` outcome is a proposal the\nexecutor would not permit, a `FAILED` outcome is one it permitted but whose service\ncall raised, and `SUCCEEDED` is the action having run.",
+        "enum": [
+          "SUCCEEDED",
+          "REJECTED",
+          "FAILED"
+        ],
+        "title": "ChatActionExecutionOutcome",
+        "type": "string"
+      },
+      "ChatActionExecutionResponse": {
+        "additionalProperties": false,
+        "description": "The audited record of one confirmed proposal's execution.\n\n`outcome` says whether the action was refused at validation (`REJECTED`), permitted but\nfailed (`FAILED`), or ran (`SUCCEEDED`); `result_ref` carries the id or handle it\nproduced (an application's new state, a document id, a navigation target) and `detail`\na secret-free note — both composed by the executor from typed, domain-safe values,\nnever a raw provider or driver message.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ChatActionExecutionOutcome"
+          },
+          "proposal_id": {
+            "format": "uuid",
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Ref"
+          }
+        },
+        "required": [
+          "id",
+          "proposal_id",
+          "outcome",
+          "detail",
+          "result_ref",
+          "created_at"
+        ],
+        "title": "ChatActionExecutionResponse",
+        "type": "object"
+      },
+      "ChatActionProposalListResponse": {
+        "additionalProperties": false,
+        "description": "One thread's proposals, oldest first, wrapped so it can grow a field.",
+        "properties": {
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/ChatActionProposalResponse"
+            },
+            "title": "Proposals",
+            "type": "array"
+          }
+        },
+        "required": [
+          "proposals"
+        ],
+        "title": "ChatActionProposalListResponse",
+        "type": "object"
+      },
+      "ChatActionProposalResponse": {
+        "additionalProperties": false,
+        "description": "One typed action the model proposed, awaiting a human's confirm or dismiss.\n\n`action` is the domain `ChatAction` union verbatim: secret-free by construction, so the\nclient receives the exact discriminated variant to render and to confirm. `status`\nstarts `PROPOSED` and only an explicit confirm or dismiss moves it — the response is how\na UI knows whether a card is still actionable.",
+        "properties": {
+          "action": {
+            "discriminator": {
+              "mapping": {
+                "APPROVE_APPLICATION": "#/components/schemas/ApproveApplicationAction",
+                "CANCEL_APPLICATION": "#/components/schemas/CancelApplicationAction",
+                "CREATE_APPLICATION": "#/components/schemas/CreateApplicationAction",
+                "GENERATE_COVER_LETTER": "#/components/schemas/GenerateCoverLetterAction",
+                "GENERATE_RESUME": "#/components/schemas/GenerateResumeAction",
+                "NAVIGATE": "#/components/schemas/NavigateAction",
+                "OPEN_INTERVIEW_PREP": "#/components/schemas/OpenInterviewPrepAction",
+                "PREPARE_APPLICATION": "#/components/schemas/PrepareApplicationAction",
+                "SET_SEARCH_RADIUS": "#/components/schemas/SetSearchRadiusAction",
+                "SUBMIT_APPLICATION": "#/components/schemas/SubmitApplicationAction",
+                "UPDATE_SEARCH_KEYWORDS": "#/components/schemas/UpdateSearchKeywordsAction"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GenerateResumeAction"
+              },
+              {
+                "$ref": "#/components/schemas/GenerateCoverLetterAction"
+              },
+              {
+                "$ref": "#/components/schemas/CreateApplicationAction"
+              },
+              {
+                "$ref": "#/components/schemas/PrepareApplicationAction"
+              },
+              {
+                "$ref": "#/components/schemas/ApproveApplicationAction"
+              },
+              {
+                "$ref": "#/components/schemas/SubmitApplicationAction"
+              },
+              {
+                "$ref": "#/components/schemas/CancelApplicationAction"
+              },
+              {
+                "$ref": "#/components/schemas/SetSearchRadiusAction"
+              },
+              {
+                "$ref": "#/components/schemas/UpdateSearchKeywordsAction"
+              },
+              {
+                "$ref": "#/components/schemas/NavigateAction"
+              },
+              {
+                "$ref": "#/components/schemas/OpenInterviewPrepAction"
+              }
+            ],
+            "title": "Action"
+          },
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChatActionProposalStatus"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "message_id",
+          "ordinal",
+          "action",
+          "status",
+          "summary",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ChatActionProposalResponse",
+        "type": "object"
+      },
+      "ChatActionProposalStatus": {
+        "description": "Where one proposal is in its life from \"offered\" to \"done\".\n\nA proposal is born `PROPOSED`. A human confirming it that succeeds moves it to\n`EXECUTED`; one that the executor refuses at validation moves it to `REJECTED`\n(it was never permitted); one whose underlying service action failed moves it to\n`FAILED` (it was permitted but did not complete). `DISMISSED` is the user declining\nit. Only a `PROPOSED` proposal may be executed or dismissed — the others are terminal.",
+        "enum": [
+          "PROPOSED",
+          "EXECUTED",
+          "REJECTED",
+          "FAILED",
+          "DISMISSED"
+        ],
+        "title": "ChatActionProposalStatus",
+        "type": "string"
+      },
       "ChatBody": {
         "properties": {
           "message": {
@@ -355,6 +1362,194 @@
         ],
         "title": "ChatBody",
         "type": "object"
+      },
+      "ChatMessageListResponse": {
+        "additionalProperties": false,
+        "description": "One thread's turns, oldest first — the transcript as it grew.",
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessageResponse"
+            },
+            "title": "Messages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "title": "ChatMessageListResponse",
+        "type": "object"
+      },
+      "ChatMessageResponse": {
+        "additionalProperties": false,
+        "description": "One stored turn: its prose and, for an assistant turn, its telemetry provenance.\n\n`content` is the prose only — the fenced proposal block was parsed out into proposals\nand is never stored here. A user turn carries no `llm_run_id`/`provider_key`; an\nassistant turn carries both, so a turn is traceable to the run that produced it.",
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "llm_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Run Id"
+          },
+          "provider_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Key"
+          },
+          "role": {
+            "$ref": "#/components/schemas/ChatMessageRole"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "role",
+          "content",
+          "sequence",
+          "llm_run_id",
+          "provider_key",
+          "created_at"
+        ],
+        "title": "ChatMessageResponse",
+        "type": "object"
+      },
+      "ChatMessageRole": {
+        "description": "Who authored one stored chat message.\n\nOnly two roles are ever persisted, and that is deliberate. `SYSTEM` is the prompt,\nwhich lives in the versioned `PromptRegistry` and is never a row a user could read or\nreplay; `TOOL` results do not exist here because the chat never lets the *provider*\nrun a tool — the application executes confirmed actions, out of band, and records the\noutcome as its own audit rather than feeding it back as a message role.",
+        "enum": [
+          "USER",
+          "ASSISTANT"
+        ],
+        "title": "ChatMessageRole",
+        "type": "string"
+      },
+      "ChatStreamEventResponse": {
+        "additionalProperties": false,
+        "description": "The SSE wire shape of one `ChatStreamEvent` a streaming turn emits.\n\nDeliberately the *service* event serialized, never the raw provider `LLMStreamEvent`: a\n`TOKEN` carries a chunk of prose to append, `COMPLETED` the persisted assistant message\nand its proposals, and `ERROR` a typed, secret-free code and note. The client reads the\nstream to render prose live, then renders the proposals from the terminal `COMPLETED`\n(or the failure from `ERROR`) — the same rows a later `GET` of the thread returns.",
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Detail"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatMessageResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/ChatActionProposalResponse"
+            },
+            "title": "Proposals",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "type": {
+            "$ref": "#/components/schemas/ChatStreamEventType"
+          }
+        },
+        "required": [
+          "type",
+          "text",
+          "message",
+          "proposals",
+          "error_code",
+          "error_detail"
+        ],
+        "title": "ChatStreamEventResponse",
+        "type": "object"
+      },
+      "ChatStreamEventType": {
+        "description": "The three shapes a chat turn streams to its caller.\n\nA service-level event, deliberately distinct from the provider's `LLMStreamEvent`, so\nthe API layer serializes *these* to SSE and never the raw LLM contract: a `TOKEN` is a\nchunk of prose to append, `COMPLETED` carries the persisted assistant message and its\nproposals, and `ERROR` carries a typed, secret-free code and note for a turn that\nreached a provider and did not succeed.",
+        "enum": [
+          "TOKEN",
+          "COMPLETED",
+          "ERROR"
+        ],
+        "title": "ChatStreamEventType",
+        "type": "string"
+      },
+      "ClaimType": {
+        "description": "The kind of assertion a claim makes.",
+        "enum": [
+          "SKILL",
+          "EXPERIENCE",
+          "EDUCATION",
+          "CERTIFICATION",
+          "LANGUAGE",
+          "AVAILABILITY",
+          "WORK_AUTHORIZATION",
+          "ACHIEVEMENT"
+        ],
+        "title": "ClaimType",
+        "type": "string"
       },
       "CompanyAliasResponse": {
         "additionalProperties": false,
@@ -1006,6 +2201,75 @@
         "title": "ContractType",
         "type": "string"
       },
+      "ConversationListResponse": {
+        "additionalProperties": false,
+        "description": "This account's threads, most recent activity first, wrapped so it can grow.",
+        "properties": {
+          "conversations": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationResponse"
+            },
+            "title": "Conversations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "conversations"
+        ],
+        "title": "ConversationListResponse",
+        "type": "object"
+      },
+      "ConversationResponse": {
+        "additionalProperties": false,
+        "description": "One chat thread's caption and activity — never its messages inline.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_archived": {
+            "title": "Is Archived",
+            "type": "boolean"
+          },
+          "last_message_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Message At"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "is_archived",
+          "created_at",
+          "updated_at",
+          "last_message_at"
+        ],
+        "title": "ConversationResponse",
+        "type": "object"
+      },
       "CountrySearchArea": {
         "additionalProperties": false,
         "description": "An entire country.",
@@ -1037,6 +2301,190 @@
           "country"
         ],
         "title": "CountrySearchArea",
+        "type": "object"
+      },
+      "CoverLetterDocument": {
+        "additionalProperties": false,
+        "description": "The structured cover letter (§33).\n\nThe persuasive counterpart to the résumé, and the looser surface: its body is\nprose. So the same invariant is applied where it bites — every `body`\nparagraph is an `EvidenceBackedText` and must cite the candidate evidence it\ndraws on, and the guard checks its numbers and skill-terms just as it does the\nrésumé's. `recipient`, `greeting`, `closing` and `signature` are the letter's\nframe: the recipient and greeting name the *employer* (a fact about the\nopportunity, not the candidate), and the signature is the candidate's own name.",
+        "properties": {
+          "body": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceBackedText"
+            },
+            "minItems": 1,
+            "title": "Body",
+            "type": "array"
+          },
+          "closing": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closing"
+          },
+          "greeting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Greeting"
+          },
+          "kind": {
+            "const": "COVER_LETTER",
+            "default": "COVER_LETTER",
+            "title": "Kind",
+            "type": "string"
+          },
+          "recipient": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient"
+          },
+          "signature": {
+            "title": "Signature",
+            "type": "string"
+          }
+        },
+        "required": [
+          "body",
+          "signature"
+        ],
+        "title": "CoverLetterDocument",
+        "type": "object"
+      },
+      "CreateApplicationAction": {
+        "additionalProperties": false,
+        "description": "Open an application for a posting from its stored decision (§2-3, §36).",
+        "properties": {
+          "kind": {
+            "const": "CREATE_APPLICATION",
+            "default": "CREATE_APPLICATION",
+            "title": "Kind",
+            "type": "string"
+          },
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ],
+        "title": "CreateApplicationAction",
+        "type": "object"
+      },
+      "CreateApplicationRequest": {
+        "additionalProperties": false,
+        "description": "Open an application for one posting from its current decision.\n\nThe body names the *opportunity* and nothing else: the candidate is the\naccount's own profile and the intent is the decision already stored for the pair,\nboth resolved server-side, so a request cannot open an application against\nsomeone else's profile or invent an intent (§2-3, §Security).",
+        "properties": {
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ],
+        "title": "CreateApplicationRequest",
+        "type": "object"
+      },
+      "CreateLLMConnectionRequest": {
+        "additionalProperties": false,
+        "description": "A new LLM connection as the settings form submits it (§4, §13).\n\nNo `id`, `user_id`, or timestamps — the service supplies them from the session and\nthe request clock, so there is no field to file a connection under another account.\n`api_key` is write-only: it is accepted here and never echoed, and a connection\nresponse reports only `has_api_key`. The `provider_type` decides which of the other\nfields are meaningful, and the `LLMConnection` model — not this schema — is the one\nthat refuses an incoherent shape (a CLI carrying a key, an API without a base URL),\nso the rule lives in one place.",
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "format": "password",
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "custom_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Custom Headers",
+            "type": "object"
+          },
+          "display_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "priority": {
+            "default": 100,
+            "minimum": 0.0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "provider_type": {
+            "$ref": "#/components/schemas/LLMProviderType"
+          }
+        },
+        "required": [
+          "provider_type",
+          "display_name"
+        ],
+        "title": "CreateLLMConnectionRequest",
         "type": "object"
       },
       "DetectedAtsResponse": {
@@ -1092,6 +2540,460 @@
         "title": "DetectionStatus",
         "type": "string"
       },
+      "DeterminationSource": {
+        "description": "Who decided a check, which is an audit fact, not a detail.\n\n`LLM_EXTRACTION` is deliberately the weakest: see the module docstring and\nthe `EligibilityCheck` validator below.",
+        "enum": [
+          "DETERMINISTIC_RULE",
+          "COUNTRY_PACK_RULE",
+          "CANDIDATE_DECLARATION",
+          "HUMAN_REVIEW",
+          "LLM_EXTRACTION"
+        ],
+        "title": "DeterminationSource",
+        "type": "string"
+      },
+      "DimensionScoreResponse": {
+        "additionalProperties": false,
+        "description": "One axis of a match, on both scales, with the reasons behind it.\n\n`score_percent` is the axis rendered for a UI; `score` and `weight` are the\ncanonical values an audit or a re-weighting would want. A dimension that appears\nhere was evaluated — an axis the engine could not assess is *absent* from the\nmatch rather than present with a zero (docs/MATCHING_ELIGIBILITY.md §Coverage).",
+        "properties": {
+          "dimension": {
+            "$ref": "#/components/schemas/MatchDimension"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ReasonResponse"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "score_percent": {
+            "title": "Score Percent",
+            "type": "integer"
+          },
+          "weight": {
+            "title": "Weight",
+            "type": "number"
+          }
+        },
+        "required": [
+          "dimension",
+          "score",
+          "score_percent",
+          "weight",
+          "reasons"
+        ],
+        "title": "DimensionScoreResponse",
+        "type": "object"
+      },
+      "DocumentArtifactResponse": {
+        "additionalProperties": false,
+        "description": "Where a rendered PDF lives, as much of it as a download UI needs.\n\nThe opaque `storage_key` is deliberately absent: a client downloads through the\ndocument id, and a storage locator in a response body is an internal path a UI\nhas no use for and an attacker might. `byte_size` and `page_count` let a list\nshow \"2 pages, 48 KB\" without fetching the file.",
+        "properties": {
+          "byte_size": {
+            "title": "Byte Size",
+            "type": "integer"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "page_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "rendered_at": {
+            "format": "date-time",
+            "title": "Rendered At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "media_type",
+          "byte_size",
+          "page_count",
+          "rendered_at"
+        ],
+        "title": "DocumentArtifactResponse",
+        "type": "object"
+      },
+      "DocumentGuardReport": {
+        "additionalProperties": false,
+        "description": "The guard's verdict on one version.\n\n`ok` is not free to disagree with `violations`: a report that claimed to pass\nwhile carrying a violation would be the exact silent-failure the guard exists\nto prevent, so the validator ties them together. An empty, `ok=True` report is\na version that cleared every gate.",
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "violations": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DocumentGuardViolation"
+            },
+            "title": "Violations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "DocumentGuardReport",
+        "type": "object"
+      },
+      "DocumentGuardViolation": {
+        "additionalProperties": false,
+        "description": "One reason a version failed the `CandidateEvidenceGuard`.\n\n`evidence_ids` names the records the offending text *should* have rested on\n(empty when the problem is that it cited nothing), and `offending_text` quotes\nthe fragment that tripped the rule, so a reviewer sees the sentence rather than\na section number. Kept as a value: it is a finding, not an entity.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/DocumentViolationCode"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "offending_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offending Text"
+          }
+        },
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "DocumentGuardViolation",
+        "type": "object"
+      },
+      "DocumentStatus": {
+        "description": "Where one `DocumentVersion` sits in its lifecycle (§7).\n\nThe path is deliberately one-way through the guard: a version is `DRAFT` when\na generator has proposed content, `VALIDATING` while the guard runs, and then\neither `VALIDATED` (cleared the guard) or `REJECTED` (a fabrication was\ncaught). Only a `VALIDATED` version may be `RENDERED` to a PDF, and only a\nrendered or validated one may be `ARCHIVED` when a newer version supersedes\nit. A `REJECTED` version is kept, not discarded — the whole point of the guard\nis auditable, so the rejected attempt and *why* it was rejected are part of the\nrecord (§45).",
+        "enum": [
+          "DRAFT",
+          "VALIDATING",
+          "VALIDATED",
+          "REJECTED",
+          "RENDERED",
+          "ARCHIVED"
+        ],
+        "title": "DocumentStatus",
+        "type": "string"
+      },
+      "DocumentVersionResponse": {
+        "additionalProperties": false,
+        "description": "One attempt at a document: its content, the guard's verdict, and its artifact.\n\n`content` is the structured document (a discriminated union told apart by\n`kind`), never a blob — the same shape the guard checked, so a UI renders the\nexact thing that was validated. `guard_report` is present once the guard has\nrun and carries every violation of a rejected attempt, because an auditable\nrefusal is the point (§45). `artifact` is present only for a RENDERED version.",
+        "properties": {
+          "artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentArtifactResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "content": {
+            "discriminator": {
+              "mapping": {
+                "COVER_LETTER": "#/components/schemas/CoverLetterDocument",
+                "RESUME": "#/components/schemas/ResumeDocument"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ResumeDocument"
+              },
+              {
+                "$ref": "#/components/schemas/CoverLetterDocument"
+              }
+            ],
+            "title": "Content"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "generator_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generator Key"
+          },
+          "guard_report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentGuardReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DocumentStatus"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "status",
+          "language",
+          "content",
+          "guard_report",
+          "artifact",
+          "generator_key",
+          "created_at"
+        ],
+        "title": "DocumentVersionResponse",
+        "type": "object"
+      },
+      "DocumentViolationCode": {
+        "description": "Why the guard refused a version (§12-16).\n\nThese are the V2 form of V1's `truth_violations` categories\n(`pipeline/tailor_io.py`), named so a surface and an analytics query group on a\ncode rather than parse prose. Every one describes a way generated content\nwould state something the candidate's evidence does not support.\n\nThere is deliberately no `MISSING_CITATION`: an uncited line is not something\nthe guard has to *catch*, because `EvidenceBackedText` and `ResumeEntry` cannot\nbe constructed without at least one evidence id (`Field(min_length=1)`). The\nguard's job is the harder question the type cannot answer — whether the cited\nevidence *exists* (`UNKNOWN_EVIDENCE`) and whether the *words* are supported.",
+        "enum": [
+          "UNKNOWN_EVIDENCE",
+          "INVENTED_NUMBER",
+          "UNSUPPORTED_SKILL",
+          "INVENTED_TERM",
+          "ALTERED_IDENTITY"
+        ],
+        "title": "DocumentViolationCode",
+        "type": "string"
+      },
+      "EligibilityCheckResponse": {
+        "additionalProperties": false,
+        "description": "One gate, evaluated — with who decided it and on what authority.\n\n`determined_by` and `authority` are the audit facts §Legal-policy safety rests\non: an operator-maintained pack value carries `OPERATOR_CONFIG`, which the\nengine can only ever turn into REVIEW_REQUIRED, never a refusal. `reasons` is\nempty for a passing gate and non-empty for every other verdict, mirroring the\ndomain invariant.",
+        "properties": {
+          "authority": {
+            "$ref": "#/components/schemas/RuleAuthority"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "determined_by": {
+            "$ref": "#/components/schemas/DeterminationSource"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ReasonResponse"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "requirement": {
+            "$ref": "#/components/schemas/EligibilityRequirement"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EligibilityStatus"
+          }
+        },
+        "required": [
+          "requirement",
+          "status",
+          "determined_by",
+          "authority",
+          "detail",
+          "reasons"
+        ],
+        "title": "EligibilityCheckResponse",
+        "type": "object"
+      },
+      "EligibilityRequirement": {
+        "description": "The gates an opportunity can put in front of a candidate.\n\nEvery member is binary by nature. Nothing here is \"how good is the match\" —\nthat is `MatchDimension`. Country-specific rules (which permit allows what,\nwhat the local minimum working age is) are Country Pack knowledge (Phase 5);\nthis enum only names the *kind* of gate so the verdict has a stable code.",
+        "enum": [
+          "WORK_AUTHORIZATION",
+          "PERMIT_HOURS_CAP",
+          "MINIMUM_AGE",
+          "LANGUAGE_MINIMUM",
+          "EDUCATION_LEVEL",
+          "CERTIFICATION",
+          "DRIVING_LICENCE",
+          "AVAILABILITY_WINDOW",
+          "LOCATION_REACHABLE"
+        ],
+        "title": "EligibilityRequirement",
+        "type": "string"
+      },
+      "EligibilityResponse": {
+        "additionalProperties": false,
+        "description": "May this application happen at all — the binary axis alone.\n\n`status` is the worst-of aggregate the domain derives from the checks, and\n`is_blocking` is true only for a definite INELIGIBLE: the two honest middles\n(INCOMPLETE, REVIEW_REQUIRED) route to human review rather than refusing. The\nchecks travel with it so a UI can explain the verdict gate by gate rather than\nreducing it to a single word.",
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/EligibilityCheckResponse"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "determined_at": {
+            "format": "date-time",
+            "title": "Determined At",
+            "type": "string"
+          },
+          "is_blocking": {
+            "title": "Is Blocking",
+            "type": "boolean"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EligibilityStatus"
+          }
+        },
+        "required": [
+          "status",
+          "is_blocking",
+          "checks",
+          "policy_version",
+          "determined_at"
+        ],
+        "title": "EligibilityResponse",
+        "type": "object"
+      },
+      "EligibilityStatus": {
+        "description": "Four values, because fewer would lie.\n\nTwo of them are the honest middle the phase order insists on, and they are\nnot interchangeable:\n\n- `INCOMPLETE` means the platform does not yet know — evidence is missing.\n  Reading it as eligible produces applications that waste everyone's time;\n  reading it as ineligible silently hides opportunities. It pairs with the\n  `ELIGIBILITY_INCOMPLETE` reason code docs/ENGINEERING_STANDARDS.md\n  §Observability asks for.\n- `REVIEW_REQUIRED` means the platform found something a human must confirm\n  before it counts against the candidate — most importantly an eligibility\n  rule that is operator-maintained rather than legally verified (see\n  `RuleAuthority`). It is *not* a refusal: it is the platform refusing to\n  refuse on an unverified basis.\n\nA value that is not `ELIGIBLE` never submits an application on its own;\n`INELIGIBLE` blocks and the two middles route to human review\n(`is_blocking`).",
+        "enum": [
+          "ELIGIBLE",
+          "INCOMPLETE",
+          "REVIEW_REQUIRED",
+          "INELIGIBLE"
+        ],
+        "title": "EligibilityStatus",
+        "type": "string"
+      },
+      "EvaluateMatchRequest": {
+        "additionalProperties": false,
+        "description": "Ask for one posting to be assessed for the signed-in account's profile.\n\nThe body names the *opportunity* and nothing else. There is no `candidate_profile_id`\nand no `user_id`: the candidate is the account's own profile, resolved from the\nsession, so a request cannot ask for someone else's profile to be scored against\na posting (docs/ENGINEERING_STANDARDS.md §Security).",
+        "properties": {
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ],
+        "title": "EvaluateMatchRequest",
+        "type": "object"
+      },
+      "EvidenceBackedText": {
+        "additionalProperties": false,
+        "description": "A sentence the platform is willing to write, and what it rests on.\n\nThis is the atom of the truth guarantee: any line that makes a claim about the\ncandidate — a summary sentence, an experience bullet, a cover-letter paragraph\n— is one of these, and it cannot exist without at least one `EvidenceId`. The\nguard then checks that the *words* are supported too (no invented number, no\nskill absent from the cited evidence), but the citation itself is a\ntype-level invariant, mirroring `CandidateClaim.evidence_ids`.",
+        "properties": {
+          "evidence_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "evidence_ids"
+        ],
+        "title": "EvidenceBackedText",
+        "type": "object"
+      },
+      "EvidenceKind": {
+        "description": "What sort of record backs a claim.\n\n`SELF_DECLARATION` is the weakest member and is not a loophole: a candidate\nstating a fact about themselves is a legitimate, *attributed* source. What the\nplatform may never do is manufacture evidence — no member of this enum means\n\"an LLM inferred it\", and Phase 10's extraction pipeline must attach the\ndocument it read, not its own conclusion.",
+        "enum": [
+          "CV_BULLET",
+          "CV_SUMMARY",
+          "EMPLOYMENT_RECORD",
+          "DIPLOMA",
+          "CERTIFICATE",
+          "LANGUAGE_ASSESSMENT",
+          "PORTFOLIO_ITEM",
+          "REFERENCE",
+          "PERMIT_DOCUMENT",
+          "SELF_DECLARATION"
+        ],
+        "title": "EvidenceKind",
+        "type": "string"
+      },
+      "EvidenceProvenance": {
+        "description": "Where an evidence record was ingested from (Phase 10 §3).\n\nOrthogonal to `EvidenceKind`: the kind says *what sort of record* backs a\nfact, and the provenance says *which pipeline put it in the store*. The two\ntogether are what make an accepted document auditable (§45) — a résumé bullet\ncan say not only \"this rests on an employment record\" but \"that record was\nimported from the operator's base CV\" versus \"the candidate typed it in\".\n\nEvery member names a real source of *candidate-supplied* facts. There is,\npointedly, no `LLM_GENERATED` member: a generated sentence is never evidence\n(§3), so a document pipeline that wanted to promote its own output into the\nstore would find no provenance to file it under. `SYSTEM_DERIVED` is the one\nmachine origin, and it is deterministic derivation from other stored facts —\na language proficiency turned into a `LANGUAGE` claim — never generation.",
+        "enum": [
+          "CANDIDATE_PROFILE",
+          "BASE_CV",
+          "MANUAL_USER_INPUT",
+          "IMPORTED_CV",
+          "PROJECT",
+          "EMPLOYMENT_RECORD",
+          "EDUCATION_RECORD",
+          "SYSTEM_DERIVED"
+        ],
+        "title": "EvidenceProvenance",
+        "type": "string"
+      },
       "EvidenceResponse": {
         "additionalProperties": false,
         "description": "Why the backend believes one thing about a company.\n\nCarried out to the client because §10 and §12 both rest on it: \"this employer is\non Greenhouse\" and \"this employer takes spontaneous applications\" are only worth\nshowing next to what they were concluded from. A code the UI can branch on, a\nsentence a human can read, and — when there is one — the URL that said so.",
@@ -1135,6 +3037,94 @@
           "observed_at"
         ],
         "title": "EvidenceResponse",
+        "type": "object"
+      },
+      "GenerateCoverLetterAction": {
+        "additionalProperties": false,
+        "description": "Draft the candidate's cover letter for one posting (executes `DocumentService`).",
+        "properties": {
+          "kind": {
+            "const": "GENERATE_COVER_LETTER",
+            "default": "GENERATE_COVER_LETTER",
+            "title": "Kind",
+            "type": "string"
+          },
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          },
+          "target_language": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Language"
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ],
+        "title": "GenerateCoverLetterAction",
+        "type": "object"
+      },
+      "GenerateDocumentRequest": {
+        "additionalProperties": false,
+        "description": "Ask for a document to be generated for a posting, for this account's profile.\n\nThe opportunity and the document type are in the path; the body carries only an\noptional `language` override. Left unset, the service writes the document in the\nposting's own language, falling back to the candidate's first declared one — it\nnever guesses a language the candidate did not state. There is no profile or\nowner field, for the same reason `EvaluateMatchRequest` has none.",
+        "properties": {
+          "language": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          }
+        },
+        "title": "GenerateDocumentRequest",
+        "type": "object"
+      },
+      "GenerateResumeAction": {
+        "additionalProperties": false,
+        "description": "Tailor the candidate's résumé to one posting (executes `DocumentService`).",
+        "properties": {
+          "kind": {
+            "const": "GENERATE_RESUME",
+            "default": "GENERATE_RESUME",
+            "title": "Kind",
+            "type": "string"
+          },
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          },
+          "target_language": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Language"
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ],
+        "title": "GenerateResumeAction",
         "type": "object"
       },
       "GeoLocationResponse": {
@@ -1425,6 +3415,162 @@
         "title": "InterviewPatch",
         "type": "object"
       },
+      "LLMConnectionHealthResponse": {
+        "additionalProperties": false,
+        "description": "The result of probing a connection's live provider — data, never an exception.\n\n`status` is the runtime answer to \"can this serve a request now?\" and `detail` is a\nsecret-free sentence produced by the platform's own redaction, never a raw provider\nmessage. A provider being down is an `UNAVAILABLE` status a settings page renders,\nnot an error it must catch.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProviderHealthStatus"
+          }
+        },
+        "required": [
+          "status",
+          "detail",
+          "latency_ms"
+        ],
+        "title": "LLMConnectionHealthResponse",
+        "type": "object"
+      },
+      "LLMConnectionListResponse": {
+        "additionalProperties": false,
+        "description": "This account's connections, in the router's priority-then-id order, wrapped.",
+        "properties": {
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/LLMConnectionResponse"
+            },
+            "title": "Connections",
+            "type": "array"
+          }
+        },
+        "required": [
+          "connections"
+        ],
+        "title": "LLMConnectionListResponse",
+        "type": "object"
+      },
+      "LLMConnectionResponse": {
+        "additionalProperties": false,
+        "description": "One stored connection, echoed back with the credential reduced to a boolean.\n\n`has_api_key` is the only thing said about a credential — never its value, never\nits ciphertext (§13). `provider_type`, `base_url` and `model` describe where and as\nwhat the connection reaches its model; `is_default`, `enabled` and `priority` are\nhow a task chooses among a user's connections. `custom_headers` is echoed because a\nheader is a route hint, not a secret — an API key must never be put in one, which\nthe connection model does not police, so the settings UI keeps that field for\nnon-secret headers only.",
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "custom_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Custom Headers",
+            "type": "object"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "has_api_key": {
+            "title": "Has Api Key",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "priority": {
+            "title": "Priority",
+            "type": "integer"
+          },
+          "provider_type": {
+            "$ref": "#/components/schemas/LLMProviderType"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider_type",
+          "display_name",
+          "base_url",
+          "model",
+          "has_api_key",
+          "custom_headers",
+          "enabled",
+          "is_default",
+          "priority",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "LLMConnectionResponse",
+        "type": "object"
+      },
+      "LLMProviderType": {
+        "description": "Which adapter a connection is built into — the closed set Phase 11 implements.\n\nDispatched on by `backend.app.llm.factory` alone, and nowhere else: the factory is\nthe one place allowed to know a provider type maps to a concrete adapter, which is\nwhat keeps the \"no `if provider == …` in business code\" rule (§3) true. Later\nphases add native Anthropic/Gemini adapters here (§105); Phase 11 ships the CLI\npair and the two OpenAI-compatible transports.",
+        "enum": [
+          "CLAUDE_CODE",
+          "CODEX",
+          "OPENAI_COMPATIBLE",
+          "LOCAL_OPENAI_COMPATIBLE"
+        ],
+        "title": "LLMProviderType",
+        "type": "string"
+      },
       "LanguageLevel": {
         "description": "CEFR levels plus NATIVE.\n\nCEFR is a cross-border scale rather than one country's vocabulary, so it is\nsafe in the universal model; a Country Pack that publishes its own scale maps\nonto these levels instead of adding members here.",
         "enum": [
@@ -1619,6 +3765,105 @@
         "title": "LoginRequest",
         "type": "object"
       },
+      "MatchClassification": {
+        "description": "The band a match falls in, named once so no surface invents its own.\n\ndocs/V2_SPECIFICATION.md §9 and the phase order both refuse scattered\n`if score > 0.8` literals: a threshold that lives in five components drifts\ninto five different products. The bands live on `MatchProfile` and this enum\nis their vocabulary.\n\n`UNKNOWN` is not a low score — it is the honest answer when no dimension\ncould be evaluated at all, and it must never be rendered as WEAK. \"We could\nnot assess this\" and \"this is a poor fit\" are different facts.",
+        "enum": [
+          "EXCELLENT",
+          "STRONG",
+          "MODERATE",
+          "WEAK",
+          "UNKNOWN"
+        ],
+        "title": "MatchClassification",
+        "type": "string"
+      },
+      "MatchDimension": {
+        "description": "The axes a candidate/opportunity pair is scored on.\n\nAll six are *compatibility* axes: each answers \"how well does this fit?\" and\neach is legitimately a matter of degree. Anything that answers \"is this\nallowed?\" belongs to eligibility, not here.",
+        "enum": [
+          "SKILLS_FIT",
+          "EXPERIENCE_FIT",
+          "EDUCATION_FIT",
+          "LANGUAGE_FIT",
+          "LOCATION_FIT",
+          "SCHEDULE_FIT"
+        ],
+        "title": "MatchDimension",
+        "type": "string"
+      },
+      "MatchResponse": {
+        "additionalProperties": false,
+        "description": "How well one candidate fits one posting — the compatibility axis alone.\n\nNothing here reflects eligibility: a blocked application can still be a 92%\nmatch, and this model is where that number lives untouched. `classification` is\nthe band the score falls in, and `evidence_confidence` is the *separate* \"how\nmuch could we even assess?\" axis — a high score over one evaluable dimension is\na confident-looking number with low coverage, and the two fields say so\nindependently (docs/MATCHING_ELIGIBILITY.md §Coverage).",
+        "properties": {
+          "classification": {
+            "$ref": "#/components/schemas/MatchClassification"
+          },
+          "dimensions": {
+            "items": {
+              "$ref": "#/components/schemas/DimensionScoreResponse"
+            },
+            "title": "Dimensions",
+            "type": "array"
+          },
+          "evaluated_at": {
+            "format": "date-time",
+            "title": "Evaluated At",
+            "type": "string"
+          },
+          "evaluator_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluator Key"
+          },
+          "evidence_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Confidence"
+          },
+          "evidence_confidence_percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Confidence Percent"
+          },
+          "overall": {
+            "title": "Overall",
+            "type": "number"
+          },
+          "overall_percent": {
+            "title": "Overall Percent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "overall",
+          "overall_percent",
+          "classification",
+          "evidence_confidence",
+          "evidence_confidence_percent",
+          "dimensions",
+          "evaluator_key",
+          "evaluated_at"
+        ],
+        "title": "MatchResponse",
+        "type": "object"
+      },
       "MatchedRadiusResponse": {
         "additionalProperties": false,
         "description": "Which radius branch admitted a result, by its index and its label.",
@@ -1645,6 +3890,52 @@
         ],
         "title": "MatchedRadiusResponse",
         "type": "object"
+      },
+      "NavigateAction": {
+        "additionalProperties": false,
+        "description": "Point the client at a screen — a hint that mutates nothing on the server.",
+        "properties": {
+          "kind": {
+            "const": "NAVIGATE",
+            "default": "NAVIGATE",
+            "title": "Kind",
+            "type": "string"
+          },
+          "opportunity_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opportunity Id"
+          },
+          "target": {
+            "$ref": "#/components/schemas/NavigationTarget"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "title": "NavigateAction",
+        "type": "object"
+      },
+      "NavigationTarget": {
+        "description": "A screen a `NAVIGATE` action may point the client at.\n\nClosed on purpose: navigation is a client-side hint, but letting the model name an\narbitrary path would be an open redirect dressed as a chat action. The client maps\neach member to a route it owns; a target the client does not recognise is simply\nignored, never followed.",
+        "enum": [
+          "OPPORTUNITIES",
+          "APPLICATIONS",
+          "DOCUMENTS",
+          "MATCHES",
+          "COMPANIES",
+          "INTERVIEW_PREP",
+          "SETTINGS"
+        ],
+        "title": "NavigationTarget",
+        "type": "string"
       },
       "NotesBody": {
         "properties": {
@@ -1705,6 +3996,28 @@
           "may_complete"
         ],
         "title": "OnboardingStateResponse",
+        "type": "object"
+      },
+      "OpenInterviewPrepAction": {
+        "additionalProperties": false,
+        "description": "Open the existing V1 interview-prep view for a posting (client-side, no mutation).\n\nThe only interview capability the chat exposes, and deliberately so: the adaptive\nsimulator, scoring and readiness are Phase 14 and out of scope (§19). This is a\nnavigation hint to a view V1 already ships, nothing more.",
+        "properties": {
+          "kind": {
+            "const": "OPEN_INTERVIEW_PREP",
+            "default": "OPEN_INTERVIEW_PREP",
+            "title": "Kind",
+            "type": "string"
+          },
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ],
+        "title": "OpenInterviewPrepAction",
         "type": "object"
       },
       "OpportunityGeoItemResponse": {
@@ -1943,6 +4256,59 @@
         "title": "OpportunityType",
         "type": "string"
       },
+      "PinnedDocumentResponse": {
+        "additionalProperties": false,
+        "description": "One exact document version an application will submit (§14-16).",
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_type": {
+            "$ref": "#/components/schemas/CandidateDocumentType"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "version_id": {
+            "format": "uuid",
+            "title": "Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "version_id",
+          "version",
+          "document_type"
+        ],
+        "title": "PinnedDocumentResponse",
+        "type": "object"
+      },
+      "PrepareApplicationAction": {
+        "additionalProperties": false,
+        "description": "Prepare an application and route it by the gate — reversible, never submits.",
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "PREPARE_APPLICATION",
+            "default": "PREPARE_APPLICATION",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id"
+        ],
+        "title": "PrepareApplicationAction",
+        "type": "object"
+      },
       "ProviderHealthResponse": {
         "additionalProperties": false,
         "description": "What one company discovery provider last said about itself.\n\nReported even when a pass succeeded, because docs/V2_SPECIFICATION.md §22 lists\nhiding failed source health as a non-goal: a client that saw an empty result with\nno health could not tell \"no employer is configured\" from \"the provider that\nknows them could not read its file\".\n\n`reason` and `detail` are the normalized pair §26 requires — a code from a closed\nset and a sentence the adapter wrote. Neither is ever a serialized exception, so\nneither can carry a credential, a token or a query string.",
@@ -2003,6 +4369,19 @@
         "title": "ProviderHealthResponse",
         "type": "object"
       },
+      "ProviderHealthStatus": {
+        "description": "The runtime answer to \"can this provider serve a request now?\" (§37).\n\nSeparate from `Capability` on purpose (see `backend.app.llm.capabilities`): a\nprovider can be fully capable and momentarily `UNAVAILABLE`, or capable and\n`AUTH_REQUIRED` until a key is set. `UNKNOWN` is the honest state before anything\nhas probed it — distinct from `UNAVAILABLE`, which is a probe that failed.",
+        "enum": [
+          "UNKNOWN",
+          "HEALTHY",
+          "DEGRADED",
+          "UNAVAILABLE",
+          "AUTH_REQUIRED",
+          "MISCONFIGURED"
+        ],
+        "title": "ProviderHealthStatus",
+        "type": "string"
+      },
       "RadiusSearchArea": {
         "additionalProperties": false,
         "description": "Everything within `radius_km` of `center`.\n\nNo country field, and that is the point: a 30 km radius around Geneva covers\ntwo countries, and a search that silently added a country filter would drop\nthe French side of a commute the candidate would happily make. Right-to-work\nis an eligibility question (`WorkAuthorization`), not a discovery filter.",
@@ -2039,6 +4418,47 @@
           "radius_km"
         ],
         "title": "RadiusSearchArea",
+        "type": "object"
+      },
+      "ReasonImpact": {
+        "description": "Whether a reason argues for a candidate/opportunity pair or against it.",
+        "enum": [
+          "POSITIVE",
+          "NEGATIVE",
+          "NEUTRAL"
+        ],
+        "title": "ReasonImpact",
+        "type": "string"
+      },
+      "ReasonResponse": {
+        "additionalProperties": false,
+        "description": "One typed reason behind a score or a verdict.\n\nA `code` a client branches on, a `detail` a human reads, and the `impact` that\nsays whether it helped or hurt. Never a serialized exception and never a secret:\nthe reasons the engines emit are drawn from a closed vocabulary\n(docs/MATCHING_ELIGIBILITY.md §Reasons), so this model cannot carry a stack\ntrace or an environment value into a UI.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "impact": {
+            "$ref": "#/components/schemas/ReasonImpact"
+          }
+        },
+        "required": [
+          "code",
+          "detail",
+          "impact"
+        ],
+        "title": "ReasonResponse",
         "type": "object"
       },
       "RegenBody": {
@@ -2152,6 +4572,165 @@
           "only"
         ],
         "title": "RemoteSelection",
+        "type": "string"
+      },
+      "ResumeDocument": {
+        "additionalProperties": false,
+        "description": "The structured, ATS-oriented résumé (§28-32).\n\n`full_name` is identity, not a claim — it is the candidate's own\n`CandidateProfile.display_name`, and rewriting it would be altering identity,\nwhich the guard forbids (`ALTERED_IDENTITY`). `headline` is likewise carried\nfrom the profile. Everything that asserts a *fact* — the summary, every\nexperience bullet, every skill — is evidence-backed. `languages` renders the\nprofile's `LanguageProficiency` lines, which are facts the profile already\nholds rather than anything the generator composed.\n\nThe structure is intentionally flat and label-driven: an ATS parser\n(§28) reads plain sections, so the renderer emits headings and bullet lists,\nnever multi-column tables or text boxes.",
+        "properties": {
+          "education": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ResumeEntry"
+            },
+            "title": "Education",
+            "type": "array"
+          },
+          "experience": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ResumeEntry"
+            },
+            "title": "Experience",
+            "type": "array"
+          },
+          "full_name": {
+            "title": "Full Name",
+            "type": "string"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline"
+          },
+          "kind": {
+            "const": "RESUME",
+            "default": "RESUME",
+            "title": "Kind",
+            "type": "string"
+          },
+          "languages": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Languages",
+            "type": "array"
+          },
+          "skill_groups": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ResumeSkillGroup"
+            },
+            "title": "Skill Groups",
+            "type": "array"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceBackedText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "full_name"
+        ],
+        "title": "ResumeDocument",
+        "type": "object"
+      },
+      "ResumeEntry": {
+        "additionalProperties": false,
+        "description": "One experience, education or project block.\n\n`heading` and `subheading` are the block's factual frame (\"Software Engineer —\nAcme\", \"2021–2024, Lausanne\"). Those are facts too, so the entry as a whole\ncites the employment or education evidence it summarizes; each bullet then\ncites its own evidence on top. A block with no bullets is allowed — an\neducation line is often just its heading — but a block that cites no evidence\nis not, because then its heading would be an unsupported fact.",
+        "properties": {
+          "bullets": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EvidenceBackedText"
+            },
+            "title": "Bullets",
+            "type": "array"
+          },
+          "evidence_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "heading": {
+            "title": "Heading",
+            "type": "string"
+          },
+          "subheading": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subheading"
+          }
+        },
+        "required": [
+          "heading",
+          "evidence_ids"
+        ],
+        "title": "ResumeEntry",
+        "type": "object"
+      },
+      "ResumeSkillGroup": {
+        "additionalProperties": false,
+        "description": "A labelled cluster of skills on the résumé.\n\nEach entry in `skills` must be backed by a candidate `SKILL` claim — the guard\nchecks it against the normalized skill ontology, so \"Node\" and \"Node.js\" are\none skill and an unclaimed one is a `UNSUPPORTED_SKILL` violation. The group\n`name` (\"Languages\", \"Cloud\") is presentation and carries no claim.",
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Skills",
+            "type": "array"
+          }
+        },
+        "required": [
+          "skills"
+        ],
+        "title": "ResumeSkillGroup",
+        "type": "object"
+      },
+      "RuleAuthority": {
+        "description": "How much a rule behind a check is entitled to close a gate.\n\nThe distinction has legal teeth. A Country Pack's permit table, its minimum\nworking age and its language thresholds are *operator-maintained\nconfiguration*, not law this repository asserts — docs/COUNTRY_PACKS.md\n§Eligibility and the `PermitRule` docstring say so in the same words. A wrong\nnumber in a YAML file must never become an automatic \"you may not apply\".\n\nSo authority is carried on the check and enforced by the domain: only a\n`VERIFIED` rule may produce `INELIGIBLE`. Anything less can inform, can lower\na match score elsewhere, and can raise `REVIEW_REQUIRED` so a human looks —\nbut it cannot refuse on its own. The four levels, weakest last:\n\n- `VERIFIED` — reviewed against the actual legal source and signed off; the\n  only authority permitted to block.\n- `SOURCE_DECLARED` — the opportunity or employer stated the requirement\n  itself (e.g. a posting that says \"EU work permit required\"). Strong, but a\n  posting is not the law and can be wrong, so it informs and reviews.\n- `OPERATOR_CONFIG` — a value an operator maintains in a Country Pack. The\n  default for pack-supplied rules, and deliberately not blocking.\n- `UNKNOWN` — no provenance stated; treated as the weakest.",
+        "enum": [
+          "VERIFIED",
+          "SOURCE_DECLARED",
+          "OPERATOR_CONFIG",
+          "UNKNOWN"
+        ],
+        "title": "RuleAuthority",
         "type": "string"
       },
       "SearchProfileDraft": {
@@ -2332,6 +4911,21 @@
         "title": "SearchProfileResponse",
         "type": "object"
       },
+      "SendMessageRequest": {
+        "additionalProperties": false,
+        "description": "One user turn: the words to send. The reply streams back as SSE events.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SendMessageRequest",
+        "type": "object"
+      },
       "SessionResponse": {
         "additionalProperties": false,
         "description": "The current session's window — issued, expires — and nothing identifying it.\n\nNo session id and no digest. The client has the cookie; an id in a body would\nonly be useful to something that wanted to name somebody else's session.",
@@ -2358,6 +4952,50 @@
           "last_seen_at"
         ],
         "title": "SessionResponse",
+        "type": "object"
+      },
+      "SetLLMConnectionEnabledRequest": {
+        "additionalProperties": false,
+        "description": "The on/off a settings page toggles, without deleting the row or its key.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "SetLLMConnectionEnabledRequest",
+        "type": "object"
+      },
+      "SetSearchRadiusAction": {
+        "additionalProperties": false,
+        "description": "Change the radius of a saved search's radius area(s) (executes `OnboardingService`).",
+        "properties": {
+          "kind": {
+            "const": "SET_SEARCH_RADIUS",
+            "default": "SET_SEARCH_RADIUS",
+            "title": "Kind",
+            "type": "string"
+          },
+          "radius_km": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 500.0,
+            "title": "Radius Km",
+            "type": "number"
+          },
+          "search_profile_id": {
+            "format": "uuid",
+            "title": "Search Profile Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "search_profile_id",
+          "radius_km"
+        ],
+        "title": "SetSearchRadiusAction",
         "type": "object"
       },
       "SettingsBody": {
@@ -2530,6 +5168,25 @@
         "title": "SpontaneousApplicationSupport",
         "type": "string"
       },
+      "StartConversationRequest": {
+        "additionalProperties": false,
+        "description": "Open a new chat thread, optionally captioned from the user's opening words.\n\n`title` is a caption the service truncates, never authority the model or the client\ngrants itself; an absent or blank one falls back to a fixed default. There is no\n`user_id` field — the owner is the session's account (§Security).",
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "StartConversationRequest",
+        "type": "object"
+      },
       "StatusBody": {
         "properties": {
           "detail": {
@@ -2552,6 +5209,171 @@
           "status"
         ],
         "title": "StatusBody",
+        "type": "object"
+      },
+      "SubmitApplicationAction": {
+        "additionalProperties": false,
+        "description": "Submit an approved application — the irreversible boundary (§1, §5, §80-88).\n\nCarries no override of any kind: the executor hands this to `ApplicationService.submit`,\nwhich re-evaluates the Phase 12 gate (policy, eligibility, rate budget, the\nconcurrency-safe reservation) exactly as the HTTP route does. The chat is one more\ncaller of that boundary, never a way around it.",
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "SUBMIT_APPLICATION",
+            "default": "SUBMIT_APPLICATION",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id"
+        ],
+        "title": "SubmitApplicationAction",
+        "type": "object"
+      },
+      "UpdateLLMConnectionRequest": {
+        "additionalProperties": false,
+        "description": "A partial edit to a connection — every field optional, an unset one untouched.\n\nThe credential needs three states, not two: `api_key` set rotates it,\n`remove_api_key` clears it, and neither leaves it as stored — so a user edits a\ngateway's model without re-typing its key, or drops the key without touching the\nrest. `api_key` and `remove_api_key` together is contradictory and refused here, so\nthe service is never handed an ambiguous instruction.",
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "format": "password",
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "custom_headers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Headers"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "remove_api_key": {
+            "default": false,
+            "title": "Remove Api Key",
+            "type": "boolean"
+          }
+        },
+        "title": "UpdateLLMConnectionRequest",
+        "type": "object"
+      },
+      "UpdateSearchKeywordsAction": {
+        "additionalProperties": false,
+        "description": "Replace a saved search's title and/or excluded keyword lists.\n\nBoth fields are optional and default to \"leave unchanged\" (`None`); an empty tuple is\na real value that clears a list, which matches the domain's convention that an empty\nallow-list restricts nothing. A field the model omits is not touched, so a proposal to\nchange the title keywords cannot silently wipe the exclusions.",
+        "properties": {
+          "excluded_keywords": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excluded Keywords"
+          },
+          "kind": {
+            "const": "UPDATE_SEARCH_KEYWORDS",
+            "default": "UPDATE_SEARCH_KEYWORDS",
+            "title": "Kind",
+            "type": "string"
+          },
+          "search_profile_id": {
+            "format": "uuid",
+            "title": "Search Profile Id",
+            "type": "string"
+          },
+          "title_keywords": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Keywords"
+          }
+        },
+        "required": [
+          "search_profile_id"
+        ],
+        "title": "UpdateSearchKeywordsAction",
         "type": "object"
       },
       "UserStatus": {
@@ -4024,6 +6846,332 @@
         "summary": "Post Transcribe"
       }
     },
+    "/api/v2/applications": {
+      "get": {
+        "description": "This account's applications, most recently updated first.",
+        "operationId": "list_applications_api_v2_applications_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Applications",
+        "tags": [
+          "v2-applications"
+        ]
+      },
+      "post": {
+        "description": "Open an application for a posting from its stored decision (§2-3, §36).\n\nIdempotent: opening one twice for the same target returns the first rather than a\nsecond (the id is derived from the target and channel). A 409 comes back only when\nthe decision is missing (decide first) or the target was already submitted (a\ngenuine duplicate); otherwise the current application is returned.",
+        "operationId": "create_application_api_v2_applications_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApplicationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Application",
+        "tags": [
+          "v2-applications"
+        ]
+      }
+    },
+    "/api/v2/applications/{application_id}": {
+      "get": {
+        "description": "One application, or 404 if it is not this account's.",
+        "operationId": "read_application_api_v2_applications__application_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Application",
+        "tags": [
+          "v2-applications"
+        ]
+      }
+    },
+    "/api/v2/applications/{application_id}/approve": {
+      "post": {
+        "description": "A human's approval of a prepared application (§52).\n\nOnly a READY_FOR_REVIEW application can be approved; anything else is a 409.",
+        "operationId": "approve_application_api_v2_applications__application_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Application",
+        "tags": [
+          "v2-applications"
+        ]
+      }
+    },
+    "/api/v2/applications/{application_id}/cancel": {
+      "post": {
+        "description": "Abandon an application before it reaches the employer.\n\nRefused with a 409 once an application is submitted — that is a withdrawal, a\ndifferent act — or already terminal.",
+        "operationId": "cancel_application_api_v2_applications__application_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Application",
+        "tags": [
+          "v2-applications"
+        ]
+      }
+    },
+    "/api/v2/applications/{application_id}/events": {
+      "get": {
+        "description": "One application's append-only audit trail, oldest first (§41).\n\n404 when the application is not this account's — the ownership check is the same\nread the other endpoints use, so the trail cannot be read by guessing an id.",
+        "operationId": "list_application_events_api_v2_applications__application_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationEventListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Application Events",
+        "tags": [
+          "v2-applications"
+        ]
+      }
+    },
+    "/api/v2/applications/{application_id}/prepare": {
+      "post": {
+        "description": "Prepare materials and route by the gate (auto-approve, review, human, block).\n\nReversible and safe to retry (§33) — it never submits. The returned state says\nwhat happens next.",
+        "operationId": "prepare_application_api_v2_applications__application_id__prepare_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepare Application",
+        "tags": [
+          "v2-applications"
+        ]
+      }
+    },
+    "/api/v2/applications/{application_id}/submit": {
+      "post": {
+        "description": "Submit an approved application — the irreversible boundary (§1, §5, §80-88).\n\nThe gate is re-evaluated against the current policy first, so an application\napproved this morning is refused this afternoon if the policy became MANUAL. An\nexhausted rate budget is a 429; a duplicate is a 409; an ambiguous send comes back\nas SUBMISSION_STATE_UNKNOWN rather than a false success.",
+        "operationId": "submit_application_api_v2_applications__application_id__submit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Application",
+        "tags": [
+          "v2-applications"
+        ]
+      }
+    },
     "/api/v2/auth/login": {
       "post": {
         "description": "Verify a password and issue a session.\n\nEvery refusal is raised by the service and mapped by `install_v2_error_handlers`:\n401 for credentials, 403 for a disabled account, 423 for a locked one. There is\nno branching here, which is what keeps the enumeration property a property of\nthe service rather than of this handler.",
@@ -4142,6 +7290,340 @@
         "summary": "Read Session",
         "tags": [
           "v2-auth"
+        ]
+      }
+    },
+    "/api/v2/chat/conversations": {
+      "get": {
+        "description": "This account's chat threads, most recent activity first.",
+        "operationId": "list_conversations_api_v2_chat_conversations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Conversations",
+        "tags": [
+          "v2-chat"
+        ]
+      },
+      "post": {
+        "description": "Open a new, empty chat thread for this account (§Security).\n\n201, because it creates a resource. `title` is a caption the service truncates, never\nauthority; an absent or blank one falls back to a default. The thread has no turns yet.",
+        "operationId": "start_conversation_api_v2_chat_conversations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartConversationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Conversation",
+        "tags": [
+          "v2-chat"
+        ]
+      }
+    },
+    "/api/v2/chat/conversations/{conversation_id}": {
+      "get": {
+        "description": "One thread's caption and activity, or 404 if it is not this account's.",
+        "operationId": "read_conversation_api_v2_chat_conversations__conversation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Conversation",
+        "tags": [
+          "v2-chat"
+        ]
+      }
+    },
+    "/api/v2/chat/conversations/{conversation_id}/messages": {
+      "get": {
+        "description": "One thread's turns, oldest first. 404 when the thread is not this account's.",
+        "operationId": "list_messages_api_v2_chat_conversations__conversation_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatMessageListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Messages",
+        "tags": [
+          "v2-chat"
+        ]
+      },
+      "post": {
+        "description": "Send one user turn and stream the assistant's reply as Server-Sent Events.\n\nOwnership and empty-message checks run *before* the stream is returned, so a thread\nthat is not this account's is a 404 and an empty message a 422 — an ordinary JSON error,\nnot an event mid-stream. Once past them the user's message is persisted and the reply\nstreams: `TOKEN` events as prose arrives, then a terminal `COMPLETED` carrying the\nstored assistant message and its `PROPOSED` proposals, or `ERROR` for a turn that\nreached a provider and failed. Nothing here executes a proposal — that is `confirm`.",
+        "operationId": "send_message_api_v2_chat_conversations__conversation_id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatStreamEventResponse"
+                }
+              }
+            },
+            "description": "A Server-Sent Events stream: one ChatStreamEventResponse per `data:` line — TOKEN chunks, then a terminal COMPLETED or ERROR."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send Message",
+        "tags": [
+          "v2-chat"
+        ]
+      }
+    },
+    "/api/v2/chat/conversations/{conversation_id}/proposals": {
+      "get": {
+        "description": "One thread's proposals, oldest first. 404 when the thread is not this account's.\n\nThe current status of each proposal is on the response, so a UI knows which cards are\nstill open to confirm or dismiss and which are already terminal.",
+        "operationId": "list_proposals_api_v2_chat_conversations__conversation_id__proposals_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatActionProposalListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Proposals",
+        "tags": [
+          "v2-chat"
+        ]
+      }
+    },
+    "/api/v2/chat/proposals/{proposal_id}/confirm": {
+      "post": {
+        "description": "Execute one confirmed proposal — the last gate, and the only place it runs.\n\nThe proposal is re-authorized (ownership, coarse domain state) and then handed to the\nsame service the HTTP routes call, which runs its own authoritative checks — a submit\nre-runs the whole Phase 12 gate. Idempotent by the proposal's id: a double-confirm\nreturns the recorded execution rather than running twice. The response is the audited\noutcome (`SUCCEEDED`, `REJECTED` or `FAILED`); a 404 when the proposal is not this\naccount's, a 409 when it is no longer open.",
+        "operationId": "confirm_proposal_api_v2_chat_proposals__proposal_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatActionExecutionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Proposal",
+        "tags": [
+          "v2-chat"
+        ]
+      }
+    },
+    "/api/v2/chat/proposals/{proposal_id}/dismiss": {
+      "post": {
+        "description": "Decline an open proposal without running it — `PROPOSED` → `DISMISSED`.\n\nWrites no execution because nothing was attempted; it only moves the proposal out of\nthe open set so it cannot later be confirmed. A 404 when the proposal is not this\naccount's, a 409 when it is no longer open (already executed, rejected, failed or\ndismissed). Returns the proposal in its new status.",
+        "operationId": "dismiss_proposal_api_v2_chat_proposals__proposal_id__dismiss_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatActionProposalResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dismiss Proposal",
+        "tags": [
+          "v2-chat"
         ]
       }
     },
@@ -4375,6 +7857,114 @@
         "summary": "Run Discovery",
         "tags": [
           "v2-companies"
+        ]
+      }
+    },
+    "/api/v2/documents": {
+      "get": {
+        "description": "This account's documents, most recently updated first.",
+        "operationId": "list_documents_api_v2_documents_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateDocumentListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Documents",
+        "tags": [
+          "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/documents/{document_id}": {
+      "get": {
+        "description": "One document with its whole version history.\n\n404 for \"no such document\" and \"not yours\" alike: the service raises one error\nfor both, so a caller cannot enumerate another account's documents by id.",
+        "operationId": "read_document_api_v2_documents__document_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateDocumentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Document",
+        "tags": [
+          "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/documents/{document_id}/download": {
+      "get": {
+        "description": "Stream the newest rendered PDF of a document.\n\nA binary response, not JSON: the bytes are read from the artifact store and\nreturned with the stored media type and a `Content-Disposition` naming the\nfile. 404 when the document is not this account's; 409\n(`document_not_rendered`) when it exists but no version has cleared the guard\nand been rendered yet — the resource is real, the state is temporary.",
+        "operationId": "download_document_api_v2_documents__document_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Document",
+        "tags": [
+          "v2-documents"
         ]
       }
     },
@@ -4673,6 +8263,174 @@
         "summary": "Search Opportunities",
         "tags": [
           "v2-geo"
+        ]
+      }
+    },
+    "/api/v2/matches": {
+      "get": {
+        "description": "This account's assessed pairs, most recently determined first.\n\nChronological, not ranked: both axes travel untouched and an INELIGIBLE pair is\nnever pushed down by pretending its match is low. A UI that wants to rank by fit\nor filter by eligibility has both numbers and does so itself\n(docs/MATCHING_ELIGIBILITY.md §Ranking).",
+        "operationId": "list_matches_api_v2_matches_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssessmentListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Matches",
+        "tags": [
+          "v2-matches"
+        ]
+      }
+    },
+    "/api/v2/matches/evaluate": {
+      "post": {
+        "description": "Assess one posting for this account's profile, on both axes.\n\nRuns the deterministic match engine and the eligibility engine independently\nand stores each verdict in its own record. Not a 201: the pair's verdicts are\nkeyed on `(profile, opportunity)`, so a re-evaluation replaces the previous\nanswer rather than creating a resource, and `200` with the fresh assessment is\nthe honest status.\n\n404 when the account has no profile yet (go to onboarding) or when no posting\nis stored under the id — two distinct error codes, because the frontend acts on\nthem differently.",
+        "operationId": "evaluate_match_api_v2_matches_evaluate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluateMatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssessmentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Evaluate Match",
+        "tags": [
+          "v2-matches"
+        ]
+      }
+    },
+    "/api/v2/me/claims": {
+      "post": {
+        "description": "Assert one claim, citing evidence the profile already holds.\n\n422 when a cited id names no evidence record on the profile: the service\nrefuses it rather than writing a claim that rests on nothing, and the error\nnames the ids that were not found so a client fixes the citation.",
+        "operationId": "add_claim_api_v2_me_claims_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateClaimResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Claim",
+        "tags": [
+          "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/me/evidence": {
+      "get": {
+        "description": "The account's whole attested record: its evidence and its claims.\n\nRead through the document service's profile view so one dependency answers the\nprofile-backed reads. 404 when onboarding has not saved a profile — the same\nstate `GET /me/profile` reports, so a client sends the user to onboarding.",
+        "operationId": "list_evidence_api_v2_me_evidence_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateEvidenceListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Evidence",
+        "tags": [
+          "v2-documents"
+        ]
+      },
+      "post": {
+        "description": "Record one attested fact on the account's profile.\n\n201, because it creates a resource: the response carries the id the record was\nfiled under, which a later claim or a generated document line cites. 404 when\nonboarding has not saved a profile yet — evidence hangs off a profile, and\nthere is nothing to hang it on.",
+        "operationId": "add_evidence_api_v2_me_evidence_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddEvidenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateEvidenceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Evidence",
+        "tags": [
+          "v2-documents"
         ]
       }
     },
@@ -5035,6 +8793,493 @@
         "summary": "Complete",
         "tags": [
           "v2-onboarding"
+        ]
+      }
+    },
+    "/api/v2/opportunities/{opportunity_id}/cover-letter": {
+      "post": {
+        "description": "Generate a cover letter for a posting, from this account's evidence.\n\nThe persuasive counterpart to the résumé, versioned the same way and subject to\nthe same guard: every body paragraph cites the candidate evidence it draws on.\nSame error codes as the résumé endpoint.",
+        "operationId": "generate_cover_letter_api_v2_opportunities__opportunity_id__cover_letter_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateDocumentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateDocumentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Cover Letter",
+        "tags": [
+          "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/opportunities/{opportunity_id}/match": {
+      "get": {
+        "description": "The stored assessment for one pair, or 404 if it has not been evaluated.\n\nA pure read — it never runs an engine. The 404 covers \"not evaluated yet\", \"no\nprofile yet\" and \"not this account's posting-run\" without distinguishing them:\nthe service answers `None` for all three, so a caller cannot learn that another\nuser has assessed a posting by asking about it (§Security: ids must not be\nenumerable).",
+        "operationId": "read_match_api_v2_opportunities__opportunity_id__match_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssessmentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Match",
+        "tags": [
+          "v2-matches"
+        ]
+      }
+    },
+    "/api/v2/opportunities/{opportunity_id}/resume": {
+      "post": {
+        "description": "Generate an ATS résumé for a posting, from this account's evidence.\n\nAppends a version to the résumé document for the `(profile, opportunity,\nRESUME)` triple, returning the whole document so a client sees the new attempt\nin its history. 404 when the account has no profile or no such posting; 409\n(`insufficient_evidence`) when the profile carries too little evidence to build\na truthful résumé — the honest answer is to say so, not to invent content.",
+        "operationId": "generate_resume_api_v2_opportunities__opportunity_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateDocumentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateDocumentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Resume",
+        "tags": [
+          "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/settings/llm/connections": {
+      "get": {
+        "description": "This account's connections, in the router's priority-then-id order.\n\nEvery credential is reduced to `has_api_key`; the values never leave the service.",
+        "operationId": "list_connections_api_v2_settings_llm_connections_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Connections",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      },
+      "post": {
+        "description": "Store a new connection for this account, encrypting any credential first.\n\n201, because it creates a resource: the response carries the id the connection was\nfiled under, which a later edit, probe or default targets. 422 when the shape is\nincoherent (a CLI carrying a key, an API missing a base URL) — the `LLMConnection`\nmodel decides that once, for every writer. 409 (`llm_secret_key_unavailable`) when\na credential is submitted but the deployment configured no master key to encrypt\nit: the honest answer, rather than storing the key in the clear.",
+        "operationId": "create_connection_api_v2_settings_llm_connections_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLLMConnectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Connection",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      }
+    },
+    "/api/v2/settings/llm/connections/{connection_id}": {
+      "delete": {
+        "description": "Delete one connection, and its stored credential with it.\n\nNot idempotent, on purpose: a second `DELETE` answers 404 rather than 204, so a\nclient working from a stale list is told rather than misled. Scoped to the owner —\na delete of an id that is not this account's removes nothing and 404s, the same as\na never-created id, so a caller cannot probe another account by trying to delete.",
+        "operationId": "delete_connection_api_v2_settings_llm_connections__connection_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Connection",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      },
+      "get": {
+        "description": "One connection, credential reduced to `has_api_key`.\n\n404 for \"no such connection\" and \"not yours\" alike — the service raises one error\nfor both, so a caller cannot enumerate another account's connections by id.",
+        "operationId": "read_connection_api_v2_settings_llm_connections__connection_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Connection",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      },
+      "patch": {
+        "description": "Apply a partial edit, re-encrypting or clearing the credential on request.\n\nA `PATCH`, not a `PUT`: an unset field is left as stored, and the credential has\nthree states — `api_key` rotates it, `remove_api_key` clears it, neither leaves it.\nSending both is a 422, refused before the service is called. 404 when the id is not\nthis account's; 422 when the edit would leave an incoherent shape; 409 when a new\ncredential is given but no master key is configured.",
+        "operationId": "update_connection_api_v2_settings_llm_connections__connection_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLLMConnectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Connection",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      }
+    },
+    "/api/v2/settings/llm/connections/{connection_id}/default": {
+      "put": {
+        "description": "Make one connection the account's default, clearing the flag on the rest.\n\nThe invariant \"at most one default\" holds after the write: the service clears every\nother default first, then marks this one. 404 when not this account's.",
+        "operationId": "set_connection_default_api_v2_settings_llm_connections__connection_id__default_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Connection Default",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      }
+    },
+    "/api/v2/settings/llm/connections/{connection_id}/enabled": {
+      "put": {
+        "description": "Turn a connection on or off without deleting it or its stored key.\n\nA disabled connection keeps its row and its credential and is simply filtered out\nof the router's candidates until it is turned back on. 404 when not this account's.",
+        "operationId": "set_connection_enabled_api_v2_settings_llm_connections__connection_id__enabled_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetLLMConnectionEnabledRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Connection Enabled",
+        "tags": [
+          "v2-llm-settings"
+        ]
+      }
+    },
+    "/api/v2/settings/llm/connections/{connection_id}/healthcheck": {
+      "post": {
+        "description": "Probe one connection's live provider and return its health (not stored).\n\nA `POST` because it does work — it builds the provider and reaches out — even\nthough it stores nothing. The result is data: a provider that is down is an\n`UNAVAILABLE` status the settings page renders, and its `detail` is a secret-free\nsentence the platform composed, never a raw provider message. 404 when the id is\nnot this account's.",
+        "operationId": "healthcheck_connection_api_v2_settings_llm_connections__connection_id__healthcheck_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConnectionHealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Healthcheck Connection",
+        "tags": [
+          "v2-llm-settings"
         ]
       }
     }

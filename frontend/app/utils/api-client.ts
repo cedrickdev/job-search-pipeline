@@ -157,6 +157,11 @@ export function apiPut<T>(path: string, body?: unknown): Promise<T> {
   return request<T>('PUT', path, body)
 }
 
+/** PATCH, for the partial edits V2 uses on an LLM connection (unset field untouched). */
+export function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  return request<T>('PATCH', path, body)
+}
+
 /** DELETE, whose 204 resolves to `null` through the empty-body rule above. */
 export function apiDelete<T>(path: string): Promise<T> {
   return request<T>('DELETE', path)
@@ -172,4 +177,42 @@ export function apiPostForm<T>(path: string, form: FormData): Promise<T> {
     headers: token === null ? undefined : { [CSRF_HEADER]: token },
     body: form,
   }).then(handle<T>)
+}
+
+/** A binary response: its bytes and the filename the server named it. */
+export interface DownloadedFile {
+  blob: Blob
+  filename: string | null
+}
+
+/**
+ * GET a binary body — the rendered PDF of a document (Phase 10).
+ *
+ * The other helpers assume a JSON (or empty) body and would turn a PDF into a
+ * mojibake string; this one keeps the bytes as a `Blob` and reads the filename off
+ * `Content-Disposition` so the browser can save it under the name the server chose.
+ * A non-2xx answer still carries a JSON refusal (`document_not_rendered`, a 404),
+ * so the error path parses and throws the same `ApiError` every other call does —
+ * a caller branches on `error.code` here exactly as it does elsewhere.
+ */
+export async function apiDownload(path: string): Promise<DownloadedFile> {
+  const res = await fetch(path, {
+    credentials: 'same-origin',
+    headers: { Accept: 'application/pdf' },
+  })
+  if (!res.ok) return handle<never>(res)
+  return { blob: await res.blob(), filename: dispositionFilename(res) }
+}
+
+/**
+ * The filename from a `Content-Disposition` header, or null when it has none.
+ *
+ * The backend sends `attachment; filename="<id>.pdf"`; this reads that quoted name
+ * so a save-as dialog does not fall back to the last path segment (`download`).
+ */
+function dispositionFilename(res: Response): string | null {
+  const header = res.headers.get('Content-Disposition')
+  if (header === null) return null
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header)
+  return match ? decodeURIComponent(match[1]!) : null
 }

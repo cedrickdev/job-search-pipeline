@@ -36,7 +36,15 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.domain.application import Application, ApplicationState
+from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
 from backend.app.domain.candidate import CandidateProfile
+from backend.app.domain.chat import (
+    ChatActionExecution,
+    ChatActionProposal,
+    ChatMessage,
+    Conversation,
+)
 from backend.app.domain.common import GeoPoint
 from backend.app.domain.company import (
     AtsPlatform,
@@ -46,6 +54,9 @@ from backend.app.domain.company import (
     CompanyDiscoveryRecord,
     normalize_company_name,
 )
+from backend.app.domain.decision import ApplicationDecision
+from backend.app.domain.documents import CandidateDocument, CandidateDocumentType
+from backend.app.domain.eligibility import EligibilityResult
 from backend.app.domain.geo import (
     GeoSearchQuery,
     GeoStatus,
@@ -53,52 +64,104 @@ from backend.app.domain.geo import (
     remote_scope_of,
 )
 from backend.app.domain.identifiers import (
+    ApplicationDecisionId,
+    ApplicationId,
+    ApplicationPolicyId,
+    CandidateDocumentId,
     CandidateProfileId,
+    ChatActionProposalId,
     CompanyId,
+    ConversationId,
+    EligibilityResultId,
+    LLMConnectionId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
+    SubmissionAttemptId,
     UserId,
     UserSessionId,
 )
 from backend.app.domain.matching import MatchEvaluation
 from backend.app.domain.opportunity import Opportunity, WorkplaceMode
+from backend.app.domain.policy import ApplicationPolicy
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.infrastructure.database.mappers import (
+    application_decision_to_domain,
+    application_decision_to_row,
+    application_event_to_domain,
+    application_event_to_row,
+    application_policy_to_domain,
+    application_policy_to_row,
+    application_to_domain,
+    application_to_row,
+    candidate_document_to_domain,
+    candidate_document_to_row,
     candidate_profile_to_domain,
     candidate_profile_to_row,
     career_site_to_domain,
     career_site_to_row,
+    chat_action_execution_to_domain,
+    chat_action_execution_to_row,
+    chat_action_proposal_to_domain,
+    chat_action_proposal_to_row,
+    chat_message_to_domain,
+    chat_message_to_row,
     company_alias_to_domain,
     company_alias_to_row,
     company_location_to_domain,
     company_to_domain,
     company_to_row,
+    conversation_to_domain,
+    conversation_to_row,
     discovery_record_to_domain,
     discovery_record_to_row,
+    eligibility_result_to_domain,
+    eligibility_result_to_row,
+    llm_connection_to_domain,
+    llm_connection_to_row,
+    llm_run_to_domain,
+    llm_run_to_row,
     match_evaluation_to_domain,
     match_evaluation_to_row,
     opportunity_to_domain,
     opportunity_to_row,
+    provider_session_to_domain,
+    provider_session_to_row,
     search_profile_to_domain,
     search_profile_to_row,
+    submission_attempt_to_domain,
+    submission_attempt_to_row,
     user_session_to_domain,
     user_session_to_row,
     user_to_domain,
     user_to_row,
 )
 from backend.app.infrastructure.database.models import (
+    ApplicationDecisionRow,
+    ApplicationEventRow,
+    ApplicationPolicyRow,
+    ApplicationRow,
+    CandidateDocumentRow,
     CandidateProfileRow,
+    ChatActionExecutionRow,
+    ChatActionProposalRow,
+    ChatMessageRow,
     CompanyAliasRow,
     CompanyCareerSiteRow,
     CompanyDiscoveryRecordRow,
     CompanyLocationRow,
     CompanyRow,
+    ConversationRow,
+    EligibilityResultRow,
+    LLMConnectionRow,
+    LLMRunRow,
     MatchEvaluationRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
+    ProviderSessionRow,
     SearchProfileRow,
+    SubmissionAttemptRow,
     UserRow,
     UserSessionRow,
 )
@@ -107,6 +170,9 @@ from backend.app.infrastructure.database.types import (
     within_bounds,
     within_radius,
 )
+from backend.app.llm.connection import LLMConnection
+from backend.app.llm.sessions import ProviderSession
+from backend.app.llm.telemetry import LLMRun
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
     CompanyCandidate,
@@ -120,22 +186,43 @@ from backend.app.repositories.contracts import (
 
 if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
     from backend.app.repositories.contracts import (
+        ApplicationDecisionRepository,
+        ApplicationEventRepository,
+        ApplicationPolicyRepository,
+        ApplicationRepository,
+        CandidateDocumentRepository,
         CandidateProfileRepository,
         CareerSiteRepository,
+        ChatActionExecutionRepository,
+        ChatActionProposalRepository,
+        ChatMessageRepository,
         CompanyDiscoveryRepository,
         CompanyRepository,
+        ConversationRepository,
+        EligibilityResultRepository,
+        LLMConnectionRepository,
+        LLMRunRepository,
         MatchEvaluationRepository,
         OpportunityRepository,
+        ProviderSessionRepository,
         SearchProfileRepository,
         SessionRepository,
+        SubmissionAttemptRepository,
         UserRepository,
     )
 
     def _implements_contracts(session: AsyncSession) -> tuple[
             "CompanyRepository", "CareerSiteRepository", "CompanyDiscoveryRepository",
-            "OpportunityRepository", "MatchEvaluationRepository", "UserRepository",
+            "OpportunityRepository", "MatchEvaluationRepository",
+            "EligibilityResultRepository", "UserRepository",
             "SessionRepository", "CandidateProfileRepository",
-            "SearchProfileRepository"]:
+            "SearchProfileRepository", "CandidateDocumentRepository",
+            "LLMConnectionRepository", "ProviderSessionRepository",
+            "LLMRunRepository", "ApplicationPolicyRepository",
+            "ApplicationDecisionRepository", "ApplicationRepository",
+            "ApplicationEventRepository", "SubmissionAttemptRepository",
+            "ConversationRepository", "ChatMessageRepository",
+            "ChatActionProposalRepository", "ChatActionExecutionRepository"]:
         """Structural conformance, enforced by `mypy backend`.
 
         The `Protocol`s in `contracts` are satisfied by shape, so nothing would
@@ -148,10 +235,24 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
                 SqlAlchemyCompanyDiscoveryRepository(session),
                 SqlAlchemyOpportunityRepository(session),
                 SqlAlchemyMatchEvaluationRepository(session),
+                SqlAlchemyEligibilityResultRepository(session),
                 SqlAlchemyUserRepository(session),
                 SqlAlchemySessionRepository(session),
                 SqlAlchemyCandidateProfileRepository(session),
-                SqlAlchemySearchProfileRepository(session))
+                SqlAlchemySearchProfileRepository(session),
+                SqlAlchemyCandidateDocumentRepository(session),
+                SqlAlchemyLLMConnectionRepository(session),
+                SqlAlchemyProviderSessionRepository(session),
+                SqlAlchemyLLMRunRepository(session),
+                SqlAlchemyApplicationPolicyRepository(session),
+                SqlAlchemyApplicationDecisionRepository(session),
+                SqlAlchemyApplicationRepository(session),
+                SqlAlchemyApplicationEventRepository(session),
+                SqlAlchemySubmissionAttemptRepository(session),
+                SqlAlchemyConversationRepository(session),
+                SqlAlchemyChatMessageRepository(session),
+                SqlAlchemyChatActionProposalRepository(session),
+                SqlAlchemyChatActionExecutionRepository(session))
 
 
 def _rows_affected(result: Result[Any]) -> int:
@@ -796,6 +897,73 @@ class SqlAlchemyMatchEvaluationRepository:
         return tuple(match_evaluation_to_domain(row) for row in result.scalars())
 
 
+class SqlAlchemyEligibilityResultRepository:
+    """`EligibilityResultRepository` over an `AsyncSession`.
+
+    The shape is deliberately the twin of `SqlAlchemyMatchEvaluationRepository`:
+    the two axes are stored side by side and read the same way, and a reader
+    comparing the two files should find nothing surprising in either. Every
+    statement carries `user_id`, so another user's verdict reads as absent and an
+    upsert cannot take one over — the load misses, the insert runs, and
+    `uq_eligibility_results_candidate_profile_id_opportunity_id` rejects it.
+
+    The checks are eager-loaded on every read because they are `lazy="raise"` and
+    `eligibility_result_to_row` needs the stored ones to reconcile an upsert; a
+    write that had not loaded them would raise on the first check rather than
+    replace the set.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    def _base_select(self) -> Select[tuple[EligibilityResultRow]]:
+        return select(EligibilityResultRow).options(
+            selectinload(EligibilityResultRow.checks))
+
+    async def _row_for_pair(
+            self, user_id: UserId, candidate_profile_id: CandidateProfileId,
+            opportunity_id: OpportunityId) -> EligibilityResultRow | None:
+        result = await self._session.execute(
+            self._base_select().where(
+                EligibilityResultRow.user_id == user_id,
+                EligibilityResultRow.candidate_profile_id == candidate_profile_id,
+                EligibilityResultRow.opportunity_id == opportunity_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  result_id: EligibilityResultId) -> EligibilityResult | None:
+        result = await self._session.execute(
+            self._base_select().where(EligibilityResultRow.id == result_id,
+                                      EligibilityResultRow.user_id == user_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else eligibility_result_to_domain(row)
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId) -> EligibilityResult | None:
+        row = await self._row_for_pair(user_id, candidate_profile_id, opportunity_id)
+        return None if row is None else eligibility_result_to_domain(row)
+
+    async def upsert(self, result: EligibilityResult) -> EligibilityResult:
+        existing = await self._row_for_pair(result.user_id,
+                                            result.candidate_profile_id,
+                                            result.opportunity_id)
+        row = eligibility_result_to_row(result, existing)
+        self._session.add(row)
+        await self._session.flush()
+        return eligibility_result_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[EligibilityResult, ...]:
+        result = await self._session.execute(
+            self._base_select()
+            .where(EligibilityResultRow.user_id == user_id)
+            .order_by(EligibilityResultRow.determined_at.desc(),
+                      EligibilityResultRow.id)
+            .limit(limit))
+        return tuple(eligibility_result_to_domain(row) for row in result.scalars())
+
+
 class SqlAlchemyUserRepository:
     """`UserRepository` over an `AsyncSession`.
 
@@ -910,10 +1078,11 @@ class SqlAlchemyCandidateProfileRepository:
     and an upsert cannot take one over: the load misses, the insert runs, and the
     primary key rejects it.
 
-    All three child collections are eager-loaded on every read, because they are
+    All five child collections are eager-loaded on every read, because they are
     `lazy="raise"` and `candidate_profile_to_row` needs them to reconcile an
     existing row — an upsert that had not loaded them would raise on the first
-    child rather than write a profile with none.
+    child rather than write a profile with none. Since Phase 10 that includes the
+    evidence and claims the truth guard rests on.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -923,7 +1092,9 @@ class SqlAlchemyCandidateProfileRepository:
         return select(CandidateProfileRow).options(
             selectinload(CandidateProfileRow.languages),
             selectinload(CandidateProfileRow.work_authorizations),
-            selectinload(CandidateProfileRow.availability_slots))
+            selectinload(CandidateProfileRow.availability_slots),
+            selectinload(CandidateProfileRow.evidence),
+            selectinload(CandidateProfileRow.claims))
 
     async def _row(self, user_id: UserId,
                    profile_id: CandidateProfileId) -> CandidateProfileRow | None:
@@ -1013,5 +1184,671 @@ class SqlAlchemySearchProfileRepository:
             .limit(limit))
         return tuple(search_profile_to_domain(row) for row in result.scalars())
 
+
+class SqlAlchemyCandidateDocumentRepository:
+    """`CandidateDocumentRepository` over an `AsyncSession`, `user_id` on every read.
+
+    Another user's document reads as absent and an upsert cannot take one over: the
+    load misses on the `user_id` predicate, the insert runs, and the primary key
+    rejects it. The versions are eager-loaded on every read because they are
+    `lazy="raise"` and `candidate_document_to_row` needs the stored ones to
+    reconcile an append — a write that had not loaded them would raise on the first
+    version rather than add one.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    def _base_select(self) -> Select[tuple[CandidateDocumentRow]]:
+        return select(CandidateDocumentRow).options(
+            selectinload(CandidateDocumentRow.versions))
+
+    async def _row(self, user_id: UserId,
+                   document_id: CandidateDocumentId) -> CandidateDocumentRow | None:
+        result = await self._session.execute(
+            self._base_select().where(CandidateDocumentRow.id == document_id,
+                                      CandidateDocumentRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def _row_for_pair(
+            self, user_id: UserId, candidate_profile_id: CandidateProfileId,
+            opportunity_id: OpportunityId, document_type: CandidateDocumentType
+    ) -> CandidateDocumentRow | None:
+        result = await self._session.execute(
+            self._base_select().where(
+                CandidateDocumentRow.user_id == user_id,
+                CandidateDocumentRow.candidate_profile_id == candidate_profile_id,
+                CandidateDocumentRow.opportunity_id == opportunity_id,
+                CandidateDocumentRow.document_type == document_type))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  document_id: CandidateDocumentId) -> CandidateDocument | None:
+        row = await self._row(user_id, document_id)
+        return None if row is None else candidate_document_to_domain(row)
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId,
+                           document_type: CandidateDocumentType
+                           ) -> CandidateDocument | None:
+        row = await self._row_for_pair(user_id, candidate_profile_id,
+                                       opportunity_id, document_type)
+        return None if row is None else candidate_document_to_domain(row)
+
+    async def upsert(self, document: CandidateDocument) -> CandidateDocument:
+        existing = await self._row_for_pair(
+            document.user_id, document.candidate_profile_id, document.opportunity_id,
+            document.document_type)
+        row = candidate_document_to_row(document, existing)
+        self._session.add(row)
+        await self._session.flush()
+        return candidate_document_to_domain(row)
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[CandidateDocument, ...]:
+        result = await self._session.execute(
+            self._base_select()
+            .where(CandidateDocumentRow.user_id == user_id)
+            .order_by(CandidateDocumentRow.updated_at.desc(), CandidateDocumentRow.id)
+            .limit(limit))
+        return tuple(candidate_document_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyLLMConnectionRepository:
+    """`LLMConnectionRepository` over an `AsyncSession`, `user_id` on every statement.
+
+    Another user's connection reads as absent and an upsert cannot take one over: the
+    load misses on the `user_id` predicate, the insert runs, and the primary key
+    rejects it. No `selectinload`: `llm_connection_to_domain` does not read the
+    `sessions` relationship, which exists for the cascade, so loading it on every read
+    would be work for data nothing looks at.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   connection_id: LLMConnectionId) -> LLMConnectionRow | None:
+        result = await self._session.execute(
+            select(LLMConnectionRow).where(LLMConnectionRow.id == connection_id,
+                                           LLMConnectionRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  connection_id: LLMConnectionId) -> LLMConnection | None:
+        row = await self._row(user_id, connection_id)
+        return None if row is None else llm_connection_to_domain(row)
+
+    async def get_default(self, user_id: UserId) -> LLMConnection | None:
+        result = await self._session.execute(
+            select(LLMConnectionRow).where(LLMConnectionRow.user_id == user_id,
+                                           LLMConnectionRow.is_default.is_(True)))
+        row = result.scalar_one_or_none()
+        return None if row is None else llm_connection_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *, enabled_only: bool = False,
+                            limit: int = DEFAULT_LIMIT) -> tuple[LLMConnection, ...]:
+        statement = select(LLMConnectionRow).where(
+            LLMConnectionRow.user_id == user_id)
+        if enabled_only:
+            statement = statement.where(LLMConnectionRow.enabled.is_(True))
+        result = await self._session.execute(
+            statement
+            # Priority then id — the router's own order, so the registry a caller
+            # builds from this list is tried in the sequence the routing rule expects.
+            .order_by(LLMConnectionRow.priority, LLMConnectionRow.id)
+            .limit(limit))
+        return tuple(llm_connection_to_domain(row) for row in result.scalars())
+
+    async def upsert(self, connection: LLMConnection) -> LLMConnection:
+        row = llm_connection_to_row(
+            connection, await self._row(connection.user_id, connection.id))
+        self._session.add(row)
+        # A second default for the same account fails here on
+        # `uq_llm_connections_user_id_default` — which is why a service promoting a
+        # connection calls `clear_default` first.
+        await self._session.flush()
+        return llm_connection_to_domain(row)
+
+    async def clear_default(self, user_id: UserId) -> int:
+        result = await self._session.execute(
+            update(LLMConnectionRow)
+            .where(LLMConnectionRow.user_id == user_id,
+                   LLMConnectionRow.is_default.is_(True))
+            .values(is_default=False))
+        return _rows_affected(result)
+
+    async def delete(self, user_id: UserId,
+                     connection_id: LLMConnectionId) -> bool:
+        result = await self._session.execute(
+            delete(LLMConnectionRow).where(LLMConnectionRow.id == connection_id,
+                                           LLMConnectionRow.user_id == user_id))
+        # Provider sessions go with it by `ON DELETE CASCADE`; telemetry runs stay,
+        # their `connection_id` set NULL, so a bulk `DELETE` is right — no children
+        # need to be in the identity map for the rows to disappear.
+        return bool(_rows_affected(result))
+
+
+class SqlAlchemyProviderSessionRepository:
+    """`ProviderSessionRepository` over an `AsyncSession`, `user_id` on every read.
+
+    The id is uuid5 over `(connection_id, conversation_key)`, so an upsert loads by id
+    only to preserve what the stored row knew; the `get` a resume performs is scoped
+    by `user_id`, so one account cannot continue another's provider-side conversation.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, user_id: UserId, connection_id: LLMConnectionId,
+                  conversation_key: str) -> ProviderSession | None:
+        result = await self._session.execute(
+            select(ProviderSessionRow).where(
+                ProviderSessionRow.user_id == user_id,
+                ProviderSessionRow.connection_id == connection_id,
+                ProviderSessionRow.conversation_key == conversation_key))
+        row = result.scalar_one_or_none()
+        return None if row is None else provider_session_to_domain(row)
+
+    async def upsert(self, session: ProviderSession) -> ProviderSession:
+        result = await self._session.execute(
+            select(ProviderSessionRow).where(ProviderSessionRow.id == session.id))
+        existing = result.scalar_one_or_none()
+        row = provider_session_to_row(session, existing)
+        self._session.add(row)
+        await self._session.flush()
+        return provider_session_to_domain(row)
+
+
+class SqlAlchemyLLMRunRepository:
+    """`LLMRunRepository` over an `AsyncSession`.
+
+    The write is not user-scoped, because a run's owner is nullable — a healthcheck
+    probe has none — but `list_for_user` is, so a telemetry screen only ever surfaces
+    its own account's runs. The upsert loads by the run's own id, so writing the same
+    id twice (STARTED, then a terminal state) updates the one row.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, run_id: UUID) -> LLMRunRow | None:
+        result = await self._session.execute(
+            select(LLMRunRow).where(LLMRunRow.id == run_id))
+        return result.scalar_one_or_none()
+
+    async def upsert(self, run: LLMRun) -> LLMRun:
+        row = llm_run_to_row(run, await self._row(run.id))
+        self._session.add(row)
+        await self._session.flush()
+        return llm_run_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[LLMRun, ...]:
+        result = await self._session.execute(
+            select(LLMRunRow)
+            .where(LLMRunRow.user_id == user_id)
+            .order_by(LLMRunRow.started_at.desc(), LLMRunRow.id)
+            .limit(limit))
+        return tuple(llm_run_to_domain(row) for row in result.scalars())
+
+
+
+
+
+class SqlAlchemyApplicationPolicyRepository:
+    """`ApplicationPolicyRepository` over an `AsyncSession`.
+
+    Every statement carries `user_id`, so another account's policy reads as absent.
+    `get_default` returns the most recently updated *active* policy, the row the
+    engine reads before every submission.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   policy_id: ApplicationPolicyId) -> ApplicationPolicyRow | None:
+        result = await self._session.execute(
+            select(ApplicationPolicyRow).where(
+                ApplicationPolicyRow.id == policy_id,
+                ApplicationPolicyRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  policy_id: ApplicationPolicyId) -> ApplicationPolicy | None:
+        row = await self._row(user_id, policy_id)
+        return None if row is None else application_policy_to_domain(row)
+
+    async def get_default(self, user_id: UserId) -> ApplicationPolicy | None:
+        result = await self._session.execute(
+            select(ApplicationPolicyRow)
+            .where(ApplicationPolicyRow.user_id == user_id,
+                   ApplicationPolicyRow.is_active)
+            .order_by(ApplicationPolicyRow.updated_at.desc(), ApplicationPolicyRow.id)
+            .limit(1))
+        row = result.scalar_one_or_none()
+        return None if row is None else application_policy_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT
+                            ) -> tuple[ApplicationPolicy, ...]:
+        result = await self._session.execute(
+            select(ApplicationPolicyRow)
+            .where(ApplicationPolicyRow.user_id == user_id)
+            .order_by(ApplicationPolicyRow.updated_at.desc(), ApplicationPolicyRow.id)
+            .limit(limit))
+        return tuple(application_policy_to_domain(row) for row in result.scalars())
+
+    async def upsert(self, policy: ApplicationPolicy) -> ApplicationPolicy:
+        row = application_policy_to_row(
+            policy, await self._row(policy.user_id, policy.id))
+        self._session.add(row)
+        await self._session.flush()
+        return application_policy_to_domain(row)
+
+
+class SqlAlchemyApplicationDecisionRepository:
+    """`ApplicationDecisionRepository` over an `AsyncSession`.
+
+    User-scoped everywhere. `get_for_pair` returns the most recent decision for a
+    (candidate, opportunity) pair, so a re-decided pair reads its latest intent.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   decision_id: ApplicationDecisionId
+                   ) -> ApplicationDecisionRow | None:
+        result = await self._session.execute(
+            select(ApplicationDecisionRow).where(
+                ApplicationDecisionRow.id == decision_id,
+                ApplicationDecisionRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  decision_id: ApplicationDecisionId) -> ApplicationDecision | None:
+        row = await self._row(user_id, decision_id)
+        return None if row is None else application_decision_to_domain(row)
+
+    async def get_for_pair(self, user_id: UserId,
+                           candidate_profile_id: CandidateProfileId,
+                           opportunity_id: OpportunityId
+                           ) -> ApplicationDecision | None:
+        result = await self._session.execute(
+            select(ApplicationDecisionRow)
+            .where(ApplicationDecisionRow.user_id == user_id,
+                   ApplicationDecisionRow.candidate_profile_id == candidate_profile_id,
+                   ApplicationDecisionRow.opportunity_id == opportunity_id)
+            .order_by(ApplicationDecisionRow.decided_at.desc(),
+                      ApplicationDecisionRow.id)
+            .limit(1))
+        row = result.scalar_one_or_none()
+        return None if row is None else application_decision_to_domain(row)
+
+    async def upsert(self, decision: ApplicationDecision) -> ApplicationDecision:
+        row = application_decision_to_row(
+            decision, await self._row(decision.user_id, decision.id))
+        self._session.add(row)
+        await self._session.flush()
+        return application_decision_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT
+                            ) -> tuple[ApplicationDecision, ...]:
+        result = await self._session.execute(
+            select(ApplicationDecisionRow)
+            .where(ApplicationDecisionRow.user_id == user_id)
+            .order_by(ApplicationDecisionRow.decided_at.desc(),
+                      ApplicationDecisionRow.id)
+            .limit(limit))
+        return tuple(application_decision_to_domain(row) for row in result.scalars())
+
+
+_SUBMISSION_BUDGET_LOCK_NAMESPACE = 0x4150504C  # "APPL" — namespaces this lock class.
+
+
+def _submission_budget_lock_key(user_id: UserId) -> int:
+    """A stable signed int4 advisory-lock key for one user's submission budget.
+
+    `pg_advisory_xact_lock(int4, int4)` takes two 32-bit integers; the first
+    namespaces the lock so it cannot collide with an unrelated advisory lock, the
+    second identifies the user. The user is a UUID, so we fold its first four bytes
+    into a signed int4. A collision between two *different* users is harmless — it
+    only serializes them against each other briefly — while the same user always maps
+    to the same key, which is the only guarantee the reservation needs.
+    """
+    return int.from_bytes(user_id.bytes[:4], "big", signed=True)
+
+
+class SqlAlchemyApplicationRepository:
+    """`ApplicationRepository` over an `AsyncSession`.
+
+    The `events` and `attempts` relationships are never eager-loaded here and never
+    written by an application upsert — they are append-only and owned by their own
+    repositories. `count_active_submissions_since` and `list_in_flight` are the two
+    reads the rate limit (§49) and startup recovery (§88) depend on; the latter is
+    deliberately unscoped, because recovery sweeps every account's stuck runs. The
+    count is meant to be read under `lock_submission_budget`, whose transaction-scoped
+    advisory lock makes the reservation atomic against another worker of the same user.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   application_id: ApplicationId) -> ApplicationRow | None:
+        result = await self._session.execute(
+            select(ApplicationRow).where(ApplicationRow.id == application_id,
+                                         ApplicationRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  application_id: ApplicationId) -> Application | None:
+        row = await self._row(user_id, application_id)
+        return None if row is None else application_to_domain(row)
+
+    async def get_by_idempotency_key(self, user_id: UserId,
+                                     idempotency_key: str) -> Application | None:
+        result = await self._session.execute(
+            select(ApplicationRow).where(
+                ApplicationRow.idempotency_key == idempotency_key,
+                ApplicationRow.user_id == user_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else application_to_domain(row)
+
+    async def upsert(self, application: Application) -> Application:
+        row = application_to_row(
+            application, await self._row(application.user_id, application.id))
+        self._session.add(row)
+        await self._session.flush()
+        return application_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
+        result = await self._session.execute(
+            select(ApplicationRow)
+            .where(ApplicationRow.user_id == user_id)
+            .order_by(ApplicationRow.updated_at.desc(), ApplicationRow.id)
+            .limit(limit))
+        return tuple(application_to_domain(row) for row in result.scalars())
+
+    async def lock_submission_budget(self, user_id: UserId) -> None:
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(
+                _SUBMISSION_BUDGET_LOCK_NAMESPACE,
+                _submission_budget_lock_key(user_id))))
+
+    async def count_active_submissions_since(self, user_id: UserId,
+                                             since: datetime) -> int:
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(ApplicationRow)
+            .where(ApplicationRow.user_id == user_id,
+                   ApplicationRow.state.in_((
+                       ApplicationState.SUBMITTED.value,
+                       ApplicationState.SUBMITTING.value,
+                       ApplicationState.SUBMISSION_STATE_UNKNOWN.value)),
+                   ApplicationRow.updated_at >= since))
+        return int(result.scalar_one())
+
+    async def list_in_flight(self, *,
+                             limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
+        result = await self._session.execute(
+            select(ApplicationRow)
+            .where(ApplicationRow.state.in_((ApplicationState.SUBMITTING.value,
+                                             ApplicationState.PREPARING.value)))
+            .order_by(ApplicationRow.updated_at, ApplicationRow.id)
+            .limit(limit))
+        return tuple(application_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyApplicationEventRepository:
+    """`ApplicationEventRepository` over an `AsyncSession`.
+
+    Append-only: there is only `append`, which always inserts (an event id is
+    unique). The list read joins to `applications` for the ownership check, so one
+    account cannot read another's trail by id.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def append(self, event: ApplicationEvent) -> ApplicationEvent:
+        row = application_event_to_row(event)
+        self._session.add(row)
+        await self._session.flush()
+        return application_event_to_domain(row)
+
+    async def list_for_application(self, user_id: UserId,
+                                   application_id: ApplicationId, *,
+                                   limit: int = DEFAULT_LIMIT
+                                   ) -> tuple[ApplicationEvent, ...]:
+        result = await self._session.execute(
+            select(ApplicationEventRow)
+            .join(ApplicationRow,
+                  ApplicationRow.id == ApplicationEventRow.application_id)
+            .where(ApplicationEventRow.application_id == application_id,
+                   ApplicationRow.user_id == user_id)
+            .order_by(ApplicationEventRow.occurred_at, ApplicationEventRow.id)
+            .limit(limit))
+        return tuple(application_event_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemySubmissionAttemptRepository:
+    """`SubmissionAttemptRepository` over an `AsyncSession`.
+
+    Keyed on the attempt's own id, so the in-flight row and its completion are one
+    upsert. The list read joins to `applications` for the ownership check, like the
+    event trail.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, attempt_id: SubmissionAttemptId
+                   ) -> SubmissionAttemptRow | None:
+        result = await self._session.execute(
+            select(SubmissionAttemptRow).where(
+                SubmissionAttemptRow.id == attempt_id))
+        return result.scalar_one_or_none()
+
+    async def upsert(self, attempt: SubmissionAttempt) -> SubmissionAttempt:
+        row = submission_attempt_to_row(attempt, await self._row(attempt.id))
+        self._session.add(row)
+        await self._session.flush()
+        return submission_attempt_to_domain(row)
+
+    async def get(self, application_id: ApplicationId,
+                  attempt_number: int) -> SubmissionAttempt | None:
+        result = await self._session.execute(
+            select(SubmissionAttemptRow).where(
+                SubmissionAttemptRow.application_id == application_id,
+                SubmissionAttemptRow.attempt_number == attempt_number))
+        row = result.scalar_one_or_none()
+        return None if row is None else submission_attempt_to_domain(row)
+
+    async def list_for_application(self, user_id: UserId,
+                                   application_id: ApplicationId, *,
+                                   limit: int = DEFAULT_LIMIT
+                                   ) -> tuple[SubmissionAttempt, ...]:
+        result = await self._session.execute(
+            select(SubmissionAttemptRow)
+            .join(ApplicationRow,
+                  ApplicationRow.id == SubmissionAttemptRow.application_id)
+            .where(SubmissionAttemptRow.application_id == application_id,
+                   ApplicationRow.user_id == user_id)
+            .order_by(SubmissionAttemptRow.attempt_number)
+            .limit(limit))
+        return tuple(submission_attempt_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyConversationRepository:
+    """`ConversationRepository` over an `AsyncSession`, `user_id` on every read.
+
+    The upsert loads by `(user_id, id)` so a write can never reach across accounts —
+    exactly as `SqlAlchemyApplicationRepository` does — and `list_for_user` orders by
+    the last activity, falling back to `updated_at` for a freshly opened thread that
+    has no turn yet.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   conversation_id: ConversationId) -> ConversationRow | None:
+        result = await self._session.execute(
+            select(ConversationRow).where(ConversationRow.id == conversation_id,
+                                          ConversationRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  conversation_id: ConversationId) -> Conversation | None:
+        row = await self._row(user_id, conversation_id)
+        return None if row is None else conversation_to_domain(row)
+
+    async def upsert(self, conversation: Conversation) -> Conversation:
+        row = conversation_to_row(
+            conversation, await self._row(conversation.user_id, conversation.id))
+        self._session.add(row)
+        await self._session.flush()
+        return conversation_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *, include_archived: bool = False,
+                            limit: int = DEFAULT_LIMIT) -> tuple[Conversation, ...]:
+        statement = select(ConversationRow).where(ConversationRow.user_id == user_id)
+        if not include_archived:
+            statement = statement.where(ConversationRow.is_archived.is_(False))
+        statement = statement.order_by(
+            func.coalesce(ConversationRow.last_message_at,
+                          ConversationRow.updated_at).desc(),
+            ConversationRow.id).limit(limit)
+        result = await self._session.execute(statement)
+        return tuple(conversation_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyChatMessageRepository:
+    """`ChatMessageRepository` over an `AsyncSession`.
+
+    A message carries its own `user_id`, so reads scope on it directly rather than
+    joining the conversation. The upsert loads by the message's derived id, so
+    re-finalizing a turn writes the same row; `latest_sequence` is a `MAX` the service
+    numbers the next turn from without loading the thread.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, message_id: UUID) -> ChatMessageRow | None:
+        result = await self._session.execute(
+            select(ChatMessageRow).where(ChatMessageRow.id == message_id))
+        return result.scalar_one_or_none()
+
+    async def upsert(self, message: ChatMessage) -> ChatMessage:
+        row = chat_message_to_row(message, await self._row(message.id))
+        self._session.add(row)
+        await self._session.flush()
+        return chat_message_to_domain(row)
+
+    async def latest_sequence(self, user_id: UserId,
+                              conversation_id: ConversationId) -> int | None:
+        result = await self._session.execute(
+            select(func.max(ChatMessageRow.sequence)).where(
+                ChatMessageRow.conversation_id == conversation_id,
+                ChatMessageRow.user_id == user_id))
+        return result.scalar_one()
+
+    async def list_for_conversation(
+            self, user_id: UserId, conversation_id: ConversationId, *,
+            newest_first: bool = False,
+            limit: int = DEFAULT_LIMIT) -> tuple[ChatMessage, ...]:
+        order = (ChatMessageRow.sequence.desc() if newest_first
+                 else ChatMessageRow.sequence.asc())
+        result = await self._session.execute(
+            select(ChatMessageRow)
+            .where(ChatMessageRow.conversation_id == conversation_id,
+                   ChatMessageRow.user_id == user_id)
+            .order_by(order).limit(limit))
+        return tuple(chat_message_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyChatActionProposalRepository:
+    """`ChatActionProposalRepository` over an `AsyncSession`, `user_id` on every read.
+
+    A proposal carries its own `user_id`, so the `get` the executor performs before
+    acting scopes on it — a confirmation naming another account's proposal reads as
+    absent. The upsert loads by the proposal's derived id, so re-finalizing a turn
+    writes the same rows and a confirm or dismiss updates the one row's status.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   proposal_id: ChatActionProposalId) -> ChatActionProposalRow | None:
+        result = await self._session.execute(
+            select(ChatActionProposalRow).where(
+                ChatActionProposalRow.id == proposal_id,
+                ChatActionProposalRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  proposal_id: ChatActionProposalId) -> ChatActionProposal | None:
+        row = await self._row(user_id, proposal_id)
+        return None if row is None else chat_action_proposal_to_domain(row)
+
+    async def upsert(self, proposal: ChatActionProposal) -> ChatActionProposal:
+        row = chat_action_proposal_to_row(
+            proposal, await self._row(proposal.user_id, proposal.id))
+        self._session.add(row)
+        await self._session.flush()
+        return chat_action_proposal_to_domain(row)
+
+    async def list_for_conversation(
+            self, user_id: UserId, conversation_id: ConversationId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ChatActionProposal, ...]:
+        result = await self._session.execute(
+            select(ChatActionProposalRow)
+            .where(ChatActionProposalRow.conversation_id == conversation_id,
+                   ChatActionProposalRow.user_id == user_id)
+            .order_by(ChatActionProposalRow.created_at, ChatActionProposalRow.id)
+            .limit(limit))
+        return tuple(chat_action_proposal_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyChatActionExecutionRepository:
+    """`ChatActionExecutionRepository` over an `AsyncSession`, `user_id` on every read.
+
+    Keyed on the execution's derived id (from the proposal alone), so a double-confirm
+    upserts the one row rather than recording two attempts. The `get` the executor uses
+    to detect an already-run proposal scopes on the audit's own `user_id`.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, execution_id: UUID) -> ChatActionExecutionRow | None:
+        result = await self._session.execute(
+            select(ChatActionExecutionRow).where(
+                ChatActionExecutionRow.id == execution_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  proposal_id: ChatActionProposalId) -> ChatActionExecution | None:
+        result = await self._session.execute(
+            select(ChatActionExecutionRow).where(
+                ChatActionExecutionRow.proposal_id == proposal_id,
+                ChatActionExecutionRow.user_id == user_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else chat_action_execution_to_domain(row)
+
+    async def upsert(self, execution: ChatActionExecution) -> ChatActionExecution:
+        row = chat_action_execution_to_row(execution, await self._row(execution.id))
+        self._session.add(row)
+        await self._session.flush()
+        return chat_action_execution_to_domain(row)
 
 

@@ -10,15 +10,36 @@
 // one into a request cannot reach anything.
 import type {
   Account,
+  Application,
+  ApplicationEvent,
+  ApplicationEventList,
+  ApplicationList,
+  CandidateClaim,
+  CandidateDocument,
+  CandidateDocumentList,
+  CandidateEvidence,
+  CandidateEvidenceList,
   CandidateProfile,
   CandidateProfileDraft,
+  ChatActionExecution,
+  ChatActionProposal,
+  ChatActionProposalList,
+  ChatMessage,
+  ChatMessageList,
   Company,
   CompanyDetail,
   CompanyDiscoveryRun,
   CompanyGeoItem,
   CompanyGeoResponse,
   CompanyList,
+  Conversation,
+  ConversationList,
+  DocumentArtifact,
+  DocumentVersion,
   GeoLocation,
+  LLMConnection,
+  LLMConnectionHealth,
+  LLMConnectionList,
   OnboardingState,
   OpportunityGeoItem,
   OpportunityGeoResponse,
@@ -33,6 +54,16 @@ const PROFILE_ID = '22222222-2222-4222-8222-222222222222'
 const SEARCH_ID = '33333333-3333-4333-8333-333333333333'
 const COMPANY_ID = '44444444-4444-4444-8444-444444444444'
 const OPPORTUNITY_ID = '55555555-5555-4555-8555-555555555555'
+const EVIDENCE_ID = '66666666-6666-4666-8666-666666666666'
+const CLAIM_ID = '77777777-7777-4777-8777-777777777777'
+const DOCUMENT_ID = '88888888-8888-4888-8888-888888888888'
+const VERSION_ID = '99999999-9999-4999-8999-999999999999'
+const CONNECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const APPLICATION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const CONVERSATION_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const MESSAGE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+const PROPOSAL_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+const EXECUTION_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
 
 export function account(overrides: Partial<Account> = {}): Account {
   return {
@@ -279,4 +310,308 @@ export function companyGeoResponse(
   companies: CompanyGeoItem[] = [companyGeoItem()],
   overrides: Partial<CompanyGeoResponse> = {}): CompanyGeoResponse {
   return { companies, limit: 50, offset: 0, ...overrides }
+}
+
+// --- Phase 10: candidate evidence and generated documents ----------------------------
+//
+// The default evidence is a CV summary — the one record the reference generator turns
+// into a résumé summary line — and the default claim is the EXPERIENCE claim that cites
+// it. The document fixtures build on those: a résumé whose one bullet quotes the same
+// evidence, rendered to a one-page PDF. Every value is invented; no real personal data.
+
+/** One attested fact. The default is a CV summary, the atom a summary line rests on. */
+export function evidence(overrides: Partial<CandidateEvidence> = {}): CandidateEvidence {
+  return {
+    id: EVIDENCE_ID,
+    kind: 'CV_SUMMARY',
+    provenance: 'BASE_CV',
+    summary: 'Backend engineer with 8 years of experience',
+    reference_key: null,
+    detail: null,
+    issued_on: null,
+    valid_until: null,
+    source_document: null,
+    recorded_at: '2026-01-02T09:40:00Z',
+    ...overrides,
+  }
+}
+
+/** One claim, citing evidence the profile already holds. `evidence_ids` is never empty. */
+export function claim(overrides: Partial<CandidateClaim> = {}): CandidateClaim {
+  return {
+    id: CLAIM_ID,
+    claim_type: 'EXPERIENCE',
+    label: 'Senior Backend Engineer',
+    detail: 'Acme, 2018–2026',
+    evidence_ids: [EVIDENCE_ID],
+    ...overrides,
+  }
+}
+
+/** The whole attested record `GET /me/evidence` answers with. */
+export function evidenceList(
+  overrides: Partial<CandidateEvidenceList> = {}): CandidateEvidenceList {
+  return { evidence: [evidence()], claims: [claim()], ...overrides }
+}
+
+/** Where a rendered PDF lives, as a download UI reads it. No bytes, no storage key. */
+export function documentArtifact(
+  overrides: Partial<DocumentArtifact> = {}): DocumentArtifact {
+  return {
+    media_type: 'application/pdf',
+    byte_size: 48_000,
+    page_count: 1,
+    rendered_at: '2026-01-02T10:05:00Z',
+    ...overrides,
+  }
+}
+
+/**
+ * One version. The default is a RENDERED résumé that cleared the guard, with its
+ * artifact — the shape a download and a "latest usable" both need. A rejected or draft
+ * attempt is written by overriding `status`, `guard_report` and `artifact: null`.
+ */
+export function documentVersion(overrides: Partial<DocumentVersion> = {}): DocumentVersion {
+  return {
+    id: VERSION_ID,
+    version: 1,
+    status: 'RENDERED',
+    language: 'en',
+    content: {
+      kind: 'RESUME',
+      full_name: 'Test Candidate',
+      headline: 'Backend engineer',
+      summary: {
+        text: 'Backend engineer with 8 years of experience',
+        evidence_ids: [EVIDENCE_ID],
+      },
+      experience: [{
+        heading: 'Senior Backend Engineer',
+        subheading: 'Acme, 2018–2026',
+        evidence_ids: [EVIDENCE_ID],
+        bullets: [{
+          text: 'Rebuilt the checkout flow, cutting latency 30%',
+          evidence_ids: [EVIDENCE_ID],
+        }],
+      }],
+      education: [],
+      skill_groups: [],
+      languages: [],
+    },
+    guard_report: { ok: true, violations: [] },
+    artifact: documentArtifact(),
+    generator_key: 'deterministic-reference/1',
+    created_at: '2026-01-02T10:05:00Z',
+    ...overrides,
+  }
+}
+
+/** A candidate's document for one posting, with its version history. */
+export function candidateDocument(
+  overrides: Partial<CandidateDocument> = {}): CandidateDocument {
+  return {
+    id: DOCUMENT_ID,
+    candidate_profile_id: PROFILE_ID,
+    opportunity_id: OPPORTUNITY_ID,
+    document_type: 'RESUME',
+    versions: [documentVersion()],
+    latest_usable_version: 1,
+    created_at: '2026-01-02T10:05:00Z',
+    updated_at: '2026-01-02T10:05:00Z',
+    ...overrides,
+  }
+}
+
+/** This account's documents, most recently updated first, wrapped. */
+export function documentList(
+  documents: CandidateDocument[] = [candidateDocument()],
+  overrides: Partial<CandidateDocumentList> = {}): CandidateDocumentList {
+  return { documents, ...overrides }
+}
+
+// --- Phase 11: LLM connections -------------------------------------------------------
+//
+// The default is a local OpenAI-compatible connection: an endpoint, no credential, the
+// one shape a keyless-and-enabled default exercises. The cases the settings UI is strict
+// about — a CLI that stores no key, a hosted gateway with `has_api_key: true`, a disabled
+// one — are written by overriding `provider_type`, `has_api_key` and `enabled`, because
+// those are exactly the branches the form and the row treat differently. `has_api_key` is
+// the only thing ever said about a credential; no fixture carries a key value, because no
+// response ever does (§13).
+
+/** One stored connection. The default is an enabled, keyless local endpoint. */
+export function llmConnection(overrides: Partial<LLMConnection> = {}): LLMConnection {
+  return {
+    id: CONNECTION_ID,
+    provider_type: 'LOCAL_OPENAI_COMPATIBLE',
+    display_name: 'Local Ollama',
+    base_url: 'http://127.0.0.1:11434/v1',
+    model: 'llama3.2',
+    has_api_key: false,
+    custom_headers: {},
+    enabled: true,
+    is_default: true,
+    priority: 100,
+    created_at: '2026-01-02T09:00:00Z',
+    updated_at: '2026-01-02T09:00:00Z',
+    ...overrides,
+  }
+}
+
+/** This account's connections, in priority-then-id order, wrapped. */
+export function llmConnectionList(
+  connections: LLMConnection[] = [llmConnection()],
+  overrides: Partial<LLMConnectionList> = {}): LLMConnectionList {
+  return { connections, ...overrides }
+}
+
+/** A health probe result. The default is a reachable provider with a latency. */
+export function llmConnectionHealth(
+  overrides: Partial<LLMConnectionHealth> = {}): LLMConnectionHealth {
+  return {
+    status: 'HEALTHY',
+    detail: null,
+    latency_ms: 42,
+    ...overrides,
+  }
+}
+
+export function application(overrides: Partial<Application> = {}): Application {
+  return {
+    id: APPLICATION_ID,
+    state: 'PLANNED',
+    channel: 'BROWSER',
+    opportunity_id: OPPORTUNITY_ID,
+    company_id: null,
+    pinned_documents: [],
+    attempt_count: 0,
+    created_at: '2026-03-01T09:30:00Z',
+    updated_at: '2026-03-01T09:30:00Z',
+    ...overrides,
+  }
+}
+
+export function applicationList(
+  applications: Application[] = [application()],
+): ApplicationList {
+  return { applications }
+}
+
+export function applicationEvent(
+  overrides: Partial<ApplicationEvent> = {},
+): ApplicationEvent {
+  return {
+    event_type: 'CREATED',
+    actor: 'SYSTEM',
+    from_state: null,
+    to_state: 'PLANNED',
+    detail: 'opened for opportunity',
+    reasons: [],
+    occurred_at: '2026-03-01T09:30:00Z',
+    ...overrides,
+  }
+}
+
+export function applicationEventList(
+  events: ApplicationEvent[] = [applicationEvent()],
+): ApplicationEventList {
+  return { events }
+}
+
+// --- Phase 13: career-chat control plane ---------------------------------------------
+//
+// The default thread has one exchange and one open proposal, and the proposal's default
+// action is a NAVIGATE — the one action the page acts on itself (a confirmed NAVIGATE is
+// the only client-side side effect). The cases the control plane is strict about — a
+// terminal proposal (EXECUTED/REJECTED/FAILED/DISMISSED), a mutating action, a rejected
+// confirm — are written by overriding `status`, `action` and the execution `outcome`,
+// because those are exactly the branches the card and the store treat differently. No
+// fixture carries a secret: `action` is the domain union verbatim, secret-free by
+// construction, and an execution's `detail` is the server's own secret-free note.
+
+/** One chat thread's caption and activity — never its messages inline. */
+export function conversation(overrides: Partial<Conversation> = {}): Conversation {
+  return {
+    id: CONVERSATION_ID,
+    title: 'Backend roles in Lausanne',
+    is_archived: false,
+    last_message_at: '2026-03-01T10:05:00Z',
+    created_at: '2026-03-01T10:00:00Z',
+    updated_at: '2026-03-01T10:05:00Z',
+    ...overrides,
+  }
+}
+
+/** This account's threads, most recent first, wrapped. */
+export function conversationList(
+  conversations: Conversation[] = [conversation()],
+): ConversationList {
+  return { conversations }
+}
+
+/** One stored turn. The default is a user turn; pass `role: 'ASSISTANT'` for a reply. */
+export function chatMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
+  return {
+    id: MESSAGE_ID,
+    conversation_id: CONVERSATION_ID,
+    role: 'USER',
+    content: 'Which roles near Lausanne should I look at?',
+    sequence: 1,
+    llm_run_id: null,
+    provider_key: null,
+    created_at: '2026-03-01T10:00:00Z',
+    ...overrides,
+  }
+}
+
+/** One thread's transcript, oldest first, wrapped. */
+export function chatMessageList(
+  messages: ChatMessage[] = [chatMessage()],
+): ChatMessageList {
+  return { messages }
+}
+
+/**
+ * One typed action the model proposed, awaiting a confirm or dismiss.
+ *
+ * The default action is a NAVIGATE to the opportunity map — inert, `PROPOSED` — because
+ * that is the branch the page acts on itself once confirmed. Override `action` for a
+ * mutating proposal and `status` for a terminal card.
+ */
+export function chatProposal(overrides: Partial<ChatActionProposal> = {}): ChatActionProposal {
+  return {
+    id: PROPOSAL_ID,
+    conversation_id: CONVERSATION_ID,
+    message_id: MESSAGE_ID,
+    ordinal: 0,
+    status: 'PROPOSED',
+    summary: 'Open the opportunity map to see roles near you.',
+    action: { kind: 'NAVIGATE', target: 'OPPORTUNITIES', opportunity_id: null },
+    created_at: '2026-03-01T10:05:00Z',
+    updated_at: '2026-03-01T10:05:00Z',
+    ...overrides,
+  }
+}
+
+/** One thread's proposals, oldest first, wrapped. */
+export function chatProposalList(
+  proposals: ChatActionProposal[] = [chatProposal()],
+): ChatActionProposalList {
+  return { proposals }
+}
+
+/**
+ * The audited outcome of a confirmed proposal. The default SUCCEEDED; override `outcome`
+ * and `detail` for a REJECTED (refused at the gate) or FAILED one.
+ */
+export function chatExecution(overrides: Partial<ChatActionExecution> = {}): ChatActionExecution {
+  return {
+    id: EXECUTION_ID,
+    proposal_id: PROPOSAL_ID,
+    outcome: 'SUCCEEDED',
+    detail: null,
+    result_ref: null,
+    created_at: '2026-03-01T10:06:00Z',
+    ...overrides,
+  }
 }

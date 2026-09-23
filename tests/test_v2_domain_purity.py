@@ -29,7 +29,9 @@ COMPAT_DIR = REPO_ROOT / "backend" / "app" / "compat"
 # `eligibility` from growing into `matching`.
 DEPENDENCY_ORDER = (
     "base", "identifiers", "user", "common", "opportunity", "company", "candidate",
-    "search", "geo", "matching", "eligibility", "policy", "decision",
+    "documents", "search", "geo", "matching", "eligibility", "policy", "decision",
+    "application_channel", "application_failure", "application_answer", "application",
+    "application_event", "execution_gate", "chat",
 )
 
 # Named explicitly rather than derived, so the list reads as the phase order's

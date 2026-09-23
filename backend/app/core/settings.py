@@ -186,6 +186,21 @@ AUTH_SESSION_HOURS_VARIABLE: Final[str] = "JOBSEARCH_AUTH_SESSION_HOURS"
 AUTH_MAX_FAILED_LOGINS_VARIABLE: Final[str] = "JOBSEARCH_AUTH_MAX_FAILED_LOGINS"
 AUTH_LOCKOUT_MINUTES_VARIABLE: Final[str] = "JOBSEARCH_AUTH_LOCKOUT_MINUTES"
 
+# Where rendered document PDFs are written. A directory under the working tree by
+# default, so a fresh checkout produces artifacts without configuration; a
+# deployment overrides it to a mounted volume, and a future object-store adapter
+# would read a URL from its own variable instead.
+DOCUMENT_ARTIFACT_ROOT_VARIABLE: Final[str] = "JOBSEARCH_DOCUMENT_ARTIFACT_ROOT"
+DEFAULT_DOCUMENT_ARTIFACT_ROOT: Final[str] = "var/document_artifacts"
+
+# The Fernet master key the LLM connection store encrypts provider credentials with
+# (Phase 11, docs/LLM_PROVIDER_ARCHITECTURE.md §21). Read from the environment,
+# never stored in the database and never returned by the API. A deployment that
+# manages remote LLM connections must set it; one that uses only CLI and keyless
+# local providers never needs it, so its absence is not an error until a credential
+# has to be encrypted.
+LLM_SECRET_KEY_VARIABLE: Final[str] = "JOBSEARCH_LLM_SECRET_KEY"  # noqa: S105 — an env var name, not a credential
+
 _TRUE_WORDS: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 
@@ -339,6 +354,59 @@ class AuthSettings(BaseModel):
         "local http" to do it.
         """
         return cls(cookie_secure=False)
+
+
+class DocumentSettings(BaseModel):
+    """Where rendered document artifacts live.
+
+    Frozen and closed like every settings model. Only the artifact root today —
+    the store is a directory of PDFs (`LocalDocumentArtifactStore`), and the path
+    is the one thing a deployment tunes. An object-store adapter would grow its own
+    fields here rather than overloading this one.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    artifact_root: str = DEFAULT_DOCUMENT_ARTIFACT_ROOT
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
+        """Read the artifact root from the environment, or use the default path."""
+        source = environ if env is None else env
+        value = source.get(DOCUMENT_ARTIFACT_ROOT_VARIABLE, "").strip()
+        return cls(artifact_root=value or DEFAULT_DOCUMENT_ARTIFACT_ROOT)
+
+
+class LLMSecretSettings(BaseModel):
+    """The master key for encrypting stored LLM credentials — env-sourced, never DB.
+
+    Frozen and closed like every settings model, and with the same custom repr rule
+    as `DatabaseSettings`: the key is excluded from the repr so a traceback that
+    renders this object cannot print it. `master_key` is optional because a
+    deployment using only CLI and keyless local providers never encrypts anything;
+    the service raises a clear error only if a credential must be stored while it is
+    absent, rather than failing at startup for a feature the deployment does not use.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    master_key: str | None = Field(default=None, repr=False)
+
+    @property
+    def has_key(self) -> bool:
+        return bool(self.master_key)
+
+    def __repr__(self) -> str:
+        return f"LLMSecretSettings(master_key={'set' if self.has_key else 'unset'!r})"
+
+    __str__ = __repr__
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
+        """Read the master key from the environment, leaving it unset when absent."""
+        source = environ if env is None else env
+        value = source.get(LLM_SECRET_KEY_VARIABLE, "").strip()
+        return cls(master_key=value or None)
 
 
 

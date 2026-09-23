@@ -67,10 +67,21 @@ SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
 # `candidate_documents` (Phase 10) carries `user_id` denormalized beside its
 # `candidate_profile_id` for the same reason every user-owned table does: each
 # scoped read is `WHERE user_id = :current_user`.
+#
+# The four Phase 13 chat tables are all here, not in the parent-owned group, and the
+# reason is the query the control plane actually runs: "my open submit proposals" is
+# `WHERE user_id = :current_user AND status = 'PROPOSED'`, indexed on the proposal
+# row itself, not a three-table join up to `users`. A message, a proposal and an
+# execution each carries `user_id` denormalized beside its parent link for the same
+# reason `candidate_documents` does — and the cascade from `users` is what still makes
+# "delete my account" a single statement even though the parent cascade would already
+# reach them through `conversations`.
 USER_OWNED_TABLES = ("application_decisions", "application_policies", "applications",
                      "candidate_documents", "candidate_profiles",
-                     "eligibility_results", "llm_connections", "match_evaluations",
-                     "provider_sessions", "search_profiles", "user_sessions")
+                     "chat_action_executions", "chat_action_proposals",
+                     "chat_messages", "conversations", "eligibility_results",
+                     "llm_connections", "match_evaluations", "provider_sessions",
+                     "search_profiles", "user_sessions")
 
 # Telemetry rows: user-attributable, but not user-owned. `llm_runs` (Phase 11)
 # carries a `user_id` so a user can list their own calls, but it is *nullable* — a
@@ -130,7 +141,7 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_thirty_two_v2_tables():
+def test_the_metadata_holds_exactly_the_thirty_six_v2_tables():
     """A tripwire on the shape of the schema itself.
 
     `models.py` is the only place a V2 table may be declared, so the four ownership
@@ -140,7 +151,7 @@ def test_the_metadata_holds_exactly_the_thirty_two_v2_tables():
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
         PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | {"users"}
-    assert len(TABLES) == 32
+    assert len(TABLES) == 36
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))

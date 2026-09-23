@@ -750,6 +750,159 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/chat/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Conversations
+         * @description This account's chat threads, most recent activity first.
+         */
+        get: operations["list_conversations_api_v2_chat_conversations_get"];
+        put?: never;
+        /**
+         * Start Conversation
+         * @description Open a new, empty chat thread for this account (§Security).
+         *
+         *     201, because it creates a resource. `title` is a caption the service truncates, never
+         *     authority; an absent or blank one falls back to a default. The thread has no turns yet.
+         */
+        post: operations["start_conversation_api_v2_chat_conversations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/chat/conversations/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Conversation
+         * @description One thread's caption and activity, or 404 if it is not this account's.
+         */
+        get: operations["read_conversation_api_v2_chat_conversations__conversation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/chat/conversations/{conversation_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Messages
+         * @description One thread's turns, oldest first. 404 when the thread is not this account's.
+         */
+        get: operations["list_messages_api_v2_chat_conversations__conversation_id__messages_get"];
+        put?: never;
+        /**
+         * Send Message
+         * @description Send one user turn and stream the assistant's reply as Server-Sent Events.
+         *
+         *     Ownership and empty-message checks run *before* the stream is returned, so a thread
+         *     that is not this account's is a 404 and an empty message a 422 — an ordinary JSON error,
+         *     not an event mid-stream. Once past them the user's message is persisted and the reply
+         *     streams: `TOKEN` events as prose arrives, then a terminal `COMPLETED` carrying the
+         *     stored assistant message and its `PROPOSED` proposals, or `ERROR` for a turn that
+         *     reached a provider and failed. Nothing here executes a proposal — that is `confirm`.
+         */
+        post: operations["send_message_api_v2_chat_conversations__conversation_id__messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/chat/conversations/{conversation_id}/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Proposals
+         * @description One thread's proposals, oldest first. 404 when the thread is not this account's.
+         *
+         *     The current status of each proposal is on the response, so a UI knows which cards are
+         *     still open to confirm or dismiss and which are already terminal.
+         */
+        get: operations["list_proposals_api_v2_chat_conversations__conversation_id__proposals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/chat/proposals/{proposal_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Proposal
+         * @description Execute one confirmed proposal — the last gate, and the only place it runs.
+         *
+         *     The proposal is re-authorized (ownership, coarse domain state) and then handed to the
+         *     same service the HTTP routes call, which runs its own authoritative checks — a submit
+         *     re-runs the whole Phase 12 gate. Idempotent by the proposal's id: a double-confirm
+         *     returns the recorded execution rather than running twice. The response is the audited
+         *     outcome (`SUCCEEDED`, `REJECTED` or `FAILED`); a 404 when the proposal is not this
+         *     account's, a 409 when it is no longer open.
+         */
+        post: operations["confirm_proposal_api_v2_chat_proposals__proposal_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/chat/proposals/{proposal_id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Proposal
+         * @description Decline an open proposal without running it — `PROPOSED` → `DISMISSED`.
+         *
+         *     Writes no execution because nothing was attempted; it only moves the proposal out of
+         *     the open set so it cannot later be confirmed. A 404 when the proposal is not this
+         *     account's, a 409 when it is no longer open (already executed, rejected, failed or
+         *     dismissed). Returns the proposal in its new status.
+         */
+        post: operations["dismiss_proposal_api_v2_chat_proposals__proposal_id__dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/companies": {
         parameters: {
             query?: never;
@@ -1655,6 +1808,22 @@ export interface components {
             channel: string;
         };
         /**
+         * ApproveApplicationAction
+         * @description Record a human's approval of a prepared application (§52).
+         */
+        ApproveApplicationAction: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "APPROVE_APPLICATION";
+        };
+        /**
          * AssessedOpportunityResponse
          * @description The posting an assessment is about, as much of it as a list card needs.
          *
@@ -1750,6 +1919,22 @@ export interface components {
         Body_post_transcribe_api_transcribe_post: {
             /** File */
             file: string;
+        };
+        /**
+         * CancelApplicationAction
+         * @description Abandon an application before it reaches the employer.
+         */
+        CancelApplicationAction: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "CANCEL_APPLICATION";
         };
         /**
          * CandidateClaimResponse
@@ -1974,6 +2159,112 @@ export interface components {
             url: string;
             verification_status: components["schemas"]["DetectionStatus"];
         };
+        /**
+         * ChatActionExecutionOutcome
+         * @description How one attempt to execute a confirmed proposal ended.
+         *
+         *     Told apart from the proposal's status because an execution is the *event* and the
+         *     status is the proposal's resulting *state*: a `REJECTED` outcome is a proposal the
+         *     executor would not permit, a `FAILED` outcome is one it permitted but whose service
+         *     call raised, and `SUCCEEDED` is the action having run.
+         * @enum {string}
+         */
+        ChatActionExecutionOutcome: "SUCCEEDED" | "REJECTED" | "FAILED";
+        /**
+         * ChatActionExecutionResponse
+         * @description The audited record of one confirmed proposal's execution.
+         *
+         *     `outcome` says whether the action was refused at validation (`REJECTED`), permitted but
+         *     failed (`FAILED`), or ran (`SUCCEEDED`); `result_ref` carries the id or handle it
+         *     produced (an application's new state, a document id, a navigation target) and `detail`
+         *     a secret-free note — both composed by the executor from typed, domain-safe values,
+         *     never a raw provider or driver message.
+         */
+        ChatActionExecutionResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Detail */
+            detail: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            outcome: components["schemas"]["ChatActionExecutionOutcome"];
+            /**
+             * Proposal Id
+             * Format: uuid
+             */
+            proposal_id: string;
+            /** Result Ref */
+            result_ref: string | null;
+        };
+        /**
+         * ChatActionProposalListResponse
+         * @description One thread's proposals, oldest first, wrapped so it can grow a field.
+         */
+        ChatActionProposalListResponse: {
+            /** Proposals */
+            proposals: components["schemas"]["ChatActionProposalResponse"][];
+        };
+        /**
+         * ChatActionProposalResponse
+         * @description One typed action the model proposed, awaiting a human's confirm or dismiss.
+         *
+         *     `action` is the domain `ChatAction` union verbatim: secret-free by construction, so the
+         *     client receives the exact discriminated variant to render and to confirm. `status`
+         *     starts `PROPOSED` and only an explicit confirm or dismiss moves it — the response is how
+         *     a UI knows whether a card is still actionable.
+         */
+        ChatActionProposalResponse: {
+            /** Action */
+            action: components["schemas"]["GenerateResumeAction"] | components["schemas"]["GenerateCoverLetterAction"] | components["schemas"]["CreateApplicationAction"] | components["schemas"]["PrepareApplicationAction"] | components["schemas"]["ApproveApplicationAction"] | components["schemas"]["SubmitApplicationAction"] | components["schemas"]["CancelApplicationAction"] | components["schemas"]["SetSearchRadiusAction"] | components["schemas"]["UpdateSearchKeywordsAction"] | components["schemas"]["NavigateAction"] | components["schemas"]["OpenInterviewPrepAction"];
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Message Id
+             * Format: uuid
+             */
+            message_id: string;
+            /** Ordinal */
+            ordinal: number;
+            status: components["schemas"]["ChatActionProposalStatus"];
+            /** Summary */
+            summary: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * ChatActionProposalStatus
+         * @description Where one proposal is in its life from "offered" to "done".
+         *
+         *     A proposal is born `PROPOSED`. A human confirming it that succeeds moves it to
+         *     `EXECUTED`; one that the executor refuses at validation moves it to `REJECTED`
+         *     (it was never permitted); one whose underlying service action failed moves it to
+         *     `FAILED` (it was permitted but did not complete). `DISMISSED` is the user declining
+         *     it. Only a `PROPOSED` proposal may be executed or dismissed — the others are terminal.
+         * @enum {string}
+         */
+        ChatActionProposalStatus: "PROPOSED" | "EXECUTED" | "REJECTED" | "FAILED" | "DISMISSED";
         /** ChatBody */
         ChatBody: {
             /** Message */
@@ -1989,6 +2280,94 @@ export interface components {
              */
             scope_id: number;
         };
+        /**
+         * ChatMessageListResponse
+         * @description One thread's turns, oldest first — the transcript as it grew.
+         */
+        ChatMessageListResponse: {
+            /** Messages */
+            messages: components["schemas"]["ChatMessageResponse"][];
+        };
+        /**
+         * ChatMessageResponse
+         * @description One stored turn: its prose and, for an assistant turn, its telemetry provenance.
+         *
+         *     `content` is the prose only — the fenced proposal block was parsed out into proposals
+         *     and is never stored here. A user turn carries no `llm_run_id`/`provider_key`; an
+         *     assistant turn carries both, so a turn is traceable to the run that produced it.
+         */
+        ChatMessageResponse: {
+            /** Content */
+            content: string;
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Llm Run Id */
+            llm_run_id: string | null;
+            /** Provider Key */
+            provider_key: string | null;
+            role: components["schemas"]["ChatMessageRole"];
+            /** Sequence */
+            sequence: number;
+        };
+        /**
+         * ChatMessageRole
+         * @description Who authored one stored chat message.
+         *
+         *     Only two roles are ever persisted, and that is deliberate. `SYSTEM` is the prompt,
+         *     which lives in the versioned `PromptRegistry` and is never a row a user could read or
+         *     replay; `TOOL` results do not exist here because the chat never lets the *provider*
+         *     run a tool — the application executes confirmed actions, out of band, and records the
+         *     outcome as its own audit rather than feeding it back as a message role.
+         * @enum {string}
+         */
+        ChatMessageRole: "USER" | "ASSISTANT";
+        /**
+         * ChatStreamEventResponse
+         * @description The SSE wire shape of one `ChatStreamEvent` a streaming turn emits.
+         *
+         *     Deliberately the *service* event serialized, never the raw provider `LLMStreamEvent`: a
+         *     `TOKEN` carries a chunk of prose to append, `COMPLETED` the persisted assistant message
+         *     and its proposals, and `ERROR` a typed, secret-free code and note. The client reads the
+         *     stream to render prose live, then renders the proposals from the terminal `COMPLETED`
+         *     (or the failure from `ERROR`) — the same rows a later `GET` of the thread returns.
+         */
+        ChatStreamEventResponse: {
+            /** Error Code */
+            error_code: string | null;
+            /** Error Detail */
+            error_detail: string | null;
+            message: components["schemas"]["ChatMessageResponse"] | null;
+            /** Proposals */
+            proposals: components["schemas"]["ChatActionProposalResponse"][];
+            /** Text */
+            text: string | null;
+            type: components["schemas"]["ChatStreamEventType"];
+        };
+        /**
+         * ChatStreamEventType
+         * @description The three shapes a chat turn streams to its caller.
+         *
+         *     A service-level event, deliberately distinct from the provider's `LLMStreamEvent`, so
+         *     the API layer serializes *these* to SSE and never the raw LLM contract: a `TOKEN` is a
+         *     chunk of prose to append, `COMPLETED` carries the persisted assistant message and its
+         *     proposals, and `ERROR` carries a typed, secret-free code and note for a turn that
+         *     reached a provider and did not succeed.
+         * @enum {string}
+         */
+        ChatStreamEventType: "TOKEN" | "COMPLETED" | "ERROR";
         /**
          * ClaimType
          * @description The kind of assertion a claim makes.
@@ -2309,6 +2688,41 @@ export interface components {
          */
         ContractType: "PERMANENT" | "FIXED_TERM" | "TEMPORARY_AGENCY" | "SERVICE_CONTRACT";
         /**
+         * ConversationListResponse
+         * @description This account's threads, most recent activity first, wrapped so it can grow.
+         */
+        ConversationListResponse: {
+            /** Conversations */
+            conversations: components["schemas"]["ConversationResponse"][];
+        };
+        /**
+         * ConversationResponse
+         * @description One chat thread's caption and activity — never its messages inline.
+         */
+        ConversationResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Archived */
+            is_archived: boolean;
+            /** Last Message At */
+            last_message_at: string | null;
+            /** Title */
+            title: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
          * CountrySearchArea
          * @description An entire country.
          */
@@ -2351,6 +2765,22 @@ export interface components {
             recipient?: string | null;
             /** Signature */
             signature: string;
+        };
+        /**
+         * CreateApplicationAction
+         * @description Open an application for a posting from its stored decision (§2-3, §36).
+         */
+        CreateApplicationAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "CREATE_APPLICATION";
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
         };
         /**
          * CreateApplicationRequest
@@ -2759,6 +3189,24 @@ export interface components {
             source_url: string | null;
         };
         /**
+         * GenerateCoverLetterAction
+         * @description Draft the candidate's cover letter for one posting (executes `DocumentService`).
+         */
+        GenerateCoverLetterAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "GENERATE_COVER_LETTER";
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+            /** Target Language */
+            target_language?: string | null;
+        };
+        /**
          * GenerateDocumentRequest
          * @description Ask for a document to be generated for a posting, for this account's profile.
          *
@@ -2771,6 +3219,24 @@ export interface components {
         GenerateDocumentRequest: {
             /** Language */
             language?: string | null;
+        };
+        /**
+         * GenerateResumeAction
+         * @description Tailor the candidate's résumé to one posting (executes `DocumentService`).
+         */
+        GenerateResumeAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "GENERATE_RESUME";
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+            /** Target Language */
+            target_language?: string | null;
         };
         /**
          * GeoLocationResponse
@@ -3132,6 +3598,31 @@ export interface components {
             /** Radius Index */
             radius_index: number;
         };
+        /**
+         * NavigateAction
+         * @description Point the client at a screen — a hint that mutates nothing on the server.
+         */
+        NavigateAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "NAVIGATE";
+            /** Opportunity Id */
+            opportunity_id?: string | null;
+            target: components["schemas"]["NavigationTarget"];
+        };
+        /**
+         * NavigationTarget
+         * @description A screen a `NAVIGATE` action may point the client at.
+         *
+         *     Closed on purpose: navigation is a client-side hint, but letting the model name an
+         *     arbitrary path would be an open redirect dressed as a chat action. The client maps
+         *     each member to a route it owns; a target the client does not recognise is simply
+         *     ignored, never followed.
+         * @enum {string}
+         */
+        NavigationTarget: "OPPORTUNITIES" | "APPLICATIONS" | "DOCUMENTS" | "MATCHES" | "COMPANIES" | "INTERVIEW_PREP" | "SETTINGS";
         /** NotesBody */
         NotesBody: {
             /** Notes Md */
@@ -3157,6 +3648,26 @@ export interface components {
             may_complete: boolean;
             /** Search Profiles */
             search_profiles: number;
+        };
+        /**
+         * OpenInterviewPrepAction
+         * @description Open the existing V1 interview-prep view for a posting (client-side, no mutation).
+         *
+         *     The only interview capability the chat exposes, and deliberately so: the adaptive
+         *     simulator, scoring and readiness are Phase 14 and out of scope (§19). This is a
+         *     navigation hint to a view V1 already ships, nothing more.
+         */
+        OpenInterviewPrepAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "OPEN_INTERVIEW_PREP";
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
         };
         /**
          * OpportunityGeoItemResponse
@@ -3267,6 +3778,22 @@ export interface components {
              * Format: uuid
              */
             version_id: string;
+        };
+        /**
+         * PrepareApplicationAction
+         * @description Prepare an application and route it by the gate — reversible, never submits.
+         */
+        PrepareApplicationAction: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "PREPARE_APPLICATION";
         };
         /**
          * ProviderHealthResponse
@@ -3639,6 +4166,14 @@ export interface components {
             user_id: string;
         };
         /**
+         * SendMessageRequest
+         * @description One user turn: the words to send. The reply streams back as SSE events.
+         */
+        SendMessageRequest: {
+            /** Text */
+            text: string;
+        };
+        /**
          * SessionResponse
          * @description The current session's window — issued, expires — and nothing identifying it.
          *
@@ -3669,6 +4204,24 @@ export interface components {
         SetLLMConnectionEnabledRequest: {
             /** Enabled */
             enabled: boolean;
+        };
+        /**
+         * SetSearchRadiusAction
+         * @description Change the radius of a saved search's radius area(s) (executes `OnboardingService`).
+         */
+        SetSearchRadiusAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "SET_SEARCH_RADIUS";
+            /** Radius Km */
+            radius_km: number;
+            /**
+             * Search Profile Id
+             * Format: uuid
+             */
+            search_profile_id: string;
         };
         /** SettingsBody */
         SettingsBody: {
@@ -3784,12 +4337,45 @@ export interface components {
          * @enum {string}
          */
         SpontaneousApplicationSupport: "SUPPORTED" | "NOT_SUPPORTED" | "UNKNOWN";
+        /**
+         * StartConversationRequest
+         * @description Open a new chat thread, optionally captioned from the user's opening words.
+         *
+         *     `title` is a caption the service truncates, never authority the model or the client
+         *     grants itself; an absent or blank one falls back to a fixed default. There is no
+         *     `user_id` field — the owner is the session's account (§Security).
+         */
+        StartConversationRequest: {
+            /** Title */
+            title?: string | null;
+        };
         /** StatusBody */
         StatusBody: {
             /** Detail */
             detail?: string | null;
             /** Status */
             status: string;
+        };
+        /**
+         * SubmitApplicationAction
+         * @description Submit an approved application — the irreversible boundary (§1, §5, §80-88).
+         *
+         *     Carries no override of any kind: the executor hands this to `ApplicationService.submit`,
+         *     which re-evaluates the Phase 12 gate (policy, eligibility, rate budget, the
+         *     concurrency-safe reservation) exactly as the HTTP route does. The chat is one more
+         *     caller of that boundary, never a way around it.
+         */
+        SubmitApplicationAction: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "SUBMIT_APPLICATION";
         };
         /**
          * UpdateLLMConnectionRequest
@@ -3821,6 +4407,31 @@ export interface components {
              * @default false
              */
             remove_api_key: boolean;
+        };
+        /**
+         * UpdateSearchKeywordsAction
+         * @description Replace a saved search's title and/or excluded keyword lists.
+         *
+         *     Both fields are optional and default to "leave unchanged" (`None`); an empty tuple is
+         *     a real value that clears a list, which matches the domain's convention that an empty
+         *     allow-list restricts nothing. A field the model omits is not touched, so a proposal to
+         *     change the title keywords cannot silently wipe the exclusions.
+         */
+        UpdateSearchKeywordsAction: {
+            /** Excluded Keywords */
+            excluded_keywords?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "UPDATE_SEARCH_KEYWORDS";
+            /**
+             * Search Profile Id
+             * Format: uuid
+             */
+            search_profile_id: string;
+            /** Title Keywords */
+            title_keywords?: string[] | null;
         };
         /**
          * UserStatus
@@ -5171,6 +5782,249 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SignedInResponse"];
+                };
+            };
+        };
+    };
+    list_conversations_api_v2_chat_conversations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationListResponse"];
+                };
+            };
+        };
+    };
+    start_conversation_api_v2_chat_conversations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartConversationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_conversation_api_v2_chat_conversations__conversation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_messages_api_v2_chat_conversations__conversation_id__messages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatMessageListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    send_message_api_v2_chat_conversations__conversation_id__messages_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description A Server-Sent Events stream: one ChatStreamEventResponse per `data:` line — TOKEN chunks, then a terminal COMPLETED or ERROR. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatStreamEventResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_proposals_api_v2_chat_conversations__conversation_id__proposals_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatActionProposalListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_proposal_api_v2_chat_proposals__proposal_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatActionExecutionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dismiss_proposal_api_v2_chat_proposals__proposal_id__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatActionProposalResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

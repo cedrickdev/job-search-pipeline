@@ -61,6 +61,8 @@ from backend.app.api.dependencies import (
     assessment_service,
     auth_settings,
     authentication_service,
+    chat_action_executor,
+    chat_conversation_service,
     company_directory_service,
     company_discovery_service,
     document_service,
@@ -73,6 +75,10 @@ from backend.app.api.dependencies import (
 )
 from backend.app.companies.orchestrator import CompanyDiscoveryOrchestrator
 from backend.app.companies.registry import CompanyProviderRegistry
+from backend.app.chat.context import ChatContextBuilder
+from backend.app.chat.conversation import ChatConversationService
+from backend.app.chat.executor import ChatActionExecutor
+from backend.app.chat.validators import ProposalValidator
 from backend.app.core.settings import AuthSettings
 from backend.app.documents import (
     DeterministicDocumentGenerator,
@@ -80,6 +86,10 @@ from backend.app.documents import (
 )
 from backend.app.documents.guard import CandidateEvidenceGuard
 from backend.app.application_engine.bootstrap import build_application_registry
+from backend.app.llm.capabilities import BASELINE_CAPABILITY, Capability
+from backend.app.llm.recorder import LLMTelemetryRecorder
+from backend.app.llm.registry import LLMProviderRegistry
+from backend.app.llm.router import LLMRouter, PrivacyClass, RoutingPolicy
 from backend.app.services.applications import ApplicationService
 from backend.app.services.assessment import AssessmentService
 from backend.app.services.authentication import AuthenticationService
@@ -104,10 +114,15 @@ from tests.v2_fakes import (
     FakeCandidateDocumentRepository,
     FakeCandidateProfileRepository,
     FakeCareerSiteRepository,
+    FakeChatActionExecutionRepository,
+    FakeChatActionProposalRepository,
+    FakeChatMessageRepository,
     FakeCompanyDiscoveryRepository,
     FakeCompanyRepository,
+    FakeConversationRepository,
     FakeEligibilityResultRepository,
     FakeLLMConnectionRepository,
+    FakeLLMRunRepository,
     FakeMatchEvaluationRepository,
     FakeOpportunityRepository,
     FakeSearchProfileRepository,
@@ -115,7 +130,7 @@ from tests.v2_fakes import (
     FakeSubmissionAttemptRepository,
     FakeUserRepository,
 )
-from tests.v2_llm import FakeHostResolver
+from tests.v2_llm import FakeHostResolver, FakeProvider
 
 # The instant every flow starts at, and the two addresses they sign in with.
 NOW: Final[datetime] = datetime(2026, 4, 1, 8, 0, tzinfo=UTC)
@@ -250,6 +265,16 @@ class Harness:
     applications: FakeApplicationRepository
     application_events: FakeApplicationEventRepository
     submission_attempts: FakeSubmissionAttemptRepository
+    # The Phase 13 career-chat stores, plus the stub provider the streaming turn runs
+    # through. `chat_provider` is the one a test writes *to* before the request — its
+    # canned reply (prose, or prose plus a fenced proposal block) is what a turn streams
+    # back — the same before-the-request role `providers` plays for company discovery.
+    conversations: FakeConversationRepository
+    chat_messages: FakeChatMessageRepository
+    chat_proposals: FakeChatActionProposalRepository
+    chat_executions: FakeChatActionExecutionRepository
+    chat_runs: FakeLLMRunRepository
+    chat_provider: FakeProvider
 
     def url(self, path: str) -> str:
         """A V2 path, prefixed once so no test spells `/api/v2` itself."""
@@ -335,8 +360,10 @@ class Harness:
 
 @asynccontextmanager
 async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
-                      base_url: str = LOCAL_HTTP_BASE_URL,
-                      instant: datetime = NOW) -> AsyncIterator[Harness]:
+                     base_url: str = LOCAL_HTTP_BASE_URL,
+                     instant: datetime = NOW,
+                     chat_provider: FakeProvider | None = None
+                     ) -> AsyncIterator[Harness]:
     """The application wired to fresh fakes, with a cookie-keeping client.
 
     A context manager rather than a fixture: three tests need a different cookie
@@ -372,6 +399,14 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     applications = FakeApplicationRepository()
     application_events = FakeApplicationEventRepository(applications)
     submission_attempts = FakeSubmissionAttemptRepository(applications)
+    # The Phase 13 chat stores. Independent of the rest: a conversation, its messages and
+    # their proposals scope on the owner themselves, and the run store is the telemetry the
+    # streaming turn writes through the recorder.
+    conversations = FakeConversationRepository()
+    chat_messages = FakeChatMessageRepository()
+    chat_proposals = FakeChatActionProposalRepository()
+    chat_executions = FakeChatActionExecutionRepository()
+    chat_runs = FakeLLMRunRepository()
     directory = CompanyDirectoryService(companies, career_sites, discoveries)
     # The assessment service reads the real country packs — the CH pack is what the
     # legal-safety path exercises — over the fake verdict stores. `build_country_packs`
@@ -391,8 +426,11 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     app.dependency_overrides[auth_settings] = lambda: resolved
     app.dependency_overrides[authentication_service] = lambda: AuthenticationService(
         users, sessions, resolved)
-    app.dependency_overrides[onboarding_service] = lambda: OnboardingService(
-        profiles, searches, users)
+    # Built as a local, not an inline lambda, so the chat executor can be handed the *same*
+    # instance the `onboarding_service` dependency returns — the chat is one more caller of
+    # this boundary, never a second copy of it.
+    onboarding = OnboardingService(profiles, searches, users)
+    app.dependency_overrides[onboarding_service] = lambda: onboarding
     app.dependency_overrides[company_directory_service] = lambda: directory
     app.dependency_overrides[company_discovery_service] = lambda: discovery
     app.dependency_overrides[geo_search_service] = lambda: GeoSearchService(
@@ -403,11 +441,13 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     # The real document workflow over the fakes: the deterministic reference
     # generator and the pure guard are the production defaults, and the artifact
     # store writes under `tmp_path` so a rendered PDF has somewhere to land and a
-    # download reads real bytes rather than a stub.
-    app.dependency_overrides[document_service] = lambda: DocumentService(
+    # download reads real bytes rather than a stub. A local, so a `GENERATE_RESUME`
+    # proposal the chat executor confirms drives this same workflow.
+    document_workflow = DocumentService(
         profiles, postings, documents, DeterministicDocumentGenerator(),
         CandidateEvidenceGuard(),
         LocalDocumentArtifactStore(tmp_path / "document_artifacts"))
+    app.dependency_overrides[document_service] = lambda: document_workflow
     # A real Fernet cipher over a per-harness master key, so a stored credential is
     # genuinely encrypted and the `has_api_key`/never-the-value guarantee is exercised
     # end to end rather than stubbed. The `MockTransport` is the healthcheck seam: a
@@ -429,13 +469,47 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     # The application engine over the fakes, with a fallback-only registry (the
     # generic adapter): the request-flow tests exercise the lifecycle and the gate,
     # not a real browser or mail server, so every prepared application routes to a
-    # human exactly as the cautious API default does.
-    app.dependency_overrides[application_service] = lambda: ApplicationService(
+    # human exactly as the cautious API default does. A local, so a proposal the chat
+    # confirms re-runs the same Phase 12 gate `POST /applications/{id}/submit` does.
+    application_engine = ApplicationService(
         applications=applications, events=application_events,
         attempts=submission_attempts, decisions=application_decisions,
         policies=application_policies, matches=matches, eligibilities=eligibilities,
         profiles=profiles, opportunities=postings, documents=documents,
         registry=build_application_registry())
+    app.dependency_overrides[application_service] = lambda: application_engine
+    # --- Phase 13 career chat -------------------------------------------------
+    # The streaming turn runs through a stub provider a test may supply; the default
+    # answers with a fixed line of prose and no proposal. It claims SYSTEM_INSTRUCTIONS
+    # because the career-chat prompt is a system prompt, and its key mirrors a stored
+    # connection's so a run's provenance reads plausibly.
+    provider = chat_provider or FakeProvider(
+        provider_key="conn_gateway",
+        capabilities=frozenset({BASELINE_CAPABILITY, Capability.SYSTEM_INSTRUCTIONS}),
+        text="How can I help with your search?")
+    chat_registry = LLMProviderRegistry()
+    chat_registry.register_all([provider])
+    # The two chat services, composed over the fakes exactly as the dependencies do:
+    # the conversation service streams and *proposes*, the executor confirms onto the
+    # same three application services the routes use. `EXTERNAL_ALLOWED` because the stub
+    # is a remote transport — a `LOCAL_ONLY` policy would route to no provider and make
+    # every turn an error.
+    chat_service = ChatConversationService(
+        conversations=conversations, messages=chat_messages, proposals=chat_proposals,
+        context=ChatContextBuilder(
+            profiles=profiles, searches=searches, applications=applications,
+            opportunities=postings),
+        router=LLMRouter(chat_registry),
+        recorder=LLMTelemetryRecorder(runs=chat_runs),
+        policy=RoutingPolicy(privacy=PrivacyClass.EXTERNAL_ALLOWED))
+    chat_executor = ChatActionExecutor(
+        proposals=chat_proposals, executions=chat_executions,
+        validator=ProposalValidator(
+            opportunities=postings, applications=applications, searches=searches),
+        documents=document_workflow, applications=application_engine,
+        onboarding=onboarding)
+    app.dependency_overrides[chat_conversation_service] = lambda: chat_service
+    app.dependency_overrides[chat_action_executor] = lambda: chat_executor
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:
@@ -450,7 +524,10 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
                       application_decisions=application_decisions,
                       applications=applications,
                       application_events=application_events,
-                      submission_attempts=submission_attempts)
+                      submission_attempts=submission_attempts,
+                      conversations=conversations, chat_messages=chat_messages,
+                      chat_proposals=chat_proposals, chat_executions=chat_executions,
+                      chat_runs=chat_runs, chat_provider=provider)
 
 
 def operations(app: FastAPI, *, under: str) -> tuple[tuple[str, str], ...]:

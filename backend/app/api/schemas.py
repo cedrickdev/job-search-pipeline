@@ -41,6 +41,7 @@ from pydantic import (
     model_validator,
 )
 
+from backend.app.chat.conversation import ChatStreamEvent, ChatStreamEventType
 from backend.app.companies.contracts import (
     MAX_COMPANIES_PER_PROVIDER,
     CompanyDiscoveryRequest,
@@ -73,6 +74,16 @@ from backend.app.domain.candidate import (
     ClaimType,
     EvidenceKind,
     EvidenceProvenance,
+)
+from backend.app.domain.chat import (
+    ChatAction,
+    ChatActionExecution,
+    ChatActionExecutionOutcome,
+    ChatActionProposal,
+    ChatActionProposalStatus,
+    ChatMessage,
+    ChatMessageRole,
+    Conversation,
 )
 from backend.app.domain.common import (
     GeoBounds,
@@ -131,11 +142,16 @@ from backend.app.domain.identifiers import (
     ApplicationId,
     CandidateDocumentId,
     CandidateProfileId,
+    ChatActionExecutionId,
+    ChatActionProposalId,
+    ChatMessageId,
     ClaimId,
     CompanyId,
+    ConversationId,
     DocumentVersionId,
     EvidenceId,
     LLMConnectionId,
+    LLMRunId,
     OpportunityId,
     SearchProfileId,
     UserId,
@@ -1733,3 +1749,189 @@ class ApplicationEventListResponse(ApiModel):
     def of(cls, events: tuple[ApplicationEvent, ...]) -> "ApplicationEventListResponse":
         return cls(events=tuple(ApplicationEventResponse.of(event)
                                 for event in events))
+
+
+# --- career chat (Phase 13) ------------------------------------------------------------
+#
+# The chat is a control plane, and its schemas keep the phase's one rule visible at the
+# boundary: prose leaves as a message, a *typed* proposal leaves as a proposal, and the
+# two never mix. A `ChatActionProposalResponse` exposes the domain `ChatAction` union
+# directly — it is secret-free by construction (only ids, enums, floats and keyword
+# tuples), so the client and the generated TypeScript get the exact discriminated variants
+# rather than an opaque bag, and there is nothing on it a response must strip. No request
+# body carries an owner: the account is the session's, resolved server-side.
+
+
+class StartConversationRequest(ApiModel):
+    """Open a new chat thread, optionally captioned from the user's opening words.
+
+    `title` is a caption the service truncates, never authority the model or the client
+    grants itself; an absent or blank one falls back to a fixed default. There is no
+    `user_id` field — the owner is the session's account (§Security).
+    """
+
+    title: str | None = None
+
+
+class SendMessageRequest(ApiModel):
+    """One user turn: the words to send. The reply streams back as SSE events."""
+
+    text: str
+
+
+class ConversationResponse(ApiModel):
+    """One chat thread's caption and activity — never its messages inline."""
+
+    id: ConversationId
+    title: str
+    is_archived: bool
+    created_at: datetime
+    updated_at: datetime
+    last_message_at: datetime | None
+
+    @classmethod
+    def of(cls, conversation: Conversation) -> "ConversationResponse":
+        return cls(id=conversation.id, title=conversation.title,
+                   is_archived=conversation.is_archived,
+                   created_at=conversation.created_at,
+                   updated_at=conversation.updated_at,
+                   last_message_at=conversation.last_message_at)
+
+
+class ConversationListResponse(ApiModel):
+    """This account's threads, most recent activity first, wrapped so it can grow."""
+
+    conversations: tuple[ConversationResponse, ...]
+
+    @classmethod
+    def of(cls, conversations: tuple[Conversation, ...]) -> "ConversationListResponse":
+        return cls(conversations=tuple(ConversationResponse.of(conversation)
+                                       for conversation in conversations))
+
+
+class ChatMessageResponse(ApiModel):
+    """One stored turn: its prose and, for an assistant turn, its telemetry provenance.
+
+    `content` is the prose only — the fenced proposal block was parsed out into proposals
+    and is never stored here. A user turn carries no `llm_run_id`/`provider_key`; an
+    assistant turn carries both, so a turn is traceable to the run that produced it.
+    """
+
+    id: ChatMessageId
+    conversation_id: ConversationId
+    role: ChatMessageRole
+    content: str
+    sequence: int
+    llm_run_id: LLMRunId | None
+    provider_key: str | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, message: ChatMessage) -> "ChatMessageResponse":
+        return cls(id=message.id, conversation_id=message.conversation_id,
+                   role=message.role, content=message.content,
+                   sequence=message.sequence, llm_run_id=message.llm_run_id,
+                   provider_key=message.provider_key, created_at=message.created_at)
+
+
+class ChatMessageListResponse(ApiModel):
+    """One thread's turns, oldest first — the transcript as it grew."""
+
+    messages: tuple[ChatMessageResponse, ...]
+
+    @classmethod
+    def of(cls, messages: tuple[ChatMessage, ...]) -> "ChatMessageListResponse":
+        return cls(messages=tuple(ChatMessageResponse.of(message)
+                                  for message in messages))
+
+
+class ChatActionProposalResponse(ApiModel):
+    """One typed action the model proposed, awaiting a human's confirm or dismiss.
+
+    `action` is the domain `ChatAction` union verbatim: secret-free by construction, so the
+    client receives the exact discriminated variant to render and to confirm. `status`
+    starts `PROPOSED` and only an explicit confirm or dismiss moves it — the response is how
+    a UI knows whether a card is still actionable.
+    """
+
+    id: ChatActionProposalId
+    conversation_id: ConversationId
+    message_id: ChatMessageId
+    ordinal: int
+    action: ChatAction
+    status: ChatActionProposalStatus
+    summary: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, proposal: ChatActionProposal) -> "ChatActionProposalResponse":
+        return cls(id=proposal.id, conversation_id=proposal.conversation_id,
+                   message_id=proposal.message_id, ordinal=proposal.ordinal,
+                   action=proposal.action, status=proposal.status,
+                   summary=proposal.summary, created_at=proposal.created_at,
+                   updated_at=proposal.updated_at)
+
+
+class ChatActionProposalListResponse(ApiModel):
+    """One thread's proposals, oldest first, wrapped so it can grow a field."""
+
+    proposals: tuple[ChatActionProposalResponse, ...]
+
+    @classmethod
+    def of(cls, proposals: tuple[ChatActionProposal, ...]
+           ) -> "ChatActionProposalListResponse":
+        return cls(proposals=tuple(ChatActionProposalResponse.of(proposal)
+                                   for proposal in proposals))
+
+
+class ChatActionExecutionResponse(ApiModel):
+    """The audited record of one confirmed proposal's execution.
+
+    `outcome` says whether the action was refused at validation (`REJECTED`), permitted but
+    failed (`FAILED`), or ran (`SUCCEEDED`); `result_ref` carries the id or handle it
+    produced (an application's new state, a document id, a navigation target) and `detail`
+    a secret-free note — both composed by the executor from typed, domain-safe values,
+    never a raw provider or driver message.
+    """
+
+    id: ChatActionExecutionId
+    proposal_id: ChatActionProposalId
+    outcome: ChatActionExecutionOutcome
+    detail: str | None
+    result_ref: str | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, execution: ChatActionExecution) -> "ChatActionExecutionResponse":
+        return cls(id=execution.id, proposal_id=execution.proposal_id,
+                   outcome=execution.outcome, detail=execution.detail,
+                   result_ref=execution.result_ref, created_at=execution.created_at)
+
+
+class ChatStreamEventResponse(ApiModel):
+    """The SSE wire shape of one `ChatStreamEvent` a streaming turn emits.
+
+    Deliberately the *service* event serialized, never the raw provider `LLMStreamEvent`: a
+    `TOKEN` carries a chunk of prose to append, `COMPLETED` the persisted assistant message
+    and its proposals, and `ERROR` a typed, secret-free code and note. The client reads the
+    stream to render prose live, then renders the proposals from the terminal `COMPLETED`
+    (or the failure from `ERROR`) — the same rows a later `GET` of the thread returns.
+    """
+
+    type: ChatStreamEventType
+    text: str | None
+    message: ChatMessageResponse | None
+    proposals: tuple[ChatActionProposalResponse, ...]
+    error_code: str | None
+    error_detail: str | None
+
+    @classmethod
+    def of(cls, event: ChatStreamEvent) -> "ChatStreamEventResponse":
+        return cls(
+            type=event.type, text=event.text,
+            message=(ChatMessageResponse.of(event.message)
+                     if event.message is not None else None),
+            proposals=tuple(ChatActionProposalResponse.of(proposal)
+                            for proposal in event.proposals),
+            error_code=event.error_code, error_detail=event.error_detail)

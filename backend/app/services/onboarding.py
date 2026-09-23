@@ -41,7 +41,7 @@ from backend.app.domain.identifiers import (
     new_search_profile_id,
 )
 from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
-from backend.app.domain.search import SearchArea, SearchProfile
+from backend.app.domain.search import SearchArea, SearchAreaKind, SearchProfile
 from backend.app.domain.user import User
 from backend.app.repositories.contracts import (
     CandidateProfileRepository,
@@ -220,6 +220,58 @@ class OnboardingService:
         """Delete one of this user's searches, or raise if there is none."""
         if not await self._searches.delete(user_id, search_profile_id):
             raise SearchProfileNotFound(str(search_profile_id))
+
+    async def set_search_radius(self, user_id: UserId,
+                                search_profile_id: SearchProfileId, *,
+                                radius_km: float, now: datetime) -> SearchProfile:
+        """Replace the radius on every radius area of one of this user's searches.
+
+        A focused edit rather than a whole-search replace: it loads the aggregate
+        (the load is the authorization check — another user's id reads as absent and
+        raises), rewrites `radius_km` on each `RADIUS` area through the area's own
+        `model_copy`, and leaves country and remote areas untouched. Going through the
+        aggregate keeps every other field intact by construction, and the domain's own
+        `RadiusSearchArea` bound (`0 < r <= 500`) re-validates the new value — a chat
+        proposal cannot smuggle a radius the domain would refuse past the repository.
+
+        Caller's precondition: the search has at least one radius area; the chat
+        validator refuses the proposal otherwise, so this is not a silent no-op there.
+        """
+        existing = await self._searches.get(user_id, search_profile_id)
+        if existing is None:
+            raise SearchProfileNotFound(str(search_profile_id))
+        areas: tuple[SearchArea, ...] = tuple(
+            area.model_copy(update={"radius_km": radius_km})
+            if area.kind is SearchAreaKind.RADIUS else area
+            for area in existing.areas)
+        return await self._searches.upsert(
+            existing.model_copy(update={"areas": areas, "updated_at": now}))
+
+    async def set_search_keywords(
+            self, user_id: UserId, search_profile_id: SearchProfileId, *,
+            title_keywords: tuple[str, ...] | None = None,
+            excluded_keywords: tuple[str, ...] | None = None,
+            now: datetime) -> SearchProfile:
+        """Replace a saved search's title and/or excluded keyword lists.
+
+        `None` means "leave this list unchanged"; an empty tuple is a real value that
+        clears a list (the domain's convention that an empty allow-list restricts
+        nothing). A call that changes neither list is a no-op that does not even bump
+        `updated_at`, so a proposal the model emitted with both omitted writes nothing.
+        The load is the ownership check, as everywhere else here.
+        """
+        existing = await self._searches.get(user_id, search_profile_id)
+        if existing is None:
+            raise SearchProfileNotFound(str(search_profile_id))
+        updates: dict[str, object] = {}
+        if title_keywords is not None:
+            updates["title_keywords"] = title_keywords
+        if excluded_keywords is not None:
+            updates["excluded_keywords"] = excluded_keywords
+        if not updates:
+            return existing
+        updates["updated_at"] = now
+        return await self._searches.upsert(existing.model_copy(update=updates))
 
     async def state(self, user: User) -> OnboardingState:
         """What has been done so far, for the screen that decides the next step.

@@ -42,6 +42,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.api.errors import csrf_failed, not_authenticated
 from backend.app.application_engine.bootstrap import build_application_registry
+from backend.app.chat.context import ChatContextBuilder
+from backend.app.chat.conversation import ChatConversationService
+from backend.app.chat.executor import ChatActionExecutor
+from backend.app.chat.validators import ProposalValidator
 from backend.app.companies.bootstrap import build_company_discovery
 from backend.app.companies.providers.manual_seed import (
     PROVIDER_KEY as MANUAL_SEED_PROVIDER,
@@ -63,6 +67,9 @@ from backend.app.infrastructure.database.engine import (
     create_session_factory,
     session_scope,
 )
+from backend.app.llm.bootstrap import build_llm_provider_registry
+from backend.app.llm.recorder import LLMTelemetryRecorder
+from backend.app.llm.router import LLMRouter, PrivacyClass, RoutingPolicy
 from backend.app.llm.secrets import FernetSecretCipher, SecretCipher
 from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyApplicationDecisionRepository,
@@ -72,10 +79,15 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyCandidateDocumentRepository,
     SqlAlchemyCandidateProfileRepository,
     SqlAlchemyCareerSiteRepository,
+    SqlAlchemyChatActionExecutionRepository,
+    SqlAlchemyChatActionProposalRepository,
+    SqlAlchemyChatMessageRepository,
     SqlAlchemyCompanyDiscoveryRepository,
     SqlAlchemyCompanyRepository,
+    SqlAlchemyConversationRepository,
     SqlAlchemyEligibilityResultRepository,
     SqlAlchemyLLMConnectionRepository,
+    SqlAlchemyLLMRunRepository,
     SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
     SqlAlchemySearchProfileRepository,
@@ -497,6 +509,68 @@ def application_service(
         registry=build_application_registry())
 
 
+async def chat_conversation_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        current: Annotated[AuthenticatedSession, Depends(current_session)],
+        cipher: Annotated[SecretCipher | None, Depends(llm_cipher)],
+) -> ChatConversationService:
+    """The streaming career-chat service, composed per request for this account.
+
+    Async, and for one reason the other service factories are not: the provider registry
+    the turn streams through is built from *this account's* enabled LLM connections, so the
+    user's own connections are loaded here and handed to a router and a telemetry recorder
+    scoped to them. The context builder reads the same four user-scoped repositories the
+    rest of V2 uses, so the situation snapshot the model sees is this account's and carries
+    no secret. The privacy decision is made here, in wiring, and nowhere else
+    (docs/LLM_PROVIDER_ARCHITECTURE.md §…): `EXTERNAL_ALLOWED`, so a deployment whose only
+    connections are remote can still chat — a `LOCAL_ONLY` policy would make the chat
+    unusable for an API- or CLI-only account. No clock in the constructor; the route hands
+    `now` to each turn, so a single request's timestamps agree.
+    """
+    connections = await SqlAlchemyLLMConnectionRepository(session).list_for_user(
+        current.user.id, enabled_only=True)
+    registry = build_llm_provider_registry(connections, cipher=cipher)
+    return ChatConversationService(
+        conversations=SqlAlchemyConversationRepository(session),
+        messages=SqlAlchemyChatMessageRepository(session),
+        proposals=SqlAlchemyChatActionProposalRepository(session),
+        context=ChatContextBuilder(
+            profiles=SqlAlchemyCandidateProfileRepository(session),
+            searches=SqlAlchemySearchProfileRepository(session),
+            applications=SqlAlchemyApplicationRepository(session),
+            opportunities=SqlAlchemyOpportunityRepository(session)),
+        router=LLMRouter(registry),
+        recorder=LLMTelemetryRecorder(
+            runs=SqlAlchemyLLMRunRepository(session), connections=connections),
+        policy=RoutingPolicy(privacy=PrivacyClass.EXTERNAL_ALLOWED))
+
+
+def chat_action_executor(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        documents: Annotated[DocumentService, Depends(document_service)],
+        applications: Annotated[ApplicationService, Depends(application_service)],
+        onboarding: Annotated[OnboardingService, Depends(onboarding_service)],
+) -> ChatActionExecutor:
+    """The confirm/dismiss side of the chat: it runs a proposal onto the real services.
+
+    Composed from the *same* `DocumentService`, `ApplicationService` and `OnboardingService`
+    the HTTP routes use — the chat is one more caller of those boundaries, never a way
+    around them, so a submit a proposal confirms re-runs the Phase 12 gate exactly as
+    `POST /applications/{id}/submit` does. The `ProposalValidator` is the coarse
+    re-authorization the executor runs first; the chat proposal and execution repositories
+    are its audit. It reaches no provider and drives no browser, so it needs neither the
+    registry nor the cipher, and stays a plain synchronous factory.
+    """
+    return ChatActionExecutor(
+        proposals=SqlAlchemyChatActionProposalRepository(session),
+        executions=SqlAlchemyChatActionExecutionRepository(session),
+        validator=ProposalValidator(
+            opportunities=SqlAlchemyOpportunityRepository(session),
+            applications=SqlAlchemyApplicationRepository(session),
+            searches=SqlAlchemySearchProfileRepository(session)),
+        documents=documents, applications=applications, onboarding=onboarding)
+
+
 CurrentSession = Annotated[AuthenticatedSession, Depends(current_session)]
 Now = Annotated[datetime, Depends(now)]
 Auth = Annotated[AuthSettings, Depends(auth_settings)]
@@ -511,3 +585,6 @@ Evidence = Annotated[CandidateEvidenceService, Depends(evidence_service)]
 Documents = Annotated[DocumentService, Depends(document_service)]
 LLMConnections = Annotated[LLMConnectionService, Depends(llm_connection_service)]
 Applications = Annotated[ApplicationService, Depends(application_service)]
+ChatConversations = Annotated[ChatConversationService,
+                              Depends(chat_conversation_service)]
+ChatActions = Annotated[ChatActionExecutor, Depends(chat_action_executor)]

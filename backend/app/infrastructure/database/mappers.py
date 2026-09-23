@@ -51,6 +51,16 @@ from backend.app.domain.candidate import (
     WorkAuthorization,
     WorkAuthorizationStatus,
 )
+from backend.app.domain.chat import (
+    CHAT_ACTION_ADAPTER,
+    ChatActionExecution,
+    ChatActionExecutionOutcome,
+    ChatActionProposal,
+    ChatActionProposalStatus,
+    ChatMessage,
+    ChatMessageRole,
+    Conversation,
+)
 from backend.app.domain.common import (
     LanguageLevel,
     LanguageProficiency,
@@ -100,11 +110,15 @@ from backend.app.domain.identifiers import (
     CandidateDocumentId,
     CandidateProfileId,
     CareerSiteId,
+    ChatActionExecutionId,
+    ChatActionProposalId,
+    ChatMessageId,
     ClaimId,
     CompanyAliasId,
     CompanyDiscoveryRecordId,
     CompanyId,
     CompanyLocationId,
+    ConversationId,
     DocumentVersionId,
     EligibilityResultId,
     EvidenceId,
@@ -148,11 +162,15 @@ from backend.app.infrastructure.database.models import (
     CandidateLanguageRow,
     CandidateProfileRow,
     CandidateWorkAuthorizationRow,
+    ChatActionExecutionRow,
+    ChatActionProposalRow,
+    ChatMessageRow,
     CompanyAliasRow,
     CompanyCareerSiteRow,
     CompanyDiscoveryRecordRow,
     CompanyLocationRow,
     CompanyRow,
+    ConversationRow,
     DocumentVersionRow,
     EligibilityCheckRow,
     EligibilityResultRow,
@@ -1871,3 +1889,152 @@ def submission_attempt_to_domain(row: SubmissionAttemptRow) -> SubmissionAttempt
         correlation_id=row.correlation_id,
         started_at=row.started_at,
         finished_at=row.finished_at)
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 — career chat as a control plane. A conversation, its messages, the
+# typed action proposals a turn parsed out of the assistant's fenced block, and the
+# audit of executing a confirmed one. The proposal's `action` is JSONB carrying the
+# validated `ChatAction` verbatim — dumped through `CHAT_ACTION_ADAPTER` in,
+# re-validated through it out — so a payload that reached the table is re-checked
+# against the closed action grammar on the way back, never trusted raw. `kind` is a
+# denormalised column so "my open submit proposals" is one indexed query; it always
+# equals `action["kind"]` because both come from the same validated object.
+# ---------------------------------------------------------------------------
+
+
+def conversation_to_row(conversation: Conversation,
+                        row: ConversationRow | None = None) -> ConversationRow:
+    """A `Conversation` onto its row.
+
+    `created_at`/`updated_at`/`last_message_at` are domain-supplied — the service owns
+    the clock — so `updated_at` is forced into every UPDATE for the reason
+    `application_to_row` documents: two writes at one instant would otherwise let the
+    DB `onupdate` overwrite it and expire the attribute under asyncio.
+    """
+    target = ConversationRow(id=conversation.id) if row is None else row
+    target.user_id = conversation.user_id
+    target.title = conversation.title
+    target.is_archived = conversation.is_archived
+    target.last_message_at = conversation.last_message_at
+    target.created_at = conversation.created_at
+    target.updated_at = conversation.updated_at
+    if row is not None:
+        flag_modified(target, "updated_at")
+    return target
+
+
+def conversation_to_domain(row: ConversationRow) -> Conversation:
+    return Conversation(
+        id=ConversationId(row.id),
+        user_id=UserId(row.user_id),
+        title=row.title,
+        is_archived=row.is_archived,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        last_message_at=row.last_message_at)
+
+
+def chat_message_to_row(message: ChatMessage,
+                        row: ChatMessageRow | None = None) -> ChatMessageRow:
+    """A `ChatMessage` onto its row. `created_at` is the domain fact; `updated_at` is
+    left to the server default, the row-write bookkeeping, as `llm_run_to_row` does —
+    a message is written once per `(conversation_id, sequence)` and never mutated."""
+    target = ChatMessageRow(id=message.id) if row is None else row
+    target.conversation_id = message.conversation_id
+    target.user_id = message.user_id
+    target.role = message.role
+    target.content = message.content
+    target.sequence = message.sequence
+    target.llm_run_id = message.llm_run_id
+    target.provider_key = message.provider_key
+    target.created_at = message.created_at
+    return target
+
+
+def chat_message_to_domain(row: ChatMessageRow) -> ChatMessage:
+    return ChatMessage(
+        id=ChatMessageId(row.id),
+        conversation_id=ConversationId(row.conversation_id),
+        user_id=UserId(row.user_id),
+        role=ChatMessageRole(row.role),
+        content=row.content,
+        sequence=row.sequence,
+        llm_run_id=None if row.llm_run_id is None else LLMRunId(row.llm_run_id),
+        provider_key=row.provider_key,
+        created_at=row.created_at)
+
+
+def chat_action_proposal_to_row(proposal: ChatActionProposal,
+                                row: ChatActionProposalRow | None = None
+                                ) -> ChatActionProposalRow:
+    """A `ChatActionProposal` onto its row.
+
+    `kind` is written from `action.kind` and `action` from the whole validated union,
+    dumped through the shared adapter so the JSONB is exactly what re-validation will
+    accept. `updated_at` is forced into every UPDATE (a confirm or dismiss moves
+    `status`) for the reason `application_to_row` states.
+    """
+    target = ChatActionProposalRow(id=proposal.id) if row is None else row
+    target.conversation_id = proposal.conversation_id
+    target.message_id = proposal.message_id
+    target.user_id = proposal.user_id
+    target.ordinal = proposal.ordinal
+    target.kind = proposal.action.kind
+    target.action = CHAT_ACTION_ADAPTER.dump_python(proposal.action, mode="json")
+    target.status = proposal.status
+    target.summary = proposal.summary
+    target.created_at = proposal.created_at
+    target.updated_at = proposal.updated_at
+    if row is not None:
+        flag_modified(target, "updated_at")
+    return target
+
+
+def chat_action_proposal_to_domain(row: ChatActionProposalRow) -> ChatActionProposal:
+    """A `chat_action_proposals` row as a domain proposal, its action re-validated.
+
+    `CHAT_ACTION_ADAPTER.validate_python` runs the closed union again, so a stored
+    payload that no longer parses — an action kind retired from the grammar, a field
+    the model since forbade — fails here rather than reaching an executor branch.
+    """
+    return ChatActionProposal(
+        id=ChatActionProposalId(row.id),
+        conversation_id=ConversationId(row.conversation_id),
+        message_id=ChatMessageId(row.message_id),
+        user_id=UserId(row.user_id),
+        ordinal=row.ordinal,
+        action=CHAT_ACTION_ADAPTER.validate_python(row.action),
+        status=ChatActionProposalStatus(row.status),
+        summary=row.summary,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def chat_action_execution_to_row(execution: ChatActionExecution,
+                                 row: ChatActionExecutionRow | None = None
+                                 ) -> ChatActionExecutionRow:
+    """A `ChatActionExecution` onto its row. Written once per proposal — the id is
+    derived from it — so `created_at` is the domain fact and `updated_at` is left to
+    the server default, as `chat_message_to_row` does."""
+    target = ChatActionExecutionRow(id=execution.id) if row is None else row
+    target.proposal_id = execution.proposal_id
+    target.user_id = execution.user_id
+    target.outcome = execution.outcome
+    target.detail = execution.detail
+    target.result_ref = execution.result_ref
+    target.created_at = execution.created_at
+    return target
+
+
+def chat_action_execution_to_domain(row: ChatActionExecutionRow) -> ChatActionExecution:
+    return ChatActionExecution(
+        id=ChatActionExecutionId(row.id),
+        proposal_id=ChatActionProposalId(row.proposal_id),
+        user_id=UserId(row.user_id),
+        outcome=ChatActionExecutionOutcome(row.outcome),
+        detail=row.detail,
+        result_ref=row.result_ref,
+        created_at=row.created_at)
+
+

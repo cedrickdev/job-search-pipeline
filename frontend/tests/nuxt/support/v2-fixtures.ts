@@ -21,12 +21,19 @@ import type {
   CandidateEvidenceList,
   CandidateProfile,
   CandidateProfileDraft,
+  ChatActionExecution,
+  ChatActionProposal,
+  ChatActionProposalList,
+  ChatMessage,
+  ChatMessageList,
   Company,
   CompanyDetail,
   CompanyDiscoveryRun,
   CompanyGeoItem,
   CompanyGeoResponse,
   CompanyList,
+  Conversation,
+  ConversationList,
   DocumentArtifact,
   DocumentVersion,
   GeoLocation,
@@ -53,6 +60,10 @@ const DOCUMENT_ID = '88888888-8888-4888-8888-888888888888'
 const VERSION_ID = '99999999-9999-4999-8999-999999999999'
 const CONNECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const APPLICATION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const CONVERSATION_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const MESSAGE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+const PROPOSAL_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+const EXECUTION_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
 
 export function account(overrides: Partial<Account> = {}): Account {
   return {
@@ -505,4 +516,102 @@ export function applicationEventList(
   events: ApplicationEvent[] = [applicationEvent()],
 ): ApplicationEventList {
   return { events }
+}
+
+// --- Phase 13: career-chat control plane ---------------------------------------------
+//
+// The default thread has one exchange and one open proposal, and the proposal's default
+// action is a NAVIGATE — the one action the page acts on itself (a confirmed NAVIGATE is
+// the only client-side side effect). The cases the control plane is strict about — a
+// terminal proposal (EXECUTED/REJECTED/FAILED/DISMISSED), a mutating action, a rejected
+// confirm — are written by overriding `status`, `action` and the execution `outcome`,
+// because those are exactly the branches the card and the store treat differently. No
+// fixture carries a secret: `action` is the domain union verbatim, secret-free by
+// construction, and an execution's `detail` is the server's own secret-free note.
+
+/** One chat thread's caption and activity — never its messages inline. */
+export function conversation(overrides: Partial<Conversation> = {}): Conversation {
+  return {
+    id: CONVERSATION_ID,
+    title: 'Backend roles in Lausanne',
+    is_archived: false,
+    last_message_at: '2026-03-01T10:05:00Z',
+    created_at: '2026-03-01T10:00:00Z',
+    updated_at: '2026-03-01T10:05:00Z',
+    ...overrides,
+  }
+}
+
+/** This account's threads, most recent first, wrapped. */
+export function conversationList(
+  conversations: Conversation[] = [conversation()],
+): ConversationList {
+  return { conversations }
+}
+
+/** One stored turn. The default is a user turn; pass `role: 'ASSISTANT'` for a reply. */
+export function chatMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
+  return {
+    id: MESSAGE_ID,
+    conversation_id: CONVERSATION_ID,
+    role: 'USER',
+    content: 'Which roles near Lausanne should I look at?',
+    sequence: 1,
+    llm_run_id: null,
+    provider_key: null,
+    created_at: '2026-03-01T10:00:00Z',
+    ...overrides,
+  }
+}
+
+/** One thread's transcript, oldest first, wrapped. */
+export function chatMessageList(
+  messages: ChatMessage[] = [chatMessage()],
+): ChatMessageList {
+  return { messages }
+}
+
+/**
+ * One typed action the model proposed, awaiting a confirm or dismiss.
+ *
+ * The default action is a NAVIGATE to the opportunity map — inert, `PROPOSED` — because
+ * that is the branch the page acts on itself once confirmed. Override `action` for a
+ * mutating proposal and `status` for a terminal card.
+ */
+export function chatProposal(overrides: Partial<ChatActionProposal> = {}): ChatActionProposal {
+  return {
+    id: PROPOSAL_ID,
+    conversation_id: CONVERSATION_ID,
+    message_id: MESSAGE_ID,
+    ordinal: 0,
+    status: 'PROPOSED',
+    summary: 'Open the opportunity map to see roles near you.',
+    action: { kind: 'NAVIGATE', target: 'OPPORTUNITIES', opportunity_id: null },
+    created_at: '2026-03-01T10:05:00Z',
+    updated_at: '2026-03-01T10:05:00Z',
+    ...overrides,
+  }
+}
+
+/** One thread's proposals, oldest first, wrapped. */
+export function chatProposalList(
+  proposals: ChatActionProposal[] = [chatProposal()],
+): ChatActionProposalList {
+  return { proposals }
+}
+
+/**
+ * The audited outcome of a confirmed proposal. The default SUCCEEDED; override `outcome`
+ * and `detail` for a REJECTED (refused at the gate) or FAILED one.
+ */
+export function chatExecution(overrides: Partial<ChatActionExecution> = {}): ChatActionExecution {
+  return {
+    id: EXECUTION_ID,
+    proposal_id: PROPOSAL_ID,
+    outcome: 'SUCCEEDED',
+    detail: null,
+    result_ref: null,
+    created_at: '2026-03-01T10:06:00Z',
+    ...overrides,
+  }
 }

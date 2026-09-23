@@ -25,6 +25,15 @@ from backend.app.domain.candidate import (
     WorkAuthorization,
     WorkAuthorizationStatus,
 )
+from backend.app.domain.chat import (
+    ChatActionExecution,
+    ChatActionExecutionOutcome,
+    ChatActionProposal,
+    ChatMessage,
+    ChatMessageRole,
+    Conversation,
+    SubmitApplicationAction,
+)
 from backend.app.domain.documents import (
     CandidateDocument,
     CandidateDocumentType,
@@ -57,11 +66,13 @@ from backend.app.domain.eligibility import (
 )
 from backend.app.domain.identifiers import (
     ApplicationDecisionId,
+    ApplicationId,
     ApplicationPolicyId,
     CandidateDocumentId,
     CandidateProfileId,
     CompanyId,
     CompanyLocationId,
+    ConversationId,
     EligibilityResultId,
     EvidenceId,
     LLMConnectionId,
@@ -71,6 +82,9 @@ from backend.app.domain.identifiers import (
     SearchProfileId,
     UserId,
     candidate_document_id,
+    chat_action_execution_id,
+    chat_action_proposal_id,
+    chat_message_id,
     document_version_id,
     provider_session_id,
 )
@@ -116,6 +130,9 @@ DOCUMENT = CandidateDocumentId(UUID("00000000-0000-4000-8000-000000000091"))
 CONNECTION = LLMConnectionId(UUID("00000000-0000-4000-8000-0000000000a1"))
 OTHER_CONNECTION = LLMConnectionId(UUID("00000000-0000-4000-8000-0000000000a2"))
 RUN = LLMRunId(UUID("00000000-0000-4000-8000-0000000000b1"))
+CONVERSATION = ConversationId(UUID("00000000-0000-4000-8000-0000000000c1"))
+OTHER_CONVERSATION = ConversationId(UUID("00000000-0000-4000-8000-0000000000c2"))
+APPLICATION = ApplicationId(UUID("00000000-0000-4000-8000-0000000000d1"))
 
 # Somewhere real, so a distance a test asserts on can be checked against a map.
 LAUSANNE = GeoPoint(latitude=46.5197, longitude=6.6323)
@@ -506,3 +523,97 @@ def an_llm_run(**overrides):
     }
     fields.update(overrides)
     return LLMRun(**fields)
+
+
+def a_conversation(**overrides):
+    """A career-chat thread owned by `USER`, with one turn's worth of activity.
+
+    Defaults to an active (non-archived) thread whose `last_message_at` is set, so a
+    round trip proves every column carried. A test that needs the just-created empty
+    thread passes `last_message_at=None`; one that needs another owner passes
+    `user_id=OTHER_USER` with `id=OTHER_CONVERSATION`.
+    """
+    fields = {
+        "id": CONVERSATION,
+        "user_id": USER,
+        "title": "Postuler chez Fixture SA",
+        "created_at": NOW,
+        "updated_at": NOW,
+        "last_message_at": LATER,
+    }
+    fields.update(overrides)
+    return Conversation(**fields)
+
+
+def a_chat_message(*, conversation_id=CONVERSATION, sequence=0,
+                   role=ChatMessageRole.USER, **overrides):
+    """One turn in a conversation, a user message at sequence 0 by default.
+
+    The id derives from `(conversation_id, sequence)` — the rule the service applies — so
+    re-finalizing the same turn writes the same row rather than duplicating it. A user
+    message carries no LLM provenance; an assistant one opts in with
+    `role=ChatMessageRole.ASSISTANT, llm_run_id=RUN, provider_key="openai_compatible"`,
+    which is the only shape the `user_has_no_run` CHECK permits to hold telemetry.
+    """
+    fields = {
+        "id": chat_message_id(conversation_id, sequence),
+        "conversation_id": conversation_id,
+        "user_id": USER,
+        "role": role,
+        "content": "Peux-tu preparer ma candidature ?",
+        "sequence": sequence,
+        "created_at": NOW,
+    }
+    fields.update(overrides)
+    return ChatMessage(**fields)
+
+
+def a_chat_action_proposal(*, conversation_id=CONVERSATION, message_id=None,
+                           sequence=1, ordinal=0, action=None, **overrides):
+    """One typed action proposed in a turn, `PROPOSED` and awaiting confirmation.
+
+    Defaults to a `SubmitApplicationAction` — the heaviest-weight action, so a round trip
+    proves the JSONB payload and the denormalized `kind` column agree. The id derives from
+    `(message_id, ordinal)`; `message_id` defaults to the assistant turn at `sequence`
+    (1 by default, since the assistant answers the user's opening turn).
+    """
+    resolved_message_id = (message_id if message_id is not None
+                           else chat_message_id(conversation_id, sequence))
+    resolved_action = (action if action is not None
+                       else SubmitApplicationAction(application_id=APPLICATION))
+    fields = {
+        "id": chat_action_proposal_id(resolved_message_id, ordinal),
+        "conversation_id": conversation_id,
+        "message_id": resolved_message_id,
+        "user_id": USER,
+        "ordinal": ordinal,
+        "action": resolved_action,
+        "summary": "Soumettre la candidature",
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return ChatActionProposal(**fields)
+
+
+def a_chat_action_execution(*, proposal_id=None, **overrides):
+    """The audit of one confirmed proposal, a `SUCCEEDED` outcome by default.
+
+    The id derives from the proposal, so a double-confirm collapses onto one row rather
+    than running the action twice. `proposal_id` defaults to the derived id of the default
+    proposal above; a test that seeds a different proposal passes its id explicitly.
+    """
+    resolved_proposal_id = (
+        proposal_id if proposal_id is not None
+        else chat_action_proposal_id(chat_message_id(CONVERSATION, 1), 0))
+    fields = {
+        "id": chat_action_execution_id(resolved_proposal_id),
+        "proposal_id": resolved_proposal_id,
+        "user_id": USER,
+        "outcome": ChatActionExecutionOutcome.SUCCEEDED,
+        "detail": "Candidature soumise",
+        "result_ref": "SUBMITTED",
+        "created_at": NOW,
+    }
+    fields.update(overrides)
+    return ChatActionExecution(**fields)

@@ -21,6 +21,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.domain.candidate import WorkAuthorizationStatus
+from backend.app.domain.chat import (
+    ChatActionExecutionOutcome,
+    ChatActionKind,
+    ChatMessageRole,
+)
 from backend.app.domain.common import LanguageLevel, SalaryPeriod, Weekday
 from backend.app.domain.eligibility import (
     DeterminationSource,
@@ -36,8 +41,12 @@ from backend.app.infrastructure.database.models import (
     CandidateLanguageRow,
     CandidateProfileRow,
     CandidateWorkAuthorizationRow,
+    ChatActionExecutionRow,
+    ChatActionProposalRow,
+    ChatMessageRow,
     CompanyLocationRow,
     CompanyRow,
+    ConversationRow,
     EligibilityCheckRow,
     EligibilityResultRow,
     MatchDimensionScoreRow,
@@ -78,6 +87,13 @@ ELIGIBILITY = UUID("00000000-0000-4000-8000-0000000000d1")
 SECOND_ELIGIBILITY = UUID("00000000-0000-4000-8000-0000000000d2")
 ELIGIBILITY_CHECK = UUID("00000000-0000-4000-8000-0000000000d3")
 SECOND_ELIGIBILITY_CHECK = UUID("00000000-0000-4000-8000-0000000000d4")
+CONVERSATION = UUID("00000000-0000-4000-8000-0000000000e1")
+CHAT_MESSAGE = UUID("00000000-0000-4000-8000-0000000000e2")
+SECOND_CHAT_MESSAGE = UUID("00000000-0000-4000-8000-0000000000e3")
+CHAT_PROPOSAL = UUID("00000000-0000-4000-8000-0000000000e4")
+SECOND_CHAT_PROPOSAL = UUID("00000000-0000-4000-8000-0000000000e5")
+CHAT_EXECUTION = UUID("00000000-0000-4000-8000-0000000000e6")
+SECOND_CHAT_EXECUTION = UUID("00000000-0000-4000-8000-0000000000e7")
 
 # Two distinct SHA-256 digests, written out rather than computed: what the CHECK
 # polices is the *shape* stored, so a literal that a reader can count is the point.
@@ -877,3 +893,155 @@ async def test_a_posting_may_not_carry_two_source_records(db_session):
         id=SECOND_SOURCE_RECORD, opportunity_id=OPPORTUNITY,
         source_key="other_board", external_id="posting-9", fetched_at=NOW),
         "uq_opportunity_source_records_opportunity_id")
+
+
+# --- Phase 13 career chat ---------------------------------------------------
+# The chat's domain rules made physical: a candidate's own turn carries no LLM
+# telemetry, the monotonic counters never go negative, a turn numbers each
+# proposal once, and a proposal records at most one execution. Every row here is
+# built raw to reach a state the domain would refuse.
+
+
+def a_conversation_row(**overrides) -> ConversationRow:
+    """One thread owned by `USER`, for the tests about its turns and its cascade."""
+    columns = {"id": CONVERSATION, "user_id": USER, "title": "Ma recherche d'emploi"}
+    columns.update(overrides)
+    return ConversationRow(**columns)
+
+
+def a_chat_message_row(**overrides) -> ChatMessageRow:
+    """A user turn at sequence 0, the shape the `user_has_no_run` CHECK permits."""
+    columns = {"id": CHAT_MESSAGE, "conversation_id": CONVERSATION, "user_id": USER,
+               "role": ChatMessageRole.USER, "content": "Peux-tu m'aider ?",
+               "sequence": 0}
+    columns.update(overrides)
+    return ChatMessageRow(**columns)
+
+
+def a_chat_action_proposal_row(**overrides) -> ChatActionProposalRow:
+    """One NAVIGATE proposal hanging off the seeded turn — `status` takes its default."""
+    columns = {"id": CHAT_PROPOSAL, "conversation_id": CONVERSATION,
+               "message_id": CHAT_MESSAGE, "user_id": USER, "ordinal": 0,
+               "kind": ChatActionKind.NAVIGATE,
+               "action": {"kind": "NAVIGATE", "target": "APPLICATIONS"},
+               "summary": "Aller aux candidatures"}
+    columns.update(overrides)
+    return ChatActionProposalRow(**columns)
+
+
+async def seed_conversation(session) -> None:
+    """An account and one conversation: the two foreign keys a turn needs."""
+    session.add(a_user_row())
+    await session.flush()
+    session.add(a_conversation_row())
+    await session.flush()
+
+
+async def seed_chat_message(session) -> None:
+    """A valid user turn, for the tests about the proposals and executions beneath it."""
+    await seed_conversation(session)
+    session.add(a_chat_message_row())
+    await session.flush()
+
+
+async def test_a_user_turn_carries_no_run_but_an_assistant_turn_may(db_session):
+    """`ChatMessage`'s rule made physical: only an assistant turn holds LLM telemetry.
+
+    A user turn with a provider key is refused by the CHECK — not by the `llm_runs`
+    foreign key, which is why the telemetry column exercised here is `provider_key`
+    and not `llm_run_id`. The same value on an assistant turn is permitted, because a
+    generated turn is exactly what must be traceable to the call that produced it.
+    """
+    await seed_conversation(db_session)
+    await refuses(db_session, a_chat_message_row(provider_key="openai_compatible"),
+                  "ck_chat_messages_user_has_no_run")
+    db_session.add(a_chat_message_row(id=SECOND_CHAT_MESSAGE, sequence=1,
+                                      role=ChatMessageRole.ASSISTANT,
+                                      content="Voici ce que je propose.",
+                                      provider_key="openai_compatible"))
+    await db_session.flush()
+    assert await _count(db_session, ChatMessageRow) == 1
+
+
+async def test_a_negative_turn_sequence_is_refused(db_session):
+    """The monotonic counter the message id derives from never goes below zero."""
+    await seed_conversation(db_session)
+    await refuses(db_session, a_chat_message_row(sequence=-1),
+                  "ck_chat_messages_sequence_non_negative")
+
+
+async def test_a_conversation_numbers_each_turn_once(db_session):
+    """`UNIQUE (conversation_id, sequence)`: what makes re-finalizing a turn an update.
+
+    The message id is derived from `(conversation_id, sequence)`, so re-finalizing the
+    same turn writes the same row — and a second row claiming a taken sequence is the
+    duplicated exchange this constraint exists to prevent.
+    """
+    await seed_chat_message(db_session)
+    await refuses(db_session, a_chat_message_row(id=SECOND_CHAT_MESSAGE, sequence=0),
+                  "uq_chat_messages_conversation_id_sequence")
+
+
+async def test_a_negative_proposal_ordinal_is_refused(db_session):
+    """The position the proposal id derives from is a counter, never negative."""
+    await seed_chat_message(db_session)
+    await refuses(db_session, a_chat_action_proposal_row(ordinal=-1),
+                  "ck_chat_action_proposals_ordinal_non_negative")
+
+
+async def test_a_turn_numbers_each_proposal_once(db_session):
+    """`UNIQUE (message_id, ordinal)`: re-finalizing a turn rewrites its proposals.
+
+    A turn can propose several actions, ordered; the id derives from `(message_id,
+    ordinal)`, so re-parsing the same assistant turn lands on the same proposal rows
+    rather than duplicating them.
+    """
+    await seed_chat_message(db_session)
+    db_session.add(a_chat_action_proposal_row())
+    await db_session.flush()
+    await refuses(db_session,
+                  a_chat_action_proposal_row(id=SECOND_CHAT_PROPOSAL, ordinal=0),
+                  "uq_chat_action_proposals_message_id_ordinal")
+
+
+async def test_a_proposal_records_at_most_one_execution(db_session):
+    """`UNIQUE (proposal_id)`: a double-confirm collides rather than running twice.
+
+    The execution id is derived from the proposal alone, and the unique key is the
+    second guard beneath it — so a second attempt to execute a confirmed proposal is
+    refused by the database, not just by the derived id colliding.
+    """
+    await seed_chat_message(db_session)
+    db_session.add(a_chat_action_proposal_row())
+    await db_session.flush()
+    db_session.add(ChatActionExecutionRow(
+        id=CHAT_EXECUTION, proposal_id=CHAT_PROPOSAL, user_id=USER,
+        outcome=ChatActionExecutionOutcome.SUCCEEDED))
+    await db_session.flush()
+    await refuses(db_session, ChatActionExecutionRow(
+        id=SECOND_CHAT_EXECUTION, proposal_id=CHAT_PROPOSAL, user_id=USER,
+        outcome=ChatActionExecutionOutcome.FAILED),
+        "uq_chat_action_executions_proposal_id")
+
+
+async def test_deleting_an_account_deletes_its_conversations(db_session):
+    """"Delete my account" reaches the chat too, through one cascade from `users`.
+
+    A conversation, its turns, the proposals parsed from them and the executions that
+    ran are all the account's — so all four carry `user_id` and cascade from `users`,
+    and deleting the account takes the whole thread without a script that has to know
+    the order. This is the chat's row in `test_deleting_an_account_deletes_everything`.
+    """
+    await seed_chat_message(db_session)
+    db_session.add(a_chat_action_proposal_row())
+    await db_session.flush()
+    db_session.add(ChatActionExecutionRow(
+        id=CHAT_EXECUTION, proposal_id=CHAT_PROPOSAL, user_id=USER,
+        outcome=ChatActionExecutionOutcome.SUCCEEDED))
+    await db_session.flush()
+
+    await db_session.execute(delete(UserRow).where(UserRow.id == USER))
+    db_session.expunge_all()
+    for model in (ConversationRow, ChatMessageRow, ChatActionProposalRow,
+                  ChatActionExecutionRow):
+        assert await _count(db_session, model) == 0, model.__tablename__

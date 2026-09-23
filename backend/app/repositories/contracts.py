@@ -34,6 +34,12 @@ from pydantic import SecretStr
 from backend.app.domain.application import Application
 from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
 from backend.app.domain.candidate import CandidateProfile
+from backend.app.domain.chat import (
+    ChatActionExecution,
+    ChatActionProposal,
+    ChatMessage,
+    Conversation,
+)
 from backend.app.domain.common import GeoPoint, Location
 from backend.app.domain.company import (
     AtsPlatform,
@@ -54,7 +60,9 @@ from backend.app.domain.identifiers import (
     ApplicationPolicyId,
     CandidateDocumentId,
     CandidateProfileId,
+    ChatActionProposalId,
     CompanyId,
+    ConversationId,
     EligibilityResultId,
     LLMConnectionId,
     MatchEvaluationId,
@@ -978,4 +986,122 @@ class SubmissionAttemptRepository(Protocol):
             limit: int = DEFAULT_LIMIT) -> tuple[SubmissionAttempt, ...]:
         """One application's attempts oldest-first, or empty if not this user's."""
         ...
+
+
+# Phase 13. The four contracts below are what the career chat persists. A
+# conversation and its messages are user-owned, so `user_id` comes first on every
+# read, exactly like the Phase 4/10/12 tables. Messages are written once per
+# `(conversation_id, sequence)` — a re-finalized turn upserts the same rows rather
+# than duplicating the exchange. A proposal is a *request* to act that only leaves
+# `PROPOSED` through an explicit confirm or dismiss, so it is an upsert on its own
+# derived id; an execution is written once per proposal, the executor's audit.
+
+
+@runtime_checkable
+class ConversationRepository(Protocol):
+    """Career-chat threads — user-owned, so `user_id` comes first on every read."""
+
+    async def get(self, user_id: UserId,
+                  conversation_id: ConversationId) -> Conversation | None:
+        """The conversation, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def upsert(self, conversation: Conversation) -> Conversation:
+        """Write the conversation; the owner comes from `conversation.user_id`."""
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *, include_archived: bool = False,
+            limit: int = DEFAULT_LIMIT) -> tuple[Conversation, ...]:
+        """This user's threads, most recently active first (archived hidden by default)."""
+        ...
+
+
+@runtime_checkable
+class ChatMessageRepository(Protocol):
+    """Chat turns — user-owned through the conversation they belong to.
+
+    Written once per `(conversation_id, sequence)`, the pair the message id derives
+    from, so re-finalizing a turn after a failed flush upserts the same row rather than
+    duplicating it. Reads are scoped to the owner through a join to the conversation,
+    so one account cannot read another's thread by id.
+    """
+
+    async def upsert(self, message: ChatMessage) -> ChatMessage:
+        """Write the turn, keyed on its own derived id."""
+        ...
+
+    async def latest_sequence(self, user_id: UserId,
+                              conversation_id: ConversationId) -> int | None:
+        """The highest sequence in this conversation, or `None` if it has no turns.
+
+        What the service adds to before appending a turn, so numbering is a query
+        rather than a count loaded into memory. `None` for an empty or not-this-user's
+        thread, which the service treats the same: the first turn is sequence 0.
+        """
+        ...
+
+    async def list_for_conversation(
+            self, user_id: UserId, conversation_id: ConversationId, *,
+            newest_first: bool = False,
+            limit: int = DEFAULT_LIMIT) -> tuple[ChatMessage, ...]:
+        """One conversation's turns, or empty if it is not this user's.
+
+        `newest_first` with a `limit` is how the context builder takes the last N turns
+        without loading the whole thread; the thread view reads oldest-first. Ordering
+        is by `sequence`, the conversation's own monotonic counter.
+        """
+        ...
+
+
+@runtime_checkable
+class ChatActionProposalRepository(Protocol):
+    """Typed action proposals — user-owned, the persisted "prose has zero authority".
+
+    A proposal is parsed and validated out of an assistant turn and changes nothing
+    until a human confirms it. It is an upsert on its own derived id — from
+    `(message_id, ordinal)` — so re-finalizing the turn lands on the same rows, and a
+    confirm or dismiss updates the one row's `status`.
+    """
+
+    async def get(self, user_id: UserId,
+                  proposal_id: ChatActionProposalId) -> ChatActionProposal | None:
+        """The proposal, or `None` — including when it belongs to somebody else.
+
+        What the executor loads before acting: it re-reads the proposal scoped by the
+        owner so a confirmation naming another account's proposal reads as absent and
+        is refused, never trusted because a request carried the id.
+        """
+        ...
+
+    async def upsert(self, proposal: ChatActionProposal) -> ChatActionProposal:
+        """Write the proposal, or move it off `PROPOSED`; keyed on its own id."""
+        ...
+
+    async def list_for_conversation(
+            self, user_id: UserId, conversation_id: ConversationId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ChatActionProposal, ...]:
+        """One conversation's proposals oldest-first, or empty if not this user's."""
+        ...
+
+
+@runtime_checkable
+class ChatActionExecutionRepository(Protocol):
+    """Execution audits — written once per proposal, the executor's own record.
+
+    Keyed on the proposal's id (the execution id derives from it alone), so a
+    double-confirmed proposal upserts the one row rather than recording two attempts —
+    the idempotency the executor rests on. Reads are user-scoped so one account cannot
+    read another's execution by proposal id.
+    """
+
+    async def get(self, user_id: UserId,
+                  proposal_id: ChatActionProposalId) -> ChatActionExecution | None:
+        """The execution recorded for this proposal, or `None` if it never ran."""
+        ...
+
+    async def upsert(self, execution: ChatActionExecution) -> ChatActionExecution:
+        """Write the audit, keyed on its own id derived from the proposal."""
+        ...
+
 

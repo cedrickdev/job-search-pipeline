@@ -52,6 +52,10 @@ LLMRunId = NewType("LLMRunId", UUID)
 ApplicationId = NewType("ApplicationId", UUID)
 ApplicationEventId = NewType("ApplicationEventId", UUID)
 SubmissionAttemptId = NewType("SubmissionAttemptId", UUID)
+ConversationId = NewType("ConversationId", UUID)
+ChatMessageId = NewType("ChatMessageId", UUID)
+ChatActionProposalId = NewType("ChatActionProposalId", UUID)
+ChatActionExecutionId = NewType("ChatActionExecutionId", UUID)
 
 
 def new_user_id() -> UserId:
@@ -367,3 +371,57 @@ def submission_attempt_id(application: ApplicationId,
     return SubmissionAttemptId(
         uuid5(SURROGATE_KEY_NAMESPACE,
               f"submission_attempt:{application}:{attempt_number}"))
+
+
+def new_conversation_id() -> ConversationId:
+    """The id of one career-chat conversation (Phase 13 §…).
+
+    Random: a conversation is an entity a user opens, not something recomputable
+    from what it holds — two "New chat" clicks are two conversations, and the
+    provider-side session that resumes it keys on this id, not the other way round.
+    """
+    return ConversationId(uuid4())
+
+
+def chat_message_id(conversation_id: ConversationId, sequence: int) -> ChatMessageId:
+    """The id of the message at one position in one conversation.
+
+    Derived from `(conversation_id, sequence)` — the pair the unique constraint
+    covers — so a turn that is finalized twice after a failed flush writes the same
+    message rows rather than duplicating the exchange. `sequence` is the
+    conversation's own monotonic counter, assigned by the chat service as it appends;
+    this only turns that pair into a stable key, exactly as `document_version_id`
+    does for a document's versions.
+    """
+    return ChatMessageId(
+        uuid5(SURROGATE_KEY_NAMESPACE, f"chat_message:{conversation_id}:{sequence}"))
+
+
+def chat_action_proposal_id(message_id: ChatMessageId,
+                            ordinal: int) -> ChatActionProposalId:
+    """The id of the nth typed action a single assistant turn proposed.
+
+    Derived from `(message_id, ordinal)`, for the reason `chat_message_id` is derived:
+    re-finalizing the turn that produced them must land on the same proposal rows, not
+    append a second copy of every proposal. `ordinal` is the action's position in the
+    turn's fenced proposal block (0-based); the message it belongs to scopes it, so two
+    turns proposing "submit" are two distinct proposals rather than one overwritten.
+    """
+    return ChatActionProposalId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"chat_action_proposal:{message_id}:{ordinal}"))
+
+
+def chat_action_execution_id(
+        proposal_id: ChatActionProposalId) -> ChatActionExecutionId:
+    """The id of the record of executing one proposal.
+
+    Derived from the proposal, and this is the load-bearing half of the idempotency
+    story the executor rests on: a proposal executed twice — a double-clicked
+    "Confirm", a retried request — computes the same execution id and collides on the
+    primary key instead of running the underlying service action a second time. The
+    executor still guards on the proposal's status, but the derived id is what makes
+    the common path idempotent by construction rather than by a caught race.
+    """
+    return ChatActionExecutionId(
+        uuid5(SURROGATE_KEY_NAMESPACE, f"chat_action_execution:{proposal_id}"))

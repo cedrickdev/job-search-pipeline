@@ -67,6 +67,12 @@ from backend.app.domain.candidate import (
     EvidenceProvenance,
     WorkAuthorizationStatus,
 )
+from backend.app.domain.chat import (
+    ChatActionExecutionOutcome,
+    ChatActionKind,
+    ChatActionProposalStatus,
+    ChatMessageRole,
+)
 from backend.app.domain.common import (
     GeocodingConfidence,
     GeoPoint,
@@ -2267,6 +2273,151 @@ class SubmissionAttemptRow(TimestampedMixin, Base):
 
     application: Mapped["ApplicationRow"] = relationship(
         back_populates="attempts", lazy="raise")
+
+
+# A `USER` turn is the candidate's own prose: it never carries the telemetry of an
+# LLM call, because the account, not a provider, produced it. The CHECK restates
+# `ChatMessage`'s provenance rule so a row written outside the mapper cannot attribute
+# a run to a human turn (docs/CAREER_CHAT.md §…).
+_CHAT_MESSAGE_USER_HAS_NO_RUN: Final[str] = (
+    "role <> 'USER' OR (llm_run_id IS NULL AND provider_key IS NULL)")
+
+
+class ConversationRow(TimestampedMixin, Base):
+    """One career-chat thread, owned by exactly one account (§…).
+
+    User-owned like every Phase 4+ entity: `user_id` cascades from `users`, so deleting
+    an account takes its conversations — and, through the cascades below, their messages,
+    proposals and executions — with it. `last_message_at` is nullable (a freshly opened
+    thread has no turn yet) and pairs with `user_id` in the one index the conversation
+    list reads: "my threads, most recently active first".
+    """
+
+    __tablename__ = "conversations"
+    __table_args__ = (
+        Index("ix_conversations_user_id_last_message_at",
+              "user_id", "last_message_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    title: Mapped[str]
+    is_archived: Mapped[bool] = mapped_column(server_default=text("false"))
+    last_message_at: Mapped[datetime | None]
+
+    messages: Mapped[list["ChatMessageRow"]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise", order_by="ChatMessageRow.sequence")
+    proposals: Mapped[list["ChatActionProposalRow"]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise", order_by="ChatActionProposalRow.created_at")
+
+
+class ChatMessageRow(TimestampedMixin, Base):
+    """One turn in a conversation — the prose and the provenance of who produced it (§…).
+
+    `UNIQUE (conversation_id, sequence)` is the natural key `chat_message_id` derives the
+    primary key from, so re-finalizing a turn writes the same row rather than duplicating
+    the exchange. `content` is the prose only: the fenced proposal block is parsed out
+    into `chat_action_proposals` and never stored here. `llm_run_id` is `SET NULL` — a
+    message outlives the telemetry row it points at, the same trade `llm_runs` makes with
+    its connection — and the CHECK forbids a `USER` turn from carrying one.
+    """
+
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "sequence"),
+        CheckConstraint("sequence >= 0", name="sequence_non_negative"),
+        CheckConstraint(_CHAT_MESSAGE_USER_HAS_NO_RUN, name="user_has_no_run"),
+        Index("ix_chat_messages_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    role: Mapped[ChatMessageRole] = mapped_column(
+        enum_column(ChatMessageRole, "chat_message_role"))
+    content: Mapped[str]
+    sequence: Mapped[int] = mapped_column(Integer)
+    llm_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("llm_runs.id", ondelete="SET NULL"))
+    provider_key: Mapped[str | None]
+
+    conversation: Mapped["ConversationRow"] = relationship(
+        back_populates="messages", lazy="raise")
+
+
+class ChatActionProposalRow(TimestampedMixin, Base):
+    """One typed action the model proposed in a turn, awaiting a human's confirmation (§…).
+
+    The persisted heart of "prose has zero authority": a row here is a *request* to act,
+    parsed and validated out of the assistant's fenced block, that changes nothing until a
+    human confirms it and the executor re-authorizes it. `UNIQUE (message_id, ordinal)` is
+    the natural key `chat_action_proposal_id` derives from, so re-finalizing the turn lands
+    on the same proposals. `kind` is stored as its own column so "my open submit proposals"
+    is one indexed query, while `action` holds the whole validated `ChatAction` as JSONB —
+    read back through `CHAT_ACTION_ADAPTER`, never trusted as free-form.
+    """
+
+    __tablename__ = "chat_action_proposals"
+    __table_args__ = (
+        UniqueConstraint("message_id", "ordinal"),
+        CheckConstraint("ordinal >= 0", name="ordinal_non_negative"),
+        Index("ix_chat_action_proposals_user_id_status", "user_id", "status"),
+        Index("ix_chat_action_proposals_conversation_id", "conversation_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"))
+    message_id: Mapped[UUID] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[ChatActionKind] = mapped_column(
+        enum_column(ChatActionKind, "chat_action_kind"))
+    action: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
+    status: Mapped[ChatActionProposalStatus] = mapped_column(
+        enum_column(ChatActionProposalStatus, "chat_action_proposal_status"),
+        server_default=text(f"'{ChatActionProposalStatus.PROPOSED.value}'"))
+    summary: Mapped[str]
+
+    conversation: Mapped["ConversationRow"] = relationship(
+        back_populates="proposals", lazy="raise")
+
+
+class ChatActionExecutionRow(TimestampedMixin, Base):
+    """The record of one attempt to execute a confirmed proposal — the executor's audit (§…).
+
+    `UNIQUE (proposal_id)` matches the derivation `chat_action_execution_id` performs from
+    the proposal alone, so a double-confirmed proposal collides on this row rather than
+    running the underlying service action twice — the idempotency the executor rests on.
+    `outcome` records whether the action was refused at validation (`REJECTED`), permitted
+    but failed (`FAILED`), or ran (`SUCCEEDED`); `result_ref` and `detail` are secret-free
+    handles the chat shows without re-deriving what happened.
+    """
+
+    __tablename__ = "chat_action_executions"
+    __table_args__ = (
+        UniqueConstraint("proposal_id"),
+        Index("ix_chat_action_executions_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    proposal_id: Mapped[UUID] = mapped_column(
+        ForeignKey("chat_action_proposals.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    outcome: Mapped[ChatActionExecutionOutcome] = mapped_column(
+        enum_column(ChatActionExecutionOutcome, "chat_action_execution_outcome"))
+    detail: Mapped[str | None]
+    result_ref: Mapped[str | None]
+
 
 
 

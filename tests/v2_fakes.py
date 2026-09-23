@@ -35,6 +35,12 @@ from backend.app.core.tokens import digests_match
 from backend.app.domain.application import Application, ApplicationState
 from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
 from backend.app.domain.candidate import CandidateProfile
+from backend.app.domain.chat import (
+    ChatActionExecution,
+    ChatActionProposal,
+    ChatMessage,
+    Conversation,
+)
 from backend.app.domain.common import GeoPoint
 from backend.app.domain.decision import ApplicationDecision
 from backend.app.domain.policy import ApplicationPolicy
@@ -65,9 +71,13 @@ from backend.app.domain.identifiers import (
     CandidateDocumentId,
     CandidateProfileId,
     CareerSiteId,
+    ChatActionExecutionId,
+    ChatActionProposalId,
+    ChatMessageId,
     CompanyAliasId,
     CompanyDiscoveryRecordId,
     CompanyId,
+    ConversationId,
     EligibilityResultId,
     LLMConnectionId,
     LLMRunId,
@@ -95,12 +105,16 @@ from backend.app.repositories.contracts import (
     CandidateDocumentRepository,
     CandidateProfileRepository,
     CareerSiteRepository,
+    ChatActionExecutionRepository,
+    ChatActionProposalRepository,
+    ChatMessageRepository,
     CompanyCandidate,
     CompanyDiscoveryRepository,
     CompanyFilter,
     CompanyGeoResult,
     CompanyPage,
     CompanyRepository,
+    ConversationRepository,
     EligibilityResultRepository,
     LLMConnectionRepository,
     LLMRunRepository,
@@ -132,7 +146,9 @@ def _implements_contracts() -> tuple[
         ProviderSessionRepository, LLMRunRepository,
         ApplicationPolicyRepository, ApplicationDecisionRepository,
         ApplicationRepository, ApplicationEventRepository,
-        SubmissionAttemptRepository]:
+        SubmissionAttemptRepository, ConversationRepository,
+        ChatMessageRepository, ChatActionProposalRepository,
+        ChatActionExecutionRepository]:
     """Structural conformance, the same guard `sqlalchemy_repositories` carries.
 
     A fake whose signature drifted from the `Protocol` would still run — Python
@@ -150,7 +166,9 @@ def _implements_contracts() -> tuple[
             FakeProviderSessionRepository(), FakeLLMRunRepository(),
             FakeApplicationPolicyRepository(), FakeApplicationDecisionRepository(),
             FakeApplicationRepository(), FakeApplicationEventRepository(),
-            FakeSubmissionAttemptRepository())
+            FakeSubmissionAttemptRepository(), FakeConversationRepository(),
+            FakeChatMessageRepository(), FakeChatActionProposalRepository(),
+            FakeChatActionExecutionRepository())
 
 
 def _meters_between(one: GeoPoint, other: GeoPoint) -> float:
@@ -1248,3 +1266,135 @@ class FakeSubmissionAttemptRepository:
                 if attempt.application_id == application_id]
         mine.sort(key=lambda attempt: attempt.attempt_number)
         return tuple(mine[:limit])
+
+
+class FakeConversationRepository:
+    """Career-chat threads, keyed by id and scoped by owner on every read (Phase 13).
+
+    `list_for_user` orders by the last activity — `last_message_at` when a thread has a
+    turn, `updated_at` when it does not — newest first, ties broken by id, the real
+    `ORDER BY coalesce(last_message_at, updated_at) DESC, id`. Archived threads are hidden
+    unless asked for, the same filter the real query applies.
+    """
+
+    def __init__(self) -> None:
+        self.conversations: dict[ConversationId, Conversation] = {}
+
+    async def get(self, user_id: UserId,
+                  conversation_id: ConversationId) -> Conversation | None:
+        found = self.conversations.get(conversation_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def upsert(self, conversation: Conversation) -> Conversation:
+        stored = conversation.model_copy(deep=True)
+        self.conversations[stored.id] = stored
+        return stored
+
+    async def list_for_user(self, user_id: UserId, *, include_archived: bool = False,
+                            limit: int = DEFAULT_LIMIT) -> tuple[Conversation, ...]:
+        mine = [c.model_copy(deep=True) for c in self.conversations.values()
+                if c.user_id == user_id and (include_archived or not c.is_archived)]
+        # id ascending first, then a stable sort by activity descending — the real
+        # `coalesce(last_message_at, updated_at) DESC, id`.
+        mine.sort(key=lambda c: str(c.id))
+        mine.sort(key=lambda c: c.last_message_at or c.updated_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeChatMessageRepository:
+    """Chat turns, keyed by their derived id and scoped by owner (Phase 13).
+
+    A message carries its own `user_id`, so reads scope on it directly rather than joining
+    the conversation. The upsert keys on the derived id, so re-finalizing a turn writes the
+    same row; `latest_sequence` is the `MAX(sequence)` the service numbers the next turn
+    from — `None` for an empty or not-this-user's thread. `list_for_conversation` orders by
+    `sequence`, oldest-first unless `newest_first` is asked for.
+    """
+
+    def __init__(self) -> None:
+        self.messages: dict[ChatMessageId, ChatMessage] = {}
+
+    async def upsert(self, message: ChatMessage) -> ChatMessage:
+        stored = message.model_copy(deep=True)
+        self.messages[stored.id] = stored
+        return stored
+
+    async def latest_sequence(self, user_id: UserId,
+                              conversation_id: ConversationId) -> int | None:
+        sequences = [message.sequence for message in self.messages.values()
+                     if message.conversation_id == conversation_id
+                     and message.user_id == user_id]
+        return max(sequences) if sequences else None
+
+    async def list_for_conversation(
+            self, user_id: UserId, conversation_id: ConversationId, *,
+            newest_first: bool = False,
+            limit: int = DEFAULT_LIMIT) -> tuple[ChatMessage, ...]:
+        mine = [message.model_copy(deep=True) for message in self.messages.values()
+                if message.conversation_id == conversation_id
+                and message.user_id == user_id]
+        mine.sort(key=lambda message: message.sequence, reverse=newest_first)
+        return tuple(mine[:limit])
+
+
+class FakeChatActionProposalRepository:
+    """Typed action proposals, keyed by derived id and owner-scoped on every read (Phase 13).
+
+    The `get` the executor performs before acting scopes on the proposal's own `user_id`, so
+    a confirmation naming another account's proposal reads as absent. The upsert keys on the
+    proposal's id, so re-finalizing a turn writes the same rows and a confirm or dismiss
+    updates the one row's status. `list_for_conversation` is oldest-first, ties by id — the
+    real `ORDER BY created_at, id`.
+    """
+
+    def __init__(self) -> None:
+        self.proposals: dict[ChatActionProposalId, ChatActionProposal] = {}
+
+    async def get(self, user_id: UserId,
+                  proposal_id: ChatActionProposalId) -> ChatActionProposal | None:
+        found = self.proposals.get(proposal_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def upsert(self, proposal: ChatActionProposal) -> ChatActionProposal:
+        stored = proposal.model_copy(deep=True)
+        self.proposals[stored.id] = stored
+        return stored
+
+    async def list_for_conversation(
+            self, user_id: UserId, conversation_id: ConversationId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ChatActionProposal, ...]:
+        mine = [proposal.model_copy(deep=True) for proposal in self.proposals.values()
+                if proposal.conversation_id == conversation_id
+                and proposal.user_id == user_id]
+        mine.sort(key=lambda proposal: str(proposal.id))
+        mine.sort(key=lambda proposal: proposal.created_at)
+        return tuple(mine[:limit])
+
+
+class FakeChatActionExecutionRepository:
+    """Execution audits, keyed on the derived id (from the proposal alone), owner-scoped.
+
+    A double-confirmed proposal upserts the one row rather than recording two attempts — the
+    idempotency the executor rests on — because the id derives from the proposal. `get` finds
+    the audit by proposal id, scoped to the owner, which is how the executor detects an
+    already-run proposal.
+    """
+
+    def __init__(self) -> None:
+        self.executions: dict[ChatActionExecutionId, ChatActionExecution] = {}
+
+    async def get(self, user_id: UserId,
+                  proposal_id: ChatActionProposalId) -> ChatActionExecution | None:
+        return next((execution.model_copy(deep=True)
+                     for execution in self.executions.values()
+                     if execution.proposal_id == proposal_id
+                     and execution.user_id == user_id), None)
+
+    async def upsert(self, execution: ChatActionExecution) -> ChatActionExecution:
+        stored = execution.model_copy(deep=True)
+        self.executions[stored.id] = stored
+        return stored

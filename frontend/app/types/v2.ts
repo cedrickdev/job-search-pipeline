@@ -230,6 +230,54 @@ export type ApplicationState = Application['state']
 /** The route an application takes to an employer. */
 export type ApplicationChannel = Application['channel']
 
+// Phase 13: the career-chat control plane. A thread and its list, the turns and the
+// proposals a turn produces, one confirmed proposal's audited execution, and the SSE
+// event a streaming turn emits. Every type is an alias into the generated document, so
+// a field the backend renames fails `nuxt typecheck` here after `npm run gen:api`
+// (docs/CAREER_CHAT.md).
+
+/** One chat thread's caption and activity — never its messages inline. */
+export type Conversation = Schemas['ConversationResponse']
+
+/** This account's threads, most recent activity first. */
+export type ConversationList = Schemas['ConversationListResponse']
+
+/** One stored turn: its prose only — the fenced proposal block was parsed out. */
+export type ChatMessage = Schemas['ChatMessageResponse']
+
+/** One thread's turns, oldest first — the transcript as it grew. */
+export type ChatMessageList = Schemas['ChatMessageListResponse']
+
+/** One typed action the model proposed, awaiting a human's confirm or dismiss. */
+export type ChatActionProposal = Schemas['ChatActionProposalResponse']
+
+/** One thread's proposals, oldest first. */
+export type ChatActionProposalList = Schemas['ChatActionProposalListResponse']
+
+/** The audited record of one confirmed proposal's execution. */
+export type ChatActionExecution = Schemas['ChatActionExecutionResponse']
+
+/** The SSE wire shape of one event a streaming turn emits. */
+export type ChatStreamEvent = Schemas['ChatStreamEventResponse']
+
+/** The discriminated `ChatAction` union verbatim — secret-free by construction. */
+export type ChatAction = ChatActionProposal['action']
+
+/** `PROPOSED | EXECUTED | REJECTED | FAILED | DISMISSED` — a card's actionability. */
+export type ChatActionProposalStatus = ChatActionProposal['status']
+
+/** `SUCCEEDED | REJECTED | FAILED` — how one confirm ended. */
+export type ChatActionExecutionOutcome = ChatActionExecution['outcome']
+
+/** A screen a confirmed `NAVIGATE` may point the client at. Closed on purpose. */
+export type NavigationTarget = Schemas['NavigationTarget']
+
+/** The optional-title body that opens a new thread. */
+export type StartConversationRequest = Schemas['StartConversationRequest']
+
+/** The one-field body of a user turn. */
+export type SendMessageRequest = Schemas['SendMessageRequest']
+
 /**
  * Every `error` slug `/api/v2` can answer with, as one union.
  *
@@ -256,15 +304,19 @@ export type V2ErrorCode =
   | 'artifact_unavailable'
   | 'candidate_profile_not_found'
   | 'capability_not_supported'
+  | 'chat_proposal_not_actionable'
+  | 'chat_proposal_not_found'
   | 'claim_cites_unknown_evidence'
   | 'company_not_found'
   | 'conflict'
   | 'context_length_exceeded'
+  | 'conversation_not_found'
   | 'csrf_failed'
   | 'database_unavailable'
   | 'document_not_found'
   | 'document_not_rendered'
   | 'email_already_registered'
+  | 'empty_chat_message'
   | 'insufficient_evidence'
   | 'invalid_credentials'
   | 'llm_connection_invalid'

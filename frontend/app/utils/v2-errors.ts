@@ -46,6 +46,12 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   // A provider cannot do what a task needs (structured output on a plain CLI, tools on
   // a bare completion endpoint). The fix is choosing a different provider, not a retry.
   capability_not_supported: 'This provider does not support what that task needs. Choose a different connection.',
+  // The career-chat control-plane refusals (Phase 13). A thread or a proposal that is
+  // not this account's reads as absent, an empty turn is rejected before any provider is
+  // reached, and a proposal already confirmed or dismissed cannot be acted on again — the
+  // last is how "a proposal is a request, not a permission" surfaces to a stale card.
+  chat_proposal_not_actionable: 'This action was already handled. Reload the conversation to see where it stands.',
+  chat_proposal_not_found: 'That proposed action no longer exists.',
   // A generated line cited an evidence id the profile does not hold. The candidate
   // never types ids, so this is a stale form rather than a mistake to correct inline.
   claim_cites_unknown_evidence: 'That claim refers to evidence that is no longer on file. Reload and try again.',
@@ -53,11 +59,13 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   conflict: 'That change conflicts with something already saved. Reload and retry.',
   // The prompt plus its history was larger than the model's context window.
   context_length_exceeded: 'That request was too long for this model to handle.',
+  conversation_not_found: 'That conversation no longer exists.',
   csrf_failed: 'This request could not be verified. Reload the page and try again.',
   database_unavailable: 'The service is temporarily unavailable. Try again in a moment.',
   document_not_found: 'That document does not exist.',
   document_not_rendered: 'This document has no finished version to download yet. Generate one first.',
   email_already_registered: 'An account already exists for that email address.',
+  empty_chat_message: 'Type a message before sending.',
   // The honest refusal: the profile carries too little evidence to build a truthful
   // document, and the answer is to add evidence, never to invent content.
   insufficient_evidence: 'There is not enough evidence on your profile to build this document yet. Add evidence first.',

@@ -22,6 +22,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, StatementError
 
 from backend.app.domain.common import Location, Reason, ReasonImpact
+from backend.app.domain.chat import ChatActionProposalStatus, ChatMessageRole
 from backend.app.domain.eligibility import (
     DeterminationSource,
     EligibilityCheck,
@@ -32,6 +33,7 @@ from backend.app.domain.eligibility import (
 from backend.app.domain.identifiers import (
     CandidateProfileId,
     CompanyLocationId,
+    ConversationId,
     EligibilityResultId,
     EvidenceId,
     MatchEvaluationId,
@@ -44,7 +46,11 @@ from backend.app.infrastructure.database.engine import (
 )
 from backend.app.infrastructure.database.models import (
     CandidateProfileRow,
+    ChatActionExecutionRow,
+    ChatActionProposalRow,
+    ChatMessageRow,
     CompanyLocationRow,
+    ConversationRow,
     EligibilityCheckRow,
     EligibilityResultRow,
     MatchDimensionScoreRow,
@@ -54,7 +60,11 @@ from backend.app.infrastructure.database.models import (
     UserRow,
 )
 from backend.app.repositories.sqlalchemy_repositories import (
+    SqlAlchemyChatActionExecutionRepository,
+    SqlAlchemyChatActionProposalRepository,
+    SqlAlchemyChatMessageRepository,
     SqlAlchemyCompanyRepository,
+    SqlAlchemyConversationRepository,
     SqlAlchemyEligibilityResultRepository,
     SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
@@ -62,19 +72,25 @@ from backend.app.repositories.sqlalchemy_repositories import (
 from tests.v2_builders import (
     COMPANY,
     COMPANY_LOCATION,
+    CONVERSATION,
     ELIGIBILITY,
     EVALUATION,
     GENEVA,
     LATER,
     NOW,
     OPPORTUNITY,
+    OTHER_CONVERSATION,
     OTHER_PROFILE,
     OTHER_USER,
     PROFILE,
     USER,
+    a_chat_action_execution,
+    a_chat_action_proposal,
+    a_chat_message,
     a_check,
     a_company,
     a_company_location,
+    a_conversation,
     a_source_record,
     an_eligibility_result,
     an_evaluation,
@@ -575,3 +591,201 @@ async def test_commit_false_exercises_the_real_schema_and_keeps_nothing(
         assert await repository.get(OPPORTUNITY) is not None
     async with session_scope(committing_factory, commit=False) as session:
         assert await SqlAlchemyOpportunityRepository(session).get(OPPORTUNITY) is None
+
+
+# --- Phase 13 career chat ---------------------------------------------------
+# A conversation and its turns need only a `users` row to point at; the derived
+# ids mean a proposal attaches to the assistant turn at sequence 1 without the
+# test spelling the id out.
+
+
+@pytest.fixture
+def conversations(db_session):
+    return SqlAlchemyConversationRepository(db_session)
+
+
+@pytest.fixture
+def chat_messages(db_session):
+    return SqlAlchemyChatMessageRepository(db_session)
+
+
+@pytest.fixture
+def proposals(db_session):
+    return SqlAlchemyChatActionProposalRepository(db_session)
+
+
+@pytest.fixture
+def executions(db_session):
+    return SqlAlchemyChatActionExecutionRepository(db_session)
+
+
+@pytest_asyncio.fixture
+async def chat_users(db_session):
+    """The two accounts every chat scoping test compares — the owner and a stranger."""
+    db_session.add_all([
+        a_user_row(display_name="owner"),
+        a_user_row(id=OTHER_USER, display_name="somebody else"),
+    ])
+    await db_session.flush()
+
+
+@pytest_asyncio.fixture
+async def chat_thread(chat_users, conversations, chat_messages):
+    """A conversation with a user turn (0) and an assistant turn (1) a proposal hangs off.
+
+    The assistant turn carries no `llm_run_id`, which the `user_has_no_run` CHECK
+    permits (it only forbids a *user* turn from carrying one) and which keeps the
+    thread free of a foreign key to `llm_runs` no proposal test needs.
+    """
+    await conversations.upsert(a_conversation())
+    await chat_messages.upsert(a_chat_message(sequence=0))
+    await chat_messages.upsert(a_chat_message(
+        sequence=1, role=ChatMessageRole.ASSISTANT, content="Voici ce que je propose."))
+
+
+async def test_a_conversation_comes_back_scoped_to_its_owner(chat_users, conversations):
+    """Round trip by id, and a stranger reading it gets `None`, not the row.
+
+    A conversation is user data, so `get` takes the owner first and a caller naming
+    another account's thread cannot tell "absent" from "not yours" — the same
+    cross-user rule the evaluation and eligibility reads hold.
+    """
+    stored = await conversations.upsert(a_conversation())
+    assert stored == a_conversation()
+    assert await conversations.get(USER, CONVERSATION) == a_conversation()
+    assert await conversations.get(OTHER_USER, CONVERSATION) is None
+
+
+async def test_upserting_a_conversation_twice_updates_one_row(
+        db_session, chat_users, conversations):
+    """Renaming a thread or marking it read updates the row rather than adding one."""
+    await conversations.upsert(a_conversation())
+    await conversations.upsert(a_conversation(title="Ma recherche d'emploi",
+                                              is_archived=True))
+    stored = await conversations.get(USER, CONVERSATION)
+    assert stored is not None
+    assert stored.title == "Ma recherche d'emploi" and stored.is_archived is True
+    assert await _count(db_session, ConversationRow) == 1
+
+
+async def test_the_conversation_list_is_newest_first_and_hides_archived_threads(
+        chat_users, conversations):
+    """The sidebar order, and the archive filter that keeps a closed thread out of it.
+
+    `list_for_user` orders by the last activity descending, and excludes archived
+    threads unless asked — an archived one is hidden, never deleted, so its audit
+    trail survives and `include_archived` can still reach it.
+    """
+    latest = datetime(2026, 3, 3, 9, 30, tzinfo=UTC)
+    await conversations.upsert(a_conversation(last_message_at=NOW))
+    await conversations.upsert(a_conversation(id=OTHER_CONVERSATION,
+                                              last_message_at=LATER))
+    archived = ConversationId(UUID("00000000-0000-4000-8000-0000000000c3"))
+    await conversations.upsert(a_conversation(id=archived, is_archived=True,
+                                              last_message_at=latest))
+
+    active = await conversations.list_for_user(USER)
+    assert [row.id for row in active] == [OTHER_CONVERSATION, CONVERSATION]
+    everything = await conversations.list_for_user(USER, include_archived=True)
+    assert [row.id for row in everything] == [archived, OTHER_CONVERSATION, CONVERSATION]
+
+
+async def test_a_thread_with_no_turns_yet_sorts_by_its_updated_at(
+        chat_users, conversations):
+    """`last_message_at` is `None` until the first turn, so the list coalesces to
+    `updated_at` — a freshly opened thread sorts by when it was created, ahead of an
+    older thread whose last turn predates it, rather than sinking to the bottom."""
+    await conversations.upsert(a_conversation(last_message_at=LATER))
+    fresh = datetime(2026, 3, 4, 9, 30, tzinfo=UTC)
+    await conversations.upsert(a_conversation(id=OTHER_CONVERSATION,
+                                              last_message_at=None,
+                                              created_at=fresh, updated_at=fresh))
+    listed = await conversations.list_for_user(USER)
+    assert [row.id for row in listed] == [OTHER_CONVERSATION, CONVERSATION]
+
+
+async def test_latest_sequence_is_the_max_turn_the_owner_can_see(
+        chat_thread, chat_messages):
+    """The counter the service numbers the next turn from, without loading the thread.
+
+    A conversation with turns 0 and 1 has a latest sequence of 1; one the owner has
+    no turn in — either empty or another account's — is `None`, so the first turn a
+    caller writes is numbered 0.
+    """
+    assert await chat_messages.latest_sequence(USER, CONVERSATION) == 1
+    assert await chat_messages.latest_sequence(OTHER_USER, CONVERSATION) is None
+    assert await chat_messages.latest_sequence(USER, OTHER_CONVERSATION) is None
+
+
+async def test_messages_come_back_in_sequence_order_scoped_to_owner(
+        chat_thread, chat_messages):
+    """The transcript, oldest turn first, and only the owner's.
+
+    `list_for_conversation` orders by `sequence` and scopes on the message's own
+    `user_id`, so a stranger asking for the same conversation id gets an empty
+    transcript rather than someone else's turns.
+    """
+    turns = await chat_messages.list_for_conversation(USER, CONVERSATION)
+    assert [turn.sequence for turn in turns] == [0, 1]
+    assert [turn.role for turn in turns] == [ChatMessageRole.USER,
+                                             ChatMessageRole.ASSISTANT]
+    newest_first = await chat_messages.list_for_conversation(
+        USER, CONVERSATION, newest_first=True)
+    assert [turn.sequence for turn in newest_first] == [1, 0]
+    assert await chat_messages.list_for_conversation(OTHER_USER, CONVERSATION) == ()
+
+
+async def test_a_proposal_is_reported_as_absent_to_another_user(chat_thread, proposals):
+    """The scoped `get` the executor runs before acting.
+
+    A confirmation naming another account's proposal must read as absent — that is
+    what stops the chat from being a way to drive someone else's platform, the whole
+    point of "proposal is not permission".
+    """
+    proposal = await proposals.upsert(a_chat_action_proposal())
+    assert await proposals.get(USER, proposal.id) == proposal
+    assert await proposals.get(OTHER_USER, proposal.id) is None
+
+
+async def test_confirming_a_proposal_updates_the_one_row(
+        db_session, chat_thread, proposals):
+    """A confirm moves `status` off `PROPOSED` on the row already there.
+
+    Keyed on the derived id, so re-finalizing the turn or recording the confirm
+    updates the single proposal rather than adding a second — `is_open` flips to
+    `False` and the count stays one.
+    """
+    proposal = await proposals.upsert(a_chat_action_proposal())
+    assert proposal.is_open is True
+    confirmed = await proposals.upsert(a_chat_action_proposal(
+        status=ChatActionProposalStatus.EXECUTED))
+    assert confirmed.status is ChatActionProposalStatus.EXECUTED
+    assert confirmed.is_open is False
+    assert await _count(db_session, ChatActionProposalRow) == 1
+
+
+async def test_the_proposal_list_scopes_to_owner(chat_thread, proposals):
+    """The conversation's proposals, and only for the account that owns them."""
+    await proposals.upsert(a_chat_action_proposal())
+    mine = await proposals.list_for_conversation(USER, CONVERSATION)
+    assert [proposal.action.kind for proposal in mine] == [
+        a_chat_action_proposal().action.kind]
+    assert await proposals.list_for_conversation(OTHER_USER, CONVERSATION) == ()
+
+
+async def test_an_execution_is_written_once_per_proposal(
+        db_session, chat_thread, proposals, executions):
+    """A double-confirm collapses onto one audit row rather than running twice.
+
+    The execution id is derived from the proposal alone, so a second upsert lands on
+    the same row — the invariant that makes a repeated confirmation idempotent at the
+    storage layer, beneath whatever the executor does.
+    """
+    await proposals.upsert(a_chat_action_proposal())
+    await executions.upsert(a_chat_action_execution())
+    await executions.upsert(a_chat_action_execution(detail="second confirm ignored"))
+    assert await _count(db_session, ChatActionExecutionRow) == 1
+    proposal = a_chat_action_proposal()
+    stored = await executions.get(USER, proposal.id)
+    assert stored is not None
+    assert await executions.get(OTHER_USER, proposal.id) is None

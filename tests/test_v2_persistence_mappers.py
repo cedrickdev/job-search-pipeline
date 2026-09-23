@@ -34,6 +34,13 @@ from backend.app.domain.eligibility import (
     EligibilityStatus,
     RuleAuthority,
 )
+from backend.app.domain.chat import (
+    ChatActionProposalStatus,
+    ChatMessageRole,
+    NavigateAction,
+    NavigationTarget,
+    SetSearchRadiusAction,
+)
 from backend.app.domain.identifiers import (
     CompanyLocationId,
     EligibilityResultId,
@@ -42,9 +49,17 @@ from backend.app.domain.identifiers import (
 )
 from backend.app.domain.matching import DimensionScore, MatchDimension
 from backend.app.infrastructure.database.mappers import (
+    chat_action_execution_to_domain,
+    chat_action_execution_to_row,
+    chat_action_proposal_to_domain,
+    chat_action_proposal_to_row,
+    chat_message_to_domain,
+    chat_message_to_row,
     company_location_to_domain,
     company_to_domain,
     company_to_row,
+    conversation_to_domain,
+    conversation_to_row,
     dimension_score_row_id,
     eligibility_check_row_id,
     eligibility_result_to_domain,
@@ -57,17 +72,27 @@ from backend.app.infrastructure.database.mappers import (
     reasons_to_json,
     source_record_row_id,
 )
-from backend.app.infrastructure.database.models import CompanyLocationRow, OpportunityRow
+from backend.app.infrastructure.database.models import (
+    CompanyLocationRow,
+    OpportunityRow,
+)
 from tests.v2_builders import (
+    APPLICATION,
     COMPANY,
     COMPANY_LOCATION,
     ELIGIBILITY,
     EVALUATION,
     OPPORTUNITY,
     OTHER_OPPORTUNITY,
+    RUN,
+    SEARCH_PROFILE,
+    a_chat_action_execution,
+    a_chat_action_proposal,
+    a_chat_message,
     a_check,
     a_company,
     a_company_location,
+    a_conversation,
     a_reason,
     an_eligibility_result,
     an_evaluation,
@@ -441,3 +466,123 @@ def test_a_site_row_that_locates_nothing_is_refused_by_name():
     with pytest.raises(ValueError, match=str(COMPANY_LOCATION)):
         company_location_to_domain(CompanyLocationRow(id=COMPANY_LOCATION,
                                                       company_id=COMPANY))
+
+
+def test_a_conversation_survives_the_trip_to_the_row_and_back():
+    """Every column, including the nullable `last_message_at` a live thread carries."""
+    conversation = a_conversation()
+    assert conversation_to_domain(conversation_to_row(conversation)) == conversation
+
+
+def test_a_conversation_with_no_turns_yet_keeps_its_null_last_message():
+    """`last_message_at` is `None` until the first turn, and must read back as `None`
+    rather than as the `created_at` a coalescing mapper might substitute."""
+    conversation = a_conversation(last_message_at=None)
+    read_back = conversation_to_domain(conversation_to_row(conversation))
+    assert read_back == conversation
+    assert read_back.last_message_at is None
+
+
+def test_a_user_turn_carries_no_llm_provenance_and_an_assistant_turn_does():
+    """The two message shapes the `user_has_no_run` CHECK draws a line between.
+
+    A user turn has no run and no provider key; an assistant turn names both, because
+    it is traceable to the telemetry of the call that produced it. Both must survive the
+    trip as the exact shape written, or a UI could not tell an authored turn from a
+    generated one.
+    """
+    user_turn = a_chat_message()
+    assert chat_message_to_domain(chat_message_to_row(user_turn)) == user_turn
+    assert user_turn.llm_run_id is None and user_turn.provider_key is None
+
+    assistant_turn = a_chat_message(
+        sequence=1, role=ChatMessageRole.ASSISTANT, content="Voici votre CV tailored.",
+        llm_run_id=RUN, provider_key="openai_compatible")
+    read_back = chat_message_to_domain(chat_message_to_row(assistant_turn))
+    assert read_back == assistant_turn
+    assert read_back.llm_run_id == RUN and read_back.provider_key == "openai_compatible"
+
+
+def test_a_proposal_survives_the_trip_with_its_action_re_validated():
+    """The whole point of the proposal mapper: the typed action must round-trip.
+
+    Equality over the entire object, so a field added to `ChatActionProposal` and
+    forgotten fails here. The action is a `SubmitApplicationAction` — the heaviest — so
+    the `application_id` UUID has to survive JSONB, which has no UUID type.
+    """
+    proposal = a_chat_action_proposal()
+    read_back = chat_action_proposal_to_domain(chat_action_proposal_to_row(proposal))
+    assert read_back == proposal
+    assert read_back.action.application_id == APPLICATION
+
+
+def test_the_denormalised_kind_column_always_equals_the_action_kind():
+    """`kind` is a column so "my open submit proposals" is one indexed query, and it
+    is written from the same validated object as the JSONB — so the two cannot drift,
+    which this asserts across three different action families."""
+    for action in (SetSearchRadiusAction(search_profile_id=SEARCH_PROFILE,
+                                          radius_km=25.0),
+                   NavigateAction(target=NavigationTarget.APPLICATIONS)):
+        row = chat_action_proposal_to_row(a_chat_action_proposal(action=action))
+        assert row.kind is action.kind
+        assert row.action["kind"] == action.kind.value
+
+
+def test_confirming_a_proposal_writes_onto_the_row_and_forces_updated_at():
+    """A confirm moves `status` off `PROPOSED`; the mapper must mutate the row in place.
+
+    `row is target` is what makes the repository an upsert rather than an insert of a
+    second proposal, and `updated_at` has to be forced into the UPDATE — a status change
+    at the same instant as the insert would otherwise be lost under asyncio.
+    """
+    row = chat_action_proposal_to_row(a_chat_action_proposal())
+    assert row.status is ChatActionProposalStatus.PROPOSED
+    executed = a_chat_action_proposal(status=ChatActionProposalStatus.EXECUTED)
+    updated = chat_action_proposal_to_row(executed, row)
+    assert updated is row
+    assert updated.status is ChatActionProposalStatus.EXECUTED
+
+
+def test_a_stored_action_whose_kind_left_the_grammar_is_refused_on_the_way_back():
+    """JSONB accepts any shape, so the read-back re-validates against the closed union.
+
+    A payload an older version wrote whose `kind` is no longer a member must fail here,
+    loudly, beside the row that has it — never reach an executor branch that no longer
+    exists and be run as a half-understood command.
+    """
+    row = chat_action_proposal_to_row(a_chat_action_proposal())
+    row.action = {"kind": "DELETE_EVERYTHING", "application_id": str(APPLICATION)}
+    with pytest.raises(ValidationError):
+        chat_action_proposal_to_domain(row)
+
+
+def test_a_hand_built_proposal_row_reconstructs_from_its_stored_kind():
+    """The union is selected by the `kind` inside the JSONB, not by the column.
+
+    The column is the denormalised copy for querying; the reconstruction reads the
+    payload. A row built by hand with a navigate payload comes back a `NavigateAction`,
+    which is what proves the mapper trusts the validated payload over the column.
+    """
+    proposal = a_chat_action_proposal(
+        action=NavigateAction(target=NavigationTarget.MATCHES,
+                              opportunity_id=OPPORTUNITY))
+    read_back = chat_action_proposal_to_domain(chat_action_proposal_to_row(proposal))
+    assert isinstance(read_back.action, NavigateAction)
+    assert read_back.action.target is NavigationTarget.MATCHES
+    assert read_back.action.opportunity_id == OPPORTUNITY
+
+
+def test_an_execution_survives_the_trip_to_the_row_and_back():
+    """The executor's audit, including the optional `detail` and `result_ref`."""
+    execution = a_chat_action_execution()
+    assert chat_action_execution_to_domain(
+        chat_action_execution_to_row(execution)) == execution
+
+
+def test_an_execution_with_no_detail_reads_back_with_none():
+    """A refused-at-validation outcome may carry neither a detail nor a result, and the
+    absent columns must read back as `None` rather than empty strings."""
+    execution = a_chat_action_execution(detail=None, result_ref=None)
+    read_back = chat_action_execution_to_domain(chat_action_execution_to_row(execution))
+    assert read_back == execution
+    assert read_back.detail is None and read_back.result_ref is None

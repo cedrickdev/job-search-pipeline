@@ -29,5 +29,6 @@ The modules, in dependency order:
 - `application_answer` — form questions, proposed answers and their resolution;
 - `application` — the execution aggregate and its lifecycle state machine;
 - `application_event` — the append-only audit trail and submission attempts;
-- `execution_gate` — the deterministic gate that authorizes a submission.
+- `execution_gate` — the deterministic gate that authorizes a submission;
+- `chat` — the career chat's typed action grammar and its persisted turns.
 """

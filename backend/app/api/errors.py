@@ -29,6 +29,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 
 from backend.app.api import API_V2_PREFIX
+from backend.app.chat.conversation import ConversationNotFound, EmptyChatMessage
+from backend.app.chat.executor import ChatProposalNotActionable, ChatProposalNotFound
 from backend.app.documents import ArtifactNotFound
 from backend.app.documents.generator import InsufficientEvidence
 from backend.app.domain.application_failure import ApplicationError, ApplicationFailureCode
@@ -344,6 +346,41 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         # branches on.
         status_code = _APPLICATION_STATUS.get(exc.code, status.HTTP_409_CONFLICT)
         return _json(status_code, exc.code.value.lower(), exc.detail)
+
+    @app.exception_handler(ConversationNotFound)
+    async def _conversation_missing(request: Request,
+                                    exc: ConversationNotFound) -> JSONResponse:
+        # 404 for "no such conversation" and "not yours" alike — the service raises one
+        # exception for both, so a caller cannot learn another account holds a thread by
+        # asking for it. The id it carries is the client's own but is not echoed.
+        return _json(status.HTTP_404_NOT_FOUND, "conversation_not_found",
+                     "no such conversation")
+
+    @app.exception_handler(EmptyChatMessage)
+    async def _empty_chat_message(request: Request,
+                                  exc: EmptyChatMessage) -> JSONResponse:
+        # 422: the request is well-formed but its message is empty or whitespace, so there
+        # is no turn to run. The fixed sentence is the service's own, never echoed input.
+        return _json(UNPROCESSABLE_CONTENT, "empty_chat_message",
+                     "a chat message must not be empty")
+
+    @app.exception_handler(ChatProposalNotFound)
+    async def _chat_proposal_missing(request: Request,
+                                     exc: ChatProposalNotFound) -> JSONResponse:
+        # 404 for "no such proposal" and "not yours" alike — one exception for both, so a
+        # confirm or dismiss naming another account's proposal reads as absent.
+        return _json(status.HTTP_404_NOT_FOUND, "chat_proposal_not_found",
+                     "no such proposal")
+
+    @app.exception_handler(ChatProposalNotActionable)
+    async def _chat_proposal_not_actionable(
+            request: Request, exc: ChatProposalNotActionable) -> JSONResponse:
+        # 409: the proposal is real and this account's, but it is no longer open — it was
+        # already executed, rejected, failed or dismissed. The status is named so a UI can
+        # re-render the card, not as a secret.
+        return _json(status.HTTP_409_CONFLICT, "chat_proposal_not_actionable",
+                     f"a proposal in status {exc.status.value} cannot be acted on",
+                     state=exc.status.value)
 
     @app.exception_handler(LLMError)
     async def _llm_error(request: Request, exc: LLMError) -> JSONResponse:

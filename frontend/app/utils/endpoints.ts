@@ -82,8 +82,13 @@ export function job(template: JobTemplate, jobId: number): string {
 // document generators keyed by posting, and the document list, one document and
 // its PDF download. Phase 11 adds the LLM connection settings — the list and its
 // create (`/settings/llm/connections` GET+POST), one connection (GET+PATCH+DELETE),
-// and its enable, default and healthcheck sub-resources. The `satisfies` clause is
-// the same compile-time guard.
+// and its enable, default and healthcheck sub-resources. Phase 12 adds the
+// application engine (`/applications` and its per-application lifecycle actions).
+// Phase 13 adds the career-chat control plane: the thread list and its create
+// (`/chat/conversations` GET+POST), one thread (GET), its messages (GET plus the
+// streaming POST that returns `text/event-stream`, not JSON) and its proposals
+// (GET), and the two proposal verbs keyed by proposal id (`/confirm`, `/dismiss`).
+// The `satisfies` clause is the same compile-time guard.
 export const V2_ENDPOINTS = {
   login: '/api/v2/auth/login',
   logout: '/api/v2/auth/logout',
@@ -119,6 +124,12 @@ export const V2_ENDPOINTS = {
   applicationSubmit: '/api/v2/applications/{application_id}/submit',
   applicationCancel: '/api/v2/applications/{application_id}/cancel',
   applicationEvents: '/api/v2/applications/{application_id}/events',
+  chatConversations: '/api/v2/chat/conversations',
+  chatConversation: '/api/v2/chat/conversations/{conversation_id}',
+  chatMessages: '/api/v2/chat/conversations/{conversation_id}/messages',
+  chatProposals: '/api/v2/chat/conversations/{conversation_id}/proposals',
+  chatProposalConfirm: '/api/v2/chat/proposals/{proposal_id}/confirm',
+  chatProposalDismiss: '/api/v2/chat/proposals/{proposal_id}/dismiss',
 } as const satisfies Record<string, keyof paths>
 
 /**
@@ -237,4 +248,44 @@ type ApplicationTemplate = Extract<
  */
 export function application(template: ApplicationTemplate, applicationId: string): string {
   return template.replace('{application_id}', applicationId)
+}
+
+/** Every V2 endpoint whose template contains `{conversation_id}`. */
+type ConversationTemplate = Extract<
+  (typeof V2_ENDPOINTS)[keyof typeof V2_ENDPOINTS],
+  `${string}{conversation_id}${string}`
+>
+
+/**
+ * Resolve a `{conversation_id}` template — one thread's read, its messages (list or
+ * the streaming turn) or its proposals (Phase 13).
+ *
+ * A conversation id is a UUID string and the owner is not in the path: a thread is
+ * user-owned, reached through the session, so asking for another account's thread by
+ * id is a 404 rather than its transcript. The account is never a body or query field
+ * either — it is always the signed-in session's
+ * (docs/AUTHENTICATION.md §Authorization, docs/CAREER_CHAT.md §Sharing).
+ */
+export function conversation(template: ConversationTemplate, conversationId: string): string {
+  return template.replace('{conversation_id}', conversationId)
+}
+
+/** Every V2 endpoint whose template contains `{proposal_id}`. */
+type ProposalTemplate = Extract<
+  (typeof V2_ENDPOINTS)[keyof typeof V2_ENDPOINTS],
+  `${string}{proposal_id}${string}`
+>
+
+/**
+ * Resolve a `{proposal_id}` template — the confirm or dismiss of one chat proposal
+ * (Phase 13).
+ *
+ * A proposal id is a UUID string and the owner is not in the path: a proposal belongs
+ * to a thread that belongs to the session's account, so confirming another account's
+ * proposal by id is a 404, never its execution. Confirm re-runs every gate the action
+ * would face on its own route — a proposal is a request, not a permission
+ * (docs/CAREER_CHAT.md §Sharing, §The last gate).
+ */
+export function chatProposal(template: ProposalTemplate, proposalId: string): string {
+  return template.replace('{proposal_id}', proposalId)
 }

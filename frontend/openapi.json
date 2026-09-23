@@ -435,6 +435,28 @@
         "title": "AppliedBody",
         "type": "object"
       },
+      "ApproveApplicationAction": {
+        "additionalProperties": false,
+        "description": "Record a human's approval of a prepared application (§52).",
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "APPROVE_APPLICATION",
+            "default": "APPROVE_APPLICATION",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id"
+        ],
+        "title": "ApproveApplicationAction",
+        "type": "object"
+      },
       "AssessedOpportunityResponse": {
         "additionalProperties": false,
         "description": "The posting an assessment is about, as much of it as a list card needs.\n\nA summary rather than the whole `Opportunity` — no description, salary or source\nsnapshot — because the assessment endpoints answer \"how does this pair look?\",\nnot \"show me the posting\". It is the same shape whether it arrives from an\nevaluate call or a list, so a client holds one opportunity model here.",
@@ -667,6 +689,28 @@
           "file"
         ],
         "title": "Body_post_transcribe_api_transcribe_post",
+        "type": "object"
+      },
+      "CancelApplicationAction": {
+        "additionalProperties": false,
+        "description": "Abandon an application before it reaches the employer.",
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "CANCEL_APPLICATION",
+            "default": "CANCEL_APPLICATION",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id"
+        ],
+        "title": "CancelApplicationAction",
         "type": "object"
       },
       "CandidateClaimResponse": {
@@ -1091,6 +1135,211 @@
         "title": "CareerSiteResponse",
         "type": "object"
       },
+      "ChatActionExecutionOutcome": {
+        "description": "How one attempt to execute a confirmed proposal ended.\n\nTold apart from the proposal's status because an execution is the *event* and the\nstatus is the proposal's resulting *state*: a `REJECTED` outcome is a proposal the\nexecutor would not permit, a `FAILED` outcome is one it permitted but whose service\ncall raised, and `SUCCEEDED` is the action having run.",
+        "enum": [
+          "SUCCEEDED",
+          "REJECTED",
+          "FAILED"
+        ],
+        "title": "ChatActionExecutionOutcome",
+        "type": "string"
+      },
+      "ChatActionExecutionResponse": {
+        "additionalProperties": false,
+        "description": "The audited record of one confirmed proposal's execution.\n\n`outcome` says whether the action was refused at validation (`REJECTED`), permitted but\nfailed (`FAILED`), or ran (`SUCCEEDED`); `result_ref` carries the id or handle it\nproduced (an application's new state, a document id, a navigation target) and `detail`\na secret-free note — both composed by the executor from typed, domain-safe values,\nnever a raw provider or driver message.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ChatActionExecutionOutcome"
+          },
+          "proposal_id": {
+            "format": "uuid",
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Ref"
+          }
+        },
+        "required": [
+          "id",
+          "proposal_id",
+          "outcome",
+          "detail",
+          "result_ref",
+          "created_at"
+        ],
+        "title": "ChatActionExecutionResponse",
+        "type": "object"
+      },
+      "ChatActionProposalListResponse": {
+        "additionalProperties": false,
+        "description": "One thread's proposals, oldest first, wrapped so it can grow a field.",
+        "properties": {
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/ChatActionProposalResponse"
+            },
+            "title": "Proposals",
+            "type": "array"
+          }
+        },
+        "required": [
+          "proposals"
+        ],
+        "title": "ChatActionProposalListResponse",
+        "type": "object"
+      },
+      "ChatActionProposalResponse": {
+        "additionalProperties": false,
+        "description": "One typed action the model proposed, awaiting a human's confirm or dismiss.\n\n`action` is the domain `ChatAction` union verbatim: secret-free by construction, so the\nclient receives the exact discriminated variant to render and to confirm. `status`\nstarts `PROPOSED` and only an explicit confirm or dismiss moves it — the response is how\na UI knows whether a card is still actionable.",
+        "properties": {
+          "action": {
+            "discriminator": {
+              "mapping": {
+                "APPROVE_APPLICATION": "#/components/schemas/ApproveApplicationAction",
+                "CANCEL_APPLICATION": "#/components/schemas/CancelApplicationAction",
+                "CREATE_APPLICATION": "#/components/schemas/CreateApplicationAction",
+                "GENERATE_COVER_LETTER": "#/components/schemas/GenerateCoverLetterAction",
+                "GENERATE_RESUME": "#/components/schemas/GenerateResumeAction",
+                "NAVIGATE": "#/components/schemas/NavigateAction",
+                "OPEN_INTERVIEW_PREP": "#/components/schemas/OpenInterviewPrepAction",
+                "PREPARE_APPLICATION": "#/components/schemas/PrepareApplicationAction",
+                "SET_SEARCH_RADIUS": "#/components/schemas/SetSearchRadiusAction",
+                "SUBMIT_APPLICATION": "#/components/schemas/SubmitApplicationAction",
+                "UPDATE_SEARCH_KEYWORDS": "#/components/schemas/UpdateSearchKeywordsAction"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GenerateResumeAction"
+              },
+              {
+                "$ref": "#/components/schemas/GenerateCoverLetterAction"
+              },
+              {
+                "$ref": "#/components/schemas/CreateApplicationAction"
+              },
+              {
+                "$ref": "#/components/schemas/PrepareApplicationAction"
+              },
+              {
+                "$ref": "#/components/schemas/ApproveApplicationAction"
+              },
+              {
+                "$ref": "#/components/schemas/SubmitApplicationAction"
+              },
+              {
+                "$ref": "#/components/schemas/CancelApplicationAction"
+              },
+              {
+                "$ref": "#/components/schemas/SetSearchRadiusAction"
+              },
+              {
+                "$ref": "#/components/schemas/UpdateSearchKeywordsAction"
+              },
+              {
+                "$ref": "#/components/schemas/NavigateAction"
+              },
+              {
+                "$ref": "#/components/schemas/OpenInterviewPrepAction"
+              }
+            ],
+            "title": "Action"
+          },
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChatActionProposalStatus"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "message_id",
+          "ordinal",
+          "action",
+          "status",
+          "summary",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ChatActionProposalResponse",
+        "type": "object"
+      },
+      "ChatActionProposalStatus": {
+        "description": "Where one proposal is in its life from \"offered\" to \"done\".\n\nA proposal is born `PROPOSED`. A human confirming it that succeeds moves it to\n`EXECUTED`; one that the executor refuses at validation moves it to `REJECTED`\n(it was never permitted); one whose underlying service action failed moves it to\n`FAILED` (it was permitted but did not complete). `DISMISSED` is the user declining\nit. Only a `PROPOSED` proposal may be executed or dismissed — the others are terminal.",
+        "enum": [
+          "PROPOSED",
+          "EXECUTED",
+          "REJECTED",
+          "FAILED",
+          "DISMISSED"
+        ],
+        "title": "ChatActionProposalStatus",
+        "type": "string"
+      },
       "ChatBody": {
         "properties": {
           "message": {
@@ -1113,6 +1362,179 @@
         ],
         "title": "ChatBody",
         "type": "object"
+      },
+      "ChatMessageListResponse": {
+        "additionalProperties": false,
+        "description": "One thread's turns, oldest first — the transcript as it grew.",
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessageResponse"
+            },
+            "title": "Messages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "title": "ChatMessageListResponse",
+        "type": "object"
+      },
+      "ChatMessageResponse": {
+        "additionalProperties": false,
+        "description": "One stored turn: its prose and, for an assistant turn, its telemetry provenance.\n\n`content` is the prose only — the fenced proposal block was parsed out into proposals\nand is never stored here. A user turn carries no `llm_run_id`/`provider_key`; an\nassistant turn carries both, so a turn is traceable to the run that produced it.",
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "llm_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Run Id"
+          },
+          "provider_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Key"
+          },
+          "role": {
+            "$ref": "#/components/schemas/ChatMessageRole"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "role",
+          "content",
+          "sequence",
+          "llm_run_id",
+          "provider_key",
+          "created_at"
+        ],
+        "title": "ChatMessageResponse",
+        "type": "object"
+      },
+      "ChatMessageRole": {
+        "description": "Who authored one stored chat message.\n\nOnly two roles are ever persisted, and that is deliberate. `SYSTEM` is the prompt,\nwhich lives in the versioned `PromptRegistry` and is never a row a user could read or\nreplay; `TOOL` results do not exist here because the chat never lets the *provider*\nrun a tool — the application executes confirmed actions, out of band, and records the\noutcome as its own audit rather than feeding it back as a message role.",
+        "enum": [
+          "USER",
+          "ASSISTANT"
+        ],
+        "title": "ChatMessageRole",
+        "type": "string"
+      },
+      "ChatStreamEventResponse": {
+        "additionalProperties": false,
+        "description": "The SSE wire shape of one `ChatStreamEvent` a streaming turn emits.\n\nDeliberately the *service* event serialized, never the raw provider `LLMStreamEvent`: a\n`TOKEN` carries a chunk of prose to append, `COMPLETED` the persisted assistant message\nand its proposals, and `ERROR` a typed, secret-free code and note. The client reads the\nstream to render prose live, then renders the proposals from the terminal `COMPLETED`\n(or the failure from `ERROR`) — the same rows a later `GET` of the thread returns.",
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Detail"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatMessageResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/ChatActionProposalResponse"
+            },
+            "title": "Proposals",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "type": {
+            "$ref": "#/components/schemas/ChatStreamEventType"
+          }
+        },
+        "required": [
+          "type",
+          "text",
+          "message",
+          "proposals",
+          "error_code",
+          "error_detail"
+        ],
+        "title": "ChatStreamEventResponse",
+        "type": "object"
+      },
+      "ChatStreamEventType": {
+        "description": "The three shapes a chat turn streams to its caller.\n\nA service-level event, deliberately distinct from the provider's `LLMStreamEvent`, so\nthe API layer serializes *these* to SSE and never the raw LLM contract: a `TOKEN` is a\nchunk of prose to append, `COMPLETED` carries the persisted assistant message and its\nproposals, and `ERROR` carries a typed, secret-free code and note for a turn that\nreached a provider and did not succeed.",
+        "enum": [
+          "TOKEN",
+          "COMPLETED",
+          "ERROR"
+        ],
+        "title": "ChatStreamEventType",
+        "type": "string"
       },
       "ClaimType": {
         "description": "The kind of assertion a claim makes.",
@@ -1779,6 +2201,75 @@
         "title": "ContractType",
         "type": "string"
       },
+      "ConversationListResponse": {
+        "additionalProperties": false,
+        "description": "This account's threads, most recent activity first, wrapped so it can grow.",
+        "properties": {
+          "conversations": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationResponse"
+            },
+            "title": "Conversations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "conversations"
+        ],
+        "title": "ConversationListResponse",
+        "type": "object"
+      },
+      "ConversationResponse": {
+        "additionalProperties": false,
+        "description": "One chat thread's caption and activity — never its messages inline.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_archived": {
+            "title": "Is Archived",
+            "type": "boolean"
+          },
+          "last_message_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Message At"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "is_archived",
+          "created_at",
+          "updated_at",
+          "last_message_at"
+        ],
+        "title": "ConversationResponse",
+        "type": "object"
+      },
       "CountrySearchArea": {
         "additionalProperties": false,
         "description": "An entire country.",
@@ -1873,6 +2364,28 @@
           "signature"
         ],
         "title": "CoverLetterDocument",
+        "type": "object"
+      },
+      "CreateApplicationAction": {
+        "additionalProperties": false,
+        "description": "Open an application for a posting from its stored decision (§2-3, §36).",
+        "properties": {
+          "kind": {
+            "const": "CREATE_APPLICATION",
+            "default": "CREATE_APPLICATION",
+            "title": "Kind",
+            "type": "string"
+          },
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ],
+        "title": "CreateApplicationAction",
         "type": "object"
       },
       "CreateApplicationRequest": {
@@ -2526,6 +3039,40 @@
         "title": "EvidenceResponse",
         "type": "object"
       },
+      "GenerateCoverLetterAction": {
+        "additionalProperties": false,
+        "description": "Draft the candidate's cover letter for one posting (executes `DocumentService`).",
+        "properties": {
+          "kind": {
+            "const": "GENERATE_COVER_LETTER",
+            "default": "GENERATE_COVER_LETTER",
+            "title": "Kind",
+            "type": "string"
+          },
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          },
+          "target_language": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Language"
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ],
+        "title": "GenerateCoverLetterAction",
+        "type": "object"
+      },
       "GenerateDocumentRequest": {
         "additionalProperties": false,
         "description": "Ask for a document to be generated for a posting, for this account's profile.\n\nThe opportunity and the document type are in the path; the body carries only an\noptional `language` override. Left unset, the service writes the document in the\nposting's own language, falling back to the candidate's first declared one — it\nnever guesses a language the candidate did not state. There is no profile or\nowner field, for the same reason `EvaluateMatchRequest` has none.",
@@ -2544,6 +3091,40 @@
           }
         },
         "title": "GenerateDocumentRequest",
+        "type": "object"
+      },
+      "GenerateResumeAction": {
+        "additionalProperties": false,
+        "description": "Tailor the candidate's résumé to one posting (executes `DocumentService`).",
+        "properties": {
+          "kind": {
+            "const": "GENERATE_RESUME",
+            "default": "GENERATE_RESUME",
+            "title": "Kind",
+            "type": "string"
+          },
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          },
+          "target_language": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Language"
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ],
+        "title": "GenerateResumeAction",
         "type": "object"
       },
       "GeoLocationResponse": {
@@ -3310,6 +3891,52 @@
         "title": "MatchedRadiusResponse",
         "type": "object"
       },
+      "NavigateAction": {
+        "additionalProperties": false,
+        "description": "Point the client at a screen — a hint that mutates nothing on the server.",
+        "properties": {
+          "kind": {
+            "const": "NAVIGATE",
+            "default": "NAVIGATE",
+            "title": "Kind",
+            "type": "string"
+          },
+          "opportunity_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opportunity Id"
+          },
+          "target": {
+            "$ref": "#/components/schemas/NavigationTarget"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "title": "NavigateAction",
+        "type": "object"
+      },
+      "NavigationTarget": {
+        "description": "A screen a `NAVIGATE` action may point the client at.\n\nClosed on purpose: navigation is a client-side hint, but letting the model name an\narbitrary path would be an open redirect dressed as a chat action. The client maps\neach member to a route it owns; a target the client does not recognise is simply\nignored, never followed.",
+        "enum": [
+          "OPPORTUNITIES",
+          "APPLICATIONS",
+          "DOCUMENTS",
+          "MATCHES",
+          "COMPANIES",
+          "INTERVIEW_PREP",
+          "SETTINGS"
+        ],
+        "title": "NavigationTarget",
+        "type": "string"
+      },
       "NotesBody": {
         "properties": {
           "notes_md": {
@@ -3369,6 +3996,28 @@
           "may_complete"
         ],
         "title": "OnboardingStateResponse",
+        "type": "object"
+      },
+      "OpenInterviewPrepAction": {
+        "additionalProperties": false,
+        "description": "Open the existing V1 interview-prep view for a posting (client-side, no mutation).\n\nThe only interview capability the chat exposes, and deliberately so: the adaptive\nsimulator, scoring and readiness are Phase 14 and out of scope (§19). This is a\nnavigation hint to a view V1 already ships, nothing more.",
+        "properties": {
+          "kind": {
+            "const": "OPEN_INTERVIEW_PREP",
+            "default": "OPEN_INTERVIEW_PREP",
+            "title": "Kind",
+            "type": "string"
+          },
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "opportunity_id"
+        ],
+        "title": "OpenInterviewPrepAction",
         "type": "object"
       },
       "OpportunityGeoItemResponse": {
@@ -3636,6 +4285,28 @@
           "document_type"
         ],
         "title": "PinnedDocumentResponse",
+        "type": "object"
+      },
+      "PrepareApplicationAction": {
+        "additionalProperties": false,
+        "description": "Prepare an application and route it by the gate — reversible, never submits.",
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "PREPARE_APPLICATION",
+            "default": "PREPARE_APPLICATION",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id"
+        ],
+        "title": "PrepareApplicationAction",
         "type": "object"
       },
       "ProviderHealthResponse": {
@@ -4240,6 +4911,21 @@
         "title": "SearchProfileResponse",
         "type": "object"
       },
+      "SendMessageRequest": {
+        "additionalProperties": false,
+        "description": "One user turn: the words to send. The reply streams back as SSE events.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SendMessageRequest",
+        "type": "object"
+      },
       "SessionResponse": {
         "additionalProperties": false,
         "description": "The current session's window — issued, expires — and nothing identifying it.\n\nNo session id and no digest. The client has the cookie; an id in a body would\nonly be useful to something that wanted to name somebody else's session.",
@@ -4281,6 +4967,35 @@
           "enabled"
         ],
         "title": "SetLLMConnectionEnabledRequest",
+        "type": "object"
+      },
+      "SetSearchRadiusAction": {
+        "additionalProperties": false,
+        "description": "Change the radius of a saved search's radius area(s) (executes `OnboardingService`).",
+        "properties": {
+          "kind": {
+            "const": "SET_SEARCH_RADIUS",
+            "default": "SET_SEARCH_RADIUS",
+            "title": "Kind",
+            "type": "string"
+          },
+          "radius_km": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 500.0,
+            "title": "Radius Km",
+            "type": "number"
+          },
+          "search_profile_id": {
+            "format": "uuid",
+            "title": "Search Profile Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "search_profile_id",
+          "radius_km"
+        ],
+        "title": "SetSearchRadiusAction",
         "type": "object"
       },
       "SettingsBody": {
@@ -4453,6 +5168,25 @@
         "title": "SpontaneousApplicationSupport",
         "type": "string"
       },
+      "StartConversationRequest": {
+        "additionalProperties": false,
+        "description": "Open a new chat thread, optionally captioned from the user's opening words.\n\n`title` is a caption the service truncates, never authority the model or the client\ngrants itself; an absent or blank one falls back to a fixed default. There is no\n`user_id` field — the owner is the session's account (§Security).",
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "StartConversationRequest",
+        "type": "object"
+      },
       "StatusBody": {
         "properties": {
           "detail": {
@@ -4475,6 +5209,28 @@
           "status"
         ],
         "title": "StatusBody",
+        "type": "object"
+      },
+      "SubmitApplicationAction": {
+        "additionalProperties": false,
+        "description": "Submit an approved application — the irreversible boundary (§1, §5, §80-88).\n\nCarries no override of any kind: the executor hands this to `ApplicationService.submit`,\nwhich re-evaluates the Phase 12 gate (policy, eligibility, rate budget, the\nconcurrency-safe reservation) exactly as the HTTP route does. The chat is one more\ncaller of that boundary, never a way around it.",
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "SUBMIT_APPLICATION",
+            "default": "SUBMIT_APPLICATION",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id"
+        ],
+        "title": "SubmitApplicationAction",
         "type": "object"
       },
       "UpdateLLMConnectionRequest": {
@@ -4566,6 +5322,58 @@
           }
         },
         "title": "UpdateLLMConnectionRequest",
+        "type": "object"
+      },
+      "UpdateSearchKeywordsAction": {
+        "additionalProperties": false,
+        "description": "Replace a saved search's title and/or excluded keyword lists.\n\nBoth fields are optional and default to \"leave unchanged\" (`None`); an empty tuple is\na real value that clears a list, which matches the domain's convention that an empty\nallow-list restricts nothing. A field the model omits is not touched, so a proposal to\nchange the title keywords cannot silently wipe the exclusions.",
+        "properties": {
+          "excluded_keywords": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excluded Keywords"
+          },
+          "kind": {
+            "const": "UPDATE_SEARCH_KEYWORDS",
+            "default": "UPDATE_SEARCH_KEYWORDS",
+            "title": "Kind",
+            "type": "string"
+          },
+          "search_profile_id": {
+            "format": "uuid",
+            "title": "Search Profile Id",
+            "type": "string"
+          },
+          "title_keywords": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Keywords"
+          }
+        },
+        "required": [
+          "search_profile_id"
+        ],
+        "title": "UpdateSearchKeywordsAction",
         "type": "object"
       },
       "UserStatus": {
@@ -6482,6 +7290,340 @@
         "summary": "Read Session",
         "tags": [
           "v2-auth"
+        ]
+      }
+    },
+    "/api/v2/chat/conversations": {
+      "get": {
+        "description": "This account's chat threads, most recent activity first.",
+        "operationId": "list_conversations_api_v2_chat_conversations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Conversations",
+        "tags": [
+          "v2-chat"
+        ]
+      },
+      "post": {
+        "description": "Open a new, empty chat thread for this account (§Security).\n\n201, because it creates a resource. `title` is a caption the service truncates, never\nauthority; an absent or blank one falls back to a default. The thread has no turns yet.",
+        "operationId": "start_conversation_api_v2_chat_conversations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartConversationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Conversation",
+        "tags": [
+          "v2-chat"
+        ]
+      }
+    },
+    "/api/v2/chat/conversations/{conversation_id}": {
+      "get": {
+        "description": "One thread's caption and activity, or 404 if it is not this account's.",
+        "operationId": "read_conversation_api_v2_chat_conversations__conversation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Conversation",
+        "tags": [
+          "v2-chat"
+        ]
+      }
+    },
+    "/api/v2/chat/conversations/{conversation_id}/messages": {
+      "get": {
+        "description": "One thread's turns, oldest first. 404 when the thread is not this account's.",
+        "operationId": "list_messages_api_v2_chat_conversations__conversation_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatMessageListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Messages",
+        "tags": [
+          "v2-chat"
+        ]
+      },
+      "post": {
+        "description": "Send one user turn and stream the assistant's reply as Server-Sent Events.\n\nOwnership and empty-message checks run *before* the stream is returned, so a thread\nthat is not this account's is a 404 and an empty message a 422 — an ordinary JSON error,\nnot an event mid-stream. Once past them the user's message is persisted and the reply\nstreams: `TOKEN` events as prose arrives, then a terminal `COMPLETED` carrying the\nstored assistant message and its `PROPOSED` proposals, or `ERROR` for a turn that\nreached a provider and failed. Nothing here executes a proposal — that is `confirm`.",
+        "operationId": "send_message_api_v2_chat_conversations__conversation_id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatStreamEventResponse"
+                }
+              }
+            },
+            "description": "A Server-Sent Events stream: one ChatStreamEventResponse per `data:` line — TOKEN chunks, then a terminal COMPLETED or ERROR."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send Message",
+        "tags": [
+          "v2-chat"
+        ]
+      }
+    },
+    "/api/v2/chat/conversations/{conversation_id}/proposals": {
+      "get": {
+        "description": "One thread's proposals, oldest first. 404 when the thread is not this account's.\n\nThe current status of each proposal is on the response, so a UI knows which cards are\nstill open to confirm or dismiss and which are already terminal.",
+        "operationId": "list_proposals_api_v2_chat_conversations__conversation_id__proposals_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatActionProposalListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Proposals",
+        "tags": [
+          "v2-chat"
+        ]
+      }
+    },
+    "/api/v2/chat/proposals/{proposal_id}/confirm": {
+      "post": {
+        "description": "Execute one confirmed proposal — the last gate, and the only place it runs.\n\nThe proposal is re-authorized (ownership, coarse domain state) and then handed to the\nsame service the HTTP routes call, which runs its own authoritative checks — a submit\nre-runs the whole Phase 12 gate. Idempotent by the proposal's id: a double-confirm\nreturns the recorded execution rather than running twice. The response is the audited\noutcome (`SUCCEEDED`, `REJECTED` or `FAILED`); a 404 when the proposal is not this\naccount's, a 409 when it is no longer open.",
+        "operationId": "confirm_proposal_api_v2_chat_proposals__proposal_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatActionExecutionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Proposal",
+        "tags": [
+          "v2-chat"
+        ]
+      }
+    },
+    "/api/v2/chat/proposals/{proposal_id}/dismiss": {
+      "post": {
+        "description": "Decline an open proposal without running it — `PROPOSED` → `DISMISSED`.\n\nWrites no execution because nothing was attempted; it only moves the proposal out of\nthe open set so it cannot later be confirmed. A 404 when the proposal is not this\naccount's, a 409 when it is no longer open (already executed, rejected, failed or\ndismissed). Returns the proposal in its new status.",
+        "operationId": "dismiss_proposal_api_v2_chat_proposals__proposal_id__dismiss_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatActionProposalResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dismiss Proposal",
+        "tags": [
+          "v2-chat"
         ]
       }
     },

@@ -863,10 +863,11 @@ class ApplicationRepository(Protocol):
     The idempotency guarantee is physical: `application.id` is derived from the
     idempotency key and the table's UNIQUE constraint covers the key (§36), so
     `upsert` of a second application for the same target collides rather than opening
-    a duplicate. `count_submitted_since` backs the rate limit the gate reads (§49),
-    counted inside the caller's transaction so the reservation is concurrency-safe;
-    `list_in_flight` backs startup recovery (§88), and is deliberately *not*
-    user-scoped because recovery is a system sweep across every account's stuck runs.
+    a duplicate. `count_active_submissions_since` backs the rate limit the gate reads
+    (§49), counted under `lock_submission_budget` so the count → decide → reserve
+    sequence is atomic against another worker of the same user; `list_in_flight` backs
+    startup recovery (§88), and is deliberately *not* user-scoped because recovery is a
+    system sweep across every account's stuck runs.
     """
 
     async def get(self, user_id: UserId,
@@ -893,14 +894,31 @@ class ApplicationRepository(Protocol):
         """This user's applications, most recently updated first."""
         ...
 
-    async def count_submitted_since(self, user_id: UserId,
-                                    since: datetime) -> int:
-        """How many of this user's applications reached SUBMITTED since an instant.
+    async def lock_submission_budget(self, user_id: UserId) -> None:
+        """Serialize this user's submission-budget check against other workers.
 
-        The count the rate-limit reservation reads (§49-51). The caller passes the
-        window start (start-of-day, start-of-week) computed against its own clock, so
-        this stays a pure query and the reservation logic — count, compare, write —
-        happens inside one transaction the caller controls.
+        Taken at the top of a submission, before the count, and held to the end of the
+        caller's transaction: it makes `count_active_submissions_since` → gate decision
+        → reserve-as-SUBMITTING atomic for one account, so two workers racing the last
+        slot cannot both read the budget as free and both submit (§49-51). It is a
+        no-op ordering primitive — it guards nothing on its own; the count that follows
+        does. A DB implementation is a transaction-scoped advisory lock keyed on the
+        user, released automatically when the transaction commits or rolls back.
+        """
+        ...
+
+    async def count_active_submissions_since(self, user_id: UserId,
+                                             since: datetime) -> int:
+        """How many of this user's submissions have consumed a slot since an instant.
+
+        The count the rate-limit reservation reads (§49-51). It counts every state that
+        has *claimed* a slot — SUBMITTED plus the in-flight SUBMITTING and
+        SUBMISSION_STATE_UNKNOWN — so a slot a racing worker has just reserved (but not
+        yet confirmed) is already visible to the next, and the reservation cannot be
+        double-spent. Must be called under `lock_submission_budget`. The caller passes
+        the window start (start-of-day, start-of-week) computed against its own clock,
+        so this stays a pure query and the count → compare → reserve sequence happens
+        inside one transaction the caller controls.
         """
         ...
 

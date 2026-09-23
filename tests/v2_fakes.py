@@ -1116,8 +1116,11 @@ class FakeApplicationRepository:
     The idempotency guarantee is modelled: `upsert` keys on the application's own id,
     which is derived from the idempotency key, so writing a second application for the
     same target lands on the same row — the fake cannot represent a duplicate any more
-    than the real UNIQUE constraint can. `count_submitted_since` and `list_in_flight`
-    back the rate limit (§49) and startup recovery (§88).
+    than the real UNIQUE constraint can. `count_active_submissions_since` and
+    `list_in_flight` back the rate limit (§49) and startup recovery (§88).
+    `lock_submission_budget` is a no-op here: a fake runs one task in one transaction,
+    so there is no second worker to serialize against — the atomicity it buys is a
+    property of the real database, asserted in the concurrent PostgreSQL test.
     """
 
     def __init__(self) -> None:
@@ -1150,11 +1153,16 @@ class FakeApplicationRepository:
         mine.sort(key=lambda app: app.updated_at, reverse=True)
         return tuple(mine[:limit])
 
-    async def count_submitted_since(self, user_id: UserId,
-                                    since: datetime) -> int:
+    async def lock_submission_budget(self, user_id: UserId) -> None:
+        return None
+
+    async def count_active_submissions_since(self, user_id: UserId,
+                                             since: datetime) -> int:
+        active = (ApplicationState.SUBMITTED, ApplicationState.SUBMITTING,
+                  ApplicationState.SUBMISSION_STATE_UNKNOWN)
         return sum(1 for app in self.applications.values()
                    if app.user_id == user_id
-                   and app.state is ApplicationState.SUBMITTED
+                   and app.state in active
                    and app.updated_at >= since)
 
     async def list_in_flight(self, *,

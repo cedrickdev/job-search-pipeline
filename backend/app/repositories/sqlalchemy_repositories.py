@@ -1478,14 +1478,32 @@ class SqlAlchemyApplicationDecisionRepository:
         return tuple(application_decision_to_domain(row) for row in result.scalars())
 
 
+_SUBMISSION_BUDGET_LOCK_NAMESPACE = 0x4150504C  # "APPL" — namespaces this lock class.
+
+
+def _submission_budget_lock_key(user_id: UserId) -> int:
+    """A stable signed int4 advisory-lock key for one user's submission budget.
+
+    `pg_advisory_xact_lock(int4, int4)` takes two 32-bit integers; the first
+    namespaces the lock so it cannot collide with an unrelated advisory lock, the
+    second identifies the user. The user is a UUID, so we fold its first four bytes
+    into a signed int4. A collision between two *different* users is harmless — it
+    only serializes them against each other briefly — while the same user always maps
+    to the same key, which is the only guarantee the reservation needs.
+    """
+    return int.from_bytes(user_id.bytes[:4], "big", signed=True)
+
+
 class SqlAlchemyApplicationRepository:
     """`ApplicationRepository` over an `AsyncSession`.
 
     The `events` and `attempts` relationships are never eager-loaded here and never
     written by an application upsert — they are append-only and owned by their own
-    repositories. `count_submitted_since` and `list_in_flight` are the two reads the
-    rate limit (§49) and startup recovery (§88) depend on; the latter is deliberately
-    unscoped, because recovery sweeps every account's stuck runs.
+    repositories. `count_active_submissions_since` and `list_in_flight` are the two
+    reads the rate limit (§49) and startup recovery (§88) depend on; the latter is
+    deliberately unscoped, because recovery sweeps every account's stuck runs. The
+    count is meant to be read under `lock_submission_budget`, whose transaction-scoped
+    advisory lock makes the reservation atomic against another worker of the same user.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -1528,13 +1546,22 @@ class SqlAlchemyApplicationRepository:
             .limit(limit))
         return tuple(application_to_domain(row) for row in result.scalars())
 
-    async def count_submitted_since(self, user_id: UserId,
-                                    since: datetime) -> int:
+    async def lock_submission_budget(self, user_id: UserId) -> None:
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(
+                _SUBMISSION_BUDGET_LOCK_NAMESPACE,
+                _submission_budget_lock_key(user_id))))
+
+    async def count_active_submissions_since(self, user_id: UserId,
+                                             since: datetime) -> int:
         result = await self._session.execute(
             select(func.count())
             .select_from(ApplicationRow)
             .where(ApplicationRow.user_id == user_id,
-                   ApplicationRow.state == ApplicationState.SUBMITTED.value,
+                   ApplicationRow.state.in_((
+                       ApplicationState.SUBMITTED.value,
+                       ApplicationState.SUBMITTING.value,
+                       ApplicationState.SUBMISSION_STATE_UNKNOWN.value)),
                    ApplicationRow.updated_at >= since))
         return int(result.scalar_one())
 

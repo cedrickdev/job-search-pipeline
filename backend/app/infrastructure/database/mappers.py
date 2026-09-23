@@ -28,6 +28,7 @@ from typing import Any, Protocol
 from uuid import UUID, uuid5
 
 from pydantic import SecretStr, TypeAdapter
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.app.domain.application import (
     Application,
@@ -1770,6 +1771,16 @@ def application_to_row(application: Application,
     target.correlation_id = application.correlation_id
     target.created_at = application.created_at
     target.updated_at = application.updated_at
+    if row is not None:
+        # `updated_at` is domain-supplied here (the service controls the clock), but
+        # `TimestampedMixin` also carries `onupdate=func.now()`. Submission moves an
+        # application through SUBMITTING → SUBMITTED within one call at a single
+        # instant, so the second upsert leaves `updated_at` unchanged; without this
+        # flag SQLAlchemy would drop it from the SET clause, let the DB onupdate
+        # overwrite it, and then expire it — which under asyncio is a MissingGreenlet
+        # when the mapper reads it back. Forcing it into every UPDATE keeps the
+        # domain's value authoritative and the attribute loaded.
+        flag_modified(target, "updated_at")
     return target
 
 

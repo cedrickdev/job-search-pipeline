@@ -340,6 +340,11 @@ class ApplicationService:
             raise ApplicationNotActionable(app.state, "submit")
         adapter = self._registry.resolve(app.channel)
 
+        # §49-51: serialize this user's budget for the rest of the transaction, so the
+        # count → gate → reserve-as-SUBMITTING sequence below is atomic against another
+        # worker racing the same slot. The lock releases when session_scope commits or
+        # rolls back, and the count now sees the slot the reservation consumes.
+        await self._applications.lock_submission_budget(user_id)
         authorization = await self._evaluate_gate(
             app, adapter_safety=adapter.capabilities.safety_level, now=now)
         stopped = await self._stop_if_gate_refuses(app, authorization, now=now)
@@ -498,8 +503,10 @@ class ApplicationService:
         instant = now.astimezone(UTC)
         start_day = instant.replace(hour=0, minute=0, second=0, microsecond=0)
         start_week = start_day - timedelta(days=instant.weekday())
-        today = await self._applications.count_submitted_since(user_id, start_day)
-        week = await self._applications.count_submitted_since(user_id, start_week)
+        today = await self._applications.count_active_submissions_since(
+            user_id, start_day)
+        week = await self._applications.count_active_submissions_since(
+            user_id, start_week)
         return today, week
 
     async def _build_context(self, app: Application) -> ApplicationContext:

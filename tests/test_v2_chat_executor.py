@@ -60,6 +60,7 @@ from tests.v2_builders import (
     NOW,
     OPPORTUNITY,
     OTHER_APPLICATION,
+    OTHER_OPPORTUNITY,
     OTHER_USER,
     PROFILE,
     SEARCH_PROFILE,
@@ -572,6 +573,37 @@ async def test_the_executor_refuses_a_sibling_resource_in_an_anchored_thread():
     assert result.outcome is ChatActionExecutionOutcome.REJECTED
     assert result.result_ref == ProposalRejectionCode.SCOPE_MISMATCH.value
     assert applications.calls == []  # B was never touched
+    reloaded = await proposals.get(USER, proposal.id)
+    assert reloaded is not None
+    assert reloaded.status is ChatActionProposalStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_the_executor_refuses_read_only_prep_for_a_sibling_posting():
+    # §47/§11: a stale or forged proposal — the thread is anchored to opportunity A but the
+    # proposal opens prep for opportunity B. Read-only or not, the executor's scope wall
+    # refuses it SCOPE_MISMATCH at confirm and records no navigation hint, so a rejected
+    # read-only resource action yields no client-side result. Defense in depth behind the
+    # creation gate: the same scope rule is enforced again here.
+    proposals = FakeChatActionProposalRepository()
+    proposal = a_chat_action_proposal(
+        action=OpenInterviewPrepAction(opportunity_id=OTHER_OPPORTUNITY))
+    await _seed(proposals, proposal)
+    conversations = FakeConversationRepository()
+    conversations.conversations[CONVERSATION] = a_conversation(
+        scope=ConversationScope.OPPORTUNITY, scope_id=OPPORTUNITY)
+    validator = ProposalValidator(
+        opportunities=FakeOpportunityRepository(),
+        applications=FakeApplicationRepository(),
+        searches=FakeSearchProfileRepository())
+    executor = _executor(proposals=proposals,
+                         executions=FakeChatActionExecutionRepository(),
+                         validator=validator, conversations=conversations)
+
+    result = await executor.execute(USER, proposal.id, now=NOW)
+
+    assert result.outcome is ChatActionExecutionOutcome.REJECTED
+    assert result.result_ref == ProposalRejectionCode.SCOPE_MISMATCH.value
     reloaded = await proposals.get(USER, proposal.id)
     assert reloaded is not None
     assert reloaded.status is ChatActionProposalStatus.REJECTED

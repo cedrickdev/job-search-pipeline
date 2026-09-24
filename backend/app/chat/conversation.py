@@ -382,7 +382,8 @@ class ChatConversationService:
         its kind, and it must fall inside the conversation's scope. An action failing either
         is silently dropped here — no card, and its caption never reaches the stored content
         — because a confirmable proposal the user never asked for is exactly what this gate
-        exists to prevent (read-only navigation is always admitted, it mutates nothing). The
+        exists to prevent (read-only navigation clears the intent wall unconditionally, but
+        a read-only action naming a sibling resource is still dropped by the scope wall). The
         message carries the run's telemetry provenance and each admitted proposal is born
         `PROPOSED` with a derived id, so a re-finalize writes the same rows.
         """
@@ -523,17 +524,21 @@ def _admit_proposal(conversation: Conversation, allowed_kinds: frozenset[ChatAct
                     action: ChatAction) -> bool:
     """Whether a parsed action may become a `PROPOSED` card on this turn.
 
-    Two independent walls, both of which a mutating action must clear, plus one always-open
-    door: read-only navigation (`NAVIGATE`, `OPEN_INTERVIEW_PREP`) mutates nothing on the
-    server and is always admitted; every other action must be a kind the user's classified
-    turn intent permits (`allowed_kinds`) *and* fall inside the conversation's scope. The
-    executor re-checks scope and ownership at confirm, so this is the first of two
-    enforcements — a proposal the user never asked for never even becomes a confirmable card.
+    Two independent walls, both of which every action must clear. The intent wall: a
+    mutating action must be a kind the user's classified turn intent permits
+    (`allowed_kinds`), while read-only navigation (`NAVIGATE`, `OPEN_INTERVIEW_PREP`)
+    mutates nothing and clears it unconditionally. The scope wall: the action must fall
+    inside the conversation's scope — and this holds for read-only actions too, because a
+    read-only hint can still name a resource (prep for a posting, a navigation carrying an
+    opportunity id), and an anchored thread must not offer one pointing at a *different*
+    resource. The executor re-checks scope and ownership at confirm, so this is the first
+    of two enforcements — a proposal the user never asked for, or one outside the thread's
+    scope, never even becomes a confirmable card.
     """
-    if action.kind in READ_ONLY_ACTION_KINDS:
-        return True
-    return (action.kind in allowed_kinds
-            and action_within_scope(conversation.scope, conversation.scope_id, action))
+    intent_permits = (action.kind in READ_ONLY_ACTION_KINDS
+                      or action.kind in allowed_kinds)
+    return intent_permits and action_within_scope(
+        conversation.scope, conversation.scope_id, action)
 
 
 def _render_scope(conversation: Conversation) -> str:

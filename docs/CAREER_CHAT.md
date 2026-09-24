@@ -56,8 +56,12 @@ because each answers a different question and no one of them implies the others:
 Ownership and scope are re-checked at *confirm* time (in the validator, the last gate);
 intent is checked at *creation* time (the proposal-admission gate), because it is a fact
 about the turn that produced the proposal, not about the world at confirm time. A read-only
-action (`NAVIGATE`, `OPEN_INTERVIEW_PREP`) mutates nothing and clears all three walls
-unconditionally.
+action (`NAVIGATE`, `OPEN_INTERVIEW_PREP`) mutates nothing, so it clears the *intent* and
+*ownership* walls unconditionally — but **read-only is not scope-free**: one that names a
+resource (`OPEN_INTERVIEW_PREP`, always about one posting; a `NAVIGATE` carrying an
+`opportunity_id`) is still held to the scope wall, so an `OPPORTUNITY(A)` thread refuses to
+open prep for opportunity *B*. Only a target-only `NAVIGATE` (APPLICATIONS, SETTINGS, …),
+which names no resource, is truly unscoped.
 
 ## What the model is never given
 
@@ -103,10 +107,16 @@ places no restriction (ownership alone then governs), while an anchored thread a
 an action whose own anchor is the *same* scope and the *same* id. So an `APPLICATION(A)`
 thread refuses `SUBMIT_APPLICATION(B)` with `SCOPE_MISMATCH` even though B belongs to the
 user, and a `COMPANY` thread — no action anchors to a company — admits no mutating action at
-all. The same function runs at the proposal-admission gate (creation) *and* inside the
-validator (confirm), one rule with two callers, so a mis-scoped action can neither become a
-card nor survive a confirm. `action_scope_anchor` is exhaustive over the closed union, so a
-new mutating kind added without an anchor is a type error, never a silently unscoped one.
+all. `action_scope_anchor` computes that anchor and is exhaustive over the closed union, so
+a new kind added without an anchor is a type error, never a silently unscoped one. It anchors
+read-only actions too when they name a resource: `OPEN_INTERVIEW_PREP` anchors to its
+opportunity, and a `NAVIGATE` carrying an `opportunity_id` anchors to that posting, while a
+target-only `NAVIGATE` returns no anchor and is unscoped. So the scope wall refuses
+`OPEN_INTERVIEW_PREP(B)` in an `OPPORTUNITY(A)` thread exactly as it refuses a mutating
+sibling — read-only is checked for scope before its ownership/state checks are skipped. The
+same function runs at the proposal-admission gate (creation) *and* inside the validator
+(confirm), one rule with two callers, so a mis-scoped action can neither become a card nor
+survive a confirm.
 
 ## Turn intent: the second wall on a proposal
 
@@ -137,9 +147,11 @@ deliberately small and deliberately blind:
 The allow-list is `ALLOWED_CHAT_ACTIONS`: each mutating intent maps to the single,
 identically named `ChatActionKind` it authorises — so a `PREPARE_APPLICATION` intent can
 never authorise a `SUBMIT_APPLICATION` action — and `READ_ONLY` maps to the empty set. The
-read-only navigation kinds are in no allow-list: the gate admits them unconditionally,
-because they change nothing on the server. The gate stores its verdict as secret-free audit
-metadata on the turn; it never persists the classifier's reasoning (there is none to
+read-only navigation kinds are in no allow-list: the gate clears them past the *intent*
+wall unconditionally, because they change nothing on the server — but the *scope* wall still
+applies, so a read-only action naming a sibling resource is dropped (see
+[Conversation scope](#conversation-scope)). The gate stores its verdict as secret-free
+audit metadata on the turn; it never persists the classifier's reasoning (there is none to
 persist — the classifier is a pattern match, not a chain of thought).
 
 ## The turn pipeline
@@ -171,12 +183,14 @@ One turn of the chat runs this path (`backend/app/chat/conversation.py`):
    parser even though it was filtered from the stream) is split by `parse_turn` into prose
    (stored as the assistant message) and typed proposals.
 6. **Admit, then propose — never execute.** Each parsed proposal must clear the
-   proposal-admission gate (`_admit_proposal`): a read-only kind is admitted
-   unconditionally; a mutating kind is admitted only if it is both in this turn's intent
-   allow-list *and* within the conversation's scope. An admitted proposal is persisted
-   `PROPOSED`; one that fails either check is dropped and never becomes a card. Nothing in
-   this service ever runs one — that is the executor's job, reached only after a human
-   confirms.
+   proposal-admission gate (`_admit_proposal`): a read-only kind clears the intent wall
+   unconditionally, a mutating kind clears it only if it is in this turn's intent allow-list —
+   and *either way* the action must also be within the conversation's scope. So a read-only
+   proposal naming a sibling resource (an `OPEN_INTERVIEW_PREP(B)` in an `OPPORTUNITY(A)`
+   thread) is dropped by the scope wall exactly as a mis-scoped mutation is. An admitted
+   proposal is persisted `PROPOSED`; one that fails either wall is dropped and never becomes
+   a card. Nothing in this service ever runs one — that is the executor's job, reached only
+   after a human confirms.
 
 ## Parsing: where the rule becomes mechanical
 
@@ -315,7 +329,11 @@ of `proposal != permission`, and it is deliberately narrow:
   per-operation rule ("submit needs APPROVED", the whole Phase 12 gate) stays in
   `ApplicationService`. Re-encoding that rule here would be a second copy free to drift, so
   the validator does the drift-free check and leaves the authoritative one to its owner.
-- **Read-only actions skip every check** and are always permitted.
+- **Read-only actions skip ownership and state, but not scope.** A `NAVIGATE` or
+  `OPEN_INTERVIEW_PREP` needs no ownership read and no state guard, yet the scope check above
+  runs first for every proposal — so a read-only action that names a resource outside an
+  anchored thread's scope is still refused `SCOPE_MISMATCH`. Only a target-only `NAVIGATE`,
+  which anchors to nothing, is truly unconditional.
 
 It returns a `ProposalValidation` (a value, never an exception): a refusal carries a stable
 `ProposalRejectionCode` (`SCOPE_MISMATCH`, `OPPORTUNITY_NOT_FOUND`, `APPLICATION_NOT_FOUND`,

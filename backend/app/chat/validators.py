@@ -21,9 +21,13 @@ The validator is deliberately narrow, and the narrowness is the point:
   the executor calls and whose refusal it maps to a rejected outcome. Re-encoding that rule
   here would be a second copy free to drift from the one the service enforces — so the
   validator does the drift-free check and leaves the authoritative one to its owner.
-- **Read-only actions skip every check.** `NAVIGATE` and `OPEN_INTERVIEW_PREP` mutate
-  nothing on the server, so there is nothing to authorize; they are always permitted and
-  the executor records them without calling a service (`READ_ONLY_ACTION_KINDS`).
+- **Read-only actions skip ownership and state, but not scope.** `NAVIGATE` and
+  `OPEN_INTERVIEW_PREP` mutate nothing on the server, so there is nothing to *authorize* —
+  they are permitted without a repository read and the executor records them without
+  calling a service (`READ_ONLY_ACTION_KINDS`). But read-only is not scope-free: one that
+  names a resource (prep for a posting, a navigation carrying an opportunity id) is still
+  refused when it points outside an anchored thread's scope — the scope wall runs before
+  the read-only guard, so a cross-scope hint cannot slip through it.
 
 It returns a `ProposalValidation`, never raises for a refusal: a rejection is data the
 executor records as a `REJECTED` outcome with a secret-free reason, not an exception. The
@@ -111,17 +115,28 @@ class ProposalValidation(BaseModel):
 
 
 def action_scope_anchor(action: ChatAction) -> tuple[ConversationScope, UUID] | None:
-    """The single domain resource an action is bound to, or `None` if it is read-only.
+    """The single domain resource an action is bound to, or `None` if it names none.
 
     A pure, read-free structural fact about the action's *shape*: which scope it belongs
     to and the id it names. Because it touches no repository, the proposal-creation gate
     (`backend.app.chat.conversation`) and the executor's validator can both call it — one
-    rule, two callers, no drift. Exhaustive over the closed union: a new mutating action
-    added without an anchor here is a type error, never a silently unscoped one.
+    rule, two callers, no drift. Exhaustive over the closed union: a new action added
+    without an anchor here is a type error, never a silently unscoped one.
+
+    Read-only is not the same as scope-free. `OPEN_INTERVIEW_PREP` mutates nothing but is
+    always about one posting, so it anchors to that opportunity; a `NAVIGATE` that carries
+    an `opportunity_id` anchors to it too, while a target-only `NAVIGATE` (APPLICATIONS,
+    SETTINGS, …) names no resource and is genuinely unanchored. So an `OPPORTUNITY(A)`
+    thread admits prep or navigation for A but refuses either for opportunity B — a
+    read-only action can still cross a scope boundary, and this is where that is caught.
     """
     match action:
-        case NavigateAction() | OpenInterviewPrepAction():
+        case NavigateAction():
+            if action.opportunity_id is not None:
+                return ConversationScope.OPPORTUNITY, action.opportunity_id
             return None
+        case OpenInterviewPrepAction():
+            return ConversationScope.OPPORTUNITY, action.opportunity_id
         case (GenerateResumeAction() | GenerateCoverLetterAction()
               | CreateApplicationAction()):
             return ConversationScope.OPPORTUNITY, action.opportunity_id
@@ -144,7 +159,9 @@ def action_within_scope(scope: ConversationScope, scope_id: UUID | None,
     `APPLICATION(A)` thread thus refuses `SUBMIT_APPLICATION(B)` even when B is the user's,
     and a `COMPANY` thread — no action anchors to a company — admits no mutating action at
     all, so a cross-type flow must go through a `GLOBAL` thread rather than a mis-scoped
-    one. Read-only actions have no anchor and are always in scope.
+    one. A target-only read-only action has no anchor and is always in scope; a read-only
+    action that names a resource (`OPEN_INTERVIEW_PREP`, a `NAVIGATE` with an opportunity
+    id) is held to the same anchor rule as a mutating one.
     """
     if scope is ConversationScope.GLOBAL:
         return True

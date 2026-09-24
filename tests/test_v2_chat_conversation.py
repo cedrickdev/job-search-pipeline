@@ -32,6 +32,7 @@ from backend.app.domain.chat import (
     ConversationScope,
     NavigateAction,
     NavigationTarget,
+    OpenInterviewPrepAction,
     PrepareApplicationAction,
 )
 from backend.app.domain.identifiers import chat_action_proposal_id, chat_message_id
@@ -47,6 +48,7 @@ from tests.v2_builders import (
     CONVERSATION,
     NOW,
     OPPORTUNITY,
+    OTHER_OPPORTUNITY,
     OTHER_USER,
     USER,
     a_conversation,
@@ -338,6 +340,15 @@ def _prepare(application_id: str) -> dict:
     return {"kind": "PREPARE_APPLICATION", "application_id": application_id}
 
 
+def _open_prep(opportunity_id: str) -> dict:
+    return {"kind": "OPEN_INTERVIEW_PREP", "opportunity_id": opportunity_id}
+
+
+def _navigate_to_opportunity(opportunity_id: str) -> dict:
+    return {"kind": "NAVIGATE", "target": "OPPORTUNITIES",
+            "opportunity_id": opportunity_id}
+
+
 async def _seed_scoped_conversation(harness, *, scope, scope_id) -> None:
     """An empty thread owned by USER, anchored to `scope`/`scope_id`."""
     await harness.conversations.upsert(
@@ -387,6 +398,49 @@ async def test_an_injected_posting_cannot_drive_a_submit_from_a_read_only_turn()
     assert turn.assistant_message.content == "Voici un résumé de l'offre."
     assert "SUBMIT_APPLICATION" not in turn.assistant_message.content
     assert PROPOSAL_FENCE_TAG not in turn.assistant_message.content
+
+
+async def test_an_opportunity_thread_admits_read_only_prep_for_its_own_posting():
+    # A read-only action naming the thread's own opportunity clears both walls: read-only is
+    # intent-admitted unconditionally, and it is in scope, so it becomes a card.
+    reply = _fenced_reply("Voici la préparation.", _open_prep(str(OPPORTUNITY)))
+    harness = _harness(provider=_provider(text=reply))
+    await _seed_scoped_conversation(
+        harness, scope=ConversationScope.OPPORTUNITY, scope_id=OPPORTUNITY)
+    turn = await harness.service.send_message(
+        USER, CONVERSATION, "Prépare-moi pour cette offre.", now=NOW)
+    (proposal,) = turn.proposals
+    assert isinstance(proposal.action, OpenInterviewPrepAction)
+    assert proposal.action.opportunity_id == OPPORTUNITY
+
+
+async def test_an_opportunity_thread_drops_read_only_prep_for_a_sibling_posting():
+    # §47: prep is read-only, but it names a *different* opportunity than the one the thread
+    # is anchored to. The scope wall drops it at creation, so no confirmable card is made —
+    # read-only is not scope-free.
+    reply = _fenced_reply("Voici la préparation.", _open_prep(str(OTHER_OPPORTUNITY)))
+    harness = _harness(provider=_provider(text=reply))
+    await _seed_scoped_conversation(
+        harness, scope=ConversationScope.OPPORTUNITY, scope_id=OPPORTUNITY)
+    turn = await harness.service.send_message(
+        USER, CONVERSATION, "Prépare-moi pour cette offre.", now=NOW)
+    assert turn.proposals == ()
+    assert turn.assistant_message is not None
+    assert turn.assistant_message.content == "Voici la préparation."
+    assert "OPEN_INTERVIEW_PREP" not in turn.assistant_message.content
+
+
+async def test_an_opportunity_thread_drops_navigation_to_a_sibling_posting():
+    # A NAVIGATE carrying a sibling opportunity id is out of scope and dropped, though a
+    # target-only navigation from the same thread would have been admitted.
+    reply = _fenced_reply(
+        "Ouvrons cette offre.", _navigate_to_opportunity(str(OTHER_OPPORTUNITY)))
+    harness = _harness(provider=_provider(text=reply))
+    await _seed_scoped_conversation(
+        harness, scope=ConversationScope.OPPORTUNITY, scope_id=OPPORTUNITY)
+    turn = await harness.service.send_message(
+        USER, CONVERSATION, "Va voir cette autre offre.", now=NOW)
+    assert turn.proposals == ()
 
 
 async def test_a_fence_split_across_stream_chunks_never_leaks_to_the_client():

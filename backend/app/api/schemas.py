@@ -29,6 +29,7 @@ field for it, which is a stronger guarantee than a filter somebody has to rememb
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Self, cast
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -84,6 +85,7 @@ from backend.app.domain.chat import (
     ChatMessage,
     ChatMessageRole,
     Conversation,
+    ConversationScope,
 )
 from backend.app.domain.common import (
     GeoBounds,
@@ -1763,14 +1765,32 @@ class ApplicationEventListResponse(ApiModel):
 
 
 class StartConversationRequest(ApiModel):
-    """Open a new chat thread, optionally captioned from the user's opening words.
+    """Open a new chat thread, optionally captioned and optionally scoped.
 
     `title` is a caption the service truncates, never authority the model or the client
     grants itself; an absent or blank one falls back to a fixed default. There is no
     `user_id` field — the owner is the session's account (§Security).
+
+    `scope`/`scope_id` bind the thread to a domain surface and default to `GLOBAL` (no
+    anchor), so a caller that sends neither opens a global thread exactly as before the
+    corrective. The same shape invariant the domain enforces is checked here at the
+    boundary — a `GLOBAL` request with a stray `scope_id`, or an anchored one with none,
+    is a `422` rather than a bad row — and the service re-validates that the anchor names
+    a resource this account may talk about before the thread is created.
     """
 
     title: str | None = None
+    scope: ConversationScope = ConversationScope.GLOBAL
+    scope_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _scope_id_matches_scope(self) -> "StartConversationRequest":
+        if self.scope is ConversationScope.GLOBAL:
+            if self.scope_id is not None:
+                raise ValueError("a GLOBAL conversation must not carry a scope_id")
+        elif self.scope_id is None:
+            raise ValueError(f"a {self.scope.value} conversation requires a scope_id")
+        return self
 
 
 class SendMessageRequest(ApiModel):
@@ -1780,10 +1800,12 @@ class SendMessageRequest(ApiModel):
 
 
 class ConversationResponse(ApiModel):
-    """One chat thread's caption and activity — never its messages inline."""
+    """One chat thread's caption, scope and activity — never its messages inline."""
 
     id: ConversationId
     title: str
+    scope: ConversationScope
+    scope_id: UUID | None
     is_archived: bool
     created_at: datetime
     updated_at: datetime
@@ -1792,6 +1814,7 @@ class ConversationResponse(ApiModel):
     @classmethod
     def of(cls, conversation: Conversation) -> "ConversationResponse":
         return cls(id=conversation.id, title=conversation.title,
+                   scope=conversation.scope, scope_id=conversation.scope_id,
                    is_archived=conversation.is_archived,
                    created_at=conversation.created_at,
                    updated_at=conversation.updated_at,

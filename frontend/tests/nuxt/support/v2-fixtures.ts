@@ -529,11 +529,20 @@ export function applicationEventList(
 // fixture carries a secret: `action` is the domain union verbatim, secret-free by
 // construction, and an execution's `detail` is the server's own secret-free note.
 
-/** One chat thread's caption and activity — never its messages inline. */
+/**
+ * One chat thread's caption and activity — never its messages inline.
+ *
+ * The default thread is `GLOBAL` (spans the whole account, `scope_id` null) — the shape a
+ * first visitor's thread has. An anchored thread is written by overriding `scope` and
+ * `scope_id` together, because that pair is the domain invariant the badge reads: a
+ * `GLOBAL` thread shows none, an anchored one names the resource it is bound to.
+ */
 export function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
     id: CONVERSATION_ID,
     title: 'Backend roles in Lausanne',
+    scope: 'GLOBAL',
+    scope_id: null,
     is_archived: false,
     last_message_at: '2026-03-01T10:05:00Z',
     created_at: '2026-03-01T10:00:00Z',

@@ -60,6 +60,10 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   // The prompt plus its history was larger than the model's context window.
   context_length_exceeded: 'That request was too long for this model to handle.',
   conversation_not_found: 'That conversation no longer exists.',
+  // A thread was anchored to a resource that is not this account's — a foreign
+  // application, search, opportunity or company. Like the other ownership refusals it
+  // reads as absent, never as "exists but not yours", so it cannot confirm the id.
+  conversation_scope_not_found: 'That conversation cannot be anchored to this item.',
   csrf_failed: 'This request could not be verified. Reload the page and try again.',
   database_unavailable: 'The service is temporarily unavailable. Try again in a moment.',
   document_not_found: 'That document does not exist.',

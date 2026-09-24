@@ -54,6 +54,7 @@ class FakeProvider:
         local: bool = False,
         priority: int = 100,
         text: str = "an answer",
+        text_chunks: tuple[str, ...] | None = None,
         usage: TokenUsage | None = None,
         model: str | None = "fake-model",
         error: LLMError | None = None,
@@ -70,7 +71,12 @@ class FakeProvider:
             capabilities=frozenset(caps),
             default_model=model,
             priority=priority)
-        self._text = text
+        # When `text_chunks` is given, the streamed turn arrives in several TEXT_DELTA
+        # events (a fence can straddle two of them) and `text` becomes their concatenation
+        # — what `generate` returns and what the terminal COMPLETED event carries — so the
+        # non-streaming path and `recorded.text` still see the whole turn.
+        self._text_chunks = text_chunks
+        self._text = "".join(text_chunks) if text_chunks is not None else text
         self._usage = usage or TokenUsage()
         self._model = model
         self._error = error
@@ -112,7 +118,10 @@ class FakeProvider:
             assert self._error is not None
             yield LLMStreamEvent.errored(self._error.code, self._error.detail)
             return
-        yield LLMStreamEvent.text_delta(self._text)
+        chunks = self._text_chunks if self._text_chunks is not None else (self._text,)
+        for chunk in chunks:
+            if chunk:  # a TEXT_DELTA must carry non-empty text (§ contract validator)
+                yield LLMStreamEvent.text_delta(chunk)
         yield LLMStreamEvent.completed(LLMResponse(
             text=self._text, usage=self._usage,
             finish_reason=FinishReason.STOP, model=self._model))

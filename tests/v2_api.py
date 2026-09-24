@@ -498,12 +498,13 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
         conversations=conversations, messages=chat_messages, proposals=chat_proposals,
         context=ChatContextBuilder(
             profiles=profiles, searches=searches, applications=applications,
-            opportunities=postings),
+            opportunities=postings, companies=companies),
         router=LLMRouter(chat_registry),
         recorder=LLMTelemetryRecorder(runs=chat_runs),
         policy=RoutingPolicy(privacy=PrivacyClass.EXTERNAL_ALLOWED))
     chat_executor = ChatActionExecutor(
         proposals=chat_proposals, executions=chat_executions,
+        conversations=conversations,
         validator=ProposalValidator(
             opportunities=postings, applications=applications, searches=searches),
         documents=document_workflow, applications=application_engine,

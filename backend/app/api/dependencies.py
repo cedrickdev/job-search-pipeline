@@ -538,7 +538,8 @@ async def chat_conversation_service(
             profiles=SqlAlchemyCandidateProfileRepository(session),
             searches=SqlAlchemySearchProfileRepository(session),
             applications=SqlAlchemyApplicationRepository(session),
-            opportunities=SqlAlchemyOpportunityRepository(session)),
+            opportunities=SqlAlchemyOpportunityRepository(session),
+            companies=SqlAlchemyCompanyRepository(session)),
         router=LLMRouter(registry),
         recorder=LLMTelemetryRecorder(
             runs=SqlAlchemyLLMRunRepository(session), connections=connections),
@@ -564,6 +565,7 @@ def chat_action_executor(
     return ChatActionExecutor(
         proposals=SqlAlchemyChatActionProposalRepository(session),
         executions=SqlAlchemyChatActionExecutionRepository(session),
+        conversations=SqlAlchemyConversationRepository(session),
         validator=ProposalValidator(
             opportunities=SqlAlchemyOpportunityRepository(session),
             applications=SqlAlchemyApplicationRepository(session),

@@ -15,6 +15,8 @@ import pytest
 from backend.app.chat.validators import (
     ProposalRejectionCode,
     ProposalValidator,
+    action_scope_anchor,
+    action_within_scope,
 )
 from backend.app.domain.application import (
     Application,
@@ -23,11 +25,16 @@ from backend.app.domain.application import (
 )
 from backend.app.domain.application_channel import ApplicationChannel
 from backend.app.domain.chat import (
+    ApproveApplicationAction,
+    CancelApplicationAction,
+    ConversationScope,
     CreateApplicationAction,
+    GenerateCoverLetterAction,
     GenerateResumeAction,
     NavigateAction,
     NavigationTarget,
     OpenInterviewPrepAction,
+    PrepareApplicationAction,
     SetSearchRadiusAction,
     SubmitApplicationAction,
     UpdateSearchKeywordsAction,
@@ -42,12 +49,18 @@ from backend.app.domain.identifiers import (
 )
 from backend.app.domain.search import RadiusSearchArea
 from tests.v2_builders import (
+    APPLICATION,
+    COMPANY,
     NOW,
     OPPORTUNITY,
+    OTHER_APPLICATION,
+    OTHER_OPPORTUNITY,
+    OTHER_SEARCH_PROFILE,
     OTHER_USER,
     PROFILE,
     SEARCH_PROFILE,
     USER,
+    a_conversation,
     a_search_profile,
     an_opportunity,
 )
@@ -214,3 +227,154 @@ async def test_update_keywords_on_another_accounts_search_reads_as_absent():
             search_profile_id=SEARCH_PROFILE, title_keywords=("python",)))
     assert not verdict.permitted
     assert verdict.code is ProposalRejectionCode.SEARCH_NOT_FOUND
+
+
+# --- the scope anchor: a pure, read-free fact about the action's shape ------
+
+@pytest.mark.parametrize("action, expected", [
+    # Read-only actions touch no domain resource, so no thread can scope them out.
+    (NavigateAction(target=NavigationTarget.OPPORTUNITIES), None),
+    (OpenInterviewPrepAction(opportunity_id=OPPORTUNITY), None),
+    # Document + create actions anchor to the posting they are about.
+    (GenerateResumeAction(opportunity_id=OPPORTUNITY),
+     (ConversationScope.OPPORTUNITY, OPPORTUNITY)),
+    (GenerateCoverLetterAction(opportunity_id=OPPORTUNITY),
+     (ConversationScope.OPPORTUNITY, OPPORTUNITY)),
+    (CreateApplicationAction(opportunity_id=OPPORTUNITY),
+     (ConversationScope.OPPORTUNITY, OPPORTUNITY)),
+    # Every lifecycle action anchors to the application it drives.
+    (PrepareApplicationAction(application_id=APPLICATION),
+     (ConversationScope.APPLICATION, APPLICATION)),
+    (ApproveApplicationAction(application_id=APPLICATION),
+     (ConversationScope.APPLICATION, APPLICATION)),
+    (SubmitApplicationAction(application_id=APPLICATION),
+     (ConversationScope.APPLICATION, APPLICATION)),
+    (CancelApplicationAction(application_id=APPLICATION),
+     (ConversationScope.APPLICATION, APPLICATION)),
+    # Search-preference edits anchor to the saved search.
+    (SetSearchRadiusAction(search_profile_id=SEARCH_PROFILE, radius_km=50.0),
+     (ConversationScope.SEARCH_PROFILE, SEARCH_PROFILE)),
+    (UpdateSearchKeywordsAction(
+        search_profile_id=SEARCH_PROFILE, title_keywords=("python",)),
+     (ConversationScope.SEARCH_PROFILE, SEARCH_PROFILE)),
+])
+def test_action_scope_anchor_binds_each_action_to_its_resource(action, expected):
+    assert action_scope_anchor(action) == expected
+
+
+# --- within-scope: GLOBAL admits all, an anchor admits only its own ---------
+
+@pytest.mark.parametrize("action", [
+    NavigateAction(target=NavigationTarget.OPPORTUNITIES),
+    OpenInterviewPrepAction(opportunity_id=OPPORTUNITY),
+])
+def test_a_read_only_action_is_within_every_scope(action):
+    # No anchor, so no anchored thread can exclude it — even one of another kind.
+    assert action_within_scope(ConversationScope.APPLICATION, OTHER_APPLICATION, action)
+    assert action_within_scope(ConversationScope.GLOBAL, None, action)
+
+
+def test_a_global_scope_admits_any_mutating_action():
+    action = SubmitApplicationAction(application_id=APPLICATION)
+    assert action_within_scope(ConversationScope.GLOBAL, None, action)
+
+
+def test_an_anchored_scope_admits_its_own_id_and_refuses_a_sibling():
+    same = SubmitApplicationAction(application_id=APPLICATION)
+    sibling = SubmitApplicationAction(application_id=OTHER_APPLICATION)
+    assert action_within_scope(ConversationScope.APPLICATION, APPLICATION, same)
+    assert not action_within_scope(ConversationScope.APPLICATION, APPLICATION, sibling)
+
+
+def test_a_scope_of_another_kind_refuses_a_matching_raw_id():
+    # An OPPORTUNITY thread cannot host an application action even when the raw ids collide:
+    # the anchor's *kind* must match too.
+    action = SubmitApplicationAction(application_id=APPLICATION)
+    assert not action_within_scope(ConversationScope.OPPORTUNITY, APPLICATION, action)
+
+
+def test_a_company_scope_admits_no_mutating_action():
+    # No action anchors to a company, so a COMPANY thread hosts only read-only turns and a
+    # cross-type flow must go through GLOBAL rather than a mis-scoped thread.
+    action = SubmitApplicationAction(application_id=APPLICATION)
+    assert not action_within_scope(ConversationScope.COMPANY, COMPANY, action)
+
+
+# --- the validator's scope wall: refused before any ownership read ----------
+
+@pytest.mark.asyncio
+async def test_validate_skips_the_scope_wall_when_no_conversation_is_given():
+    # The executor's older two-argument call: no conversation, so scope is not checked and
+    # ordinary ownership validation stands alone.
+    applications = FakeApplicationRepository()
+    app = _an_application(state=ApplicationState.APPROVED)
+    await applications.upsert(app)
+    verdict = await _validator(applications=applications).validate(
+        USER, SubmitApplicationAction(application_id=app.id))
+    assert verdict.permitted
+
+
+@pytest.mark.asyncio
+async def test_a_global_thread_permits_an_owned_action():
+    applications = FakeApplicationRepository()
+    app = _an_application(state=ApplicationState.APPROVED)
+    await applications.upsert(app)
+    verdict = await _validator(applications=applications).validate(
+        USER, SubmitApplicationAction(application_id=app.id),
+        conversation=a_conversation())  # GLOBAL by default
+    assert verdict.permitted
+
+
+@pytest.mark.asyncio
+async def test_an_anchored_thread_permits_the_action_naming_its_own_resource():
+    applications = FakeApplicationRepository()
+    app = _an_application(state=ApplicationState.APPROVED)
+    await applications.upsert(app)
+    conversation = a_conversation(
+        scope=ConversationScope.APPLICATION, scope_id=app.id)
+    verdict = await _validator(applications=applications).validate(
+        USER, SubmitApplicationAction(application_id=app.id),
+        conversation=conversation)
+    assert verdict.permitted
+
+
+@pytest.mark.asyncio
+async def test_an_application_thread_rejects_a_sibling_application_before_any_read():
+    # The sibling is this account's own, open application — ownership and state would
+    # permit it. The thread is anchored to a *different* application, so scope refuses
+    # first: the verdict is SCOPE_MISMATCH, proving the wall precedes the ownership read.
+    applications = FakeApplicationRepository()
+    sibling = _an_application(state=ApplicationState.APPROVED)
+    await applications.upsert(sibling)
+    conversation = a_conversation(
+        scope=ConversationScope.APPLICATION, scope_id=OTHER_APPLICATION)
+    verdict = await _validator(applications=applications).validate(
+        USER, SubmitApplicationAction(application_id=sibling.id),
+        conversation=conversation)
+    assert not verdict.permitted
+    assert verdict.code is ProposalRejectionCode.SCOPE_MISMATCH
+
+
+@pytest.mark.asyncio
+async def test_a_company_thread_rejects_a_mutating_action_as_out_of_scope():
+    applications = FakeApplicationRepository()
+    app = _an_application(state=ApplicationState.APPROVED)
+    await applications.upsert(app)
+    conversation = a_conversation(
+        scope=ConversationScope.COMPANY, scope_id=COMPANY)
+    verdict = await _validator(applications=applications).validate(
+        USER, SubmitApplicationAction(application_id=app.id),
+        conversation=conversation)
+    assert not verdict.permitted
+    assert verdict.code is ProposalRejectionCode.SCOPE_MISMATCH
+
+
+@pytest.mark.asyncio
+async def test_a_read_only_action_is_permitted_inside_an_anchored_thread():
+    # NAVIGATE has no anchor, so even an APPLICATION-scoped thread admits it.
+    conversation = a_conversation(
+        scope=ConversationScope.APPLICATION, scope_id=OTHER_APPLICATION)
+    verdict = await _validator().validate(
+        USER, NavigateAction(target=NavigationTarget.OPPORTUNITIES),
+        conversation=conversation)
+    assert verdict.permitted

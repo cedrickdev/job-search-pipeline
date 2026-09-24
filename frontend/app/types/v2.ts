@@ -239,6 +239,9 @@ export type ApplicationChannel = Application['channel']
 /** One chat thread's caption and activity — never its messages inline. */
 export type Conversation = Schemas['ConversationResponse']
 
+/** `GLOBAL | OPPORTUNITY | APPLICATION | COMPANY | SEARCH_PROFILE` — a thread's domain anchor. */
+export type ConversationScope = Schemas['ConversationScope']
+
 /** This account's threads, most recent activity first. */
 export type ConversationList = Schemas['ConversationListResponse']
 
@@ -311,6 +314,7 @@ export type V2ErrorCode =
   | 'conflict'
   | 'context_length_exceeded'
   | 'conversation_not_found'
+  | 'conversation_scope_not_found'
   | 'csrf_failed'
   | 'database_unavailable'
   | 'document_not_found'

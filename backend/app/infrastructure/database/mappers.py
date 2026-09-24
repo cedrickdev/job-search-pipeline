@@ -60,6 +60,7 @@ from backend.app.domain.chat import (
     ChatMessage,
     ChatMessageRole,
     Conversation,
+    ConversationScope,
 )
 from backend.app.domain.common import (
     LanguageLevel,
@@ -1915,6 +1916,8 @@ def conversation_to_row(conversation: Conversation,
     target = ConversationRow(id=conversation.id) if row is None else row
     target.user_id = conversation.user_id
     target.title = conversation.title
+    target.scope = conversation.scope
+    target.scope_id = conversation.scope_id
     target.is_archived = conversation.is_archived
     target.last_message_at = conversation.last_message_at
     target.created_at = conversation.created_at
@@ -1929,6 +1932,8 @@ def conversation_to_domain(row: ConversationRow) -> Conversation:
         id=ConversationId(row.id),
         user_id=UserId(row.user_id),
         title=row.title,
+        scope=ConversationScope(row.scope),
+        scope_id=row.scope_id,
         is_archived=row.is_archived,
         created_at=row.created_at,
         updated_at=row.updated_at,

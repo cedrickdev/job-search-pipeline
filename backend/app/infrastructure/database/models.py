@@ -72,6 +72,7 @@ from backend.app.domain.chat import (
     ChatActionKind,
     ChatActionProposalStatus,
     ChatMessageRole,
+    ConversationScope,
 )
 from backend.app.domain.common import (
     GeocodingConfidence,
@@ -2282,27 +2283,47 @@ class SubmissionAttemptRow(TimestampedMixin, Base):
 _CHAT_MESSAGE_USER_HAS_NO_RUN: Final[str] = (
     "role <> 'USER' OR (llm_run_id IS NULL AND provider_key IS NULL)")
 
+# The conversation-scope invariant as a CHECK, the DB half of
+# `Conversation._scope_id_matches_scope`: a GLOBAL thread carries no anchor id, and every
+# other scope carries exactly one. Restated here in SQL so a row written outside the
+# mapper cannot claim to be about an application it never names (docs/CAREER_CHAT.md §Scope).
+_CONVERSATION_SCOPE_ID_MATCHES_SCOPE: Final[str] = (
+    "(scope = 'GLOBAL' AND scope_id IS NULL)"
+    " OR (scope <> 'GLOBAL' AND scope_id IS NOT NULL)")
+
 
 class ConversationRow(TimestampedMixin, Base):
-    """One career-chat thread, owned by exactly one account (§…).
+    """One career-chat thread, owned by exactly one account, bound to one scope (§Scope).
 
     User-owned like every Phase 4+ entity: `user_id` cascades from `users`, so deleting
     an account takes its conversations — and, through the cascades below, their messages,
     proposals and executions — with it. `last_message_at` is nullable (a freshly opened
     thread has no turn yet) and pairs with `user_id` in the one index the conversation
     list reads: "my threads, most recently active first".
+
+    `scope`/`scope_id` anchor the thread to a domain surface. `scope_id` carries no
+    cross-table foreign key on purpose — it addresses one of four different tables
+    depending on `scope`, and ownership is re-checked by reading through a `user_id`-scoped
+    repository at use time, not by a constraint. The CHECK enforces only the shape
+    invariant (`_CONVERSATION_SCOPE_ID_MATCHES_SCOPE`).
     """
 
     __tablename__ = "conversations"
     __table_args__ = (
         Index("ix_conversations_user_id_last_message_at",
               "user_id", "last_message_at"),
+        CheckConstraint(_CONVERSATION_SCOPE_ID_MATCHES_SCOPE,
+                        name="scope_id_matches_scope"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"))
     title: Mapped[str]
+    scope: Mapped[ConversationScope] = mapped_column(
+        enum_column(ConversationScope, "conversation_scope"),
+        server_default=text(f"'{ConversationScope.GLOBAL.value}'"))
+    scope_id: Mapped[UUID | None]
     is_archived: Mapped[bool] = mapped_column(server_default=text("false"))
     last_message_at: Mapped[datetime | None]
 

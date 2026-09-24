@@ -31,8 +31,9 @@ one onto the existing services.
 """
 from enum import StrEnum
 from typing import Annotated, Literal
+from uuid import UUID
 
-from pydantic import Field, TypeAdapter
+from pydantic import Field, TypeAdapter, model_validator
 
 from backend.app.domain.base import DomainModel, LanguageCode, NonEmptyStr, UtcDatetime
 from backend.app.domain.identifiers import (
@@ -295,23 +296,79 @@ READ_ONLY_ACTION_KINDS: frozenset[ChatActionKind] = frozenset({
 # --- the persisted entities ------------------------------------------------------------
 
 
+class ConversationScope(StrEnum):
+    """The domain surface one conversation is bound to — the closed set of scopes.
+
+    A thread is either `GLOBAL` (about the account's whole search) or *anchored* to a
+    single resource the account may talk about: one application, one opportunity, one
+    company, or one saved search. The scope is not decoration: it decides which slice of
+    the account's world the context builder loads (`ChatContextBuilder.build_for_conversation`)
+    and it is a second server-side wall the action validator enforces — an
+    `APPLICATION`-scoped thread may not drive a *different* application even when both
+    belong to the user (`ProposalRejectionCode.SCOPE_MISMATCH`, docs/CAREER_CHAT.md §Scope).
+
+    Closed on purpose, exactly as `ChatActionKind` is: a scope the platform does not
+    anchor to is not a free string a caller can invent.
+    """
+
+    GLOBAL = "GLOBAL"
+    OPPORTUNITY = "OPPORTUNITY"
+    APPLICATION = "APPLICATION"
+    COMPANY = "COMPANY"
+    SEARCH_PROFILE = "SEARCH_PROFILE"
+
+
+# The four anchored scopes — every scope that is *not* `GLOBAL` and therefore requires a
+# `scope_id`. Kept beside the enum so "which scopes are anchored" is one fact the domain
+# invariant, the DB CHECK and the validator all read from rather than re-listing.
+ANCHORED_CONVERSATION_SCOPES: frozenset[ConversationScope] = frozenset({
+    ConversationScope.OPPORTUNITY,
+    ConversationScope.APPLICATION,
+    ConversationScope.COMPANY,
+    ConversationScope.SEARCH_PROFILE,
+})
+
+
 class Conversation(DomainModel):
-    """One career-chat thread, owned by exactly one account.
+    """One career-chat thread, owned by exactly one account, bound to one domain scope.
 
     User-owned like every Phase 4+ entity: a conversation is read `WHERE user_id = ?`, so
     one account can neither list nor resume another's. `title` is a short human label the
     service derives from the opening message (never model-authored authority — just a
     caption). `last_message_at` orders the conversation list and is `None` for a thread
     with no turns yet; `is_archived` hides a thread without deleting its audit trail.
+
+    `scope`/`scope_id` bind the thread to a domain surface (§Scope). The invariant is
+    total and enforced here, in the API schema, and by a DB CHECK: a `GLOBAL` thread
+    carries **no** `scope_id`, and every anchored scope carries exactly one. Scope is
+    immutable once the thread is opened — there is no operation in this phase that moves a
+    conversation from one anchor to another.
     """
 
     id: ConversationId
     user_id: UserId
     title: NonEmptyStr
+    scope: ConversationScope = ConversationScope.GLOBAL
+    scope_id: UUID | None = None
     is_archived: bool = False
     created_at: UtcDatetime
     updated_at: UtcDatetime
     last_message_at: UtcDatetime | None = None
+
+    @model_validator(mode="after")
+    def _scope_id_matches_scope(self) -> "Conversation":
+        """`GLOBAL` ⇒ no `scope_id`; every anchored scope ⇒ exactly one `scope_id`.
+
+        The invariant that makes "this thread is about application A" a fact rather than a
+        hope: a `GLOBAL` thread with a stray id, or an `APPLICATION` thread with none, is
+        rejected at construction — never persisted, never handed to the context builder.
+        """
+        if self.scope is ConversationScope.GLOBAL:
+            if self.scope_id is not None:
+                raise ValueError("a GLOBAL conversation must not carry a scope_id")
+        elif self.scope_id is None:
+            raise ValueError(f"a {self.scope.value} conversation requires a scope_id")
+        return self
 
 
 class ChatMessage(DomainModel):

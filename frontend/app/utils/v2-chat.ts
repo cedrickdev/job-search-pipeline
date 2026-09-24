@@ -14,7 +14,12 @@
 // `NAVIGATE` to a route this app owns, ignoring any target it does not recognise, which
 // is the client half of "navigation is a hint, not an open redirect"
 // (docs/CAREER_CHAT.md, api.d.ts NavigationTarget).
-import type { ChatAction, ChatStreamEvent, NavigationTarget } from '~/types/v2'
+import type {
+  ChatAction,
+  ChatStreamEvent,
+  ConversationScope,
+  NavigationTarget,
+} from '~/types/v2'
 import { ApiError, CSRF_HEADER, csrfToken } from '~/utils/api-client'
 import { parseSseBuffer } from '~/utils/chat'
 
@@ -152,4 +157,26 @@ const NAVIGATION_ROUTES: Partial<Record<NavigationTarget, string>> = {
   DOCUMENTS: '/documents',
   COMPANIES: '/companies',
   SETTINGS: '/settings',
+}
+
+/**
+ * A short label for a thread's domain scope, or null for a `GLOBAL` thread.
+ *
+ * A `GLOBAL` thread spans the whole account and needs no badge, so it resolves to null
+ * and the panel shows nothing. Every anchored scope resolves to a one-word noun the
+ * header renders beside the title, so a person can see at a glance that this thread is
+ * bound to a single opportunity, application, employer or saved search — the same wall
+ * the server enforces, surfaced (docs/CAREER_CHAT.md). This is display only; it grants
+ * nothing, exactly as `describeChatAction` describes but never widens.
+ */
+export function scopeLabel(scope: ConversationScope): string | null {
+  return SCOPE_LABELS[scope]
+}
+
+const SCOPE_LABELS: Record<ConversationScope, string | null> = {
+  GLOBAL: null,
+  OPPORTUNITY: 'This opportunity',
+  APPLICATION: 'This application',
+  COMPANY: 'This employer',
+  SEARCH_PROFILE: 'This saved search',
 }

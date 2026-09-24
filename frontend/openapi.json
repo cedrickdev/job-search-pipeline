@@ -2221,7 +2221,7 @@
       },
       "ConversationResponse": {
         "additionalProperties": false,
-        "description": "One chat thread's caption and activity — never its messages inline.",
+        "description": "One chat thread's caption, scope and activity — never its messages inline.",
         "properties": {
           "created_at": {
             "format": "date-time",
@@ -2249,6 +2249,21 @@
             ],
             "title": "Last Message At"
           },
+          "scope": {
+            "$ref": "#/components/schemas/ConversationScope"
+          },
+          "scope_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
           "title": {
             "title": "Title",
             "type": "string"
@@ -2262,6 +2277,8 @@
         "required": [
           "id",
           "title",
+          "scope",
+          "scope_id",
           "is_archived",
           "created_at",
           "updated_at",
@@ -2269,6 +2286,18 @@
         ],
         "title": "ConversationResponse",
         "type": "object"
+      },
+      "ConversationScope": {
+        "description": "The domain surface one conversation is bound to — the closed set of scopes.\n\nA thread is either `GLOBAL` (about the account's whole search) or *anchored* to a\nsingle resource the account may talk about: one application, one opportunity, one\ncompany, or one saved search. The scope is not decoration: it decides which slice of\nthe account's world the context builder loads (`ChatContextBuilder.build_for_conversation`)\nand it is a second server-side wall the action validator enforces — an\n`APPLICATION`-scoped thread may not drive a *different* application even when both\nbelong to the user (`ProposalRejectionCode.SCOPE_MISMATCH`, docs/CAREER_CHAT.md §Scope).\n\nClosed on purpose, exactly as `ChatActionKind` is: a scope the platform does not\nanchor to is not a free string a caller can invent.",
+        "enum": [
+          "GLOBAL",
+          "OPPORTUNITY",
+          "APPLICATION",
+          "COMPANY",
+          "SEARCH_PROFILE"
+        ],
+        "title": "ConversationScope",
+        "type": "string"
       },
       "CountrySearchArea": {
         "additionalProperties": false,
@@ -5170,8 +5199,24 @@
       },
       "StartConversationRequest": {
         "additionalProperties": false,
-        "description": "Open a new chat thread, optionally captioned from the user's opening words.\n\n`title` is a caption the service truncates, never authority the model or the client\ngrants itself; an absent or blank one falls back to a fixed default. There is no\n`user_id` field — the owner is the session's account (§Security).",
+        "description": "Open a new chat thread, optionally captioned and optionally scoped.\n\n`title` is a caption the service truncates, never authority the model or the client\ngrants itself; an absent or blank one falls back to a fixed default. There is no\n`user_id` field — the owner is the session's account (§Security).\n\n`scope`/`scope_id` bind the thread to a domain surface and default to `GLOBAL` (no\nanchor), so a caller that sends neither opens a global thread exactly as before the\ncorrective. The same shape invariant the domain enforces is checked here at the\nboundary — a `GLOBAL` request with a stray `scope_id`, or an anchored one with none,\nis a `422` rather than a bad row — and the service re-validates that the anchor names\na resource this account may talk about before the thread is created.",
         "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/ConversationScope",
+            "default": "GLOBAL"
+          },
+          "scope_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
           "title": {
             "anyOf": [
               {
@@ -7315,7 +7360,7 @@
         ]
       },
       "post": {
-        "description": "Open a new, empty chat thread for this account (§Security).\n\n201, because it creates a resource. `title` is a caption the service truncates, never\nauthority; an absent or blank one falls back to a default. The thread has no turns yet.",
+        "description": "Open a new, empty chat thread for this account (§Security).\n\n201, because it creates a resource. `title` is a caption the service truncates, never\nauthority; an absent or blank one falls back to a default. `scope`/`scope_id` bind the\nthread to a domain surface (default `GLOBAL`); the service validates that an anchored\nscope names a resource this account may talk about — a foreign or missing anchor is a\n404 — before the thread exists. The thread has no turns yet.",
         "operationId": "start_conversation_api_v2_chat_conversations_post",
         "requestBody": {
           "content": {

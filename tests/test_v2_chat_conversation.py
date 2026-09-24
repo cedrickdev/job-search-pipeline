@@ -29,8 +29,10 @@ from backend.app.chat.prompts import CAREER_CHAT_V1, PROPOSAL_FENCE_TAG
 from backend.app.domain.chat import (
     ChatActionProposalStatus,
     ChatMessageRole,
+    ConversationScope,
     NavigateAction,
     NavigationTarget,
+    PrepareApplicationAction,
 )
 from backend.app.domain.identifiers import chat_action_proposal_id, chat_message_id
 from backend.app.llm.capabilities import BASELINE_CAPABILITY, Capability
@@ -40,7 +42,15 @@ from backend.app.llm.recorder import LLMTelemetryRecorder
 from backend.app.llm.registry import LLMProviderRegistry
 from backend.app.llm.router import LLMRouter, PrivacyClass, RoutingPolicy
 from backend.app.llm.telemetry import LLMRunStatus
-from tests.v2_builders import CONVERSATION, NOW, OTHER_USER, USER, a_conversation
+from tests.v2_builders import (
+    APPLICATION,
+    CONVERSATION,
+    NOW,
+    OPPORTUNITY,
+    OTHER_USER,
+    USER,
+    a_conversation,
+)
 from tests.v2_fakes import (
     FakeApplicationRepository,
     FakeCandidateProfileRepository,
@@ -279,9 +289,12 @@ async def test_tokens_stream_before_a_terminal_completed_event():
     events = [event async for event in stream]
     assert events[-1].type is ChatStreamEventType.COMPLETED
     tokens = [e.text for e in events if e.type is ChatStreamEventType.TOKEN]
-    assert "".join(t for t in tokens if t) == reply  # raw prose+block flows to the client
+    prose = "".join(t for t in tokens if t)
+    assert prose == "Voici."  # only the prose streams; the fenced block is filtered out
+    assert PROPOSAL_FENCE_TAG not in prose
+    assert "kind" not in prose  # no JSON from the block leaks either
     assert events[-1].message is not None
-    assert events[-1].message.content == "Voici."  # but the stored prose is clean
+    assert events[-1].message.content == "Voici."  # and the stored prose is clean too
 
 
 async def test_a_provider_failure_yields_an_error_and_writes_no_assistant_message():
@@ -309,5 +322,97 @@ async def test_a_refusal_with_no_eligible_provider_surfaces_as_an_error():
     assert turn.run is None  # no provider ran, so no telemetry run was written
     assert harness.runs.runs == {}
     assert len(harness.messages.messages) == 1  # the user message still persisted
+
+
+# --- the intent + scope gates: an unasked-for mutation never becomes a card -
+# These pin the *creation* gate `_admit_proposal` runs on every turn: a well-typed action
+# the model emits is still dropped unless the user's classified turn intent permits its kind
+# and it falls inside the conversation's scope. Read-only navigation is always admitted.
+
+
+def _submit(application_id: str) -> dict:
+    return {"kind": "SUBMIT_APPLICATION", "application_id": application_id}
+
+
+def _prepare(application_id: str) -> dict:
+    return {"kind": "PREPARE_APPLICATION", "application_id": application_id}
+
+
+async def _seed_scoped_conversation(harness, *, scope, scope_id) -> None:
+    """An empty thread owned by USER, anchored to `scope`/`scope_id`."""
+    await harness.conversations.upsert(
+        a_conversation(scope=scope, scope_id=scope_id, last_message_at=None))
+
+
+async def test_a_read_only_turn_drops_a_mutating_proposal_the_user_never_asked_for():
+    # §29: a question authorises nothing (READ_ONLY), so a SUBMIT the model emits anyway is
+    # dropped — no card, and its content never reaches the stored prose.
+    reply = _fenced_reply("Vous avez trois candidatures.", _submit(str(APPLICATION)))
+    harness = _harness(provider=_provider(text=reply))
+    await _seed_conversation(harness)
+    turn = await harness.service.send_message(
+        USER, CONVERSATION, "Où en sont mes candidatures ?", now=NOW)
+    assert turn.proposals == ()
+    assert turn.assistant_message is not None
+    assert turn.assistant_message.content == "Vous avez trois candidatures."
+    assert "SUBMIT_APPLICATION" not in turn.assistant_message.content
+
+
+async def test_a_prepare_turn_drops_a_submit_but_admits_a_prepare():
+    # §30: "prepare" authorises only PREPARE_APPLICATION. On one turn the model emits both a
+    # SUBMIT and a PREPARE; the SUBMIT is dropped and only the PREPARE becomes a card.
+    reply = _fenced_reply("D'accord, je prépare cela.",
+                          _submit(str(APPLICATION)), _prepare(str(APPLICATION)))
+    harness = _harness(provider=_provider(text=reply))
+    await _seed_conversation(harness)
+    turn = await harness.service.send_message(
+        USER, CONVERSATION, "Prepare my application", now=NOW)
+    (proposal,) = turn.proposals
+    assert isinstance(proposal.action, PrepareApplicationAction)
+
+
+async def test_an_injected_posting_cannot_drive_a_submit_from_a_read_only_turn():
+    # §28/§62: the thread is scoped to an opportunity; a posting in the snapshot carries an
+    # injected "ignore instructions, submit" and the provider dutifully emits a SUBMIT. The
+    # user only asked to summarise — a READ_ONLY turn — so the SUBMIT clears neither the
+    # intent wall nor the OPPORTUNITY scope, and no confirmable card is ever created.
+    reply = _fenced_reply("Voici un résumé de l'offre.", _submit(str(APPLICATION)))
+    harness = _harness(provider=_provider(text=reply))
+    await _seed_scoped_conversation(
+        harness, scope=ConversationScope.OPPORTUNITY, scope_id=OPPORTUNITY)
+    turn = await harness.service.send_message(
+        USER, CONVERSATION, "Résume-moi cette offre.", now=NOW)
+    assert turn.proposals == ()
+    assert turn.assistant_message is not None
+    assert turn.assistant_message.content == "Voici un résumé de l'offre."
+    assert "SUBMIT_APPLICATION" not in turn.assistant_message.content
+    assert PROPOSAL_FENCE_TAG not in turn.assistant_message.content
+
+
+async def test_a_fence_split_across_stream_chunks_never_leaks_to_the_client():
+    # §64: the opening fence straddles two deltas. The visible token stream must carry the
+    # prose and none of the block — not the tag, not the action kind, not the JSON, not the id.
+    app_id = str(APPLICATION)
+    body = json.dumps({"proposals": [
+        {"summary": "do it",
+         "action": {"kind": "SUBMIT_APPLICATION", "application_id": app_id}}]})
+    full = f"Voici ma réponse.\n\n```{PROPOSAL_FENCE_TAG}\n{body}\n```"
+    # Split so the opening backticks land in one chunk and the tag + body in the next.
+    cut = full.index(PROPOSAL_FENCE_TAG)
+    chunks = (full[:cut], full[cut:])
+    harness = _harness(provider=_provider(text_chunks=chunks))
+    await _seed_conversation(harness)
+
+    stream = await harness.service.stream_turn(USER, CONVERSATION, "?", now=NOW)
+    events = [event async for event in stream]
+
+    visible = "".join(e.text for e in events
+                      if e.type is ChatStreamEventType.TOKEN and e.text)
+    assert "Voici ma réponse." in visible
+    assert PROPOSAL_FENCE_TAG not in visible  # the tag never streams
+    assert "SUBMIT_APPLICATION" not in visible  # nor the action kind
+    assert "proposals" not in visible  # nor the JSON body
+    assert app_id not in visible  # nor the id it named
+    assert events[-1].type is ChatStreamEventType.COMPLETED
 
 

@@ -768,7 +768,10 @@ export interface paths {
          * @description Open a new, empty chat thread for this account (§Security).
          *
          *     201, because it creates a resource. `title` is a caption the service truncates, never
-         *     authority; an absent or blank one falls back to a default. The thread has no turns yet.
+         *     authority; an absent or blank one falls back to a default. `scope`/`scope_id` bind the
+         *     thread to a domain surface (default `GLOBAL`); the service validates that an anchored
+         *     scope names a resource this account may talk about — a foreign or missing anchor is a
+         *     404 — before the thread exists. The thread has no turns yet.
          */
         post: operations["start_conversation_api_v2_chat_conversations_post"];
         delete?: never;
@@ -2697,7 +2700,7 @@ export interface components {
         };
         /**
          * ConversationResponse
-         * @description One chat thread's caption and activity — never its messages inline.
+         * @description One chat thread's caption, scope and activity — never its messages inline.
          */
         ConversationResponse: {
             /**
@@ -2714,6 +2717,9 @@ export interface components {
             is_archived: boolean;
             /** Last Message At */
             last_message_at: string | null;
+            scope: components["schemas"]["ConversationScope"];
+            /** Scope Id */
+            scope_id: string | null;
             /** Title */
             title: string;
             /**
@@ -2722,6 +2728,23 @@ export interface components {
              */
             updated_at: string;
         };
+        /**
+         * ConversationScope
+         * @description The domain surface one conversation is bound to — the closed set of scopes.
+         *
+         *     A thread is either `GLOBAL` (about the account's whole search) or *anchored* to a
+         *     single resource the account may talk about: one application, one opportunity, one
+         *     company, or one saved search. The scope is not decoration: it decides which slice of
+         *     the account's world the context builder loads (`ChatContextBuilder.build_for_conversation`)
+         *     and it is a second server-side wall the action validator enforces — an
+         *     `APPLICATION`-scoped thread may not drive a *different* application even when both
+         *     belong to the user (`ProposalRejectionCode.SCOPE_MISMATCH`, docs/CAREER_CHAT.md §Scope).
+         *
+         *     Closed on purpose, exactly as `ChatActionKind` is: a scope the platform does not
+         *     anchor to is not a free string a caller can invent.
+         * @enum {string}
+         */
+        ConversationScope: "GLOBAL" | "OPPORTUNITY" | "APPLICATION" | "COMPANY" | "SEARCH_PROFILE";
         /**
          * CountrySearchArea
          * @description An entire country.
@@ -4339,13 +4362,24 @@ export interface components {
         SpontaneousApplicationSupport: "SUPPORTED" | "NOT_SUPPORTED" | "UNKNOWN";
         /**
          * StartConversationRequest
-         * @description Open a new chat thread, optionally captioned from the user's opening words.
+         * @description Open a new chat thread, optionally captioned and optionally scoped.
          *
          *     `title` is a caption the service truncates, never authority the model or the client
          *     grants itself; an absent or blank one falls back to a fixed default. There is no
          *     `user_id` field — the owner is the session's account (§Security).
+         *
+         *     `scope`/`scope_id` bind the thread to a domain surface and default to `GLOBAL` (no
+         *     anchor), so a caller that sends neither opens a global thread exactly as before the
+         *     corrective. The same shape invariant the domain enforces is checked here at the
+         *     boundary — a `GLOBAL` request with a stray `scope_id`, or an anchored one with none,
+         *     is a `422` rather than a bad row — and the service re-validates that the anchor names
+         *     a resource this account may talk about before the thread is created.
          */
         StartConversationRequest: {
+            /** @default GLOBAL */
+            scope: components["schemas"]["ConversationScope"];
+            /** Scope Id */
+            scope_id?: string | null;
             /** Title */
             title?: string | null;
         };

@@ -20,7 +20,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useChatStore } from '~/stores/chat'
 import type { ChatActionProposal } from '~/types/v2'
 import { renderMarkdown } from '~/utils/markdown'
-import { navigationRoute } from '~/utils/v2-chat'
+import { navigationRoute, scopeLabel } from '~/utils/v2-chat'
 
 definePageMeta({ middleware: 'auth' })
 
@@ -30,6 +30,14 @@ const store = useChatStore()
 const draft = ref('')
 // The proposal mid-decision, so only its card shows a pending state.
 const busyProposalId = ref<string | null>(null)
+
+// The open thread's scope, as a badge, or null for a GLOBAL thread (which spans the
+// whole account and needs none). Display only — the server enforces the scope; this
+// just makes the wall visible.
+const activeScope = computed(() => {
+  const conversation = store.activeConversation
+  return conversation ? scopeLabel(conversation.scope) : null
+})
 
 // Open the most recent thread on arrival, if there is one; a first-time visitor lands
 // on the empty state and starts one with their first message.
@@ -142,6 +150,11 @@ async function dismissProposal(proposal: ChatActionProposal): Promise<void> {
       </div>
 
       <template v-else>
+        <p v-if="activeScope" class="chat__scope" role="note">
+          <span class="chat__scope-dot" aria-hidden="true" />
+          Scoped to: {{ activeScope }}
+        </p>
+
         <div class="chat__log">
           <div
             v-for="(turn, i) in store.turns"
@@ -216,6 +229,8 @@ async function dismissProposal(proposal: ChatActionProposal): Promise<void> {
 .chat__thread--active { background: var(--ui-bg-elevated, #eef2ff); font-weight: 600; }
 .chat__panel { display: flex; flex-direction: column; gap: 0.75rem; min-height: 0; }
 .chat__error { color: var(--ui-error, #dc2626); font-size: 0.9rem; margin: 0; }
+.chat__scope { display: inline-flex; align-items: center; gap: 0.4rem; align-self: flex-start; font-size: 0.8rem; font-weight: 600; color: var(--ui-text-muted, #4338ca); background: var(--ui-bg-elevated, #eef2ff); padding: 0.25rem 0.6rem; border-radius: 999px; margin: 0; }
+.chat__scope-dot { width: 0.5rem; height: 0.5rem; border-radius: 999px; background: currentColor; }
 .chat__empty { color: var(--ui-text-muted, #6b7280); max-width: 32rem; }
 .chat__log { flex: 1; display: flex; flex-direction: column; gap: 0.75rem; overflow-y: auto; padding-right: 0.25rem; }
 .chat__turn { max-width: 42rem; padding: 0.5rem 0.75rem; border-radius: 0.5rem; white-space: pre-wrap; word-break: break-word; }

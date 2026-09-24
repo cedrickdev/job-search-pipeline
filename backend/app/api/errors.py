@@ -29,7 +29,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 
 from backend.app.api import API_V2_PREFIX
-from backend.app.chat.conversation import ConversationNotFound, EmptyChatMessage
+from backend.app.chat.conversation import (
+    ConversationNotFound,
+    ConversationScopeNotFound,
+    EmptyChatMessage,
+)
 from backend.app.chat.executor import ChatProposalNotActionable, ChatProposalNotFound
 from backend.app.documents import ArtifactNotFound
 from backend.app.documents.generator import InsufficientEvidence
@@ -355,6 +359,16 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         # asking for it. The id it carries is the client's own but is not echoed.
         return _json(status.HTTP_404_NOT_FOUND, "conversation_not_found",
                      "no such conversation")
+
+    @app.exception_handler(ConversationScopeNotFound)
+    async def _conversation_scope_missing(
+            request: Request, exc: ConversationScopeNotFound) -> JSONResponse:
+        # 404: a new thread named a scope resource that is not this account's (or does not
+        # exist). One response for both, exactly like `conversation_not_found`, so a foreign
+        # or missing anchor cannot be told apart and probed. The scope/id are the client's
+        # own but are not echoed.
+        return _json(status.HTTP_404_NOT_FOUND, "conversation_scope_not_found",
+                     "no such resource to open a conversation about")
 
     @app.exception_handler(EmptyChatMessage)
     async def _empty_chat_message(request: Request,

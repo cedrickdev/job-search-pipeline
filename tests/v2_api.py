@@ -68,6 +68,7 @@ from backend.app.api.dependencies import (
     document_service,
     evidence_service,
     geo_search_service,
+    interview_service,
     llm_connection_service,
     now,
     onboarding_service,
@@ -90,6 +91,12 @@ from backend.app.llm.capabilities import BASELINE_CAPABILITY, Capability
 from backend.app.llm.recorder import LLMTelemetryRecorder
 from backend.app.llm.registry import LLMProviderRegistry
 from backend.app.llm.router import LLMRouter, PrivacyClass, RoutingPolicy
+from backend.app.interview.context import InterviewContextBuilder
+from backend.app.interview.service import InterviewService
+from backend.app.interview.transcriber import (
+    DeterministicTranscriber,
+    SpeechTranscriber,
+)
 from backend.app.services.applications import ApplicationService
 from backend.app.services.assessment import AssessmentService
 from backend.app.services.authentication import AuthenticationService
@@ -121,6 +128,11 @@ from tests.v2_fakes import (
     FakeCompanyRepository,
     FakeConversationRepository,
     FakeEligibilityResultRepository,
+    FakeInterviewAnswerEvaluationRepository,
+    FakeInterviewAnswerRepository,
+    FakeInterviewQuestionRepository,
+    FakeInterviewSessionRepository,
+    FakeInterviewSessionSummaryRepository,
     FakeLLMConnectionRepository,
     FakeLLMRunRepository,
     FakeMatchEvaluationRepository,
@@ -131,6 +143,7 @@ from tests.v2_fakes import (
     FakeUserRepository,
 )
 from tests.v2_llm import FakeHostResolver, FakeProvider
+from tests.v2_interview import FakeInterviewLLM
 
 # The instant every flow starts at, and the two addresses they sign in with.
 NOW: Final[datetime] = datetime(2026, 4, 1, 8, 0, tzinfo=UTC)
@@ -275,6 +288,19 @@ class Harness:
     chat_executions: FakeChatActionExecutionRepository
     chat_runs: FakeLLMRunRepository
     chat_provider: FakeProvider
+    # The Phase 14 interview stores, plus the deterministic LLM and transcriber the
+    # simulator runs through. `interview_llm` is the one a test writes *to* before the
+    # request — its per-task answers (a fabricated coaching, an injected provider error)
+    # decide what a turn grades or refuses — the same before-the-request role
+    # `chat_provider` plays for a chat turn. The five repositories are exposed so a test
+    # can seed a session's rows or assert on what a turn persisted.
+    interview_sessions: FakeInterviewSessionRepository
+    interview_questions: FakeInterviewQuestionRepository
+    interview_answers: FakeInterviewAnswerRepository
+    interview_evaluations: FakeInterviewAnswerEvaluationRepository
+    interview_summaries: FakeInterviewSessionSummaryRepository
+    interview_llm: FakeInterviewLLM
+    interview_transcriber: SpeechTranscriber
 
     def url(self, path: str) -> str:
         """A V2 path, prefixed once so no test spells `/api/v2` itself."""
@@ -362,7 +388,9 @@ class Harness:
 async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
                      base_url: str = LOCAL_HTTP_BASE_URL,
                      instant: datetime = NOW,
-                     chat_provider: FakeProvider | None = None
+                     chat_provider: FakeProvider | None = None,
+                     interview_llm: FakeInterviewLLM | None = None,
+                     interview_transcriber: SpeechTranscriber | None = None
                      ) -> AsyncIterator[Harness]:
     """The application wired to fresh fakes, with a cookie-keeping client.
 
@@ -407,6 +435,14 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     chat_proposals = FakeChatActionProposalRepository()
     chat_executions = FakeChatActionExecutionRepository()
     chat_runs = FakeLLMRunRepository()
+    # The Phase 14 interview stores. The service is composed over the same user-scoped
+    # `profiles` and `postings` the rest of V2 uses, so a session grounds in the account's
+    # own profile and a shared posting — the grounding a real prompt would carry.
+    interview_sessions = FakeInterviewSessionRepository()
+    interview_questions = FakeInterviewQuestionRepository()
+    interview_answers = FakeInterviewAnswerRepository()
+    interview_evaluations = FakeInterviewAnswerEvaluationRepository()
+    interview_summaries = FakeInterviewSessionSummaryRepository()
     directory = CompanyDirectoryService(companies, career_sites, discoveries)
     # The assessment service reads the real country packs — the CH pack is what the
     # legal-safety path exercises — over the fake verdict stores. `build_country_packs`
@@ -511,6 +547,25 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
         onboarding=onboarding)
     app.dependency_overrides[chat_conversation_service] = lambda: chat_service
     app.dependency_overrides[chat_action_executor] = lambda: chat_executor
+    # --- Phase 14 adaptive interview simulator --------------------------------
+    # The real `InterviewService` over the fakes, exactly as the dependency composes it,
+    # but with a `FakeInterviewLLM` in place of the routed `InterviewLLM`: the five distinct
+    # tasks (plan, question, evaluation, follow-up, summary) each need a different JSON
+    # shape, and one canned completion cannot satisfy all five, so the flow tests talk to a
+    # fake at the adapter's own seam. The re-validation and readiness-rejection the real
+    # adapter would run are proved on their own in `test_v2_interview_llm.py`. The engine
+    # and guard default to the real, stateless ones, so the API tests exercise the true
+    # adaptive and truth-gating behaviour. A `DeterministicTranscriber` stands in for
+    # whisper.cpp, so a voice answer transcribes without a binary or a model.
+    interview_llm = interview_llm or FakeInterviewLLM()
+    interview_transcriber = interview_transcriber or DeterministicTranscriber()
+    interview = InterviewService(
+        sessions=interview_sessions, questions=interview_questions,
+        answers=interview_answers, evaluations=interview_evaluations,
+        summaries=interview_summaries,
+        context=InterviewContextBuilder(profiles=profiles, opportunities=postings),
+        llm=interview_llm, transcriber=interview_transcriber)
+    app.dependency_overrides[interview_service] = lambda: interview
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:
@@ -528,7 +583,14 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
                       submission_attempts=submission_attempts,
                       conversations=conversations, chat_messages=chat_messages,
                       chat_proposals=chat_proposals, chat_executions=chat_executions,
-                      chat_runs=chat_runs, chat_provider=provider)
+                      chat_runs=chat_runs, chat_provider=provider,
+                      interview_sessions=interview_sessions,
+                      interview_questions=interview_questions,
+                      interview_answers=interview_answers,
+                      interview_evaluations=interview_evaluations,
+                      interview_summaries=interview_summaries,
+                      interview_llm=interview_llm,
+                      interview_transcriber=interview_transcriber)
 
 
 def operations(app: FastAPI, *, under: str) -> tuple[tuple[str, str], ...]:

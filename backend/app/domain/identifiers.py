@@ -56,6 +56,11 @@ ConversationId = NewType("ConversationId", UUID)
 ChatMessageId = NewType("ChatMessageId", UUID)
 ChatActionProposalId = NewType("ChatActionProposalId", UUID)
 ChatActionExecutionId = NewType("ChatActionExecutionId", UUID)
+InterviewSessionId = NewType("InterviewSessionId", UUID)
+InterviewQuestionId = NewType("InterviewQuestionId", UUID)
+InterviewAnswerId = NewType("InterviewAnswerId", UUID)
+InterviewAnswerEvaluationId = NewType("InterviewAnswerEvaluationId", UUID)
+InterviewSessionSummaryId = NewType("InterviewSessionSummaryId", UUID)
 
 
 def new_user_id() -> UserId:
@@ -425,3 +430,72 @@ def chat_action_execution_id(
     """
     return ChatActionExecutionId(
         uuid5(SURROGATE_KEY_NAMESPACE, f"chat_action_execution:{proposal_id}"))
+
+
+def new_interview_session_id() -> InterviewSessionId:
+    """The id of one adaptive interview-practice session (Phase 14 §1).
+
+    Random: a session is an entity a user opens to rehearse against one target, not
+    something recomputable from what it holds — two "Start practice" clicks are two
+    sessions, even against the same opportunity, and each keeps its own immutable
+    history. A candidate who wants to practise the same role twice and compare
+    readiness over time depends on that: collapsing the second onto the first would
+    erase the very trajectory §37 asks the history to preserve.
+    """
+    return InterviewSessionId(uuid4())
+
+
+def interview_question_id(session_id: InterviewSessionId,
+                          sequence: int) -> InterviewQuestionId:
+    """The id of the question at one position in one session.
+
+    Derived from `(session_id, sequence)` — the pair the unique constraint covers —
+    so a turn that is finalized twice after a failed flush writes the same question
+    row rather than duplicating the exchange, exactly as `chat_message_id` does. The
+    sequence is the session's own monotonic counter, assigned by the question engine
+    as it asks; an adaptive follow-up is simply the next sequence, not a child of the
+    question it follows.
+    """
+    return InterviewQuestionId(
+        uuid5(SURROGATE_KEY_NAMESPACE, f"interview_question:{session_id}:{sequence}"))
+
+
+def interview_answer_id(question_id: InterviewQuestionId) -> InterviewAnswerId:
+    """The id of the candidate's accepted answer to one question.
+
+    Derived from the question alone, because Phase 14 accepts one immutable answer
+    per question (§52-53): retries are deferred, so a question has at most one
+    answer and its id is a function of the question. A resubmitted answer after a
+    failed flush therefore lands on the same row instead of recording the reply
+    twice. When retries arrive in a later phase this becomes `(question, attempt)`,
+    the way `submission_attempt_id` already keys attempts.
+    """
+    return InterviewAnswerId(
+        uuid5(SURROGATE_KEY_NAMESPACE, f"interview_answer:{question_id}"))
+
+
+def interview_answer_evaluation_id(
+        answer_id: InterviewAnswerId) -> InterviewAnswerEvaluationId:
+    """The id of the structured evaluation of one answer.
+
+    Derived from the answer, so re-evaluating a reply — a provider retry, a repeated
+    grade after a failed flush — replaces the one evaluation under it rather than
+    accumulating a row per attempt. An answer has exactly one current evaluation:
+    readiness is aggregated deterministically from these, and two evaluations of the
+    same answer would let a pair be counted twice.
+    """
+    return InterviewAnswerEvaluationId(
+        uuid5(SURROGATE_KEY_NAMESPACE, f"interview_answer_evaluation:{answer_id}"))
+
+
+def interview_session_summary_id(
+        session_id: InterviewSessionId) -> InterviewSessionSummaryId:
+    """The id of the coaching summary produced when a session completes.
+
+    Derived from the session, because a session has exactly one summary: completing
+    it twice after a failed flush must reuse that row, not append a second report.
+    The summary is the session's closing artefact — readiness, coverage, coaching —
+    so keying it on the session is keying it on the thing it summarizes.
+    """
+    return InterviewSessionSummaryId(
+        uuid5(SURROGATE_KEY_NAMESPACE, f"interview_session_summary:{session_id}"))

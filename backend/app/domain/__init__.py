@@ -30,5 +30,7 @@ The modules, in dependency order:
 - `application` — the execution aggregate and its lifecycle state machine;
 - `application_event` — the append-only audit trail and submission attempts;
 - `execution_gate` — the deterministic gate that authorizes a submission;
-- `chat` — the career chat's typed action grammar and its persisted turns.
+- `chat` — the career chat's typed action grammar and its persisted turns;
+- `interview` — the adaptive interview simulator: sessions, questions, answers,
+  evaluations and deterministic, app-derived readiness.
 """

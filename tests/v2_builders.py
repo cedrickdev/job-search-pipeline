@@ -64,6 +64,26 @@ from backend.app.domain.eligibility import (
     EligibilityResult,
     EligibilityStatus,
 )
+from backend.app.domain.interview import (
+    DimensionEvaluation,
+    EvaluationDimension,
+    EvaluationStatus,
+    InterviewAnswer,
+    InterviewAnswerEvaluation,
+    InterviewAnswerFormat,
+    InterviewDifficulty,
+    InterviewMode,
+    InterviewPlan,
+    InterviewQuestion,
+    InterviewQuestionType,
+    InterviewSession,
+    InterviewSessionSummary,
+    InterviewTopic,
+    ReadinessBand,
+    ReadinessDimensionSummary,
+    SessionReadiness,
+    SessionStyle,
+)
 from backend.app.domain.identifiers import (
     ApplicationDecisionId,
     ApplicationId,
@@ -75,6 +95,7 @@ from backend.app.domain.identifiers import (
     ConversationId,
     EligibilityResultId,
     EvidenceId,
+    InterviewSessionId,
     LLMConnectionId,
     LLMRunId,
     MatchEvaluationId,
@@ -86,6 +107,10 @@ from backend.app.domain.identifiers import (
     chat_action_proposal_id,
     chat_message_id,
     document_version_id,
+    interview_answer_evaluation_id,
+    interview_answer_id,
+    interview_question_id,
+    interview_session_summary_id,
     provider_session_id,
 )
 from backend.app.domain.decision import (
@@ -134,6 +159,11 @@ CONVERSATION = ConversationId(UUID("00000000-0000-4000-8000-0000000000c1"))
 OTHER_CONVERSATION = ConversationId(UUID("00000000-0000-4000-8000-0000000000c2"))
 APPLICATION = ApplicationId(UUID("00000000-0000-4000-8000-0000000000d1"))
 OTHER_APPLICATION = ApplicationId(UUID("00000000-0000-4000-8000-0000000000d2"))
+# An interview session's id is random in production (`new_interview_session_id`), so the
+# builders pin a constant instead of calling the factory — the question, answer, evaluation
+# and summary ids all derive from it, so a whole session's rows stay reproducible.
+SESSION = InterviewSessionId(UUID("00000000-0000-4000-8000-0000000000e1"))
+OTHER_SESSION = InterviewSessionId(UUID("00000000-0000-4000-8000-0000000000e2"))
 
 # Somewhere real, so a distance a test asserts on can be checked against a map.
 LAUSANNE = GeoPoint(latitude=46.5197, longitude=6.6323)
@@ -618,3 +648,192 @@ def a_chat_action_execution(*, proposal_id=None, **overrides):
     }
     fields.update(overrides)
     return ChatActionExecution(**fields)
+
+
+def an_interview_plan(**overrides):
+    """A two-topic behavioural plan, the yardstick a session's coverage is measured against.
+
+    Defaults to `InterviewMode.BEHAVIORAL` with two distinct topics, so `plan.mode` agrees
+    with `an_interview_session`'s default mode. A test for another mode passes both `mode`
+    and `topics`; the plan's own validator refuses a repeated topic label.
+    """
+    fields = {
+        "mode": InterviewMode.BEHAVIORAL,
+        "topics": (
+            InterviewTopic(label="past teamwork",
+                           question_type=InterviewQuestionType.BEHAVIORAL,
+                           target_questions=2),
+            InterviewTopic(label="motivation",
+                           question_type=InterviewQuestionType.MOTIVATION),
+        ),
+    }
+    fields.update(overrides)
+    return InterviewPlan(**fields)
+
+
+def an_interview_session(**overrides):
+    """A freshly created behavioural session owned by `USER`, rehearsing `OPPORTUNITY`.
+
+    Defaults to `CREATED` with no `ended_at`, the state the lifecycle invariant requires of
+    a non-terminal session. A test that needs a finished session passes
+    `status=InterviewSessionStatus.COMPLETED, ended_at=LATER`; one for another owner passes
+    `user_id=OTHER_USER` with `id=OTHER_SESSION`. Override `mode` together with `plan`, since
+    the two must agree.
+    """
+    fields = {
+        "id": SESSION,
+        "user_id": USER,
+        "candidate_profile_id": PROFILE,
+        "opportunity_id": OPPORTUNITY,
+        "mode": InterviewMode.BEHAVIORAL,
+        "style": SessionStyle.COACHING,
+        "difficulty": InterviewDifficulty.INTERMEDIATE,
+        "plan": an_interview_plan(),
+        "title": "Entretien comportemental — Fixture SA",
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return InterviewSession(**fields)
+
+
+def an_interview_question(*, session_id=SESSION, sequence=0,
+                          question_type=InterviewQuestionType.BEHAVIORAL, **overrides):
+    """One primary question at sequence 0 by default, its id derived from the session.
+
+    The id is `(session_id, sequence)`, the rule the engine applies, so re-finalizing the
+    same turn writes the same row. A primary question follows nothing (`depth=0`,
+    `follows_sequence=None`); an adaptive follow-up passes `depth=1, follows_sequence=0` at a
+    later `sequence`, the only shape the `follow_up_shape_coherent` invariant permits.
+    """
+    fields = {
+        "id": interview_question_id(session_id, sequence),
+        "session_id": session_id,
+        "user_id": USER,
+        "sequence": sequence,
+        "question_type": question_type,
+        "difficulty": InterviewDifficulty.INTERMEDIATE,
+        "prompt": "Parlez-moi d'une fois où vous avez résolu un conflit d'équipe.",
+        "topic_label": "past teamwork",
+        "asked_at": NOW,
+    }
+    fields.update(overrides)
+    return InterviewQuestion(**fields)
+
+
+def an_interview_answer(*, question_id=None, session_id=SESSION, **overrides):
+    """The candidate's one TEXT answer to a question, its id derived from that question.
+
+    `question_id` defaults to the id of the default primary question above; the answer id
+    derives from it, so a resubmit lands on the same row. A voice answer passes
+    `format=InterviewAnswerFormat.VOICE, transcript_confidence=0.9` — a TEXT answer must not
+    carry a `transcript_confidence`, which the invariant enforces.
+    """
+    resolved_question_id = (question_id if question_id is not None
+                            else interview_question_id(session_id, 0))
+    fields = {
+        "id": interview_answer_id(resolved_question_id),
+        "question_id": resolved_question_id,
+        "session_id": session_id,
+        "user_id": USER,
+        "format": InterviewAnswerFormat.TEXT,
+        "content": "J'ai médiatisé un désaccord sur le choix d'une base de données.",
+        "answered_at": LATER,
+    }
+    fields.update(overrides)
+    return InterviewAnswer(**fields)
+
+
+def a_dimension_evaluation(dimension=EvaluationDimension.CLARITY,
+                           status=EvaluationStatus.EVALUATED, score=0.8, **overrides):
+    """One axis of an answer's grade, `EVALUATED` at 0.8 by default.
+
+    An `EVALUATED` dimension must carry a score and a `NOT_EVALUATED` one must not — the
+    `NOT_EVALUATED` ≠ zero rule — so an honest "not assessed" axis passes
+    `status=EvaluationStatus.NOT_EVALUATED, score=None`.
+    """
+    fields = {"dimension": dimension, "status": status, "score": score}
+    fields.update(overrides)
+    return DimensionEvaluation(**fields)
+
+
+def an_answer_evaluation(*, answer_id=None, session_id=SESSION, dimensions=None,
+                         **overrides):
+    """The structured grade of one answer — two evaluated axes, and no readiness.
+
+    `answer_id` defaults to the id of the default answer above; the evaluation id derives
+    from it, so a re-grade overwrites the one row. The default `dimensions` are two distinct
+    evaluated axes; the model forbids a repeated dimension and — pointedly — has no readiness
+    field, so a round trip proves the grade persists without one.
+    """
+    resolved_answer_id = (
+        answer_id if answer_id is not None
+        else interview_answer_id(interview_question_id(session_id, 0)))
+    fields = {
+        "id": interview_answer_evaluation_id(resolved_answer_id),
+        "answer_id": resolved_answer_id,
+        "session_id": session_id,
+        "user_id": USER,
+        "dimensions": dimensions if dimensions is not None else (
+            a_dimension_evaluation(dimension=EvaluationDimension.CLARITY, score=0.8),
+            a_dimension_evaluation(dimension=EvaluationDimension.RELEVANCE, score=0.7),
+        ),
+        "confidence": 0.6,
+        "strengths": ("structure claire de la réponse",),
+        "improvements": ("chiffrer davantage l'impact",),
+        "evaluated_at": LATER,
+    }
+    fields.update(overrides)
+    return InterviewAnswerEvaluation(**fields)
+
+
+def a_session_readiness(**overrides):
+    """A `PROGRESSING` readiness computed at 0.75 over one evaluated axis.
+
+    A coaching signal, never a probability: `overall` and `band` move together
+    (`overall=None` ⟺ `band=UNKNOWN`), so an unassessable session builds with
+    `overall=None, band=ReadinessBand.UNKNOWN, dimensions=(<count 0, mean None>,)`. `coverage`
+    is the orthogonal "how much of the plan was exercised" axis, reported beside the score.
+    """
+    fields = {
+        "overall": 0.75,
+        "band": ReadinessBand.PROGRESSING,
+        "dimensions": (
+            ReadinessDimensionSummary(
+                dimension=EvaluationDimension.CLARITY, mean_score=0.8,
+                evaluated_count=1, weight=0.3),
+        ),
+        "coverage": 0.5,
+        "answered_questions": 1,
+        "evaluated_answers": 1,
+        "profile_version": "interview-readiness/1.0",
+        "computed_at": LATER,
+    }
+    fields.update(overrides)
+    return SessionReadiness(**fields)
+
+
+def an_interview_session_summary(*, session_id=SESSION, readiness=None, **overrides):
+    """The one closing summary per session — deterministic readiness plus guarded prose.
+
+    The id derives from the session, so completing a session twice reuses the row. It pairs
+    a `SessionReadiness` (defaulting to `a_session_readiness()`) with a `headline` about the
+    *practice* — never a hiring forecast — and the at-a-glance counts feed the history.
+    """
+    fields = {
+        "id": interview_session_summary_id(session_id),
+        "session_id": session_id,
+        "user_id": USER,
+        "readiness": readiness if readiness is not None else a_session_readiness(),
+        "headline": "Motivation claire, exemples encore trop généraux.",
+        "strengths": ("articule clairement ses motivations",),
+        "focus_areas": ("étayer chaque réussite d'un résultat chiffré",),
+        "questions_asked": 1,
+        "answers_evaluated": 1,
+        "created_at": LATER,
+    }
+    fields.update(overrides)
+    return InterviewSessionSummary(**fields)
+
+
+

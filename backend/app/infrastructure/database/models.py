@@ -103,6 +103,14 @@ from backend.app.domain.eligibility import (
     RuleAuthority,
 )
 from backend.app.domain.geo import GeocodingOutcome
+from backend.app.domain.interview import (
+    InterviewAnswerFormat,
+    InterviewDifficulty,
+    InterviewMode,
+    InterviewQuestionType,
+    InterviewSessionStatus,
+    SessionStyle,
+)
 from backend.app.domain.matching import MatchDimension
 from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
 from backend.app.domain.policy import AutomationMode
@@ -2438,6 +2446,238 @@ class ChatActionExecutionRow(TimestampedMixin, Base):
         enum_column(ChatActionExecutionOutcome, "chat_action_execution_outcome"))
     detail: Mapped[str | None]
     result_ref: Mapped[str | None]
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 — the adaptive interview simulator. A session, the questions its engine
+# asked, the candidate's one answer per question, the structured evaluation of each
+# answer, and the coaching summary a completed session produces. The CHECKs restate
+# the domain invariants that a column group can express, so a row written outside the
+# mapper is refused exactly as a `model_validator` would refuse it — most pointedly
+# the follow-up shape and the "readiness is never on an evaluation" absence.
+# ---------------------------------------------------------------------------
+
+# `InterviewSession._ended_at_matches_terminal_status`, as a CHECK: a session carries
+# an `ended_at` exactly when its status is terminal, and never otherwise.
+_INTERVIEW_SESSION_ENDED_AT_MATCHES_STATUS: Final[str] = (
+    "(status IN ('COMPLETED', 'ABANDONED')) = (ended_at IS NOT NULL)")
+
+# `InterviewQuestion._follow_up_shape_is_coherent`, as a CHECK: a primary question
+# (depth 0) follows nothing, and a follow-up (depth > 0) names an earlier question.
+_INTERVIEW_QUESTION_FOLLOW_UP_SHAPE: Final[str] = (
+    "(depth = 0 AND follows_sequence IS NULL)"
+    " OR (depth > 0 AND follows_sequence IS NOT NULL AND follows_sequence < sequence)")
+
+# `InterviewAnswer._transcript_confidence_only_for_voice`, as a CHECK: only a VOICE
+# answer has a transcription to be unsure about; a TEXT answer carries no confidence.
+_INTERVIEW_ANSWER_CONFIDENCE_ONLY_FOR_VOICE: Final[str] = (
+    "format <> 'TEXT' OR transcript_confidence IS NULL")
+
+
+class InterviewSessionRow(TimestampedMixin, Base):
+    """One adaptive interview-practice session, owned by exactly one account (§1-6).
+
+    User-owned like every Phase 4+ entity: `user_id` cascades from `users`, so deleting
+    an account takes its sessions — and, through the cascades below, their questions,
+    answers, evaluations and summary — with it. `candidate_profile_id` and
+    `opportunity_id` cascade too (the practice is meaningless without the profile it
+    rehearses and the role it targets), but `application_id` is `SET NULL`: a session
+    may be *for* an application, yet it outlives one that is later withdrawn. `plan` is
+    the frozen coverage plan as JSONB; the CHECK enforces the terminal/`ended_at`
+    invariant, and the index serves the "my sessions, most recent first" list.
+    """
+
+    __tablename__ = "interview_sessions"
+    __table_args__ = (
+        CheckConstraint(_INTERVIEW_SESSION_ENDED_AT_MATCHES_STATUS,
+                        name="ended_at_matches_status"),
+        _code_format("language", "^[a-z]{2}$"),
+        Index("ix_interview_sessions_user_id_updated_at", "user_id", "updated_at"),
+        Index("ix_interview_sessions_opportunity_id", "opportunity_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    candidate_profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    opportunity_id: Mapped[UUID] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"))
+    application_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"))
+    mode: Mapped[InterviewMode] = mapped_column(
+        enum_column(InterviewMode, "interview_mode"))
+    style: Mapped[SessionStyle] = mapped_column(
+        enum_column(SessionStyle, "interview_session_style"),
+        server_default=text(f"'{SessionStyle.COACHING.value}'"))
+    difficulty: Mapped[InterviewDifficulty] = mapped_column(
+        enum_column(InterviewDifficulty, "interview_difficulty"),
+        server_default=text(f"'{InterviewDifficulty.INTERMEDIATE.value}'"))
+    status: Mapped[InterviewSessionStatus] = mapped_column(
+        enum_column(InterviewSessionStatus, "interview_session_status"),
+        server_default=text(f"'{InterviewSessionStatus.CREATED.value}'"))
+    language: Mapped[str | None] = mapped_column(String(2))
+    plan: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
+    title: Mapped[str]
+    ended_at: Mapped[datetime | None]
+
+    questions: Mapped[list["InterviewQuestionRow"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise", order_by="InterviewQuestionRow.sequence")
+
+
+class InterviewQuestionRow(TimestampedMixin, Base):
+    """One question the engine asked, at one position in a session (§8-9).
+
+    `UNIQUE (session_id, sequence)` is the natural key `interview_question_id` derives
+    the primary key from, so re-finalizing a turn writes the same row rather than asking
+    twice. `depth` and `follows_sequence` reconstruct the adaptive follow-up chain
+    without a self-referential id; the CHECK restates
+    `InterviewQuestion._follow_up_shape_is_coherent` so a primary can never claim to
+    follow anything and a follow-up can never dangle. Written once and never mutated, so
+    `asked_at` is the domain fact and the mixin timestamps are row bookkeeping.
+    """
+
+    __tablename__ = "interview_questions"
+    __table_args__ = (
+        UniqueConstraint("session_id", "sequence"),
+        CheckConstraint("sequence >= 0", name="sequence_non_negative"),
+        CheckConstraint("depth BETWEEN 0 AND 2", name="depth_within_bounds"),
+        CheckConstraint(_INTERVIEW_QUESTION_FOLLOW_UP_SHAPE,
+                        name="follow_up_shape_coherent"),
+        Index("ix_interview_questions_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    session_id: Mapped[UUID] = mapped_column(
+        ForeignKey("interview_sessions.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    sequence: Mapped[int] = mapped_column(Integer)
+    question_type: Mapped[InterviewQuestionType] = mapped_column(
+        enum_column(InterviewQuestionType, "interview_question_type"))
+    difficulty: Mapped[InterviewDifficulty] = mapped_column(
+        enum_column(InterviewDifficulty, "interview_difficulty"))
+    prompt: Mapped[str]
+    topic_label: Mapped[str | None]
+    follows_sequence: Mapped[int | None] = mapped_column(Integer)
+    depth: Mapped[int] = mapped_column(SmallInteger, server_default=text("0"))
+    generator_key: Mapped[str | None]
+    asked_at: Mapped[datetime]
+
+    session: Mapped["InterviewSessionRow"] = relationship(
+        back_populates="questions", lazy="raise")
+
+
+class InterviewAnswerRow(TimestampedMixin, Base):
+    """The candidate's one, immutable answer to one question (§13, §52-53).
+
+    `UNIQUE (question_id)` matches `interview_answer_id`'s derivation from the question
+    alone, so a resubmit after a failed flush lands on the same row rather than recording
+    the reply twice. `content` is the answer as text — for a VOICE answer the transcript,
+    because the raw audio is discarded (§17). `transcript_confidence` exists only for a
+    voice answer, which the CHECK enforces. Written once and never mutated.
+    """
+
+    __tablename__ = "interview_answers"
+    __table_args__ = (
+        UniqueConstraint("question_id"),
+        _unit_interval("transcript_confidence"),
+        CheckConstraint(_INTERVIEW_ANSWER_CONFIDENCE_ONLY_FOR_VOICE,
+                        name="transcript_confidence_only_for_voice"),
+        Index("ix_interview_answers_session_id", "session_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    question_id: Mapped[UUID] = mapped_column(
+        ForeignKey("interview_questions.id", ondelete="CASCADE"))
+    session_id: Mapped[UUID] = mapped_column(
+        ForeignKey("interview_sessions.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    format: Mapped[InterviewAnswerFormat] = mapped_column(
+        enum_column(InterviewAnswerFormat, "interview_answer_format"))
+    content: Mapped[str]
+    transcript_confidence: Mapped[float | None]
+    answered_at: Mapped[datetime]
+
+
+class InterviewAnswerEvaluationRow(TimestampedMixin, Base):
+    """The structured grade of one answer — and, pointedly, no readiness (§19-24, §33).
+
+    The persisted half of "coaching, not prediction, enforced by absence": there is no
+    readiness, probability or verdict column here, because the platform computes
+    readiness later from a whole session's evaluations, never a provider per answer.
+    `UNIQUE (answer_id)` matches `interview_answer_evaluation_id`'s derivation, so
+    re-grading an answer overwrites its one evaluation rather than accreting a second —
+    the idempotency `aggregate_session_readiness` rests on so a pair is never counted
+    twice. `dimensions` is the per-axis grade as a JSONB array, re-validated on read.
+    """
+
+    __tablename__ = "interview_answer_evaluations"
+    __table_args__ = (
+        UniqueConstraint("answer_id"),
+        _unit_interval("confidence"),
+        Index("ix_interview_answer_evaluations_session_id", "session_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    answer_id: Mapped[UUID] = mapped_column(
+        ForeignKey("interview_answers.id", ondelete="CASCADE"))
+    session_id: Mapped[UUID] = mapped_column(
+        ForeignKey("interview_sessions.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    dimensions: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    confidence: Mapped[float | None]
+    strengths: Mapped[list[str]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    improvements: Mapped[list[str]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    suggested_answer: Mapped[str | None]
+    evaluator_key: Mapped[str | None]
+    evaluated_at: Mapped[datetime]
+
+
+class InterviewSessionSummaryRow(TimestampedMixin, Base):
+    """The coaching artefact produced when a session completes (§37-39, §73-74).
+
+    `UNIQUE (session_id)` matches `interview_session_summary_id`'s derivation, so
+    completing a session twice reuses the row rather than appending a second report.
+    `readiness` is the deterministic `SessionReadiness` as JSONB — computed by the
+    platform, re-validated on read — paired with the coaching prose (`headline`,
+    `strengths`, `focus_areas`) the evidence guard cleared before persistence. The index
+    serves the readiness history a candidate watches over repeated practice (§74);
+    `created_at` is the domain fact (it carries no `onupdate`) and `updated_at` is the
+    row-write bookkeeping the server default fills.
+    """
+
+    __tablename__ = "interview_session_summaries"
+    __table_args__ = (
+        UniqueConstraint("session_id"),
+        CheckConstraint("questions_asked >= 0", name="questions_asked_non_negative"),
+        CheckConstraint("answers_evaluated >= 0", name="answers_evaluated_non_negative"),
+        Index("ix_interview_session_summaries_user_id_created_at",
+              "user_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    session_id: Mapped[UUID] = mapped_column(
+        ForeignKey("interview_sessions.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    readiness: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
+    headline: Mapped[str]
+    strengths: Mapped[list[str]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    focus_areas: Mapped[list[str]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    questions_asked: Mapped[int] = mapped_column(Integer)
+    answers_evaluated: Mapped[int] = mapped_column(Integer)
+    generator_key: Mapped[str | None]
 
 
 

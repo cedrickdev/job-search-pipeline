@@ -88,7 +88,12 @@ export function job(template: JobTemplate, jobId: number): string {
 // (`/chat/conversations` GET+POST), one thread (GET), its messages (GET plus the
 // streaming POST that returns `text/event-stream`, not JSON) and its proposals
 // (GET), and the two proposal verbs keyed by proposal id (`/confirm`, `/dismiss`).
-// The `satisfies` clause is the same compile-time guard.
+// Phase 14 adds the interview simulator: the session list and its create
+// (`/interview-sessions` GET+POST), the readiness history (a literal declared before
+// `{session_id}`), one session (GET) and its detail, readiness, next-question, answers,
+// voice-answers, complete and abandon sub-resources, and the strict per-question
+// re-grade (`/questions/{sequence}/evaluate`). The `satisfies` clause is the same
+// compile-time guard.
 export const V2_ENDPOINTS = {
   login: '/api/v2/auth/login',
   logout: '/api/v2/auth/logout',
@@ -130,6 +135,17 @@ export const V2_ENDPOINTS = {
   chatProposals: '/api/v2/chat/conversations/{conversation_id}/proposals',
   chatProposalConfirm: '/api/v2/chat/proposals/{proposal_id}/confirm',
   chatProposalDismiss: '/api/v2/chat/proposals/{proposal_id}/dismiss',
+  interviewSessions: '/api/v2/interview-sessions',
+  interviewHistory: '/api/v2/interview-sessions/history',
+  interviewSession: '/api/v2/interview-sessions/{session_id}',
+  interviewSessionDetail: '/api/v2/interview-sessions/{session_id}/detail',
+  interviewReadiness: '/api/v2/interview-sessions/{session_id}/readiness',
+  interviewNextQuestion: '/api/v2/interview-sessions/{session_id}/next-question',
+  interviewAnswers: '/api/v2/interview-sessions/{session_id}/answers',
+  interviewVoiceAnswers: '/api/v2/interview-sessions/{session_id}/voice-answers',
+  interviewEvaluate: '/api/v2/interview-sessions/{session_id}/questions/{sequence}/evaluate',
+  interviewComplete: '/api/v2/interview-sessions/{session_id}/complete',
+  interviewAbandon: '/api/v2/interview-sessions/{session_id}/abandon',
 } as const satisfies Record<string, keyof paths>
 
 /**
@@ -288,4 +304,40 @@ type ProposalTemplate = Extract<
  */
 export function chatProposal(template: ProposalTemplate, proposalId: string): string {
   return template.replace('{proposal_id}', proposalId)
+}
+
+/** Every V2 endpoint whose template contains `{session_id}`. */
+type SessionTemplate = Extract<
+  (typeof V2_ENDPOINTS)[keyof typeof V2_ENDPOINTS],
+  `${string}{session_id}${string}`
+>
+
+/**
+ * Resolve a `{session_id}` template — one interview session's read, its detail, its
+ * readiness, or an action on it (next-question, answers, voice-answers, complete,
+ * abandon) (Phase 14).
+ *
+ * A session id is a UUID string and the owner is not in the path: a practice session is
+ * user-owned, reached through the session cookie, so asking for another account's session
+ * by id is a 404 rather than its transcript — it reads as absent, never as "exists but not
+ * yours" (docs/AUTHENTICATION.md §Authorization, docs/INTERVIEW_SIMULATOR.md §Sharing).
+ *
+ * The `/questions/{sequence}/evaluate` template carries a second parameter; resolve it
+ * with `interviewEvaluate` below, not this, so `{sequence}` is never left in the URL.
+ */
+export function interviewSession(template: SessionTemplate, sessionId: string): string {
+  return template.replace('{session_id}', sessionId)
+}
+
+/**
+ * Resolve the strict per-question re-grade template — both its `{session_id}` and its
+ * `{sequence}` (Phase 14).
+ *
+ * The sequence is the question's ordinal in the session (0-based), which the engine owns;
+ * the route parses it as an integer, so it is stringified here and never quoted.
+ */
+export function interviewEvaluate(sessionId: string, sequence: number): string {
+  return V2_ENDPOINTS.interviewEvaluate
+    .replace('{session_id}', sessionId)
+    .replace('{sequence}', String(sequence))
 }

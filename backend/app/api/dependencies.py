@@ -67,6 +67,10 @@ from backend.app.infrastructure.database.engine import (
     create_session_factory,
     session_scope,
 )
+from backend.app.interview.context import InterviewContextBuilder
+from backend.app.interview.llm import InterviewLLM
+from backend.app.interview.service import InterviewService
+from backend.app.interview.transcriber import WhisperCppTranscriber
 from backend.app.llm.bootstrap import build_llm_provider_registry
 from backend.app.llm.recorder import LLMTelemetryRecorder
 from backend.app.llm.router import LLMRouter, PrivacyClass, RoutingPolicy
@@ -86,6 +90,11 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyCompanyRepository,
     SqlAlchemyConversationRepository,
     SqlAlchemyEligibilityResultRepository,
+    SqlAlchemyInterviewAnswerEvaluationRepository,
+    SqlAlchemyInterviewAnswerRepository,
+    SqlAlchemyInterviewQuestionRepository,
+    SqlAlchemyInterviewSessionRepository,
+    SqlAlchemyInterviewSessionSummaryRepository,
     SqlAlchemyLLMConnectionRepository,
     SqlAlchemyLLMRunRepository,
     SqlAlchemyMatchEvaluationRepository,
@@ -573,6 +582,49 @@ def chat_action_executor(
         documents=documents, applications=applications, onboarding=onboarding)
 
 
+async def interview_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        current: Annotated[AuthenticatedSession, Depends(current_session)],
+        cipher: Annotated[SecretCipher | None, Depends(llm_cipher)],
+) -> InterviewService:
+    """The adaptive interview simulator, composed per request for this account.
+
+    Async for the same reason the chat factory is: the provider registry the session's
+    questions and evaluations route through is built from *this account's* enabled LLM
+    connections, loaded here and handed to a router and a telemetry recorder scoped to them.
+    The context builder reads the same two user-scoped repositories the rest of V2 uses, so
+    the grounding a prompt bears is this account's own.
+
+    The privacy decision is made here and nowhere else, and it is the opposite of the chat's:
+    `LOCAL_ONLY`, because every interview prompt carries the candidate's own evidence, and the
+    default for anything bearing candidate data is that it must not leave the machine unless an
+    operator opts a connection out (backend/app/interview/llm.py §Privacy,
+    docs/LLM_PROVIDER_ARCHITECTURE.md §Privacy). Transcription is local by construction — the
+    `WhisperCppTranscriber` runs on the box and discards the audio — so no privacy question
+    reaches the router for a voice answer. No clock in the constructor; each route hands `now`
+    to the method it calls, so a single request's timestamps agree.
+    """
+    connections = await SqlAlchemyLLMConnectionRepository(session).list_for_user(
+        current.user.id, enabled_only=True)
+    registry = build_llm_provider_registry(connections, cipher=cipher)
+    return InterviewService(
+        sessions=SqlAlchemyInterviewSessionRepository(session),
+        questions=SqlAlchemyInterviewQuestionRepository(session),
+        answers=SqlAlchemyInterviewAnswerRepository(session),
+        evaluations=SqlAlchemyInterviewAnswerEvaluationRepository(session),
+        summaries=SqlAlchemyInterviewSessionSummaryRepository(session),
+        context=InterviewContextBuilder(
+            profiles=SqlAlchemyCandidateProfileRepository(session),
+            opportunities=SqlAlchemyOpportunityRepository(session)),
+        llm=InterviewLLM(
+            router=LLMRouter(registry),
+            policy=RoutingPolicy(privacy=PrivacyClass.LOCAL_ONLY),
+            recorder=LLMTelemetryRecorder(
+                runs=SqlAlchemyLLMRunRepository(session), connections=connections),
+            user_id=current.user.id),
+        transcriber=WhisperCppTranscriber())
+
+
 CurrentSession = Annotated[AuthenticatedSession, Depends(current_session)]
 Now = Annotated[datetime, Depends(now)]
 Auth = Annotated[AuthSettings, Depends(auth_settings)]
@@ -590,3 +642,4 @@ Applications = Annotated[ApplicationService, Depends(application_service)]
 ChatConversations = Annotated[ChatConversationService,
                               Depends(chat_conversation_service)]
 ChatActions = Annotated[ChatActionExecutor, Depends(chat_action_executor)]
+Interviews = Annotated[InterviewService, Depends(interview_service)]

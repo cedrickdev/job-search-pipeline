@@ -38,6 +38,8 @@ from backend.app.chat.executor import ChatProposalNotActionable, ChatProposalNot
 from backend.app.documents import ArtifactNotFound
 from backend.app.documents.generator import InsufficientEvidence
 from backend.app.domain.application_failure import ApplicationError, ApplicationFailureCode
+from backend.app.domain.interview import InterviewErrorCode
+from backend.app.interview.service import InterviewError, InterviewGroundingNotFound
 from backend.app.llm.failures import LLMError, LLMFailureCode
 from backend.app.services.applications import (
     ApplicationDecisionMissing,
@@ -80,6 +82,14 @@ DATABASE_UNAVAILABLE: Final[str] = "database_unavailable"
 # handler returns — this handler only changes the body.
 UNPROCESSABLE_CONTENT: Final[int] = 422
 
+# Spelled as numbers for the same reason `UNPROCESSABLE_CONTENT` is: RFC 9110 renamed
+# these two, and Starlette carries both the old and new constant names across the version
+# range `fastapi>=0.110` allows. The integer is the one form correct on every supported
+# Starlette. A voice answer whose upload is larger than the transcriber accepts is 413
+# (Content Too Large); one whose media type is not a supported audio format is 415.
+CONTENT_TOO_LARGE: Final[int] = 413
+UNSUPPORTED_MEDIA_TYPE: Final[int] = 415
+
 # Which HTTP status each LLM failure becomes when one surfaces to a client. The LLM is
 # an upstream dependency, so an unmapped failure is a 502 (`_llm_error` defaults there):
 # from the caller's side a provider fault is a bad answer from a gateway, not a fault of
@@ -107,6 +117,26 @@ _LLM_STATUS: Final[dict[LLMFailureCode, int]] = {
 _APPLICATION_STATUS: Final[dict[ApplicationFailureCode, int]] = {
     ApplicationFailureCode.APPLICATION_DUPLICATE: status.HTTP_409_CONFLICT,
     ApplicationFailureCode.APPLICATION_RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
+}
+
+# Which HTTP status each interview refusal becomes. A missing session or question is a 404
+# (and a session read owner-first means "not yours" is indistinguishable from "no such");
+# the whole family of lifecycle and ordering refusals — an inactive session, an out-of-order
+# or already-answered question, a session at its bound — is a 409, a well-formed request the
+# engine refused on a state the caller must resolve, which is also the handler's default for
+# an unmapped code. A voice upload too large is 413 and an unsupported audio type is 415, the
+# two the client corrects by changing the file. A provider the session depends on being down
+# — evaluation, question generation or transcription unavailable — is a 503: a transient
+# upstream state, retryable, never the request's fault. The body's `error` is the code
+# lowercased, the same closed vocabulary the service raises (§90).
+_INTERVIEW_STATUS: Final[dict[InterviewErrorCode, int]] = {
+    InterviewErrorCode.SESSION_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    InterviewErrorCode.QUESTION_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    InterviewErrorCode.AUDIO_TOO_LARGE: CONTENT_TOO_LARGE,
+    InterviewErrorCode.UNSUPPORTED_AUDIO: UNSUPPORTED_MEDIA_TYPE,
+    InterviewErrorCode.EVALUATION_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
+    InterviewErrorCode.QUESTION_GENERATION_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
+    InterviewErrorCode.TRANSCRIPTION_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
 
@@ -405,6 +435,25 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         # closed vocabulary the LLM layer uses (§61) rather than parsing the sentence.
         status_code = _LLM_STATUS.get(exc.code, status.HTTP_502_BAD_GATEWAY)
         return _json(status_code, exc.code.value.lower(), exc.detail)
+
+    @app.exception_handler(InterviewError)
+    async def _interview_error(request: Request, exc: InterviewError) -> JSONResponse:
+        # A typed, secret-free interview refusal. `detail` is the service's own operator
+        # sentence — never a provider's message, a candidate's words or a payload (§90) — so
+        # returning it echoes nothing sensitive. The status comes from the code; the body's
+        # `error` is the code lowercased, the same closed vocabulary the engine raises.
+        status_code = _INTERVIEW_STATUS.get(exc.code, status.HTTP_409_CONFLICT)
+        return _json(status_code, exc.code.value.lower(), exc.detail)
+
+    @app.exception_handler(InterviewGroundingNotFound)
+    async def _interview_grounding_missing(
+            request: Request, exc: InterviewGroundingNotFound) -> JSONResponse:
+        # 404 before any session exists: the profile (read owner-first, so another account's
+        # reads as absent) or the posting to ground a new session was not found. One response
+        # that does not say which of the two was missing, so a caller cannot probe for the
+        # existence of either; the ids it carries are the client's own but are not echoed.
+        return _json(status.HTTP_404_NOT_FOUND, "interview_grounding_not_found",
+                     "no candidate profile and opportunity to open a session about")
 
     @app.exception_handler(IntegrityError)
     async def _integrity(request: Request, exc: IntegrityError) -> JSONResponse:

@@ -281,6 +281,95 @@ export type StartConversationRequest = Schemas['StartConversationRequest']
 /** The one-field body of a user turn. */
 export type SendMessageRequest = Schemas['SendMessageRequest']
 
+// Phase 14: the adaptive interview simulator. A practice session and its list, the plan
+// that shapes it, one asked question and the turn it comes back on, a recorded answer and
+// its best-effort coaching evaluation, the platform-computed readiness, and the summary a
+// completed session folds down to (with its history). Every type is an alias into the
+// generated document, so a field the backend renames fails `nuxt typecheck` here after
+// `npm run gen:api`. The load-bearing shape is `InterviewAnswerEvaluation`: it carries
+// coaching only — dimensions, strengths, improvements, a suggested answer — and *no*
+// readiness, probability or verdict, because the simulator practices, it never predicts.
+// Readiness is a coaching signal the platform derives, surfaced only by `SessionReadiness`
+// (docs/INTERVIEW_SIMULATOR.md).
+
+/** One practice session: its mode, style, difficulty, lifecycle status and plan. No `user_id`. */
+export type InterviewSession = Schemas['InterviewSessionResponse']
+
+/** This account's sessions, newest first, wrapped. */
+export type InterviewSessionList = Schemas['InterviewSessionListResponse']
+
+/** The plan a session opens with — its mode, its topics and how many questions it targets. */
+export type InterviewPlan = Schemas['InterviewPlanResponse']
+
+/** One planned topic: its label, the kind of question it drives, and how many to ask. */
+export type InterviewTopic = Schemas['InterviewTopicResponse']
+
+/** One asked question — its prompt, type, difficulty and place in the sequence. The engine owns its identity. */
+export type InterviewQuestion = Schemas['InterviewQuestionResponse']
+
+/** One ask/answer turn: the session as it now stands and the question on the table (or null). */
+export type InterviewTurn = Schemas['InterviewTurnResponse']
+
+/** One recorded answer — text or the transcript of a voice clip, with its confidence. */
+export type InterviewAnswer = Schemas['InterviewAnswerResponse']
+
+/** One answer's coaching: dimensions, strengths, improvements, a suggested answer — never a forecast. */
+export type InterviewAnswerEvaluation = Schemas['InterviewAnswerEvaluationResponse']
+
+/** What a submit returns: the session as it now stands, the recorded answer, and its coaching (or null). */
+export type InterviewAnswerOutcome = Schemas['AnswerOutcomeResponse']
+
+/** One dimension's grade: its status, its score (null when not assessed) and its notes. */
+export type DimensionEvaluation = Schemas['DimensionEvaluationResponse']
+
+/** The platform-computed coaching signal: an overall, a band, per-dimension means and coverage. */
+export type SessionReadiness = Schemas['SessionReadinessResponse']
+
+/** One dimension's rollup across a session: its weight, how many answers touched it, and their mean. */
+export type ReadinessDimensionSummary = Schemas['ReadinessDimensionSummaryResponse']
+
+/** A completed session folded down: its readiness, headline, strengths and focus areas. */
+export type InterviewSessionSummary = Schemas['InterviewSessionSummaryResponse']
+
+/** This account's readiness history — one summary per completed session. */
+export type InterviewSessionSummaryList = Schemas['InterviewSessionSummaryListResponse']
+
+/** A session with everything it holds — its questions, answers, evaluations and summary. */
+export type InterviewSessionDetail = Schemas['InterviewSessionDetailResponse']
+
+/** The body that opens a session: the profile and posting to ground on, and the mode. */
+export type CreateInterviewSessionRequest = Schemas['CreateInterviewSessionRequest']
+
+/** The one-field body of a typed answer. */
+export type SubmitTextAnswerRequest = Schemas['SubmitTextAnswerRequest']
+
+/** The six interview modes — from a recruiter screen to a final round. */
+export type InterviewMode = Schemas['InterviewMode']
+
+/** `COACHING | REALISTIC` — how forthcoming the simulator is with help. */
+export type SessionStyle = Schemas['SessionStyle']
+
+/** `INTRODUCTORY | INTERMEDIATE | ADVANCED` — the difficulty the engine adapts. */
+export type InterviewDifficulty = Schemas['InterviewDifficulty']
+
+/** `CREATED | IN_PROGRESS | COMPLETED | ABANDONED` — a session's lifecycle. */
+export type InterviewSessionStatus = Schemas['InterviewSessionStatus']
+
+/** The kind of question the engine asks — behavioural, technical, situational, and the rest. */
+export type InterviewQuestionType = Schemas['InterviewQuestionType']
+
+/** `TEXT | VOICE` — how an answer was given. */
+export type InterviewAnswerFormat = Schemas['InterviewAnswerFormat']
+
+/** `CLARITY | RELEVANCE | COMPLETENESS | STRUCTURE | SPECIFICITY` — what coaching grades. */
+export type EvaluationDimension = Schemas['EvaluationDimension']
+
+/** `EVALUATED | NOT_EVALUATED` — whether a dimension could be assessed at all. */
+export type EvaluationStatus = Schemas['EvaluationStatus']
+
+/** `UNKNOWN | EARLY | DEVELOPING | PROGRESSING | POLISHED` — the readiness band, a signal not a score. */
+export type ReadinessBand = Schemas['ReadinessBand']
+
 /**
  * Every `error` slug `/api/v2` can answer with, as one union.
  *
@@ -293,6 +382,7 @@ export type SendMessageRequest = Schemas['SendMessageRequest']
 export type V2ErrorCode =
   | 'account_disabled'
   | 'account_locked'
+  | 'answer_out_of_order'
   | 'application_adapter_error'
   | 'application_channel_unsupported'
   | 'application_decision_missing'
@@ -305,6 +395,7 @@ export type V2ErrorCode =
   | 'application_rate_limited'
   | 'application_submission_unknown'
   | 'artifact_unavailable'
+  | 'audio_too_large'
   | 'candidate_profile_not_found'
   | 'capability_not_supported'
   | 'chat_proposal_not_actionable'
@@ -321,11 +412,15 @@ export type V2ErrorCode =
   | 'document_not_rendered'
   | 'email_already_registered'
   | 'empty_chat_message'
+  | 'evaluation_unavailable'
   | 'insufficient_evidence'
+  | 'interview_grounding_not_found'
   | 'invalid_credentials'
+  | 'invalid_status_transition'
   | 'llm_connection_invalid'
   | 'llm_connection_not_found'
   | 'llm_secret_key_unavailable'
+  | 'no_current_question'
   | 'not_authenticated'
   | 'onboarding_incomplete'
   | 'output_limit_exceeded'
@@ -338,7 +433,14 @@ export type V2ErrorCode =
   | 'provider_rate_limited'
   | 'provider_timeout'
   | 'provider_unavailable'
+  | 'question_already_answered'
+  | 'question_generation_unavailable'
+  | 'question_not_found'
   | 'search_profile_not_found'
+  | 'session_limit_reached'
+  | 'session_not_active'
   | 'session_not_found'
   | 'structured_output_invalid'
+  | 'transcription_unavailable'
+  | 'unsupported_audio'
   | 'validation_failed'

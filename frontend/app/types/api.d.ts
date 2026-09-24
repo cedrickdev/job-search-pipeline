@@ -1107,6 +1107,284 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/interview-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sessions
+         * @description This account's practice sessions, most recently updated first.
+         */
+        get: operations["list_sessions_api_v2_interview_sessions_get"];
+        put?: never;
+        /**
+         * Create Session
+         * @description Plan and open a practice session against one posting, grounded in the account's profile.
+         *
+         *     201, because it creates a resource. The body names the profile and posting to rehearse
+         *     and the `mode`; the session opens `CREATED`, and the platform stamps its plan's mode so
+         *     the session and plan can never disagree. A foreign or missing profile/posting is a 404
+         *     (`interview_grounding_not_found`) that does not say which was missing. No question is asked
+         *     yet — the first `next-question` starts the exchange.
+         */
+        post: operations["create_session_api_v2_interview_sessions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/interview-sessions/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Readiness History
+         * @description This account's readiness history — the summaries of completed sessions, most recent first.
+         *
+         *     Declared before `/{session_id}` so the literal `history` is never parsed as a session id.
+         *     Each summary pairs the platform-computed readiness with the coaching prose that explains
+         *     it, so a candidate can watch progress over repeated practice — never a hiring forecast.
+         */
+        get: operations["readiness_history_api_v2_interview_sessions_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/interview-sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Session
+         * @description One session's configuration and lifecycle, or 404 if it is not this account's.
+         */
+        get: operations["get_session_api_v2_interview_sessions__session_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/interview-sessions/{session_id}/abandon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Abandon Session
+         * @description Walk away from a session, moving it to the terminal `ABANDONED` state.
+         *
+         *     A `CREATED` or `IN_PROGRESS` session becomes `ABANDONED`; no summary is written, because an
+         *     abandoned session has no closing coaching. A session already terminal is a 409
+         *     (`invalid_status_transition`); 404 when it is not this account's.
+         */
+        post: operations["abandon_session_api_v2_interview_sessions__session_id__abandon_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/interview-sessions/{session_id}/answers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit Text Answer
+         * @description Record a typed answer to the current question and grade it best-effort.
+         *
+         *     201, because it records an answer. The answer is stored and the session advances even when
+         *     coaching could not be produced (`evaluation=null`), so a lost evaluation never costs the
+         *     candidate their turn. 404 when the session is not this account's; 409 for an inactive
+         *     session or an out-of-order answer.
+         */
+        post: operations["submit_text_answer_api_v2_interview_sessions__session_id__answers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/interview-sessions/{session_id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete Session
+         * @description Aggregate readiness, write the closing summary, and finalize the session.
+         *
+         *     Readiness is computed by the platform from stored grades — never a provider — and paired
+         *     with coaching prose the guard clears; if the prose fails, the session still completes with
+         *     a safe, fact-free headline, and the readiness stands either way. `IN_PROGRESS → COMPLETED`;
+         *     a session not in progress is a 409 (`invalid_status_transition`). 404 when it is not this
+         *     account's.
+         */
+        post: operations["complete_session_api_v2_interview_sessions__session_id__complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/interview-sessions/{session_id}/detail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session Detail
+         * @description One session with its whole exchange — questions, answers, evaluations and summary.
+         *
+         *     The transcript view: everything the session holds, loaded under one ownership gate. 404
+         *     when the session is not this account's.
+         */
+        get: operations["session_detail_api_v2_interview_sessions__session_id__detail_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/interview-sessions/{session_id}/next-question": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Next Question
+         * @description The current question to answer, or the signal the plan is done.
+         *
+         *     Idempotent: if the last question is still unanswered it is returned again, so polling never
+         *     asks twice; otherwise the session advances (a `CREATED` session becomes `IN_PROGRESS` on
+         *     its first question) and the engine picks a provider-warranted follow-up or the next
+         *     uncovered topic. When neither yields a question, the turn carries `question=null` and the
+         *     caller completes the session. 404 when the session is not this account's, 409 when it is no
+         *     longer active.
+         */
+        post: operations["next_question_api_v2_interview_sessions__session_id__next_question_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/interview-sessions/{session_id}/questions/{sequence}/evaluate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Evaluate Answer
+         * @description (Re)grade one answered question, surfacing failure as an error rather than swallowing it.
+         *
+         *     The strict counterpart to the best-effort grading a submit does: where a submit keeps an
+         *     un-gradable answer and reports `evaluation=null`, this is the path to retry coaching for an
+         *     answer that lacked it, and it answers 503 (`evaluation_unavailable`) when the provider
+         *     fails or its coaching does not survive the evidence guard. It does not adapt difficulty, so
+         *     a retry never double-counts. 404 when no question holds that sequence; 409 when the question
+         *     has no answer to grade. The evaluation carries coaching only — never a readiness or verdict.
+         */
+        post: operations["evaluate_answer_api_v2_interview_sessions__session_id__questions__sequence__evaluate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/interview-sessions/{session_id}/readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session Readiness
+         * @description The session's readiness as it stands now — a coaching signal, computed by the platform.
+         *
+         *     The same deterministic aggregation `complete` uses, run without ending the session, so a
+         *     UI can show progress mid-practice. No provider is in this call, and the result is never a
+         *     hiring probability: `band` is a practice label, `UNKNOWN` when nothing was evaluable rather
+         *     than a low score. 404 when the session is not this account's.
+         */
+        get: operations["session_readiness_api_v2_interview_sessions__session_id__readiness_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/interview-sessions/{session_id}/voice-answers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit Voice Answer
+         * @description Transcribe a spoken answer, then record and grade it exactly like a typed one.
+         *
+         *     201, like a text answer. The session is confirmed active before a byte is transcribed, so
+         *     a dead session spends no transcription; the raw audio is transcribed and discarded, and
+         *     only the transcript is stored and graded. An upload larger than the transcriber accepts is
+         *     413, an unsupported media type is 415, and a transcriber that is unavailable or returns an
+         *     empty transcript is 503 — the audio bytes are never echoed back. The upload's declared
+         *     content type is passed through as-is for the transcriber to validate.
+         */
+        post: operations["submit_voice_answer_api_v2_interview_sessions__session_id__voice_answers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/matches": {
         parameters: {
             query?: never;
@@ -1663,6 +1941,19 @@ export interface components {
             valid_until?: string | null;
         };
         /**
+         * AnswerOutcomeResponse
+         * @description The result of submitting one answer: the answer, its coaching, and the session.
+         *
+         *     `evaluation is null` means coaching could not be produced for this answer (a provider
+         *     failed, or its coaching did not survive the evidence guard); the answer is still stored
+         *     and the session still advances, so a lost evaluation never costs the candidate their turn.
+         */
+        AnswerOutcomeResponse: {
+            answer: components["schemas"]["InterviewAnswerResponse"];
+            evaluation: components["schemas"]["InterviewAnswerEvaluationResponse"] | null;
+            session: components["schemas"]["InterviewSessionResponse"];
+        };
+        /**
          * ApplicationChannel
          * @description The route an application takes to an employer (§8-10).
          *
@@ -1922,6 +2213,11 @@ export interface components {
         Body_post_transcribe_api_transcribe_post: {
             /** File */
             file: string;
+        };
+        /** Body_submit_voice_answer_api_v2_interview_sessions__session_id__voice_answers_post */
+        Body_submit_voice_answer_api_v2_interview_sessions__session_id__voice_answers_post: {
+            /** Audio */
+            audio: string;
         };
         /**
          * CancelApplicationAction
@@ -2822,6 +3118,38 @@ export interface components {
             opportunity_id: string;
         };
         /**
+         * CreateInterviewSessionRequest
+         * @description Open a practice session against one posting, grounded in the account's own profile.
+         *
+         *     The body names the profile and the posting to rehearse and the interview `mode`; `style`
+         *     and `difficulty` carry coaching defaults, and `language`, `application_id` and `title`
+         *     are optional. There is no `user_id` and no `status`: the owner is the session's account
+         *     and a new session is always `CREATED` — a request cannot open one already in progress.
+         */
+        CreateInterviewSessionRequest: {
+            /** Application Id */
+            application_id?: string | null;
+            /**
+             * Candidate Profile Id
+             * Format: uuid
+             */
+            candidate_profile_id: string;
+            /** @default INTERMEDIATE */
+            difficulty: components["schemas"]["InterviewDifficulty"];
+            /** Language */
+            language?: string | null;
+            mode: components["schemas"]["InterviewMode"];
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+            /** @default COACHING */
+            style: components["schemas"]["SessionStyle"];
+            /** Title */
+            title?: string | null;
+        };
+        /**
          * CreateLLMConnectionRequest
          * @description A new LLM connection as the settings form submits it (§4, §13).
          *
@@ -2903,6 +3231,21 @@ export interface components {
          * @enum {string}
          */
         DeterminationSource: "DETERMINISTIC_RULE" | "COUNTRY_PACK_RULE" | "CANDIDATE_DECLARATION" | "HUMAN_REVIEW" | "LLM_EXTRACTION";
+        /**
+         * DimensionEvaluationResponse
+         * @description One axis of one answer's grade, or an honest "not assessed".
+         *
+         *     `score is null` is never a zero: when `status` is `NOT_EVALUATED` the provider could not
+         *     judge this axis, and the client renders "not assessed" rather than a low bar.
+         */
+        DimensionEvaluationResponse: {
+            dimension: components["schemas"]["EvaluationDimension"];
+            /** Notes */
+            notes: string[];
+            /** Score */
+            score: number | null;
+            status: components["schemas"]["EvaluationStatus"];
+        };
         /**
          * DimensionScoreResponse
          * @description One axis of a match, on both scales, with the reasons behind it.
@@ -3145,6 +3488,35 @@ export interface components {
             opportunity_id: string;
         };
         /**
+         * EvaluationDimension
+         * @description The axes one answer is graded on — the closed set of evaluation dimensions (§18).
+         *
+         *     The first three are the minimum the spec mandates and mean what a coach means by them:
+         *     `CLARITY` is whether the answer is understandable, `RELEVANCE` whether it addresses the
+         *     question asked, `COMPLETENESS` whether it leaves out something the question needed.
+         *     `STRUCTURE` (does the answer have a shape — situation, action, result — or wander) and
+         *     `SPECIFICITY` (concrete detail versus generality) round out the coaching picture without
+         *     ever straying into anything a real recruiter decides. All five are *compatibility with
+         *     good answering*, never a hiring verdict — the same discipline that keeps eligibility out
+         *     of `MatchDimension`.
+         * @enum {string}
+         */
+        EvaluationDimension: "CLARITY" | "RELEVANCE" | "COMPLETENESS" | "STRUCTURE" | "SPECIFICITY";
+        /**
+         * EvaluationStatus
+         * @description Whether one dimension of one answer was actually graded (§22-24).
+         *
+         *     The load-bearing distinction of the whole evaluation model, and the exact analogue of
+         *     `MatchClassification.UNKNOWN` ≠ `WEAK`: `NOT_EVALUATED` is *not* a score of zero. A
+         *     provider that could not judge specificity — because the question did not call for it, or
+         *     the answer was too short to tell — records `NOT_EVALUATED`, and the readiness aggregation
+         *     then *omits* that dimension rather than averaging in a zero. Grading something at 0.0 says
+         *     "this was bad"; `NOT_EVALUATED` says "we did not assess this", and conflating the two is
+         *     how a warm-up question quietly tanks a readiness number.
+         * @enum {string}
+         */
+        EvaluationStatus: "EVALUATED" | "NOT_EVALUATED";
+        /**
          * EvidenceBackedText
          * @description A sentence the platform is willing to write, and what it rests on.
          *
@@ -3352,6 +3724,94 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * InterviewAnswerEvaluationResponse
+         * @description The coaching grade of one answer — and, pointedly, nothing about hiring.
+         *
+         *     There is no readiness, probability, or verdict field here, and there is not meant to be:
+         *     readiness is aggregated by the platform and exposed only on `SessionReadinessResponse`.
+         *     `confidence` is the evaluator's confidence in its own grading, distinct from any score.
+         */
+        InterviewAnswerEvaluationResponse: {
+            /**
+             * Answer Id
+             * Format: uuid
+             */
+            answer_id: string;
+            /** Confidence */
+            confidence: number | null;
+            /** Dimensions */
+            dimensions: components["schemas"]["DimensionEvaluationResponse"][];
+            /**
+             * Evaluated At
+             * Format: date-time
+             */
+            evaluated_at: string;
+            /** Evaluator Key */
+            evaluator_key: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Improvements */
+            improvements: string[];
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Strengths */
+            strengths: string[];
+            /** Suggested Answer */
+            suggested_answer: string | null;
+        };
+        /**
+         * InterviewAnswerFormat
+         * @description How the candidate gave one answer (§13).
+         *
+         *     `TEXT` is typed; `VOICE` is spoken, transcribed to text and then treated exactly like
+         *     text — the transcript is what is stored and evaluated, and the raw audio is discarded
+         *     (§17). The distinction survives only so the UI can show how an answer was given and so a
+         *     voice answer can carry the transcriber's confidence, which a typed answer has no notion
+         *     of.
+         * @enum {string}
+         */
+        InterviewAnswerFormat: "TEXT" | "VOICE";
+        /**
+         * InterviewAnswerResponse
+         * @description The candidate's one answer to one question — the transcript for a voice answer.
+         *
+         *     `transcript_confidence` exists only for a `VOICE` answer, and only when the transcriber
+         *     reported one; the raw audio is never here, because it is transcribed and discarded.
+         */
+        InterviewAnswerResponse: {
+            /**
+             * Answered At
+             * Format: date-time
+             */
+            answered_at: string;
+            /** Content */
+            content: string;
+            format: components["schemas"]["InterviewAnswerFormat"];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Question Id
+             * Format: uuid
+             */
+            question_id: string;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Transcript Confidence */
+            transcript_confidence: number | null;
+        };
         /** InterviewBody */
         InterviewBody: {
             /** Notes */
@@ -3361,6 +3821,30 @@ export interface components {
             /** Scheduled For */
             scheduled_for?: string | null;
         };
+        /**
+         * InterviewDifficulty
+         * @description How demanding a question is, on an ordered three-step scale (§5, §32).
+         *
+         *     Ordered on purpose: the engine adapts difficulty *up* after a strong answer and *down*
+         *     after a weak one (§32), so the domain has to know that `ADVANCED` is harder than
+         *     `INTERMEDIATE`. The order lives in `_DIFFICULTY_ORDER` rather than in the member
+         *     definitions, because `StrEnum` compares by string value and "ADVANCED" < "INTERMEDIATE"
+         *     alphabetically would be exactly the wrong answer.
+         * @enum {string}
+         */
+        InterviewDifficulty: "INTRODUCTORY" | "INTERMEDIATE" | "ADVANCED";
+        /**
+         * InterviewMode
+         * @description The kind of interview a session rehearses — the closed set of stages (§4).
+         *
+         *     Each member is a real, recognizable round a candidate prepares for differently: an
+         *     HR screen is not a technical loop, and a case study is not a hiring-manager chat. The
+         *     mode decides which competencies the plan targets, how the question engine phrases
+         *     prompts, and which readiness profile aggregates the answers, so it must be a value the
+         *     domain understands rather than a free label a caller invents.
+         * @enum {string}
+         */
+        InterviewMode: "RECRUITER_HR" | "BEHAVIORAL" | "TECHNICAL" | "HIRING_MANAGER" | "CASE_STUDY" | "FINAL_INTERVIEW";
         /** InterviewPatch */
         InterviewPatch: {
             /** Notes */
@@ -3371,6 +3855,225 @@ export interface components {
             round_label?: string | null;
             /** Scheduled For */
             scheduled_for?: string | null;
+        };
+        /**
+         * InterviewPlanResponse
+         * @description The coverage plan a session sets out against — its topics and its intended length.
+         */
+        InterviewPlanResponse: {
+            mode: components["schemas"]["InterviewMode"];
+            /** Target Question Count */
+            target_question_count: number;
+            /** Topics */
+            topics: components["schemas"]["InterviewTopicResponse"][];
+        };
+        /**
+         * InterviewQuestionResponse
+         * @description One question the engine asked, at its position in the session.
+         *
+         *     The identity fields (`sequence`, `depth`, `follows_sequence`) are the engine's and are
+         *     exposed read-only so a client can render the adaptive chain; `is_follow_up` is surfaced
+         *     so it need not re-derive it from `depth`.
+         */
+        InterviewQuestionResponse: {
+            /**
+             * Asked At
+             * Format: date-time
+             */
+            asked_at: string;
+            /** Depth */
+            depth: number;
+            difficulty: components["schemas"]["InterviewDifficulty"];
+            /** Follows Sequence */
+            follows_sequence: number | null;
+            /** Generator Key */
+            generator_key: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Follow Up */
+            is_follow_up: boolean;
+            /** Prompt */
+            prompt: string;
+            question_type: components["schemas"]["InterviewQuestionType"];
+            /** Sequence */
+            sequence: number;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Topic Label */
+            topic_label: string | null;
+        };
+        /**
+         * InterviewQuestionType
+         * @description The topical kind of a single question — the closed question vocabulary (§8-9).
+         *
+         *     Orthogonal to `InterviewMode`: a `TECHNICAL` mode is mostly `TECHNICAL` and `CASE`
+         *     questions but opens with a `BACKGROUND` one and closes with `CANDIDATE_QUESTIONS`, and a
+         *     `BEHAVIORAL` mode leans on `BEHAVIORAL` and `SITUATIONAL`. The type drives how an answer
+         *     is evaluated (a `BACKGROUND` warm-up is not graded for technical depth) and which planned
+         *     topic a question discharges, so it is typed rather than left to prose.
+         * @enum {string}
+         */
+        InterviewQuestionType: "BACKGROUND" | "MOTIVATION" | "BEHAVIORAL" | "SITUATIONAL" | "TECHNICAL" | "CASE" | "ROLE_KNOWLEDGE" | "CANDIDATE_QUESTIONS";
+        /**
+         * InterviewSessionDetailResponse
+         * @description One session with its whole exchange — questions, answers, evaluations, and summary.
+         *
+         *     The read a transcript or history view composes from: everything a session holds, loaded
+         *     under one ownership gate, so a surface renders the full practice without extra round trips.
+         */
+        InterviewSessionDetailResponse: {
+            /** Answers */
+            answers: components["schemas"]["InterviewAnswerResponse"][];
+            /** Evaluations */
+            evaluations: components["schemas"]["InterviewAnswerEvaluationResponse"][];
+            /** Questions */
+            questions: components["schemas"]["InterviewQuestionResponse"][];
+            session: components["schemas"]["InterviewSessionResponse"];
+            summary: components["schemas"]["InterviewSessionSummaryResponse"] | null;
+        };
+        /**
+         * InterviewSessionListResponse
+         * @description This account's sessions, most recently updated first, wrapped so it can grow.
+         */
+        InterviewSessionListResponse: {
+            /** Sessions */
+            sessions: components["schemas"]["InterviewSessionResponse"][];
+        };
+        /**
+         * InterviewSessionResponse
+         * @description One practice session's configuration and lifecycle — never another account's.
+         *
+         *     `is_active` is surfaced so a UI knows whether the session still takes turns without
+         *     re-deriving it from `status`. There is no `user_id`: the owner is always the caller.
+         */
+        InterviewSessionResponse: {
+            /** Application Id */
+            application_id: string | null;
+            /**
+             * Candidate Profile Id
+             * Format: uuid
+             */
+            candidate_profile_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            difficulty: components["schemas"]["InterviewDifficulty"];
+            /** Ended At */
+            ended_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Language */
+            language: string | null;
+            mode: components["schemas"]["InterviewMode"];
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+            plan: components["schemas"]["InterviewPlanResponse"];
+            status: components["schemas"]["InterviewSessionStatus"];
+            style: components["schemas"]["SessionStyle"];
+            /** Title */
+            title: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * InterviewSessionStatus
+         * @description Where a session is in its life, as a closed state machine (§6).
+         *
+         *     A session is born `CREATED` — planned but not yet started. The first question moves it
+         *     to `IN_PROGRESS`, where it stays through every question, answer and evaluation. It
+         *     leaves that state exactly once, into one of two terminal states: `COMPLETED` when the
+         *     candidate finishes and readiness is aggregated, or `ABANDONED` when they walk away. The
+         *     terminal states are final — a completed session's history is immutable (§37-39), and an
+         *     abandoned one is not resumed but restarted. `_ALLOWED_STATUS_TRANSITIONS` is the whole
+         *     machine; `can_transition_to` is the only thing that reads it.
+         * @enum {string}
+         */
+        InterviewSessionStatus: "CREATED" | "IN_PROGRESS" | "COMPLETED" | "ABANDONED";
+        /**
+         * InterviewSessionSummaryListResponse
+         * @description A candidate's readiness history — the summaries of their completed sessions, newest first.
+         */
+        InterviewSessionSummaryListResponse: {
+            /** Summaries */
+            summaries: components["schemas"]["InterviewSessionSummaryResponse"][];
+        };
+        /**
+         * InterviewSessionSummaryResponse
+         * @description The coaching artefact produced when a session completes.
+         *
+         *     Pairs the deterministic `readiness` with the prose that explains it — a `headline` that
+         *     describes the practice, never a hiring forecast — plus `strengths` and `focus_areas`.
+         */
+        InterviewSessionSummaryResponse: {
+            /** Answers Evaluated */
+            answers_evaluated: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Focus Areas */
+            focus_areas: string[];
+            /** Generator Key */
+            generator_key: string | null;
+            /** Headline */
+            headline: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Questions Asked */
+            questions_asked: number;
+            readiness: components["schemas"]["SessionReadinessResponse"];
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Strengths */
+            strengths: string[];
+        };
+        /**
+         * InterviewTopicResponse
+         * @description One competency a plan intends to probe, and how many questions it is worth.
+         */
+        InterviewTopicResponse: {
+            /** Label */
+            label: string;
+            question_type: components["schemas"]["InterviewQuestionType"];
+            /** Target Questions */
+            target_questions: number;
+        };
+        /**
+         * InterviewTurnResponse
+         * @description The next step of a session: the current question, or `null` to complete it.
+         *
+         *     `question is null` means the plan is covered or the session hit its bound — there is
+         *     nothing more to ask, and the client should complete the session.
+         */
+        InterviewTurnResponse: {
+            question: components["schemas"]["InterviewQuestionResponse"] | null;
+            session: components["schemas"]["InterviewSessionResponse"];
         };
         /**
          * LLMConnectionHealthResponse
@@ -3879,6 +4582,36 @@ export interface components {
             radius_km: number;
         };
         /**
+         * ReadinessBand
+         * @description The coaching band a session's readiness falls in — named once, invented nowhere (§34).
+         *
+         *     A practice trajectory, never a hiring probability (§123). The names describe how far
+         *     *rehearsal* has come — `EARLY` through `POLISHED` — and deliberately avoid any word that
+         *     reads as "will get the offer". `UNKNOWN` is the honest answer when no answer in the
+         *     session could be evaluated at all; like its match-domain twin it must never be rendered as
+         *     a low band, because "we could not assess this practice" and "this practice went badly" are
+         *     different facts. The thresholds live on `ReadinessProfile`, so no surface hard-codes a
+         *     `if score > 0.8`.
+         * @enum {string}
+         */
+        ReadinessBand: "UNKNOWN" | "EARLY" | "DEVELOPING" | "PROGRESSING" | "POLISHED";
+        /**
+         * ReadinessDimensionSummaryResponse
+         * @description How one axis fared across a whole session — the aggregated view of one dimension.
+         *
+         *     `mean_score is null` when the axis was never evaluated in the session; `evaluated_count`
+         *     is how many answers backed the mean, so a UI can tell "0.9 from one" from "0.9 from eight".
+         */
+        ReadinessDimensionSummaryResponse: {
+            dimension: components["schemas"]["EvaluationDimension"];
+            /** Evaluated Count */
+            evaluated_count: number;
+            /** Mean Score */
+            mean_score: number | null;
+            /** Weight */
+            weight: number;
+        };
+        /**
          * ReasonImpact
          * @description Whether a reason argues for a candidate/opportunity pair or against it.
          * @enum {string}
@@ -4197,6 +4930,36 @@ export interface components {
             text: string;
         };
         /**
+         * SessionReadinessResponse
+         * @description A session's readiness — a coaching signal computed by the platform, not a forecast.
+         *
+         *     `overall`/`overall_percent` are `null` when nothing in the session could be evaluated, in
+         *     which case `band` is `UNKNOWN` — never a low band. `coverage` is a second, orthogonal axis:
+         *     how much of the plan the session exercised, reported beside readiness rather than folded in.
+         */
+        SessionReadinessResponse: {
+            /** Answered Questions */
+            answered_questions: number;
+            band: components["schemas"]["ReadinessBand"];
+            /**
+             * Computed At
+             * Format: date-time
+             */
+            computed_at: string;
+            /** Coverage */
+            coverage: number;
+            /** Dimensions */
+            dimensions: components["schemas"]["ReadinessDimensionSummaryResponse"][];
+            /** Evaluated Answers */
+            evaluated_answers: number;
+            /** Overall */
+            overall: number | null;
+            /** Overall Percent */
+            overall_percent: number | null;
+            /** Profile Version */
+            profile_version: string;
+        };
+        /**
          * SessionResponse
          * @description The current session's window — issued, expires — and nothing identifying it.
          *
@@ -4220,6 +4983,19 @@ export interface components {
              */
             last_seen_at: string;
         };
+        /**
+         * SessionStyle
+         * @description How the simulator conducts itself (§80).
+         *
+         *     `COACHING` is the default and the point of the phase: the simulator explains, offers
+         *     strengths and focus areas, and is generous with follow-ups that teach. `REALISTIC`
+         *     dials the hand-holding down to something closer to a real room — terser, fewer
+         *     scaffolding cues — without ever changing what is *true*: both styles run the same
+         *     evidence guard and the same deterministic readiness, because coaching honesty is not
+         *     a style setting (§123).
+         * @enum {string}
+         */
+        SessionStyle: "COACHING" | "REALISTIC";
         /**
          * SetLLMConnectionEnabledRequest
          * @description The on/off a settings page toggles, without deleting the row or its key.
@@ -4410,6 +5186,14 @@ export interface components {
              * @enum {string}
              */
             kind: "SUBMIT_APPLICATION";
+        };
+        /**
+         * SubmitTextAnswerRequest
+         * @description One typed answer to the current question. The reply carries best-effort coaching.
+         */
+        SubmitTextAnswerRequest: {
+            /** Content */
+            content: string;
         };
         /**
          * UpdateLLMConnectionRequest
@@ -6311,6 +7095,367 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OpportunityGeoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sessions_api_v2_interview_sessions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterviewSessionListResponse"];
+                };
+            };
+        };
+    };
+    create_session_api_v2_interview_sessions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateInterviewSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterviewSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readiness_history_api_v2_interview_sessions_history_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterviewSessionSummaryListResponse"];
+                };
+            };
+        };
+    };
+    get_session_api_v2_interview_sessions__session_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterviewSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    abandon_session_api_v2_interview_sessions__session_id__abandon_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterviewSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_text_answer_api_v2_interview_sessions__session_id__answers_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmitTextAnswerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnswerOutcomeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_session_api_v2_interview_sessions__session_id__complete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterviewSessionSummaryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    session_detail_api_v2_interview_sessions__session_id__detail_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterviewSessionDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    next_question_api_v2_interview_sessions__session_id__next_question_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterviewTurnResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    evaluate_answer_api_v2_interview_sessions__session_id__questions__sequence__evaluate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                sequence: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterviewAnswerEvaluationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    session_readiness_api_v2_interview_sessions__session_id__readiness_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionReadinessResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_voice_answer_api_v2_interview_sessions__session_id__voice_answers_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_submit_voice_answer_api_v2_interview_sessions__session_id__voice_answers_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnswerOutcomeResponse"];
                 };
             };
             /** @description Validation Error */

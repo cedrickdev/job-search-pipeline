@@ -53,6 +53,16 @@ class PromptName(StrEnum):
     MATCHING = "matching"
     INTERVIEW_PREP = "interview_prep"
     CAREER_CHAT = "career_chat"
+    # The adaptive interview simulator's typed tasks (Phase 14 §45-48). Each is a distinct
+    # prompt with its own version and — for the structured ones — its own schema; the
+    # evaluation prompt is pointedly free of any readiness field, because readiness is the
+    # platform's to compute, never a provider's to author (§33). The evaluation task also
+    # carries the coaching suggested answer, so a single call grades and coaches together.
+    INTERVIEW_PLAN = "interview_plan"
+    INTERVIEW_QUESTION = "interview_question"
+    INTERVIEW_EVALUATION = "interview_evaluation"
+    INTERVIEW_FOLLOW_UP = "interview_follow_up"
+    INTERVIEW_SUMMARY = "interview_summary"
 
 
 class PromptRenderError(Exception):

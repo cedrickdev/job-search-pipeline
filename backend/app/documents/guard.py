@@ -128,6 +128,51 @@ class CandidateEvidenceGuard:
             return DocumentGuardReport(ok=False, violations=tuple(violations))
         return DocumentGuardReport(ok=True)
 
+    def review_supporting_prose(
+            self, text: str, *, profile: CandidateProfile,
+            opportunity: Opportunity, label: str = "text"
+            ) -> tuple[DocumentGuardViolation, ...]:
+        """Truth gate for un-cited coaching prose (Phase 14 §40-44, reusing this guard).
+
+        A résumé line carries its own evidence ids; interview coaching text — a suggested
+        answer, a strength, a focus area — does not, because it is advice *about* the
+        candidate rather than a claim the candidate is making. So this applies the two gates
+        that do not need a citation, against the candidate's whole corpus rather than a cited
+        subset: a number in the prose must appear *somewhere* in the candidate's evidence
+        (INVENTED_NUMBER), and a claimable hard-skill term must appear there too
+        (INVENTED_TERM). The corpus, the term universe and the tokenizer are exactly the ones
+        the document gates use, so a fact that would pass on a résumé passes here and a
+        fabrication is caught identically — the point of reusing this guard rather than
+        writing a second, weaker one.
+
+        Returns every violation rather than the first, so a caller can reject a whole
+        coaching payload and report all of its problems at once. Pure and deterministic, so
+        the interview service runs it before persisting a thing.
+        """
+        corpus = self._evidence_corpus(profile)
+        universe = self._term_universe(profile, opportunity)
+        issues: list[DocumentGuardViolation] = []
+
+        allowed = numeric_tokens(corpus)
+        invented = numeric_tokens(text) - allowed
+        if invented:
+            issues.append(DocumentGuardViolation(
+                code=DocumentViolationCode.INVENTED_NUMBER,
+                detail=f"{label}: numbers not supported by the candidate's evidence: "
+                       + ", ".join(sorted(invented)),
+                offending_text=text))
+
+        lowered = text.lower()
+        for term in universe:
+            pattern = _term_pattern(term)
+            if pattern.search(lowered) and not pattern.search(corpus):
+                issues.append(DocumentGuardViolation(
+                    code=DocumentViolationCode.INVENTED_TERM,
+                    detail=f"{label}: qualification not supported by the candidate's "
+                           f"evidence: {term}",
+                    offending_text=text))
+        return tuple(issues)
+
     # --- gate: citations exist and numbers are supported -------------------
 
     def _citation_and_number_violations(

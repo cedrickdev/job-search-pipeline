@@ -73,6 +73,9 @@ from backend.app.domain.identifiers import (
     CompanyId,
     ConversationId,
     EligibilityResultId,
+    InterviewAnswerId,
+    InterviewQuestionId,
+    InterviewSessionId,
     LLMConnectionId,
     MatchEvaluationId,
     OpportunityId,
@@ -80,6 +83,13 @@ from backend.app.domain.identifiers import (
     SubmissionAttemptId,
     UserId,
     UserSessionId,
+)
+from backend.app.domain.interview import (
+    InterviewAnswer,
+    InterviewAnswerEvaluation,
+    InterviewQuestion,
+    InterviewSession,
+    InterviewSessionSummary,
 )
 from backend.app.domain.matching import MatchEvaluation
 from backend.app.domain.opportunity import Opportunity, WorkplaceMode
@@ -118,6 +128,16 @@ from backend.app.infrastructure.database.mappers import (
     discovery_record_to_row,
     eligibility_result_to_domain,
     eligibility_result_to_row,
+    interview_answer_evaluation_to_domain,
+    interview_answer_evaluation_to_row,
+    interview_answer_to_domain,
+    interview_answer_to_row,
+    interview_question_to_domain,
+    interview_question_to_row,
+    interview_session_summary_to_domain,
+    interview_session_summary_to_row,
+    interview_session_to_domain,
+    interview_session_to_row,
     llm_connection_to_domain,
     llm_connection_to_row,
     llm_run_to_domain,
@@ -154,6 +174,11 @@ from backend.app.infrastructure.database.models import (
     CompanyRow,
     ConversationRow,
     EligibilityResultRow,
+    InterviewAnswerEvaluationRow,
+    InterviewAnswerRow,
+    InterviewQuestionRow,
+    InterviewSessionRow,
+    InterviewSessionSummaryRow,
     LLMConnectionRow,
     LLMRunRow,
     MatchEvaluationRow,
@@ -200,6 +225,11 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
         CompanyRepository,
         ConversationRepository,
         EligibilityResultRepository,
+        InterviewAnswerEvaluationRepository,
+        InterviewAnswerRepository,
+        InterviewQuestionRepository,
+        InterviewSessionRepository,
+        InterviewSessionSummaryRepository,
         LLMConnectionRepository,
         LLMRunRepository,
         MatchEvaluationRepository,
@@ -222,7 +252,10 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
             "ApplicationDecisionRepository", "ApplicationRepository",
             "ApplicationEventRepository", "SubmissionAttemptRepository",
             "ConversationRepository", "ChatMessageRepository",
-            "ChatActionProposalRepository", "ChatActionExecutionRepository"]:
+            "ChatActionProposalRepository", "ChatActionExecutionRepository",
+            "InterviewSessionRepository", "InterviewQuestionRepository",
+            "InterviewAnswerRepository", "InterviewAnswerEvaluationRepository",
+            "InterviewSessionSummaryRepository"]:
         """Structural conformance, enforced by `mypy backend`.
 
         The `Protocol`s in `contracts` are satisfied by shape, so nothing would
@@ -252,7 +285,12 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
                 SqlAlchemyConversationRepository(session),
                 SqlAlchemyChatMessageRepository(session),
                 SqlAlchemyChatActionProposalRepository(session),
-                SqlAlchemyChatActionExecutionRepository(session))
+                SqlAlchemyChatActionExecutionRepository(session),
+                SqlAlchemyInterviewSessionRepository(session),
+                SqlAlchemyInterviewQuestionRepository(session),
+                SqlAlchemyInterviewAnswerRepository(session),
+                SqlAlchemyInterviewAnswerEvaluationRepository(session),
+                SqlAlchemyInterviewSessionSummaryRepository(session))
 
 
 def _rows_affected(result: Result[Any]) -> int:
@@ -1850,5 +1888,235 @@ class SqlAlchemyChatActionExecutionRepository:
         self._session.add(row)
         await self._session.flush()
         return chat_action_execution_to_domain(row)
+
+
+class SqlAlchemyInterviewSessionRepository:
+    """`InterviewSessionRepository` over an `AsyncSession`, `user_id` on every read.
+
+    The upsert loads by `(user_id, id)`, so a write can never reach across accounts and
+    a lifecycle step (start, adapt, complete) re-finalized after a failed flush writes
+    the same row. `list_for_user` orders by the last update, so the practice history
+    reads most-recent-first.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   session_id: InterviewSessionId) -> InterviewSessionRow | None:
+        result = await self._session.execute(
+            select(InterviewSessionRow).where(
+                InterviewSessionRow.id == session_id,
+                InterviewSessionRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  session_id: InterviewSessionId) -> InterviewSession | None:
+        row = await self._row(user_id, session_id)
+        return None if row is None else interview_session_to_domain(row)
+
+    async def upsert(self, session: InterviewSession) -> InterviewSession:
+        row = interview_session_to_row(
+            session, await self._row(session.user_id, session.id))
+        self._session.add(row)
+        await self._session.flush()
+        return interview_session_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[InterviewSession, ...]:
+        result = await self._session.execute(
+            select(InterviewSessionRow)
+            .where(InterviewSessionRow.user_id == user_id)
+            .order_by(InterviewSessionRow.updated_at.desc(), InterviewSessionRow.id)
+            .limit(limit))
+        return tuple(interview_session_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyInterviewQuestionRepository:
+    """`InterviewQuestionRepository` over an `AsyncSession`.
+
+    A question carries its own `user_id`, so reads scope on it directly. The upsert loads
+    by the question's derived id, so re-finalizing a turn writes the same row;
+    `latest_sequence` is a `MAX` the service numbers the next turn from without loading
+    the session.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, question_id: InterviewQuestionId) -> InterviewQuestionRow | None:
+        result = await self._session.execute(
+            select(InterviewQuestionRow).where(InterviewQuestionRow.id == question_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  question_id: InterviewQuestionId) -> InterviewQuestion | None:
+        result = await self._session.execute(
+            select(InterviewQuestionRow).where(
+                InterviewQuestionRow.id == question_id,
+                InterviewQuestionRow.user_id == user_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else interview_question_to_domain(row)
+
+    async def upsert(self, question: InterviewQuestion) -> InterviewQuestion:
+        row = interview_question_to_row(question, await self._row(question.id))
+        self._session.add(row)
+        await self._session.flush()
+        return interview_question_to_domain(row)
+
+    async def latest_sequence(self, user_id: UserId,
+                              session_id: InterviewSessionId) -> int | None:
+        result = await self._session.execute(
+            select(func.max(InterviewQuestionRow.sequence)).where(
+                InterviewQuestionRow.session_id == session_id,
+                InterviewQuestionRow.user_id == user_id))
+        return result.scalar_one()
+
+    async def list_for_session(
+            self, user_id: UserId, session_id: InterviewSessionId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewQuestion, ...]:
+        result = await self._session.execute(
+            select(InterviewQuestionRow)
+            .where(InterviewQuestionRow.session_id == session_id,
+                   InterviewQuestionRow.user_id == user_id)
+            .order_by(InterviewQuestionRow.sequence).limit(limit))
+        return tuple(interview_question_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyInterviewAnswerRepository:
+    """`InterviewAnswerRepository` over an `AsyncSession`, `user_id` on every read.
+
+    One answer per question — the id derives from the question — so the upsert loads by
+    that id and a resubmit lands on the same row. `get_for_question` scopes on the
+    answer's own `user_id`, so another account's question reads as unanswered.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, answer_id: UUID) -> InterviewAnswerRow | None:
+        result = await self._session.execute(
+            select(InterviewAnswerRow).where(InterviewAnswerRow.id == answer_id))
+        return result.scalar_one_or_none()
+
+    async def get_for_question(self, user_id: UserId,
+                               question_id: InterviewQuestionId) -> InterviewAnswer | None:
+        result = await self._session.execute(
+            select(InterviewAnswerRow).where(
+                InterviewAnswerRow.question_id == question_id,
+                InterviewAnswerRow.user_id == user_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else interview_answer_to_domain(row)
+
+    async def upsert(self, answer: InterviewAnswer) -> InterviewAnswer:
+        row = interview_answer_to_row(answer, await self._row(answer.id))
+        self._session.add(row)
+        await self._session.flush()
+        return interview_answer_to_domain(row)
+
+    async def list_for_session(
+            self, user_id: UserId, session_id: InterviewSessionId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewAnswer, ...]:
+        result = await self._session.execute(
+            select(InterviewAnswerRow)
+            .where(InterviewAnswerRow.session_id == session_id,
+                   InterviewAnswerRow.user_id == user_id)
+            .order_by(InterviewAnswerRow.answered_at, InterviewAnswerRow.id)
+            .limit(limit))
+        return tuple(interview_answer_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyInterviewAnswerEvaluationRepository:
+    """`InterviewAnswerEvaluationRepository` over an `AsyncSession`, `user_id` on reads.
+
+    One evaluation per answer — the id derives from the answer — so a re-grade overwrites
+    the one row. `list_for_session` is what `aggregate_session_readiness` reads: readiness
+    is computed from these, never authored by a provider (§33-36).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, evaluation_id: UUID) -> InterviewAnswerEvaluationRow | None:
+        result = await self._session.execute(
+            select(InterviewAnswerEvaluationRow).where(
+                InterviewAnswerEvaluationRow.id == evaluation_id))
+        return result.scalar_one_or_none()
+
+    async def get_for_answer(
+            self, user_id: UserId,
+            answer_id: InterviewAnswerId) -> InterviewAnswerEvaluation | None:
+        result = await self._session.execute(
+            select(InterviewAnswerEvaluationRow).where(
+                InterviewAnswerEvaluationRow.answer_id == answer_id,
+                InterviewAnswerEvaluationRow.user_id == user_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else interview_answer_evaluation_to_domain(row)
+
+    async def upsert(self,
+                     evaluation: InterviewAnswerEvaluation) -> InterviewAnswerEvaluation:
+        row = interview_answer_evaluation_to_row(
+            evaluation, await self._row(evaluation.id))
+        self._session.add(row)
+        await self._session.flush()
+        return interview_answer_evaluation_to_domain(row)
+
+    async def list_for_session(
+            self, user_id: UserId, session_id: InterviewSessionId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewAnswerEvaluation, ...]:
+        result = await self._session.execute(
+            select(InterviewAnswerEvaluationRow)
+            .where(InterviewAnswerEvaluationRow.session_id == session_id,
+                   InterviewAnswerEvaluationRow.user_id == user_id)
+            .order_by(InterviewAnswerEvaluationRow.evaluated_at,
+                      InterviewAnswerEvaluationRow.id)
+            .limit(limit))
+        return tuple(interview_answer_evaluation_to_domain(row)
+                     for row in result.scalars())
+
+
+class SqlAlchemyInterviewSessionSummaryRepository:
+    """`InterviewSessionSummaryRepository` over an `AsyncSession`, `user_id` on reads.
+
+    One summary per session — the id derives from the session — so completing it twice
+    reuses the row. `list_for_user` is the readiness history a candidate watches over
+    repeated practice (§74): the stored summaries, most recent first.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   session_id: InterviewSessionId) -> InterviewSessionSummaryRow | None:
+        result = await self._session.execute(
+            select(InterviewSessionSummaryRow).where(
+                InterviewSessionSummaryRow.session_id == session_id,
+                InterviewSessionSummaryRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  session_id: InterviewSessionId) -> InterviewSessionSummary | None:
+        row = await self._row(user_id, session_id)
+        return None if row is None else interview_session_summary_to_domain(row)
+
+    async def upsert(self,
+                     summary: InterviewSessionSummary) -> InterviewSessionSummary:
+        row = interview_session_summary_to_row(
+            summary, await self._row(summary.user_id, summary.session_id))
+        self._session.add(row)
+        await self._session.flush()
+        return interview_session_summary_to_domain(row)
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewSessionSummary, ...]:
+        result = await self._session.execute(
+            select(InterviewSessionSummaryRow)
+            .where(InterviewSessionSummaryRow.user_id == user_id)
+            .order_by(InterviewSessionSummaryRow.created_at.desc(),
+                      InterviewSessionSummaryRow.id)
+            .limit(limit))
+        return tuple(interview_session_summary_to_domain(row)
+                     for row in result.scalars())
 
 

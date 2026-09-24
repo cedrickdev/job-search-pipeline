@@ -76,12 +76,21 @@ SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
 # reason `candidate_documents` does — and the cascade from `users` is what still makes
 # "delete my account" a single statement even though the parent cascade would already
 # reach them through `conversations`.
+#
+# The five Phase 14 interview tables are all here for the same reason: a session, a
+# question, an answer, an evaluation and a summary each carries `user_id` denormalized
+# beside its parent link, so "my sessions, most recent first" and "my readiness over
+# time" are `WHERE user_id = :current_user` reads indexed on the row itself, and the
+# cascade from `users` keeps account deletion one statement even though the cascade
+# through `interview_sessions` would already reach the children.
 USER_OWNED_TABLES = ("application_decisions", "application_policies", "applications",
                      "candidate_documents", "candidate_profiles",
                      "chat_action_executions", "chat_action_proposals",
                      "chat_messages", "conversations", "eligibility_results",
-                     "llm_connections", "match_evaluations", "provider_sessions",
-                     "search_profiles", "user_sessions")
+                     "interview_answer_evaluations", "interview_answers",
+                     "interview_questions", "interview_session_summaries",
+                     "interview_sessions", "llm_connections", "match_evaluations",
+                     "provider_sessions", "search_profiles", "user_sessions")
 
 # Telemetry rows: user-attributable, but not user-owned. `llm_runs` (Phase 11)
 # carries a `user_id` so a user can list their own calls, but it is *nullable* — a
@@ -141,7 +150,7 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_thirty_six_v2_tables():
+def test_the_metadata_holds_exactly_the_forty_one_v2_tables():
     """A tripwire on the shape of the schema itself.
 
     `models.py` is the only place a V2 table may be declared, so the four ownership
@@ -151,7 +160,7 @@ def test_the_metadata_holds_exactly_the_thirty_six_v2_tables():
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
         PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | {"users"}
-    assert len(TABLES) == 36
+    assert len(TABLES) == 41
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
@@ -383,6 +392,7 @@ def test_free_text_columns_are_text_not_varchar():
                      ("company_locations", "location_country"),
                      ("geocoding_cache", "country_hint"),
                      ("geocoding_cache", "provider"),
+                     ("interview_sessions", "language"),
                      ("opportunities", "location_country"),
                      ("search_areas", "country"),
                      ("user_sessions", "token_digest"),

@@ -100,11 +100,32 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   provider_timeout: 'This provider did not answer in time. Try again.',
   provider_unavailable: 'This provider could not be reached. Check that it is running.',
   search_profile_not_found: 'That saved search no longer exists.',
-  // A resume was asked for a session the provider no longer holds.
-  session_not_found: 'That session has expired on the provider. Try again.',
+  // A resume was asked for a session the provider no longer holds; and — the same slug —
+  // a practice session that is not this account's reads as absent (§90). One neutral
+  // sentence serves both: the id is gone, and retrying from a fresh list is the fix.
+  session_not_found: 'That session is no longer available. Try again.',
   // The model answered, but its JSON did not match the requested schema even after the
   // one repair attempt — the content is untrusted and dropped rather than half-parsed.
   structured_output_invalid: 'This provider returned an answer in the wrong format. Try again.',
+  // The interview-simulator refusals (Phase 14). Most are a state the caller resolves by
+  // reloading — a session or question that moved on, a step taken out of order, one answer
+  // already given — and read as such, never as a fault to correct inline. The three "…
+  // unavailable" ones are a provider or transcriber that could not deliver (a 503): the
+  // practice degrades, it is not lost, and a retry is the fix. The audio pair is the clip
+  // itself: too large, or a format the transcriber does not take.
+  answer_out_of_order: 'That answer arrived out of order. Reload the session to see the current question.',
+  audio_too_large: 'That recording is too long. Record a shorter answer and try again.',
+  evaluation_unavailable: 'The coaching could not be produced right now. Your answer was kept — try grading it again.',
+  interview_grounding_not_found: 'There is no profile and posting to practice on yet. Save a profile and pick an opportunity first.',
+  invalid_status_transition: 'This session cannot do that in its current state. Reload to see where it stands.',
+  no_current_question: 'There is no question to answer yet. Ask for the next question first.',
+  question_already_answered: 'You have already answered this question. Ask for the next one.',
+  question_generation_unavailable: 'A question could not be generated right now. Try again in a moment.',
+  question_not_found: 'That question is not part of this session.',
+  session_limit_reached: 'You have reached your practice limit for now. Try again later.',
+  session_not_active: 'This session is not open for practice. Start a new one.',
+  transcription_unavailable: 'That recording could not be transcribed. Try again, or type your answer instead.',
+  unsupported_audio: 'That audio format is not supported. Record in a supported format and try again.',
   validation_failed: 'Some of the details below are not valid.',
 }
 

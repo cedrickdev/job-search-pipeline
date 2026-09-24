@@ -31,6 +31,15 @@ list, one thread, its messages, its proposals) and four writes (open a thread, t
 streaming-turn `POST .../messages`, and confirm/dismiss a proposal). The chat obeys the
 same last rule — a `ChatAction` and every chat response is secret-free by construction —
 so nothing here can echo a credential.
+
+Phase 14 adds twelve for the adaptive interview simulator: five reads (the session
+list, the readiness history, one session, its detail transcript, and its live
+readiness) and seven writes (open a session, ask the next question, answer by text or
+by voice, re-grade one answered question, and complete or abandon the session). The
+simulator's one rule — practice, never prediction — is a surface fact here too: no
+response schema carries a hiring probability, a recruiter verdict or a provider-authored
+readiness, so the credential walk that already forbids secrets forbids these by the same
+absence, and readiness is published only on its own read.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -46,6 +55,7 @@ from backend.app.domain.identifiers import (
     CandidateDocumentId,
     CompanyId,
     ConversationId,
+    InterviewSessionId,
     LLMConnectionId,
     OpportunityId,
     SearchProfileId,
@@ -68,6 +78,7 @@ from tests.v2_builders import (
     a_rendered_document,
     a_search_profile,
     an_eligibility_result,
+    an_interview_session,
     an_llm_connection,
     an_opportunity,
 )
@@ -92,6 +103,11 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/documents/{document_id}/download"),
     ("GET", "/api/v2/geo/companies"),
     ("GET", "/api/v2/geo/opportunities"),
+    ("GET", "/api/v2/interview-sessions"),
+    ("GET", "/api/v2/interview-sessions/history"),
+    ("GET", "/api/v2/interview-sessions/{session_id}"),
+    ("GET", "/api/v2/interview-sessions/{session_id}/detail"),
+    ("GET", "/api/v2/interview-sessions/{session_id}/readiness"),
     ("GET", "/api/v2/matches"),
     ("GET", "/api/v2/me/evidence"),
     ("GET", "/api/v2/me/profile"),
@@ -115,6 +131,13 @@ V2_OPERATIONS = (
     ("POST", "/api/v2/chat/proposals/{proposal_id}/confirm"),
     ("POST", "/api/v2/chat/proposals/{proposal_id}/dismiss"),
     ("POST", "/api/v2/company-discovery/run"),
+    ("POST", "/api/v2/interview-sessions"),
+    ("POST", "/api/v2/interview-sessions/{session_id}/abandon"),
+    ("POST", "/api/v2/interview-sessions/{session_id}/answers"),
+    ("POST", "/api/v2/interview-sessions/{session_id}/complete"),
+    ("POST", "/api/v2/interview-sessions/{session_id}/next-question"),
+    ("POST", "/api/v2/interview-sessions/{session_id}/questions/{sequence}/evaluate"),
+    ("POST", "/api/v2/interview-sessions/{session_id}/voice-answers"),
     ("POST", "/api/v2/matches/evaluate"),
     ("POST", "/api/v2/me/claims"),
     ("POST", "/api/v2/me/evidence"),
@@ -177,14 +200,14 @@ async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_de
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 43
+        assert len({path for _, path in published}) == 54
 
 
 @pytest.mark.asyncio
 async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path):
     """The inventory half of "no GET mutates state".
 
-    Twenty-four `GET`s, all of them reports. `POST /onboarding/complete` exists precisely
+    Twenty-nine `GET`s, all of them reports. `POST /onboarding/complete` exists precisely
     so that the screen displaying progress does not have to be the thing that records
     it, and `POST /company-discovery/run` is the same split for the directory: reading
     it is safe, filling it is a write an operator triggers. The three Phase 7 reads
@@ -195,7 +218,10 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
     two document generators (`POST .../resume`, `POST .../cover-letter`) are the
     writes that produce what it streams. Phase 13 adds four chat reads — the
     conversation list, one thread, its messages and its proposals — all views; the
-    streaming turn (`POST .../messages`) and the confirm/dismiss are its writes.
+    streaming turn (`POST .../messages`) and the confirm/dismiss are its writes. Phase 14
+    adds five interview reads — the session list, the readiness history, one session, its
+    detail transcript and its live readiness — all views; asking, answering, grading,
+    completing and abandoning are its writes.
     """
     async with api_harness(tmp_path) as api:
         published = operations(api.app, under=API_V2_PREFIX)
@@ -216,6 +242,11 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/documents/{document_id}/download",
             "/api/v2/geo/companies",
             "/api/v2/geo/opportunities",
+            "/api/v2/interview-sessions",
+            "/api/v2/interview-sessions/history",
+            "/api/v2/interview-sessions/{session_id}",
+            "/api/v2/interview-sessions/{session_id}/detail",
+            "/api/v2/interview-sessions/{session_id}/readiness",
             "/api/v2/matches",
             "/api/v2/me/evidence",
             "/api/v2/me/profile",
@@ -308,6 +339,14 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
         # an empty list is a 200.
         await api.conversations.upsert(a_conversation(
             id=ConversationId(PLACEHOLDER_ID), user_id=user_id))
+        # The three interview reads keyed by session — the session, its detail transcript
+        # and its live readiness — 404 before the service unless a session exists under the
+        # placeholder id for this account, so one is seeded. Its questions, answers and
+        # evaluations stay empty: detail returns an empty exchange and readiness aggregates
+        # to `UNKNOWN` (nothing evaluable), both 200 and neither writing. The session *list*
+        # and the readiness *history* need no seed; an empty list is a 200.
+        await api.interview_sessions.upsert(an_interview_session(
+            id=InterviewSessionId(PLACEHOLDER_ID), user_id=user_id))
         reads = [_get_with_scope(concrete(path)) for method, path in operations(
             api.app, under=API_V2_PREFIX) if method == "GET"]
         before = deepcopy((api.users.users, api.sessions.sessions,
@@ -317,7 +356,12 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                            api.matches.evaluations, api.eligibilities.results,
                            api.documents.documents, api.llm_connections.connections,
                            api.conversations.conversations, api.chat_messages.messages,
-                           api.chat_proposals.proposals))
+                           api.chat_proposals.proposals,
+                           api.interview_sessions.sessions,
+                           api.interview_questions.questions,
+                           api.interview_answers.answers,
+                           api.interview_evaluations.evaluations,
+                           api.interview_summaries.summaries))
 
         for path in reads:
             for _ in range(2):
@@ -330,7 +374,10 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                 api.postings.opportunities, api.matches.evaluations,
                 api.eligibilities.results, api.documents.documents,
                 api.llm_connections.connections, api.conversations.conversations,
-                api.chat_messages.messages, api.chat_proposals.proposals) == before
+                api.chat_messages.messages, api.chat_proposals.proposals,
+                api.interview_sessions.sessions, api.interview_questions.questions,
+                api.interview_answers.answers, api.interview_evaluations.evaluations,
+                api.interview_summaries.summaries) == before
 
 
 @pytest.mark.asyncio
@@ -362,7 +409,7 @@ async def test_the_one_write_a_get_performs_is_last_seen_at_and_it_cannot_extend
 @pytest.mark.asyncio
 async def test_every_operation_but_register_and_login_refuses_an_anonymous_caller(
         tmp_path):
-    """401 from all fifty-one, with no body sent and nothing created.
+    """401 from all sixty-three, with no body sent and nothing created.
 
     No payload is needed because FastAPI resolves the session dependency before it
     validates a body, so the refusal happens before the request is read — which is
@@ -379,7 +426,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
         protected = [(method, path) for method, path in operations(
             api.app, under=API_V2_PREFIX) if (method, path) not in PUBLIC_OPERATIONS]
 
-        assert len(protected) == 51
+        assert len(protected) == 63
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

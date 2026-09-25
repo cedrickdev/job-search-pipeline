@@ -112,6 +112,13 @@ class DocumentViolationCode(StrEnum):
     be constructed without at least one evidence id (`Field(min_length=1)`). The
     guard's job is the harder question the type cannot answer — whether the cited
     evidence *exists* (`UNKNOWN_EVIDENCE`) and whether the *words* are supported.
+
+    `MISATTRIBUTED_TO_CANDIDATE` is the one code where the offending fact is real:
+    an interview question may name a skill or number the *posting* states, but must
+    not pin it on the candidate as their own experience unless the candidate's
+    evidence backs it too. It is raised by `InterviewCoachingGuard.review_question`
+    (§10-17), never on a résumé or cover letter, where every line is already
+    candidate-scoped by construction.
     """
 
     UNKNOWN_EVIDENCE = "UNKNOWN_EVIDENCE"
@@ -119,6 +126,7 @@ class DocumentViolationCode(StrEnum):
     UNSUPPORTED_SKILL = "UNSUPPORTED_SKILL"
     INVENTED_TERM = "INVENTED_TERM"
     ALTERED_IDENTITY = "ALTERED_IDENTITY"
+    MISATTRIBUTED_TO_CANDIDATE = "MISATTRIBUTED_TO_CANDIDATE"
 
 
 class DocumentGuardViolation(DomainModel):

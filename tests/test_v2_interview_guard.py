@@ -99,3 +99,89 @@ def test_a_clean_summary_clears_and_a_fabricated_one_is_rejected():
     assert report.ok is False
     assert DocumentViolationCode.INVENTED_TERM in _codes(report)
 
+
+# --- a posting fact is not a candidate fact (§10-17) --------------------------
+#
+# The question gate widens the allowed corpus with the posting, so a question may *reference*
+# a skill or a figure the posting states. What it must still refuse is attributing that
+# posting-only fact to the candidate as their own experience. These prove both directions for
+# a skill term (Kafka) and a number (a team of 20): a role reference or a hypothetical passes,
+# a possessive or a second-person assertion of experience is rejected.
+
+
+def _team_opportunity():
+    """A posting whose description states a team of 20 — so '20' is the posting's figure.
+
+    Kafka stays a sought skill too, so both a posting-only term and a posting-only number are
+    available; neither appears in the candidate's evidence (which mentions only 30%)."""
+    return an_opportunity(
+        skill_requirements=(SkillRequirement(skill="Kafka"),),
+        description="The platform team has 20 engineers.")
+
+
+def test_a_question_referencing_a_posting_skill_as_a_role_fact_passes():
+    """'The role mentions Kafka. How would you approach it?' — a role reference, not a claim."""
+    guard = InterviewCoachingGuard()
+    report = guard.review_question(
+        "The role mentions Kafka. How would you approach using it?",
+        profile=_profile(), opportunity=_opportunity())
+    assert report.ok is True
+
+
+def test_a_hypothetical_second_person_question_about_a_posting_skill_passes():
+    """'How would you use Kafka?' carries 'you use' but is hypothetical — approach, not a claim."""
+    guard = InterviewCoachingGuard()
+    report = guard.review_question(
+        "How would you use Kafka in this role?",
+        profile=_profile(), opportunity=_opportunity())
+    assert report.ok is True
+
+
+def test_a_question_attributing_a_posting_skill_to_the_candidate_is_rejected():
+    """'Tell me about your extensive Kafka experience' pins a posting-only skill on the candidate."""
+    guard = InterviewCoachingGuard()
+    report = guard.review_question(
+        "Tell me about your extensive Kafka experience.",
+        profile=_profile(), opportunity=_opportunity())
+    assert report.ok is False
+    assert DocumentViolationCode.MISATTRIBUTED_TO_CANDIDATE in _codes(report)
+
+
+def test_a_question_referencing_a_posting_number_as_a_role_fact_passes():
+    """'The role involves a team of 20' states the posting's own figure, not the candidate's."""
+    guard = InterviewCoachingGuard()
+    report = guard.review_question(
+        "The role involves a team of 20 engineers. How would you organise it?",
+        profile=_profile(), opportunity=_team_opportunity())
+    assert report.ok is True
+
+
+def test_a_question_attributing_a_posting_number_to_the_candidate_is_rejected():
+    """'You managed a team of 20' credits the candidate with a figure only the posting states."""
+    guard = InterviewCoachingGuard()
+    report = guard.review_question(
+        "You managed a team of 20 engineers.",
+        profile=_profile(), opportunity=_team_opportunity())
+    assert report.ok is False
+    assert DocumentViolationCode.MISATTRIBUTED_TO_CANDIDATE in _codes(report)
+
+
+def test_a_possessive_over_a_posting_number_is_rejected():
+    """'Your team of 20' binds a posting-only figure to the candidate through the possessive."""
+    guard = InterviewCoachingGuard()
+    report = guard.review_question(
+        "Walk me through your team of 20 and how you structured it.",
+        profile=_profile(), opportunity=_team_opportunity())
+    assert report.ok is False
+    assert DocumentViolationCode.MISATTRIBUTED_TO_CANDIDATE in _codes(report)
+
+
+def test_a_question_inventing_a_number_from_nowhere_still_fails_the_grounding_gate():
+    """A figure in neither the candidate nor the posting is a fabrication — the original gate, intact."""
+    guard = InterviewCoachingGuard()
+    report = guard.review_question(
+        "How would you replicate cutting costs by 73% here?",
+        profile=_profile(), opportunity=_opportunity())
+    assert report.ok is False
+    assert DocumentViolationCode.INVENTED_NUMBER in _codes(report)
+

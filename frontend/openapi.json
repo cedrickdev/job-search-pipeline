@@ -2971,13 +2971,14 @@
         "type": "object"
       },
       "DocumentViolationCode": {
-        "description": "Why the guard refused a version (§12-16).\n\nThese are the V2 form of V1's `truth_violations` categories\n(`pipeline/tailor_io.py`), named so a surface and an analytics query group on a\ncode rather than parse prose. Every one describes a way generated content\nwould state something the candidate's evidence does not support.\n\nThere is deliberately no `MISSING_CITATION`: an uncited line is not something\nthe guard has to *catch*, because `EvidenceBackedText` and `ResumeEntry` cannot\nbe constructed without at least one evidence id (`Field(min_length=1)`). The\nguard's job is the harder question the type cannot answer — whether the cited\nevidence *exists* (`UNKNOWN_EVIDENCE`) and whether the *words* are supported.",
+        "description": "Why the guard refused a version (§12-16).\n\nThese are the V2 form of V1's `truth_violations` categories\n(`pipeline/tailor_io.py`), named so a surface and an analytics query group on a\ncode rather than parse prose. Every one describes a way generated content\nwould state something the candidate's evidence does not support.\n\nThere is deliberately no `MISSING_CITATION`: an uncited line is not something\nthe guard has to *catch*, because `EvidenceBackedText` and `ResumeEntry` cannot\nbe constructed without at least one evidence id (`Field(min_length=1)`). The\nguard's job is the harder question the type cannot answer — whether the cited\nevidence *exists* (`UNKNOWN_EVIDENCE`) and whether the *words* are supported.\n\n`MISATTRIBUTED_TO_CANDIDATE` is the one code where the offending fact is real:\nan interview question may name a skill or number the *posting* states, but must\nnot pin it on the candidate as their own experience unless the candidate's\nevidence backs it too. It is raised by `InterviewCoachingGuard.review_question`\n(§10-17), never on a résumé or cover letter, where every line is already\ncandidate-scoped by construction.",
         "enum": [
           "UNKNOWN_EVIDENCE",
           "INVENTED_NUMBER",
           "UNSUPPORTED_SKILL",
           "INVENTED_TERM",
-          "ALTERED_IDENTITY"
+          "ALTERED_IDENTITY",
+          "MISATTRIBUTED_TO_CANDIDATE"
         ],
         "title": "DocumentViolationCode",
         "type": "string"

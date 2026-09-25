@@ -37,6 +37,17 @@ import type {
   DocumentArtifact,
   DocumentVersion,
   GeoLocation,
+  InterviewAnswer,
+  InterviewAnswerEvaluation,
+  InterviewAnswerOutcome,
+  InterviewPlan,
+  InterviewQuestion,
+  InterviewSession,
+  InterviewSessionDetail,
+  InterviewSessionList,
+  InterviewSessionSummary,
+  InterviewSessionSummaryList,
+  InterviewTurn,
   LLMConnection,
   LLMConnectionHealth,
   LLMConnectionList,
@@ -45,6 +56,7 @@ import type {
   OpportunityGeoResponse,
   SearchProfile,
   SearchProfileDraft,
+  SessionReadiness,
   SessionWindow,
   SignedIn,
 } from '~/types/v2'
@@ -64,6 +76,11 @@ const CONVERSATION_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const MESSAGE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 const PROPOSAL_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
 const EXECUTION_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+const SESSION_ID = '1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a'
+const QUESTION_ID = '2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b'
+const ANSWER_ID = '3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c'
+const INTERVIEW_EVALUATION_ID = '4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d'
+const SUMMARY_ID = '5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e'
 
 export function account(overrides: Partial<Account> = {}): Account {
   return {
@@ -529,11 +546,20 @@ export function applicationEventList(
 // fixture carries a secret: `action` is the domain union verbatim, secret-free by
 // construction, and an execution's `detail` is the server's own secret-free note.
 
-/** One chat thread's caption and activity — never its messages inline. */
+/**
+ * One chat thread's caption and activity — never its messages inline.
+ *
+ * The default thread is `GLOBAL` (spans the whole account, `scope_id` null) — the shape a
+ * first visitor's thread has. An anchored thread is written by overriding `scope` and
+ * `scope_id` together, because that pair is the domain invariant the badge reads: a
+ * `GLOBAL` thread shows none, an anchored one names the resource it is bound to.
+ */
 export function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
     id: CONVERSATION_ID,
     title: 'Backend roles in Lausanne',
+    scope: 'GLOBAL',
+    scope_id: null,
     is_archived: false,
     last_message_at: '2026-03-01T10:05:00Z',
     created_at: '2026-03-01T10:00:00Z',
@@ -615,3 +641,225 @@ export function chatExecution(overrides: Partial<ChatActionExecution> = {}): Cha
     ...overrides,
   }
 }
+
+// --- Phase 14: interview simulator ---------------------------------------------------
+//
+// The default session is `CREATED` and open — the shape a just-opened panel has, before
+// any question is asked. The states the panel is strict about — an `IN_PROGRESS` session
+// with a pending question, a graded answer, a `COMPLETED` one with a summary — are written
+// by overriding `status`/`is_active` and pairing the matching fixtures. The one rule the
+// fixtures encode is the phase's: an evaluation carries only coaching (dimensions,
+// strengths, improvements, a suggested answer) and never a forecast, and readiness is its
+// own object — `overall`/`band` computed, `UNKNOWN` when nothing was evaluated. No forecast
+// field exists to set. Every value is invented; no real personal data.
+
+/** A coverage plan: what the session intends to exercise and how long it should run. */
+export function interviewPlan(overrides: Partial<InterviewPlan> = {}): InterviewPlan {
+  return {
+    mode: 'BEHAVIORAL',
+    target_question_count: 4,
+    topics: [
+      { label: 'Ownership', question_type: 'BEHAVIORAL', target_questions: 2 },
+      { label: 'Collaboration', question_type: 'BEHAVIORAL', target_questions: 2 },
+    ],
+    ...overrides,
+  }
+}
+
+/** One practice session. The default is `CREATED` and open — no question asked yet. */
+export function interviewSession(overrides: Partial<InterviewSession> = {}): InterviewSession {
+  return {
+    id: SESSION_ID,
+    candidate_profile_id: PROFILE_ID,
+    opportunity_id: OPPORTUNITY_ID,
+    application_id: null,
+    title: 'Behavioral practice · Backend Engineer',
+    mode: 'BEHAVIORAL',
+    style: 'COACHING',
+    difficulty: 'INTERMEDIATE',
+    language: null,
+    status: 'CREATED',
+    is_active: true,
+    plan: interviewPlan(),
+    ended_at: null,
+    created_at: '2026-03-02T09:00:00Z',
+    updated_at: '2026-03-02T09:00:00Z',
+    ...overrides,
+  }
+}
+
+/** This account's sessions, newest first, wrapped. */
+export function interviewSessionList(
+  sessions: InterviewSession[] = [interviewSession()],
+): InterviewSessionList {
+  return { sessions }
+}
+
+/** One question. The default is the first, depth-0 question the plan discharges. */
+export function interviewQuestion(overrides: Partial<InterviewQuestion> = {}): InterviewQuestion {
+  return {
+    id: QUESTION_ID,
+    session_id: SESSION_ID,
+    sequence: 0,
+    depth: 0,
+    question_type: 'BEHAVIORAL',
+    difficulty: 'INTERMEDIATE',
+    prompt: 'Tell me about a time you took ownership of a problem no one else would.',
+    topic_label: 'Ownership',
+    is_follow_up: false,
+    follows_sequence: null,
+    generator_key: 'deterministic-interview/1',
+    asked_at: '2026-03-02T09:05:00Z',
+    ...overrides,
+  }
+}
+
+/** What `next-question` returns: the session as it now stands and the question to answer. */
+export function interviewTurn(overrides: Partial<InterviewTurn> = {}): InterviewTurn {
+  return {
+    session: interviewSession({ status: 'IN_PROGRESS' }),
+    question: interviewQuestion(),
+    ...overrides,
+  }
+}
+
+/** One recorded answer. The default is a typed answer with no transcript confidence. */
+export function interviewAnswer(overrides: Partial<InterviewAnswer> = {}): InterviewAnswer {
+  return {
+    id: ANSWER_ID,
+    session_id: SESSION_ID,
+    question_id: QUESTION_ID,
+    format: 'TEXT',
+    content: 'I noticed our deploys were flaky, so I owned the fix end to end.',
+    transcript_confidence: null,
+    answered_at: '2026-03-02T09:06:00Z',
+    ...overrides,
+  }
+}
+
+/**
+ * One answer's coaching — dimensions, strengths, improvements, a suggested answer.
+ *
+ * No forecast: the shape has no probability, no verdict and no readiness, by construction.
+ * A degraded submit returns no evaluation at all (`null`), which is written at the outcome.
+ */
+export function interviewEvaluation(
+  overrides: Partial<InterviewAnswerEvaluation> = {}): InterviewAnswerEvaluation {
+  return {
+    id: INTERVIEW_EVALUATION_ID,
+    session_id: SESSION_ID,
+    answer_id: ANSWER_ID,
+    dimensions: [
+      { dimension: 'CLARITY', status: 'EVALUATED', score: 0.8, notes: ['Clear and direct.'] },
+      { dimension: 'STRUCTURE', status: 'EVALUATED', score: 0.6, notes: ['Lean on STAR.'] },
+    ],
+    strengths: ['Owned a concrete outcome end to end.'],
+    improvements: ['Quantify the impact you had.'],
+    suggested_answer: 'When our deploys were flaky, I took the fix end to end and…',
+    confidence: 0.7,
+    evaluator_key: 'deterministic-interview/1',
+    evaluated_at: '2026-03-02T09:06:30Z',
+    ...overrides,
+  }
+}
+
+/** What a submit returns: the moved session, the recorded answer, and its coaching. */
+export function interviewOutcome(
+  overrides: Partial<InterviewAnswerOutcome> = {}): InterviewAnswerOutcome {
+  return {
+    session: interviewSession({ status: 'IN_PROGRESS' }),
+    answer: interviewAnswer(),
+    evaluation: interviewEvaluation(),
+    ...overrides,
+  }
+}
+
+/**
+ * A session's readiness — the platform's own coaching signal, not a forecast.
+ *
+ * The default is the honest empty state: nothing evaluated, so `overall` is null and `band`
+ * is `UNKNOWN` (never a low score). A graded session is written by overriding `overall`,
+ * `overall_percent`, `band` and the dimension means together.
+ */
+export function sessionReadiness(overrides: Partial<SessionReadiness> = {}): SessionReadiness {
+  return {
+    overall: null,
+    overall_percent: null,
+    band: 'UNKNOWN',
+    dimensions: [
+      { dimension: 'CLARITY', mean_score: null, evaluated_count: 0, weight: 0.15 },
+      { dimension: 'RELEVANCE', mean_score: null, evaluated_count: 0, weight: 0.2 },
+      { dimension: 'COMPLETENESS', mean_score: null, evaluated_count: 0, weight: 0.2 },
+      { dimension: 'STRUCTURE', mean_score: null, evaluated_count: 0, weight: 0.25 },
+      { dimension: 'SPECIFICITY', mean_score: null, evaluated_count: 0, weight: 0.2 },
+    ],
+    coverage: 0,
+    answered_questions: 0,
+    evaluated_answers: 0,
+    profile_version: 'interview-readiness/1.0',
+    computed_at: '2026-03-02T09:00:00Z',
+    ...overrides,
+  }
+}
+
+/** A graded readiness — a session with one strong answer behind it, for the trend and summary. */
+export function gradedReadiness(overrides: Partial<SessionReadiness> = {}): SessionReadiness {
+  return sessionReadiness({
+    overall: 0.62,
+    overall_percent: 62,
+    band: 'DEVELOPING',
+    coverage: 0.25,
+    answered_questions: 1,
+    evaluated_answers: 1,
+    dimensions: [
+      { dimension: 'CLARITY', mean_score: 0.8, evaluated_count: 1, weight: 0.15 },
+      { dimension: 'RELEVANCE', mean_score: null, evaluated_count: 0, weight: 0.2 },
+      { dimension: 'COMPLETENESS', mean_score: null, evaluated_count: 0, weight: 0.2 },
+      { dimension: 'STRUCTURE', mean_score: 0.6, evaluated_count: 1, weight: 0.25 },
+      { dimension: 'SPECIFICITY', mean_score: null, evaluated_count: 0, weight: 0.2 },
+    ],
+    ...overrides,
+  })
+}
+
+/** A finalized session's summary — its computed readiness paired with cleared coaching prose. */
+export function interviewSummary(
+  overrides: Partial<InterviewSessionSummary> = {}): InterviewSessionSummary {
+  return {
+    id: SUMMARY_ID,
+    session_id: SESSION_ID,
+    headline: 'A solid first pass — tighten your STAR structure.',
+    strengths: ['Clear ownership stories.'],
+    focus_areas: ['Quantify the outcomes you drove.'],
+    questions_asked: 1,
+    answers_evaluated: 1,
+    generator_key: 'deterministic-interview/1',
+    readiness: gradedReadiness(),
+    created_at: '2026-03-02T09:30:00Z',
+    ...overrides,
+  }
+}
+
+/** The readiness history: completed sessions' summaries, newest first, wrapped. */
+export function interviewSummaryList(
+  summaries: InterviewSessionSummary[] = [interviewSummary()],
+): InterviewSessionSummaryList {
+  return { summaries }
+}
+
+/**
+ * One session's full detail. The default is an `IN_PROGRESS` session with one question
+ * asked and not yet answered — the state the store derives a current question from.
+ */
+export function interviewDetail(
+  overrides: Partial<InterviewSessionDetail> = {}): InterviewSessionDetail {
+  return {
+    session: interviewSession({ status: 'IN_PROGRESS' }),
+    questions: [interviewQuestion()],
+    answers: [],
+    evaluations: [],
+    summary: null,
+    ...overrides,
+  }
+}
+

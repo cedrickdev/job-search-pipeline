@@ -13,8 +13,8 @@
 // are ignored, never followed, so a chat action can never be an open redirect.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '~/utils/api-client'
-import { describeChatAction, navigationRoute, streamChatTurn } from '~/utils/v2-chat'
-import type { ChatAction, ChatStreamEvent, NavigationTarget } from '~/types/v2'
+import { describeChatAction, navigationRoute, scopeLabel, streamChatTurn } from '~/utils/v2-chat'
+import type { ChatAction, ChatStreamEvent, ConversationScope, NavigationTarget } from '~/types/v2'
 import { stubFetch } from '../support/http'
 
 afterEach(() => vi.restoreAllMocks())
@@ -144,5 +144,22 @@ describe('navigationRoute', () => {
   it('returns null for a target it does not own a route for', () => {
     const unowned: NavigationTarget[] = ['MATCHES', 'INTERVIEW_PREP']
     for (const target of unowned) expect(navigationRoute(target)).toBeNull()
+  })
+})
+
+describe('scopeLabel', () => {
+  // A GLOBAL thread spans the whole account and needs no badge, so it resolves to null;
+  // every anchored scope resolves to a one-word noun. One case per member, so a scope
+  // added to the union without a label fails this typecheck rather than the badge.
+  const cases: Array<[ConversationScope, string | null]> = [
+    ['GLOBAL', null],
+    ['OPPORTUNITY', 'This opportunity'],
+    ['APPLICATION', 'This application'],
+    ['COMPANY', 'This employer'],
+    ['SEARCH_PROFILE', 'This saved search'],
+  ]
+
+  it.each(cases)('labels the %s scope for display only', (scope, expected) => {
+    expect(scopeLabel(scope)).toBe(expected)
   })
 })

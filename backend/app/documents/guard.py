@@ -128,6 +128,86 @@ class CandidateEvidenceGuard:
             return DocumentGuardReport(ok=False, violations=tuple(violations))
         return DocumentGuardReport(ok=True)
 
+    def review_supporting_prose(
+            self, text: str, *, profile: CandidateProfile,
+            opportunity: Opportunity, label: str = "text",
+            extra_corpus: str = ""
+            ) -> tuple[DocumentGuardViolation, ...]:
+        """Truth gate for un-cited coaching prose (Phase 14 §40-44, reusing this guard).
+
+        A résumé line carries its own evidence ids; interview coaching text — a suggested
+        answer, a strength, a focus area — does not, because it is advice *about* the
+        candidate rather than a claim the candidate is making. So this applies the two gates
+        that do not need a citation, against the candidate's whole corpus rather than a cited
+        subset: a number in the prose must appear *somewhere* in the candidate's evidence
+        (INVENTED_NUMBER), and a claimable hard-skill term must appear there too
+        (INVENTED_TERM). The corpus, the term universe and the tokenizer are exactly the ones
+        the document gates use, so a fact that would pass on a résumé passes here and a
+        fabrication is caught identically — the point of reusing this guard rather than
+        writing a second, weaker one.
+
+        `extra_corpus` widens the allowed pool with text that is legitimately citable even
+        though it is not the candidate's own evidence — the posting the practice rehearses,
+        for a generated *question* (§10-17). A question may reference a skill or a number the
+        posting states ("the posting mentions Kafka; how would you approach it?") without that
+        being a fabrication, so the posting text is appended to the corpus both gates check.
+        This gate deliberately does *not* distinguish "the posting mentions Kafka" from "you
+        have Kafka experience" — it stays the authoritative catch for a term or number grounded
+        in *neither* the candidate nor the posting. That attribution distinction (a posting-only
+        fact must not be pinned on the candidate) is enforced deterministically alongside this
+        gate by `InterviewCoachingGuard.review_question`, not left to the prompt. `extra_corpus`
+        is empty for evaluation and summary prose, which speaks only of the candidate.
+
+        Returns every violation rather than the first, so a caller can reject a whole
+        coaching payload and report all of its problems at once. Pure and deterministic, so
+        the interview service runs it before persisting a thing.
+        """
+        corpus = self._evidence_corpus(profile)
+        if extra_corpus:
+            corpus = f"{corpus}\n{extra_corpus.lower()}"
+        universe = self._term_universe(profile, opportunity)
+        issues: list[DocumentGuardViolation] = []
+
+        allowed = numeric_tokens(corpus)
+        invented = numeric_tokens(text) - allowed
+        if invented:
+            issues.append(DocumentGuardViolation(
+                code=DocumentViolationCode.INVENTED_NUMBER,
+                detail=f"{label}: numbers not supported by the candidate's evidence: "
+                       + ", ".join(sorted(invented)),
+                offending_text=text))
+
+        lowered = text.lower()
+        for term in universe:
+            pattern = _term_pattern(term)
+            if pattern.search(lowered) and not pattern.search(corpus):
+                issues.append(DocumentGuardViolation(
+                    code=DocumentViolationCode.INVENTED_TERM,
+                    detail=f"{label}: qualification not supported by the candidate's "
+                           f"evidence: {term}",
+                    offending_text=text))
+        return tuple(issues)
+
+    def evidence_corpus(self, profile: CandidateProfile) -> str:
+        """The candidate's own evidence prose, lower-cased — the public view of it.
+
+        A caller that must tell a fact the candidate's evidence backs from one grounded
+        only elsewhere (the interview question attribution gate, §10-17) needs the
+        candidate-only corpus, without any `extra_corpus` widening folded in. Delegates to
+        the one private implementation the document gates use, so the two never drift.
+        """
+        return self._evidence_corpus(profile)
+
+    def term_universe(self, profile: CandidateProfile,
+                      opportunity: Opportunity) -> tuple[str, ...]:
+        """The claimable hard-skill terms the term rule scans for — the public view of it.
+
+        Exposed for the same reason as `evidence_corpus`: the interview attribution gate
+        reasons about the same universe of claimable qualifications this guard's
+        `INVENTED_TERM` rule does, and must share its one definition.
+        """
+        return self._term_universe(profile, opportunity)
+
     # --- gate: citations exist and numbers are supported -------------------
 
     def _citation_and_number_violations(

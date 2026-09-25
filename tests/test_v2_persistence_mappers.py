@@ -64,6 +64,14 @@ from backend.app.infrastructure.database.mappers import (
     eligibility_check_row_id,
     eligibility_result_to_domain,
     eligibility_result_to_row,
+    interview_answer_evaluation_to_domain,
+    interview_answer_evaluation_to_row,
+    interview_question_to_domain,
+    interview_question_to_row,
+    interview_session_summary_to_domain,
+    interview_session_summary_to_row,
+    interview_session_to_domain,
+    interview_session_to_row,
     match_evaluation_to_domain,
     match_evaluation_to_row,
     opportunity_to_domain,
@@ -94,8 +102,12 @@ from tests.v2_builders import (
     a_company_location,
     a_conversation,
     a_reason,
+    an_answer_evaluation,
     an_eligibility_result,
     an_evaluation,
+    an_interview_question,
+    an_interview_session,
+    an_interview_session_summary,
     an_opportunity,
 )
 
@@ -585,4 +597,89 @@ def test_an_execution_with_no_detail_reads_back_with_none():
     execution = a_chat_action_execution(detail=None, result_ref=None)
     read_back = chat_action_execution_to_domain(chat_action_execution_to_row(execution))
     assert read_back == execution
-    assert read_back.detail is None and read_back.result_ref is None
+
+
+# --- interview provenance: the exact run each artefact is traceable to ------
+#
+# The corrective added a nullable link from every generated interview artefact to the
+# `LLMRun` that produced it. A round trip is where that link earns its keep: an artefact
+# written with a run must read back pointing at the *same* run, and one written without —
+# the deterministic fallback summary, a migrated pre-provenance row — must read back
+# honestly `None`, never a forged or coalesced id. Equality is over the whole object, so a
+# provenance field added to a domain type and forgotten in a mapper fails right here.
+
+
+def test_a_session_carries_its_planning_run_through_the_row_and_back():
+    """`plan_llm_run_id` is the run that proposed the plan; it must survive the trip."""
+    session = an_interview_session(plan_llm_run_id=RUN)
+    read_back = interview_session_to_domain(interview_session_to_row(session))
+    assert read_back == session
+    assert read_back.plan_llm_run_id == RUN
+
+
+def test_a_session_planned_deterministically_keeps_its_null_run():
+    """A plan built without a model has no run to point at, and must read back as `None`
+    rather than as some coalesced default a lossy mapper might substitute."""
+    session = an_interview_session(plan_llm_run_id=None)
+    read_back = interview_session_to_domain(interview_session_to_row(session))
+    assert read_back == session
+    assert read_back.plan_llm_run_id is None
+
+
+def test_a_question_carries_the_run_that_generated_it_through_the_trip():
+    """`llm_run_id` names the generation; a question written with one reads it back."""
+    question = an_interview_question(llm_run_id=RUN)
+    read_back = interview_question_to_domain(interview_question_to_row(question))
+    assert read_back == question
+    assert read_back.llm_run_id == RUN
+
+
+def test_a_question_with_no_run_reads_back_with_none():
+    """A question with no attributed run — a hand-seeded or migrated row — is honestly
+    `None`, not a fabricated provenance the mapper invented on read."""
+    question = an_interview_question(llm_run_id=None)
+    read_back = interview_question_to_domain(interview_question_to_row(question))
+    assert read_back == question
+    assert read_back.llm_run_id is None
+
+
+def test_an_evaluation_carries_its_grading_run_and_never_a_readiness():
+    """The grade round-trips with the run that produced it — and, pointedly, without a
+    readiness, which the type has no field for. A re-graded answer stays traceable."""
+    evaluation = an_answer_evaluation(llm_run_id=RUN)
+    read_back = interview_answer_evaluation_to_domain(
+        interview_answer_evaluation_to_row(evaluation))
+    assert read_back == evaluation
+    assert read_back.llm_run_id == RUN
+    assert not hasattr(read_back, "readiness")
+
+
+def test_an_evaluation_with_no_run_reads_back_with_none():
+    """An evaluation whose run link is absent reads back `None`, never a coalesced id."""
+    evaluation = an_answer_evaluation(llm_run_id=None)
+    read_back = interview_answer_evaluation_to_domain(
+        interview_answer_evaluation_to_row(evaluation))
+    assert read_back == evaluation
+    assert read_back.llm_run_id is None
+
+
+def test_a_summary_carries_its_authoring_run_through_the_trip():
+    """A model-authored summary names the run behind its prose; the link must survive,
+    beside the deterministic readiness the platform — not the model — computed."""
+    summary = an_interview_session_summary(llm_run_id=RUN)
+    read_back = interview_session_summary_to_domain(
+        interview_session_summary_to_row(summary))
+    assert read_back == summary
+    assert read_back.llm_run_id == RUN
+
+
+def test_a_deterministic_fallback_summary_reads_back_with_a_null_run():
+    """The fallback summary is composed without a model, so it must persist with no run —
+    the honest signal that its prose was not authored by one."""
+    summary = an_interview_session_summary(
+        generator_key="deterministic-summary/1", llm_run_id=None)
+    read_back = interview_session_summary_to_domain(
+        interview_session_summary_to_row(summary))
+    assert read_back == summary
+    assert read_back.llm_run_id is None
+    assert read_back.generator_key == "deterministic-summary/1"

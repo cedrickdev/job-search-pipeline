@@ -38,6 +38,31 @@ a confirmed proposal is re-checked against the state of the world:
 
 The chat is one more caller of those boundaries, never a way around them.
 
+## Three independent walls
+
+A confirmed mutating proposal must clear three checks that are deliberately separate,
+because each answers a different question and no one of them implies the others:
+
+1. **Ownership** — does the action name *this account's* resource? Enforced by reading every
+   entity through a `user_id`-scoped repository (`ProposalValidator`).
+2. **Scope** — does it name the *conversation's* resource? An `APPLICATION(A)` thread cannot
+   drive application *B* even when *B* is the user's own (`action_within_scope` →
+   `SCOPE_MISMATCH`). See [Conversation scope](#conversation-scope).
+3. **Intent** — does it correspond to what the user actually *asked for this turn*? A
+   well-typed, owned, in-scope `SUBMIT_APPLICATION` is dropped before it becomes a
+   confirmable card if the turn's message was "summarise this posting"
+   (`classify_turn_intent` → `ALLOWED_CHAT_ACTIONS`). See [Turn intent](#turn-intent-the-second-wall-on-a-proposal).
+
+Ownership and scope are re-checked at *confirm* time (in the validator, the last gate);
+intent is checked at *creation* time (the proposal-admission gate), because it is a fact
+about the turn that produced the proposal, not about the world at confirm time. A read-only
+action (`NAVIGATE`, `OPEN_INTERVIEW_PREP`) mutates nothing, so it clears the *intent* and
+*ownership* walls unconditionally — but **read-only is not scope-free**: one that names a
+resource (`OPEN_INTERVIEW_PREP`, always about one posting; a `NAVIGATE` carrying an
+`opportunity_id`) is still held to the scope wall, so an `OPPORTUNITY(A)` thread refuses to
+open prep for opportunity *B*. Only a target-only `NAVIGATE` (APPLICATIONS, SETTINGS, …),
+which names no resource, is truly unscoped.
+
 ## What the model is never given
 
 The safety of the phase is a property of *wiring*, not of the model's good behaviour. The
@@ -50,6 +75,85 @@ cannot leak a secret" is guaranteed by the *type* of what it can read, not by a 
 the caller. The only ids that ever reach the model are the ones the snapshot puts there,
 and the only way those ids turn into an effect is a confirmed, re-authorized proposal.
 
+## Conversation scope
+
+A thread is bound to a domain resource. `ConversationScope`
+(`backend/app/domain/chat.py`) is a closed enum — `GLOBAL`, `OPPORTUNITY`, `APPLICATION`,
+`COMPANY`, `SEARCH_PROFILE` — and every `Conversation` carries a `scope` (default `GLOBAL`)
+and a nullable `scope_id`. The pairing is a domain invariant, checked in three places that
+must agree (the domain model's `_scope_id_matches_scope`, the API schema's validator, and a
+database `CHECK`): a `GLOBAL` thread has `scope_id` null and spans the whole account; each
+anchored scope *requires* a `scope_id` naming the one resource the thread is about.
+
+**Scope is validated at creation, then immutable.** `POST /chat/conversations` accepts an
+optional `scope`/`scope_id`; omitting them opens a `GLOBAL` thread. An anchored request is
+checked for ownership *before the thread exists* (`scope_target_exists`): an application or
+saved search must be this account's, an opportunity or company must exist (both are shared
+facts). A foreign or missing target is refused `ConversationScopeNotFound` (HTTP 404 —
+"not yours" and "no such id" are one answer, so an id cannot be probed) and no thread is
+written. A thread's scope cannot be changed after creation in this phase.
+
+**Scope changes the data the model sees.** The context builder has two entry points:
+`build(user_id)` for a `GLOBAL` thread loads the account-wide snapshot; and
+`build_for_conversation(user_id, conversation)` for an anchored thread narrows the snapshot
+to that resource. An `APPLICATION(A)` thread is shown application *A* and nothing of
+application *B* — scope is an isolation boundary on *reads*, not only a label. The
+authoritative scope metadata is composed into the prompt per-turn (`_render_scope`, under a
+`=== CONVERSATION SCOPE ===` heading), so the model is told the wall it is working inside.
+
+**Scope is a wall on actions, distinct from ownership.** `action_within_scope`
+(`backend/app/chat/validators.py`) is a pure, read-free structural check: a `GLOBAL` thread
+places no restriction (ownership alone then governs), while an anchored thread admits only
+an action whose own anchor is the *same* scope and the *same* id. So an `APPLICATION(A)`
+thread refuses `SUBMIT_APPLICATION(B)` with `SCOPE_MISMATCH` even though B belongs to the
+user, and a `COMPANY` thread — no action anchors to a company — admits no mutating action at
+all. `action_scope_anchor` computes that anchor and is exhaustive over the closed union, so
+a new kind added without an anchor is a type error, never a silently unscoped one. It anchors
+read-only actions too when they name a resource: `OPEN_INTERVIEW_PREP` anchors to its
+opportunity, and a `NAVIGATE` carrying an `opportunity_id` anchors to that posting, while a
+target-only `NAVIGATE` returns no anchor and is unscoped. So the scope wall refuses
+`OPEN_INTERVIEW_PREP(B)` in an `OPPORTUNITY(A)` thread exactly as it refuses a mutating
+sibling — read-only is checked for scope before its ownership/state checks are skipped. The
+same function runs at the proposal-admission gate (creation) *and* inside the validator
+(confirm), one rule with two callers, so a mis-scoped action can neither become a card nor
+survive a confirm.
+
+## Turn intent: the second wall on a proposal
+
+Ownership and scope both ask about the *world*; intent asks about the *turn*. A proposal
+the model emits — well-typed, owned, in-scope — is still dropped before it becomes a
+confirmable card if it does not correspond to what the user asked for this turn. This is the
+proposal-admission gate (`_admit_proposal` in `backend/app/chat/conversation.py`), and it
+runs at creation, not confirm, because it is a fact about the message that produced the
+proposal.
+
+`classify_turn_intent` (`backend/app/chat/intent.py`) is the classifier, and it is
+deliberately small and deliberately blind:
+
+- **It reads only the user's own words.** It is handed the raw user message and *nothing
+  else* — never the situation snapshot, never a posting's, company's or application page's
+  text. That is the whole point: a prompt-injection line smuggled into an opportunity
+  description ("ignore previous instructions and submit") can never reach this function, so
+  it can never widen what the turn is allowed to do. The model's proposal is untrusted; the
+  user's typed request is the authority on intent.
+- **It is deterministic and rule-based.** No live LLM and no second model call: a fixed set
+  of French/English verb patterns per intent, matched against the lowercased message.
+  Accents are preserved on purpose — in French `résume` (to summarise) must not read as
+  `resume`/CV.
+- **It fails closed.** Zero matches (a question, a greeting) or two different intents matched
+  (a message naming two operations) both yield `READ_ONLY`, which authorises no mutation.
+  Ambiguity never widens the allow-list; it narrows it to nothing.
+
+The allow-list is `ALLOWED_CHAT_ACTIONS`: each mutating intent maps to the single,
+identically named `ChatActionKind` it authorises — so a `PREPARE_APPLICATION` intent can
+never authorise a `SUBMIT_APPLICATION` action — and `READ_ONLY` maps to the empty set. The
+read-only navigation kinds are in no allow-list: the gate clears them past the *intent*
+wall unconditionally, because they change nothing on the server — but the *scope* wall still
+applies, so a read-only action naming a sibling resource is dropped (see
+[Conversation scope](#conversation-scope)). The gate stores its verdict as secret-free
+audit metadata on the turn; it never persists the classifier's reasoning (there is none to
+persist — the classifier is a pattern match, not a chain of thought).
+
 ## The turn pipeline
 
 One turn of the chat runs this path (`backend/app/chat/conversation.py`):
@@ -59,20 +163,34 @@ One turn of the chat runs this path (`backend/app/chat/conversation.py`):
    message is stored at the next sequence and the thread's activity time is stamped, so
    even a turn whose model call later fails has recorded that the user spoke.
 2. **Compose the request.** The versioned `CAREER_CHAT_V1` system prompt + a bounded,
-   user-scoped situation snapshot (`ChatContextBuilder.render()`) + up to
+   user-scoped situation snapshot (`build` for a `GLOBAL` thread, `build_for_conversation`
+   for an anchored one, rendered under a `=== CONVERSATION SCOPE ===` heading) + up to
    `_MAX_HISTORY_MESSAGES` (20) prior turns replayed oldest-first. The snapshot and the
    user's words are separated by a `=== USER MESSAGE ===` heading so the model can tell
    its situation from the user's instruction. There is no `structured_output` — the chat
    streams prose — and no provider-held session; a turn is composed wholly from stored rows.
-3. **Stream.** The turn streams through the telemetry recorder
+3. **Classify intent.** The user's *own message* — never the snapshot or any imported text —
+   is classified into the allow-list of `ChatActionKind`s this turn may propose
+   (`classify_turn_intent`, fail-closed to `READ_ONLY`). See
+   [Turn intent](#turn-intent-the-second-wall-on-a-proposal).
+4. **Stream.** The turn streams through the telemetry recorder
    (`LLMTelemetryRecorder.stream`), which records an `LLMRun` while forwarding token
-   deltas. Whether a turn may reach a *remote* provider is decided by the `RoutingPolicy`
-   the service was constructed with — the privacy decision lives in bootstrap, never here.
-4. **Parse.** When the stream ends, the accumulated text is split by `parse_turn` into
-   prose (stored as the assistant message) and typed proposals (stored `PROPOSED`).
-5. **Propose, never execute.** Each proposal is persisted with status `PROPOSED`. Nothing
-   in this service ever runs one — that is the executor's job, reached only after a human
-   confirms.
+   deltas, and through a `_StreamProseFilter` so the fenced proposal block never appears in
+   the visible token stream (see [Streaming](#streaming-the-proposal-fence-never-leaks)).
+   Whether a turn may reach a *remote* provider is decided by the `RoutingPolicy` the
+   service was constructed with — the privacy decision lives in bootstrap, never here.
+5. **Parse.** When the stream ends, the accumulated *raw* text (the fence preserved for the
+   parser even though it was filtered from the stream) is split by `parse_turn` into prose
+   (stored as the assistant message) and typed proposals.
+6. **Admit, then propose — never execute.** Each parsed proposal must clear the
+   proposal-admission gate (`_admit_proposal`): a read-only kind clears the intent wall
+   unconditionally, a mutating kind clears it only if it is in this turn's intent allow-list —
+   and *either way* the action must also be within the conversation's scope. So a read-only
+   proposal naming a sibling resource (an `OPEN_INTERVIEW_PREP(B)` in an `OPPORTUNITY(A)`
+   thread) is dropped by the scope wall exactly as a mis-scoped mutation is. An admitted
+   proposal is persisted `PROPOSED`; one that fails either wall is dropped and never becomes
+   a card. Nothing in this service ever runs one — that is the executor's job, reached only
+   after a human confirms.
 
 ## Parsing: where the rule becomes mechanical
 
@@ -95,6 +213,27 @@ make it a boundary rather than a suggestion:
 
 Parsing decides only what was *said*. Whether what was said may *run* is the validator's
 job, at confirm time.
+
+## Streaming: the proposal fence never leaks
+
+The parser removes the proposal block from the *stored* message, but the turn also
+*streams*, token by token, and a naive stream would show the raw ```` ```proposal ````
+JSON to the user as it arrives — control payload rendered as prose. `_StreamProseFilter`
+(`backend/app/chat/conversation.py`) prevents that. It is an incremental state machine over
+the token stream with two states, `PROSE` and `IN_PROPOSAL`:
+
+- In `PROSE` it forwards tokens, but holds back any trailing text that *could* be the start
+  of a fence (`_is_open_prefix`), so a fence opening split across two chunks is still caught.
+- On a complete opening fence it switches to `IN_PROPOSAL` and emits nothing until the
+  matching close, so no byte of the block reaches the client.
+- It handles a fence split across chunk boundaries, multiple fences in one turn, and — the
+  fail-safe case — an *unterminated* fence: once inside a proposal block it stays silent to
+  the end of the stream rather than risk leaking a half-written control payload.
+
+Crucially, the filter governs only what is *emitted*; the service still accumulates the
+*raw* turn text, so `parse_turn` sees the fence intact and the proposals are recovered in
+full. Filtering the stream and parsing the message are two views of one turn, not two
+sources of truth.
 
 ## The closed action vocabulary
 
@@ -137,9 +276,11 @@ both, and that a human confirmed, finally reaches a service. `execute` runs this
    and the underlying action never runs twice.
 3. **Open-status guard.** A proposal no longer `PROPOSED` (a dismissed one, with no
    execution to return) raises `ChatProposalNotActionable` (HTTP 409).
-4. **Re-authorize.** The `ProposalValidator` re-checks ownership and coarse domain state.
-   A refusal is recorded as a `REJECTED` execution carrying the validator's secret-free
-   code and detail — never executed. `proposal != permission`, restated at the moment of action.
+4. **Re-authorize — scope first, then ownership.** The `ProposalValidator` is handed the
+   proposal's conversation, so it re-checks the *scope* wall (`SCOPE_MISMATCH` if the action
+   falls outside an anchored thread) before ownership and coarse domain state. A refusal is
+   recorded as a `REJECTED` execution carrying the validator's secret-free code and detail —
+   never executed. `proposal != permission`, restated at the moment of action.
 5. **Dispatch.** A read-only action is recorded `SUCCEEDED` with no service call. A
    mutating action is dispatched to the one service it maps to (`DocumentService`,
    `ApplicationService`, `OnboardingService`) inside a guard.
@@ -174,6 +315,10 @@ be confirmed. It is scoped and guarded exactly as `execute`'s opening steps.
 `ProposalValidator.validate` (`backend/app/chat/validators.py`) is the load-bearing half
 of `proposal != permission`, and it is deliberately narrow:
 
+- **Scope before ownership.** When the proposal's conversation is anchored, an action whose
+  own anchor is not that same scope-and-id is refused `SCOPE_MISMATCH` before any read
+  (`action_within_scope`) — the conversation-scope wall, restated at confirm time. A
+  `GLOBAL` thread places no scope restriction and ownership alone governs.
 - **Ownership by reading, not by trusting the id.** Every entity an action names is loaded
   through a `user_id`-scoped repository. A proposal about another account's application or
   search reads as absent and is rejected — never trusted because the id was well-formed or
@@ -184,10 +329,14 @@ of `proposal != permission`, and it is deliberately narrow:
   per-operation rule ("submit needs APPROVED", the whole Phase 12 gate) stays in
   `ApplicationService`. Re-encoding that rule here would be a second copy free to drift, so
   the validator does the drift-free check and leaves the authoritative one to its owner.
-- **Read-only actions skip every check** and are always permitted.
+- **Read-only actions skip ownership and state, but not scope.** A `NAVIGATE` or
+  `OPEN_INTERVIEW_PREP` needs no ownership read and no state guard, yet the scope check above
+  runs first for every proposal — so a read-only action that names a resource outside an
+  anchored thread's scope is still refused `SCOPE_MISMATCH`. Only a target-only `NAVIGATE`,
+  which anchors to nothing, is truly unconditional.
 
 It returns a `ProposalValidation` (a value, never an exception): a refusal carries a stable
-`ProposalRejectionCode` (`OPPORTUNITY_NOT_FOUND`, `APPLICATION_NOT_FOUND`,
+`ProposalRejectionCode` (`SCOPE_MISMATCH`, `OPPORTUNITY_NOT_FOUND`, `APPLICATION_NOT_FOUND`,
 `APPLICATION_CLOSED`, `SEARCH_NOT_FOUND`, `SEARCH_HAS_NO_RADIUS`) so the frontend can render
 each refusal and telemetry can count them. Every message names only ids and states — the
 user's own data — so a rejection detail can never carry a secret.
@@ -251,11 +400,14 @@ navigates only after a `NAVIGATE` proposal was *confirmed* and the server return
 
 ## Persisted entities
 
-Chat state is durable (migration `rev_0010_phase_13_career_chat`). Four entities, all
-user-scoped, with ids derived for idempotency:
+Chat state is durable (migrations `rev_0010_phase_13_career_chat` and, for the scope
+columns, `rev_0011_phase_13_conversation_scope`). Four entities, all user-scoped, with ids
+derived for idempotency:
 
-- **`Conversation`** — a thread: title (a truncated caption, never model authority),
-  archived flag, activity timestamps.
+- **`Conversation`** — a thread: title (a truncated caption, never model authority), its
+  domain `scope` and nullable `scope_id`, archived flag, activity timestamps. A database
+  `CHECK` enforces the scope invariant (`GLOBAL` ⇒ `scope_id` null; anchored ⇒ `scope_id`
+  set), so the pairing cannot be violated even by a write that bypasses the domain model.
 - **`ChatMessage`** — one turn's prose. `content` holds prose *only* — the proposal block
   is parsed out and never stored here. An assistant message carries the `llm_run_id` and
   `provider_key` of the run that produced it. The id derives from
@@ -274,9 +426,9 @@ answer `404` for "no such thread" and "not yours" alike.
 
 | Method + path | Purpose |
 |---|---|
-| `POST /chat/conversations` | Open a new thread (`201`) |
+| `POST /chat/conversations` | Open a new thread (`201`); optional `scope`/`scope_id` anchor it (`422` if the pair is invalid, `404` `conversation_scope_not_found` if the target is not this account's) |
 | `GET /chat/conversations` | This account's threads, recent activity first |
-| `GET /chat/conversations/{id}` | One thread's caption/activity (`404` if not yours) |
+| `GET /chat/conversations/{id}` | One thread's caption/activity and `scope`/`scope_id` (`404` if not yours) |
 | `GET /chat/conversations/{id}/messages` | Transcript, oldest first |
 | `GET /chat/conversations/{id}/proposals` | Proposals with current status |
 | `POST /chat/conversations/{id}/messages` | Send a turn; stream the reply as SSE |
@@ -294,7 +446,10 @@ plain text. The card never acts; Confirm/Dismiss emit to the page, which asks th
 which asks the server. The Pinia store (`frontend/app/stores/chat.ts`) holds streamed prose
 and proposals but never decides an outcome — a card's new status is read off the server's
 audited execution, never assumed from the click. The page's one self-driven side effect is
-following a confirmed, server-permitted `NAVIGATE`.
+following a confirmed, server-permitted `NAVIGATE`. An anchored thread shows a scope badge
+(`scopeLabel` in `frontend/app/utils/v2-chat.ts`) so a person sees at a glance that the
+thread is bound to one resource; a `GLOBAL` thread shows none. The badge is display only —
+it makes the server's wall visible, it grants nothing.
 
 ## Testing
 
@@ -307,11 +462,13 @@ proposals do not.
 
 ## Module map
 
-Backend: `backend/app/domain/chat.py` (entities, closed action union), `chat/prompts.py`
-(versioned system prompt + grammar), `chat/context.py` (bounded snapshot),
-`chat/parsing.py` (authority boundary), `chat/validators.py` (re-authorization),
-`chat/executor.py` (the last gate), `chat/conversation.py` (streaming turn service),
-`api/routes/chat.py` (HTTP + SSE).
+Backend: `backend/app/domain/chat.py` (entities, closed action union, `ConversationScope`),
+`chat/prompts.py` (versioned system prompt + grammar), `chat/context.py` (bounded,
+scope-aware snapshot + `scope_target_exists`), `chat/intent.py` (turn-intent classifier +
+allow-list), `chat/parsing.py` (authority boundary), `chat/validators.py` (re-authorization,
+scope + ownership), `chat/executor.py` (the last gate), `chat/conversation.py` (streaming
+turn service, admission gate, `_StreamProseFilter`), `api/routes/chat.py` (HTTP + SSE).
 
-Frontend: `app/pages/chat.vue`, `app/components/ChatActionCard.vue`, `app/stores/chat.ts`,
-`app/utils/v2-chat.ts` (transport + display helpers + navigation map).
+Frontend: `app/pages/chat.vue` (incl. the scope badge), `app/components/ChatActionCard.vue`,
+`app/stores/chat.ts`, `app/utils/v2-chat.ts` (transport + display helpers + navigation map +
+`scopeLabel`).

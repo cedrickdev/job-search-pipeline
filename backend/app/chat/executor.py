@@ -69,6 +69,7 @@ from backend.app.domain.identifiers import (
 from backend.app.repositories.contracts import (
     ChatActionExecutionRepository,
     ChatActionProposalRepository,
+    ConversationRepository,
 )
 from backend.app.services.applications import (
     ApplicationDecisionMissing,
@@ -157,12 +158,14 @@ class ChatActionExecutor:
 
     def __init__(self, *, proposals: ChatActionProposalRepository,
                  executions: ChatActionExecutionRepository,
+                 conversations: ConversationRepository,
                  validator: ProposalValidator,
                  documents: DocumentService,
                  applications: ApplicationService,
                  onboarding: OnboardingService) -> None:
         self._proposals = proposals
         self._executions = executions
+        self._conversations = conversations
         self._validator = validator
         self._documents = documents
         self._applications = applications
@@ -181,8 +184,9 @@ class ChatActionExecutor:
            the underlying action never runs twice;
         3. a proposal no longer `PROPOSED` (a dismissed one) raises
            `ChatProposalNotActionable` rather than running;
-        4. the `ProposalValidator` re-authorizes it; a refusal is recorded as a `REJECTED`
-           execution and the proposal moves to `REJECTED`;
+        4. the `ProposalValidator` re-authorizes it against the proposal's own
+           conversation — scope first, then ownership and coarse domain state; a refusal is
+           recorded as a `REJECTED` execution and the proposal moves to `REJECTED`;
         5. a read-only action is recorded `SUCCEEDED` without calling any service — there
            is nothing on the server to change;
         6. a mutating action is dispatched to its service inside a guard that maps a typed
@@ -198,7 +202,9 @@ class ChatActionExecutor:
         if not proposal.is_open:
             raise ChatProposalNotActionable(proposal.status)
 
-        validation = await self._validator.validate(user_id, proposal.action)
+        conversation = await self._conversations.get(user_id, proposal.conversation_id)
+        validation = await self._validator.validate(
+            user_id, proposal.action, conversation=conversation)
         if not validation.permitted:
             return await self._record(
                 proposal, ChatActionExecutionOutcome.REJECTED,

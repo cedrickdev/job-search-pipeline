@@ -31,9 +31,11 @@ from backend.app.domain.application import (
     build_idempotency_key,
 )
 from backend.app.domain.application_channel import ApplicationChannel
+from backend.app.domain.chat import ConversationScope
 from backend.app.domain.common import GeoPoint
 from backend.app.domain.identifiers import (
     CandidateProfileId,
+    CompanyId,
     OpportunityId,
     SearchProfileId,
     UserId,
@@ -44,15 +46,19 @@ from backend.app.domain.identifiers import (
 )
 from backend.app.domain.search import RadiusSearchArea
 from tests.v2_builders import (
+    COMPANY,
     OTHER_USER,
     USER,
     a_candidate_profile,
+    a_company,
+    a_conversation,
     a_search_profile,
     an_opportunity,
 )
 from tests.v2_fakes import (
     FakeApplicationRepository,
     FakeCandidateProfileRepository,
+    FakeCompanyRepository,
     FakeOpportunityRepository,
     FakeSearchProfileRepository,
 )
@@ -61,12 +67,14 @@ NOW = datetime(2026, 9, 20, tzinfo=UTC)
 LONG_AGO = datetime(2026, 1, 1, tzinfo=UTC)
 
 
-def _builder(profiles=None, searches=None, applications=None, opportunities=None):
+def _builder(profiles=None, searches=None, applications=None, opportunities=None,
+             companies=None):
     return ChatContextBuilder(
         profiles=profiles or FakeCandidateProfileRepository(),
         searches=searches or FakeSearchProfileRepository(),
         applications=applications or FakeApplicationRepository(),
-        opportunities=opportunities or FakeOpportunityRepository())
+        opportunities=opportunities or FakeOpportunityRepository(),
+        companies=companies)
 
 
 def _an_application(*, user_id: UserId, profile_id: CandidateProfileId,
@@ -298,3 +306,160 @@ async def test_the_render_shows_ids_and_marks_labels_untrusted():
     assert str(opportunity.id) in text
     assert opportunity.title in text
     assert "untrusted" in text.lower()
+
+
+# --- scoped isolation: an anchored thread sees only its own slice -----------
+# The tripwire in every case is another of the account's *own* resources: it is loaded in
+# the repository and would appear in the GLOBAL snapshot, so its absence proves the scope
+# narrowed the read rather than ownership merely filtering a foreign row.
+
+@pytest.mark.asyncio
+async def test_a_global_conversation_still_gets_the_whole_account_snapshot():
+    profiles = FakeCandidateProfileRepository()
+    searches = FakeSearchProfileRepository()
+    await profiles.upsert(a_candidate_profile())
+    await searches.upsert(a_search_profile(name="Mine"))
+    builder = _builder(profiles, searches)
+
+    context = await builder.build_for_conversation(USER, a_conversation())  # GLOBAL
+
+    assert context.profile is not None
+    assert [s.name for s in context.search_profiles] == ["Mine"]
+
+
+@pytest.mark.asyncio
+async def test_an_application_thread_exposes_only_that_application_and_its_posting():
+    profiles = FakeCandidateProfileRepository()
+    applications = FakeApplicationRepository()
+    opportunities = FakeOpportunityRepository()
+    profile = a_candidate_profile()
+    await profiles.upsert(profile)
+
+    posting_a = an_opportunity(id=OpportunityId(UUID(int=0xA)), title="Role A")
+    posting_b = an_opportunity(id=OpportunityId(UUID(int=0xB)), title="Role B")
+    await opportunities.upsert(posting_a)
+    await opportunities.upsert(posting_b)
+    app_a = _an_application(user_id=USER, profile_id=profile.id,
+                            opportunity_id=posting_a.id)
+    app_b = _an_application(user_id=USER, profile_id=profile.id,
+                            opportunity_id=posting_b.id)
+    await applications.upsert(app_a)
+    await applications.upsert(app_b)
+    conversation = a_conversation(
+        scope=ConversationScope.APPLICATION, scope_id=app_a.id)
+
+    context = await _builder(
+        profiles, None, applications, opportunities
+    ).build_for_conversation(USER, conversation)
+
+    assert [a.id for a in context.applications] == [app_a.id]
+    assert [o.id for o in context.opportunities] == [posting_a.id]
+    rendered = context.render()
+    # The sibling application and its posting are the account's own — their absence proves
+    # the scope narrowed the read, not ownership.
+    assert str(app_b.id) not in rendered
+    assert str(posting_b.id) not in rendered
+    assert "Role B" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_an_opportunity_thread_exposes_only_that_posting_and_its_applications():
+    profiles = FakeCandidateProfileRepository()
+    applications = FakeApplicationRepository()
+    opportunities = FakeOpportunityRepository()
+    profile = a_candidate_profile()
+    await profiles.upsert(profile)
+
+    posting_x = an_opportunity(id=OpportunityId(UUID(int=0x11)), title="Role X")
+    posting_y = an_opportunity(id=OpportunityId(UUID(int=0x22)), title="Role Y")
+    await opportunities.upsert(posting_x)
+    await opportunities.upsert(posting_y)
+    app_to_x = _an_application(user_id=USER, profile_id=profile.id,
+                               opportunity_id=posting_x.id)
+    app_to_y = _an_application(user_id=USER, profile_id=profile.id,
+                               opportunity_id=posting_y.id)
+    await applications.upsert(app_to_x)
+    await applications.upsert(app_to_y)
+    conversation = a_conversation(
+        scope=ConversationScope.OPPORTUNITY, scope_id=posting_x.id)
+
+    context = await _builder(
+        profiles, None, applications, opportunities
+    ).build_for_conversation(USER, conversation)
+
+    assert [o.id for o in context.opportunities] == [posting_x.id]
+    assert [a.id for a in context.applications] == [app_to_x.id]
+    rendered = context.render()
+    assert str(posting_y.id) not in rendered
+    assert str(app_to_y.id) not in rendered
+    assert "Role Y" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_a_search_thread_exposes_only_that_saved_search():
+    searches = FakeSearchProfileRepository()
+    search_s = a_search_profile(id=SearchProfileId(UUID(int=0x51)), name="Search S")
+    search_t = a_search_profile(id=SearchProfileId(UUID(int=0x52)), name="Search T")
+    await searches.upsert(search_s)
+    await searches.upsert(search_t)
+    conversation = a_conversation(
+        scope=ConversationScope.SEARCH_PROFILE, scope_id=search_s.id)
+
+    context = await _builder(None, searches).build_for_conversation(USER, conversation)
+
+    assert [s.id for s in context.search_profiles] == [search_s.id]
+    assert context.applications == ()
+    assert context.opportunities == ()
+    rendered = context.render()
+    assert str(search_t.id) not in rendered
+    assert "Search T" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_a_company_thread_exposes_only_postings_at_that_employer():
+    profiles = FakeCandidateProfileRepository()
+    opportunities = FakeOpportunityRepository()
+    companies = FakeCompanyRepository()
+    await profiles.upsert(a_candidate_profile())
+
+    company_c = COMPANY
+    company_d = CompanyId(UUID(int=0xD0))
+    await companies.upsert(a_company(name="Employer C"))  # id defaults to COMPANY
+    posting_at_c = an_opportunity(id=OpportunityId(UUID(int=0xC1)),
+                                  company_id=company_c, title="At C")
+    posting_at_d = an_opportunity(id=OpportunityId(UUID(int=0xD1)),
+                                  company_id=company_d, title="At D")
+    await opportunities.upsert(posting_at_c)
+    await opportunities.upsert(posting_at_d)
+    conversation = a_conversation(
+        scope=ConversationScope.COMPANY, scope_id=company_c)
+
+    context = await _builder(
+        profiles, None, None, opportunities, companies
+    ).build_for_conversation(USER, conversation)
+
+    assert [o.id for o in context.opportunities] == [posting_at_c.id]
+    rendered = context.render()
+    assert str(posting_at_d.id) not in rendered
+    assert "At D" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_a_company_thread_degrades_to_profile_only_without_a_company_repo():
+    # A builder wired without a company repository cannot prove employer C exists, so it
+    # loads nothing rather than risk leaking another employer's postings.
+    profiles = FakeCandidateProfileRepository()
+    opportunities = FakeOpportunityRepository()
+    await profiles.upsert(a_candidate_profile())
+    await opportunities.upsert(an_opportunity(
+        id=OpportunityId(UUID(int=0xC1)), company_id=CompanyId(UUID(int=0xC0))))
+    conversation = a_conversation(
+        scope=ConversationScope.COMPANY, scope_id=CompanyId(UUID(int=0xC0)))
+
+    context = await _builder(
+        profiles, None, None, opportunities  # companies=None
+    ).build_for_conversation(USER, conversation)
+
+    assert context.profile is not None
+    assert context.opportunities == ()
+    assert context.applications == ()

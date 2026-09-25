@@ -60,6 +60,7 @@ from backend.app.domain.chat import (
     ChatMessage,
     ChatMessageRole,
     Conversation,
+    ConversationScope,
 )
 from backend.app.domain.common import (
     LanguageLevel,
@@ -122,6 +123,11 @@ from backend.app.domain.identifiers import (
     DocumentVersionId,
     EligibilityResultId,
     EvidenceId,
+    InterviewAnswerEvaluationId,
+    InterviewAnswerId,
+    InterviewQuestionId,
+    InterviewSessionId,
+    InterviewSessionSummaryId,
     LLMConnectionId,
     LLMRunId,
     MatchEvaluationId,
@@ -131,6 +137,22 @@ from backend.app.domain.identifiers import (
     SubmissionAttemptId,
     UserId,
     UserSessionId,
+)
+from backend.app.domain.interview import (
+    DimensionEvaluation,
+    InterviewAnswer,
+    InterviewAnswerEvaluation,
+    InterviewAnswerFormat,
+    InterviewDifficulty,
+    InterviewMode,
+    InterviewPlan,
+    InterviewQuestion,
+    InterviewQuestionType,
+    InterviewSession,
+    InterviewSessionStatus,
+    InterviewSessionSummary,
+    SessionReadiness,
+    SessionStyle,
 )
 from backend.app.domain.matching import DimensionScore, MatchDimension, MatchEvaluation
 from backend.app.domain.opportunity import (
@@ -174,6 +196,11 @@ from backend.app.infrastructure.database.models import (
     DocumentVersionRow,
     EligibilityCheckRow,
     EligibilityResultRow,
+    InterviewAnswerEvaluationRow,
+    InterviewAnswerRow,
+    InterviewQuestionRow,
+    InterviewSessionRow,
+    InterviewSessionSummaryRow,
     LLMConnectionRow,
     LLMRunRow,
     LocationColumnsMixin,
@@ -1915,6 +1942,8 @@ def conversation_to_row(conversation: Conversation,
     target = ConversationRow(id=conversation.id) if row is None else row
     target.user_id = conversation.user_id
     target.title = conversation.title
+    target.scope = conversation.scope
+    target.scope_id = conversation.scope_id
     target.is_archived = conversation.is_archived
     target.last_message_at = conversation.last_message_at
     target.created_at = conversation.created_at
@@ -1929,6 +1958,8 @@ def conversation_to_domain(row: ConversationRow) -> Conversation:
         id=ConversationId(row.id),
         user_id=UserId(row.user_id),
         title=row.title,
+        scope=ConversationScope(row.scope),
+        scope_id=row.scope_id,
         is_archived=row.is_archived,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -2035,6 +2066,223 @@ def chat_action_execution_to_domain(row: ChatActionExecutionRow) -> ChatActionEx
         outcome=ChatActionExecutionOutcome(row.outcome),
         detail=row.detail,
         result_ref=row.result_ref,
+        created_at=row.created_at)
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 — the adaptive interview simulator. A session, its questions, the one
+# answer per question, the structured evaluation of each answer, and the coaching
+# summary. Nested domain values ride as JSONB — the frozen `plan`, each evaluation's
+# `dimensions`, the deterministic `readiness` — dumped with `model_dump(mode="json")`
+# in and re-validated with `model_validate` out, so a payload that reached the table
+# is re-checked against the domain on the way back, never trusted raw. The session and
+# its summary are mutable (a lifecycle step, a re-finalize), so `updated_at` is forced
+# into every UPDATE; questions, answers and evaluations are write-once.
+# ---------------------------------------------------------------------------
+
+
+def interview_session_to_row(session: InterviewSession,
+                             row: InterviewSessionRow | None = None) -> InterviewSessionRow:
+    """An `InterviewSession` onto its row. `plan` rides as JSONB; `created_at`/
+    `updated_at`/`ended_at` are domain facts (the service owns the clock), so
+    `updated_at` is forced into every UPDATE for the reason `application_to_row`
+    documents — a start-then-adapt at one instant must not lose the domain's timestamp
+    to the DB `onupdate`."""
+    target = InterviewSessionRow(id=session.id) if row is None else row
+    target.user_id = session.user_id
+    target.candidate_profile_id = session.candidate_profile_id
+    target.opportunity_id = session.opportunity_id
+    target.application_id = session.application_id
+    target.mode = session.mode
+    target.style = session.style
+    target.difficulty = session.difficulty
+    target.status = session.status
+    target.language = session.language
+    target.plan = session.plan.model_dump(mode="json")
+    target.plan_llm_run_id = session.plan_llm_run_id
+    target.title = session.title
+    target.created_at = session.created_at
+    target.updated_at = session.updated_at
+    target.ended_at = session.ended_at
+    if row is not None:
+        flag_modified(target, "updated_at")
+    return target
+
+
+def interview_session_to_domain(row: InterviewSessionRow) -> InterviewSession:
+    return InterviewSession(
+        id=InterviewSessionId(row.id),
+        user_id=UserId(row.user_id),
+        candidate_profile_id=CandidateProfileId(row.candidate_profile_id),
+        opportunity_id=OpportunityId(row.opportunity_id),
+        application_id=(None if row.application_id is None
+                        else ApplicationId(row.application_id)),
+        mode=InterviewMode(row.mode),
+        style=SessionStyle(row.style),
+        difficulty=InterviewDifficulty(row.difficulty),
+        status=InterviewSessionStatus(row.status),
+        language=row.language,
+        plan=InterviewPlan.model_validate(row.plan),
+        plan_llm_run_id=(None if row.plan_llm_run_id is None
+                         else LLMRunId(row.plan_llm_run_id)),
+        title=row.title,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        ended_at=row.ended_at)
+
+
+def interview_question_to_row(question: InterviewQuestion,
+                              row: InterviewQuestionRow | None = None
+                              ) -> InterviewQuestionRow:
+    """An `InterviewQuestion` onto its row. Written once per `(session_id, sequence)` —
+    the pair the id derives from — and never mutated, so `asked_at` is the domain fact
+    and the mixin timestamps are left to the server default, as `chat_message_to_row`
+    does."""
+    target = InterviewQuestionRow(id=question.id) if row is None else row
+    target.session_id = question.session_id
+    target.user_id = question.user_id
+    target.sequence = question.sequence
+    target.question_type = question.question_type
+    target.difficulty = question.difficulty
+    target.prompt = question.prompt
+    target.topic_label = question.topic_label
+    target.follows_sequence = question.follows_sequence
+    target.depth = question.depth
+    target.generator_key = question.generator_key
+    target.llm_run_id = question.llm_run_id
+    target.asked_at = question.asked_at
+    return target
+
+
+def interview_question_to_domain(row: InterviewQuestionRow) -> InterviewQuestion:
+    return InterviewQuestion(
+        id=InterviewQuestionId(row.id),
+        session_id=InterviewSessionId(row.session_id),
+        user_id=UserId(row.user_id),
+        sequence=row.sequence,
+        question_type=InterviewQuestionType(row.question_type),
+        difficulty=InterviewDifficulty(row.difficulty),
+        prompt=row.prompt,
+        topic_label=row.topic_label,
+        follows_sequence=row.follows_sequence,
+        depth=row.depth,
+        generator_key=row.generator_key,
+        llm_run_id=(None if row.llm_run_id is None else LLMRunId(row.llm_run_id)),
+        asked_at=row.asked_at)
+
+
+def interview_answer_to_row(answer: InterviewAnswer,
+                            row: InterviewAnswerRow | None = None) -> InterviewAnswerRow:
+    """An `InterviewAnswer` onto its row. One immutable answer per question — the id is
+    derived from the question — so `answered_at` is the domain fact and the mixin
+    timestamps are left to the server default."""
+    target = InterviewAnswerRow(id=answer.id) if row is None else row
+    target.question_id = answer.question_id
+    target.session_id = answer.session_id
+    target.user_id = answer.user_id
+    target.format = answer.format
+    target.content = answer.content
+    target.transcript_confidence = answer.transcript_confidence
+    target.answered_at = answer.answered_at
+    return target
+
+
+def interview_answer_to_domain(row: InterviewAnswerRow) -> InterviewAnswer:
+    return InterviewAnswer(
+        id=InterviewAnswerId(row.id),
+        question_id=InterviewQuestionId(row.question_id),
+        session_id=InterviewSessionId(row.session_id),
+        user_id=UserId(row.user_id),
+        format=InterviewAnswerFormat(row.format),
+        content=row.content,
+        transcript_confidence=row.transcript_confidence,
+        answered_at=row.answered_at)
+
+
+def interview_answer_evaluation_to_row(evaluation: InterviewAnswerEvaluation,
+                                       row: InterviewAnswerEvaluationRow | None = None
+                                       ) -> InterviewAnswerEvaluationRow:
+    """An `InterviewAnswerEvaluation` onto its row — and never a readiness, because the
+    schema has no such column. `dimensions` rides as a JSONB array, dumped per entry so
+    the payload is exactly what re-validation accepts. Keyed on an id derived from the
+    answer, so a re-grade overwrites the one evaluation; `evaluated_at` is the domain
+    fact and the mixin timestamps are row bookkeeping."""
+    target = InterviewAnswerEvaluationRow(id=evaluation.id) if row is None else row
+    target.answer_id = evaluation.answer_id
+    target.session_id = evaluation.session_id
+    target.user_id = evaluation.user_id
+    target.dimensions = [entry.model_dump(mode="json") for entry in evaluation.dimensions]
+    target.confidence = evaluation.confidence
+    target.strengths = list(evaluation.strengths)
+    target.improvements = list(evaluation.improvements)
+    target.suggested_answer = evaluation.suggested_answer
+    target.evaluator_key = evaluation.evaluator_key
+    target.llm_run_id = evaluation.llm_run_id
+    target.evaluated_at = evaluation.evaluated_at
+    return target
+
+
+def interview_answer_evaluation_to_domain(
+        row: InterviewAnswerEvaluationRow) -> InterviewAnswerEvaluation:
+    """A stored evaluation as a domain value, its dimensions re-validated.
+
+    Each dimension is run back through `DimensionEvaluation`, so a stored grade whose
+    shape no longer parses — a score on a `NOT_EVALUATED` axis, a dimension retired from
+    the vocabulary — fails here rather than skewing a readiness computed from it.
+    """
+    return InterviewAnswerEvaluation(
+        id=InterviewAnswerEvaluationId(row.id),
+        answer_id=InterviewAnswerId(row.answer_id),
+        session_id=InterviewSessionId(row.session_id),
+        user_id=UserId(row.user_id),
+        dimensions=tuple(DimensionEvaluation.model_validate(item)
+                         for item in row.dimensions),
+        confidence=row.confidence,
+        strengths=tuple(row.strengths),
+        improvements=tuple(row.improvements),
+        suggested_answer=row.suggested_answer,
+        evaluator_key=row.evaluator_key,
+        llm_run_id=(None if row.llm_run_id is None else LLMRunId(row.llm_run_id)),
+        evaluated_at=row.evaluated_at)
+
+
+def interview_session_summary_to_row(summary: InterviewSessionSummary,
+                                     row: InterviewSessionSummaryRow | None = None
+                                     ) -> InterviewSessionSummaryRow:
+    """An `InterviewSessionSummary` onto its row. `readiness` rides as JSONB — the
+    deterministic value the platform computed, re-validated on read. Keyed on an id
+    derived from the session, so re-finalizing reuses the row; `created_at` is the
+    domain fact (no `onupdate`, so it is safe to set on every write) and `updated_at`
+    is left to the server default."""
+    target = InterviewSessionSummaryRow(id=summary.id) if row is None else row
+    target.session_id = summary.session_id
+    target.user_id = summary.user_id
+    target.readiness = summary.readiness.model_dump(mode="json")
+    target.headline = summary.headline
+    target.strengths = list(summary.strengths)
+    target.focus_areas = list(summary.focus_areas)
+    target.questions_asked = summary.questions_asked
+    target.answers_evaluated = summary.answers_evaluated
+    target.generator_key = summary.generator_key
+    target.llm_run_id = summary.llm_run_id
+    target.created_at = summary.created_at
+    return target
+
+
+def interview_session_summary_to_domain(
+        row: InterviewSessionSummaryRow) -> InterviewSessionSummary:
+    return InterviewSessionSummary(
+        id=InterviewSessionSummaryId(row.id),
+        session_id=InterviewSessionId(row.session_id),
+        user_id=UserId(row.user_id),
+        readiness=SessionReadiness.model_validate(row.readiness),
+        headline=row.headline,
+        strengths=tuple(row.strengths),
+        focus_areas=tuple(row.focus_areas),
+        questions_asked=row.questions_asked,
+        answers_evaluated=row.answers_evaluated,
+        generator_key=row.generator_key,
+        llm_run_id=(None if row.llm_run_id is None else LLMRunId(row.llm_run_id)),
         created_at=row.created_at)
 
 

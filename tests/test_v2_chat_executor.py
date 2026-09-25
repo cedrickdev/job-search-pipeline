@@ -37,6 +37,7 @@ from backend.app.domain.application_failure import (
 from backend.app.domain.chat import (
     ChatActionExecutionOutcome,
     ChatActionProposalStatus,
+    ConversationScope,
     CreateApplicationAction,
     GenerateResumeAction,
     NavigateAction,
@@ -55,14 +56,18 @@ from backend.app.documents import InsufficientEvidence
 from backend.app.services.applications import ApplicationNotActionable
 from tests.v2_builders import (
     APPLICATION,
+    CONVERSATION,
     NOW,
     OPPORTUNITY,
+    OTHER_APPLICATION,
+    OTHER_OPPORTUNITY,
     OTHER_USER,
     PROFILE,
     SEARCH_PROFILE,
     USER,
     a_chat_action_execution,
     a_chat_action_proposal,
+    a_conversation,
     a_rendered_document,
     a_search_profile,
 )
@@ -70,6 +75,7 @@ from tests.v2_fakes import (
     FakeApplicationRepository,
     FakeChatActionExecutionRepository,
     FakeChatActionProposalRepository,
+    FakeConversationRepository,
     FakeOpportunityRepository,
     FakeSearchProfileRepository,
 )
@@ -102,8 +108,8 @@ class _StubValidator:
         self.calls: list[object] = []
         self._verdict = verdict if verdict is not None else ProposalValidation.permit()
 
-    async def validate(self, user_id, action) -> ProposalValidation:
-        self.calls.append((user_id, action))
+    async def validate(self, user_id, action, *, conversation=None) -> ProposalValidation:
+        self.calls.append((user_id, action, conversation))
         return self._verdict
 
 
@@ -176,10 +182,26 @@ class _StubOnboarding:
         return self._result
 
 
+def _conversations_with_global() -> FakeConversationRepository:
+    """A store holding the default GLOBAL thread the seeded proposals belong to.
+
+    The executor loads a proposal's conversation to hand the validator its scope; the
+    proposals here are built for `CONVERSATION`, which is GLOBAL, so the scope wall is a
+    no-op and these tests stay about re-authorization, dispatch and audit — the scope wall
+    itself is exercised in the dedicated scope tests.
+    """
+    repo = FakeConversationRepository()
+    repo.conversations[CONVERSATION] = a_conversation()
+    return repo
+
+
 def _executor(*, proposals, executions, validator=None, documents=None,
-              applications=None, onboarding=None) -> ChatActionExecutor:
+              applications=None, onboarding=None, conversations=None
+              ) -> ChatActionExecutor:
     return ChatActionExecutor(
         proposals=proposals, executions=executions,
+        conversations=(conversations if conversations is not None
+                       else _conversations_with_global()),
         validator=validator if validator is not None else _StubValidator(),
         documents=documents if documents is not None else _StubDocuments(),
         applications=applications if applications is not None else _StubApplications(),
@@ -520,6 +542,71 @@ async def test_the_executor_honors_a_real_validator_refusal():
     assert result.outcome is ChatActionExecutionOutcome.REJECTED
     assert result.result_ref == ProposalRejectionCode.OPPORTUNITY_NOT_FOUND.value
     assert documents.calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_executor_refuses_a_sibling_resource_in_an_anchored_thread():
+    # §63: the thread is anchored to application A; the proposal names application B (both
+    # the user's own). The executor loads the conversation and hands it to the real
+    # validator, whose scope wall refuses SCOPE_MISMATCH before any ownership read — so the
+    # application service is never entered and B is untouched. Defense in depth: the same
+    # scope rule the creation gate applied is re-enforced here at confirm.
+    proposals = FakeChatActionProposalRepository()
+    proposal = a_chat_action_proposal(
+        action=SubmitApplicationAction(application_id=OTHER_APPLICATION))
+    await _seed(proposals, proposal)
+    conversations = FakeConversationRepository()
+    conversations.conversations[CONVERSATION] = a_conversation(
+        scope=ConversationScope.APPLICATION, scope_id=APPLICATION)
+    validator = ProposalValidator(
+        opportunities=FakeOpportunityRepository(),
+        applications=FakeApplicationRepository(),
+        searches=FakeSearchProfileRepository())
+    applications = _StubApplications(error=_MUST_NOT_RUN)
+    executor = _executor(proposals=proposals,
+                         executions=FakeChatActionExecutionRepository(),
+                         validator=validator, applications=applications,
+                         conversations=conversations)
+
+    result = await executor.execute(USER, proposal.id, now=NOW)
+
+    assert result.outcome is ChatActionExecutionOutcome.REJECTED
+    assert result.result_ref == ProposalRejectionCode.SCOPE_MISMATCH.value
+    assert applications.calls == []  # B was never touched
+    reloaded = await proposals.get(USER, proposal.id)
+    assert reloaded is not None
+    assert reloaded.status is ChatActionProposalStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_the_executor_refuses_read_only_prep_for_a_sibling_posting():
+    # §47/§11: a stale or forged proposal — the thread is anchored to opportunity A but the
+    # proposal opens prep for opportunity B. Read-only or not, the executor's scope wall
+    # refuses it SCOPE_MISMATCH at confirm and records no navigation hint, so a rejected
+    # read-only resource action yields no client-side result. Defense in depth behind the
+    # creation gate: the same scope rule is enforced again here.
+    proposals = FakeChatActionProposalRepository()
+    proposal = a_chat_action_proposal(
+        action=OpenInterviewPrepAction(opportunity_id=OTHER_OPPORTUNITY))
+    await _seed(proposals, proposal)
+    conversations = FakeConversationRepository()
+    conversations.conversations[CONVERSATION] = a_conversation(
+        scope=ConversationScope.OPPORTUNITY, scope_id=OPPORTUNITY)
+    validator = ProposalValidator(
+        opportunities=FakeOpportunityRepository(),
+        applications=FakeApplicationRepository(),
+        searches=FakeSearchProfileRepository())
+    executor = _executor(proposals=proposals,
+                         executions=FakeChatActionExecutionRepository(),
+                         validator=validator, conversations=conversations)
+
+    result = await executor.execute(USER, proposal.id, now=NOW)
+
+    assert result.outcome is ChatActionExecutionOutcome.REJECTED
+    assert result.result_ref == ProposalRejectionCode.SCOPE_MISMATCH.value
+    reloaded = await proposals.get(USER, proposal.id)
+    assert reloaded is not None
+    assert reloaded.status is ChatActionProposalStatus.REJECTED
 
 
 

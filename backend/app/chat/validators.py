@@ -21,9 +21,13 @@ The validator is deliberately narrow, and the narrowness is the point:
   the executor calls and whose refusal it maps to a rejected outcome. Re-encoding that rule
   here would be a second copy free to drift from the one the service enforces — so the
   validator does the drift-free check and leaves the authoritative one to its owner.
-- **Read-only actions skip every check.** `NAVIGATE` and `OPEN_INTERVIEW_PREP` mutate
-  nothing on the server, so there is nothing to authorize; they are always permitted and
-  the executor records them without calling a service (`READ_ONLY_ACTION_KINDS`).
+- **Read-only actions skip ownership and state, but not scope.** `NAVIGATE` and
+  `OPEN_INTERVIEW_PREP` mutate nothing on the server, so there is nothing to *authorize* —
+  they are permitted without a repository read and the executor records them without
+  calling a service (`READ_ONLY_ACTION_KINDS`). But read-only is not scope-free: one that
+  names a resource (prep for a posting, a navigation carrying an opportunity id) is still
+  refused when it points outside an anchored thread's scope — the scope wall runs before
+  the read-only guard, so a cross-scope hint cannot slip through it.
 
 It returns a `ProposalValidation`, never raises for a refusal: a rejection is data the
 executor records as a `REJECTED` outcome with a secret-free reason, not an exception. The
@@ -31,6 +35,7 @@ messages name only ids and states — the user's own data — so nothing here ca
 """
 from enum import StrEnum
 from typing import assert_never
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
@@ -39,6 +44,8 @@ from backend.app.domain.chat import (
     ApproveApplicationAction,
     CancelApplicationAction,
     ChatAction,
+    Conversation,
+    ConversationScope,
     CreateApplicationAction,
     GenerateCoverLetterAction,
     GenerateResumeAction,
@@ -68,11 +75,13 @@ class ProposalRejectionCode(StrEnum):
 
     A closed vocabulary so the frontend can render each refusal in its own words and the
     telemetry can count them, rather than parsing a free-text sentence. Each maps to a
-    pre-execution check: the entity was not this account's (`*_NOT_FOUND`), the application
+    pre-execution check: the action fell outside the conversation's scope
+    (`SCOPE_MISMATCH`), the entity was not this account's (`*_NOT_FOUND`), the application
     is closed for good (`APPLICATION_CLOSED`), or the search has no radius area to resize
     (`SEARCH_HAS_NO_RADIUS`).
     """
 
+    SCOPE_MISMATCH = "SCOPE_MISMATCH"
     OPPORTUNITY_NOT_FOUND = "OPPORTUNITY_NOT_FOUND"
     APPLICATION_NOT_FOUND = "APPLICATION_NOT_FOUND"
     APPLICATION_CLOSED = "APPLICATION_CLOSED"
@@ -105,6 +114,64 @@ class ProposalValidation(BaseModel):
         return cls(permitted=False, code=code, detail=detail)
 
 
+def action_scope_anchor(action: ChatAction) -> tuple[ConversationScope, UUID] | None:
+    """The single domain resource an action is bound to, or `None` if it names none.
+
+    A pure, read-free structural fact about the action's *shape*: which scope it belongs
+    to and the id it names. Because it touches no repository, the proposal-creation gate
+    (`backend.app.chat.conversation`) and the executor's validator can both call it — one
+    rule, two callers, no drift. Exhaustive over the closed union: a new action added
+    without an anchor here is a type error, never a silently unscoped one.
+
+    Read-only is not the same as scope-free. `OPEN_INTERVIEW_PREP` mutates nothing but is
+    always about one posting, so it anchors to that opportunity; a `NAVIGATE` that carries
+    an `opportunity_id` anchors to it too, while a target-only `NAVIGATE` (APPLICATIONS,
+    SETTINGS, …) names no resource and is genuinely unanchored. So an `OPPORTUNITY(A)`
+    thread admits prep or navigation for A but refuses either for opportunity B — a
+    read-only action can still cross a scope boundary, and this is where that is caught.
+    """
+    match action:
+        case NavigateAction():
+            if action.opportunity_id is not None:
+                return ConversationScope.OPPORTUNITY, action.opportunity_id
+            return None
+        case OpenInterviewPrepAction():
+            return ConversationScope.OPPORTUNITY, action.opportunity_id
+        case (GenerateResumeAction() | GenerateCoverLetterAction()
+              | CreateApplicationAction()):
+            return ConversationScope.OPPORTUNITY, action.opportunity_id
+        case (PrepareApplicationAction() | ApproveApplicationAction()
+              | SubmitApplicationAction() | CancelApplicationAction()):
+            return ConversationScope.APPLICATION, action.application_id
+        case SetSearchRadiusAction() | UpdateSearchKeywordsAction():
+            return ConversationScope.SEARCH_PROFILE, action.search_profile_id
+        case _:  # pragma: no cover - exhaustiveness guard over the closed union
+            assert_never(action)
+
+
+def action_within_scope(scope: ConversationScope, scope_id: UUID | None,
+                        action: ChatAction) -> bool:
+    """Whether `action` may be proposed or run inside a thread of this scope.
+
+    `GLOBAL` places no restriction — it may reference any of the account's resources, and
+    ordinary ownership validation is what then checks each id. An anchored thread admits
+    only an action whose own anchor is the *same* scope and the *same* id: an
+    `APPLICATION(A)` thread thus refuses `SUBMIT_APPLICATION(B)` even when B is the user's,
+    and a `COMPANY` thread — no action anchors to a company — admits no mutating action at
+    all, so a cross-type flow must go through a `GLOBAL` thread rather than a mis-scoped
+    one. A target-only read-only action has no anchor and is always in scope; a read-only
+    action that names a resource (`OPEN_INTERVIEW_PREP`, a `NAVIGATE` with an opportunity
+    id) is held to the same anchor rule as a mutating one.
+    """
+    if scope is ConversationScope.GLOBAL:
+        return True
+    anchor = action_scope_anchor(action)
+    if anchor is None:
+        return True
+    anchor_scope, anchor_id = anchor
+    return anchor_scope is scope and anchor_id == scope_id
+
+
 class ProposalValidator:
     """Re-authorizes a confirmed `ChatAction` against ownership and coarse domain state.
 
@@ -122,14 +189,25 @@ class ProposalValidator:
         self._applications = applications
         self._searches = searches
 
-    async def validate(self, user_id: UserId,
-                       action: ChatAction) -> ProposalValidation:
+    async def validate(self, user_id: UserId, action: ChatAction, *,
+                       conversation: Conversation | None = None) -> ProposalValidation:
         """Whether `action` may run for `user_id`, or the reason it may not.
 
-        Exhaustive over the closed union by construction: `assert_never` makes a new
-        `ChatActionKind` that is added without a branch here a type error, so a future
-        mutating action cannot slip through unauthorized.
+        Scope is the first wall, distinct from ownership: when a `conversation` is given
+        and it is anchored, an action outside that anchor is refused `SCOPE_MISMATCH`
+        before any read — an `APPLICATION(A)` thread cannot drive application B even though
+        B is the user's. Passing no `conversation` (the executor's older two-argument call,
+        a `GLOBAL` thread) skips the scope wall, and ordinary ownership validation stands
+        alone. Exhaustive over the closed union by construction: `assert_never` makes a new
+        `ChatActionKind` added without a branch here a type error, so a future mutating
+        action cannot slip through unauthorized.
         """
+        if conversation is not None and not action_within_scope(
+                conversation.scope, conversation.scope_id, action):
+            return ProposalValidation.reject(
+                ProposalRejectionCode.SCOPE_MISMATCH,
+                "this action is outside the conversation's "
+                f"{conversation.scope.value} scope")
         if action.kind in READ_ONLY_ACTION_KINDS:
             return ProposalValidation.permit()
         match action:

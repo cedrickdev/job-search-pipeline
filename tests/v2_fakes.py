@@ -64,6 +64,13 @@ from backend.app.domain.geo import (
     remote_scope_of,
 )
 from backend.app.domain.eligibility import EligibilityResult
+from backend.app.domain.interview import (
+    InterviewAnswer,
+    InterviewAnswerEvaluation,
+    InterviewQuestion,
+    InterviewSession,
+    InterviewSessionSummary,
+)
 from backend.app.domain.identifiers import (
     ApplicationDecisionId,
     ApplicationId,
@@ -79,6 +86,11 @@ from backend.app.domain.identifiers import (
     CompanyId,
     ConversationId,
     EligibilityResultId,
+    InterviewAnswerEvaluationId,
+    InterviewAnswerId,
+    InterviewQuestionId,
+    InterviewSessionId,
+    InterviewSessionSummaryId,
     LLMConnectionId,
     LLMRunId,
     MatchEvaluationId,
@@ -116,6 +128,11 @@ from backend.app.repositories.contracts import (
     CompanyRepository,
     ConversationRepository,
     EligibilityResultRepository,
+    InterviewAnswerEvaluationRepository,
+    InterviewAnswerRepository,
+    InterviewQuestionRepository,
+    InterviewSessionRepository,
+    InterviewSessionSummaryRepository,
     LLMConnectionRepository,
     LLMRunRepository,
     MatchedRadius,
@@ -148,7 +165,9 @@ def _implements_contracts() -> tuple[
         ApplicationRepository, ApplicationEventRepository,
         SubmissionAttemptRepository, ConversationRepository,
         ChatMessageRepository, ChatActionProposalRepository,
-        ChatActionExecutionRepository]:
+        ChatActionExecutionRepository, InterviewSessionRepository,
+        InterviewQuestionRepository, InterviewAnswerRepository,
+        InterviewAnswerEvaluationRepository, InterviewSessionSummaryRepository]:
     """Structural conformance, the same guard `sqlalchemy_repositories` carries.
 
     A fake whose signature drifted from the `Protocol` would still run — Python
@@ -168,7 +187,10 @@ def _implements_contracts() -> tuple[
             FakeApplicationRepository(), FakeApplicationEventRepository(),
             FakeSubmissionAttemptRepository(), FakeConversationRepository(),
             FakeChatMessageRepository(), FakeChatActionProposalRepository(),
-            FakeChatActionExecutionRepository())
+            FakeChatActionExecutionRepository(), FakeInterviewSessionRepository(),
+            FakeInterviewQuestionRepository(), FakeInterviewAnswerRepository(),
+            FakeInterviewAnswerEvaluationRepository(),
+            FakeInterviewSessionSummaryRepository())
 
 
 def _meters_between(one: GeoPoint, other: GeoPoint) -> float:
@@ -1398,3 +1420,180 @@ class FakeChatActionExecutionRepository:
         stored = execution.model_copy(deep=True)
         self.executions[stored.id] = stored
         return stored
+
+
+class FakeInterviewSessionRepository:
+    """Interview-practice sessions, keyed by id and owner-scoped on every read (Phase 14).
+
+    `get` returns `None` for another account's session, so the service maps a foreign id
+    to `SESSION_NOT_FOUND` rather than "forbidden" (§90). `upsert` keys on the session's
+    own id, so re-finalizing a lifecycle step writes the same row. `list_for_user` is the
+    practice history, most-recently-updated first, ties by id — the real
+    `ORDER BY updated_at DESC, id`.
+    """
+
+    def __init__(self) -> None:
+        self.sessions: dict[InterviewSessionId, InterviewSession] = {}
+
+    async def get(self, user_id: UserId,
+                  session_id: InterviewSessionId) -> InterviewSession | None:
+        found = self.sessions.get(session_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def upsert(self, session: InterviewSession) -> InterviewSession:
+        stored = session.model_copy(deep=True)
+        self.sessions[stored.id] = stored
+        return stored
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[InterviewSession, ...]:
+        mine = [s.model_copy(deep=True) for s in self.sessions.values()
+                if s.user_id == user_id]
+        mine.sort(key=lambda s: str(s.id))
+        mine.sort(key=lambda s: s.updated_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeInterviewQuestionRepository:
+    """A session's questions, keyed by derived id and owner-scoped on every read (Phase 14).
+
+    A question carries its own `user_id`, so reads scope on it directly. The upsert keys on
+    the id derived from `(session_id, sequence)`, so re-finalizing a turn writes the same
+    row; `latest_sequence` is the `MAX(sequence)` the service numbers the next turn from —
+    `None` for an empty or not-this-user's session. `list_for_session` is sequence-ordered.
+    """
+
+    def __init__(self) -> None:
+        self.questions: dict[InterviewQuestionId, InterviewQuestion] = {}
+
+    async def get(self, user_id: UserId,
+                  question_id: InterviewQuestionId) -> InterviewQuestion | None:
+        found = self.questions.get(question_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def upsert(self, question: InterviewQuestion) -> InterviewQuestion:
+        stored = question.model_copy(deep=True)
+        self.questions[stored.id] = stored
+        return stored
+
+    async def latest_sequence(self, user_id: UserId,
+                              session_id: InterviewSessionId) -> int | None:
+        sequences = [q.sequence for q in self.questions.values()
+                     if q.session_id == session_id and q.user_id == user_id]
+        return max(sequences) if sequences else None
+
+    async def list_for_session(
+            self, user_id: UserId, session_id: InterviewSessionId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewQuestion, ...]:
+        mine = [q.model_copy(deep=True) for q in self.questions.values()
+                if q.session_id == session_id and q.user_id == user_id]
+        mine.sort(key=lambda q: q.sequence)
+        return tuple(mine[:limit])
+
+
+class FakeInterviewAnswerRepository:
+    """One answer per question, keyed by derived id and owner-scoped on reads (Phase 14).
+
+    The id derives from the question alone, so a resubmit lands on the same row.
+    `get_for_question` scopes on the answer's own `user_id`, so another account's question
+    reads as unanswered — the test the service uses to tell an already-answered question
+    from one still awaiting a reply. `list_for_session` is answer-time ordered, ties by id.
+    """
+
+    def __init__(self) -> None:
+        self.answers: dict[InterviewAnswerId, InterviewAnswer] = {}
+
+    async def get_for_question(self, user_id: UserId,
+                               question_id: InterviewQuestionId) -> InterviewAnswer | None:
+        return next((a.model_copy(deep=True) for a in self.answers.values()
+                     if a.question_id == question_id and a.user_id == user_id), None)
+
+    async def upsert(self, answer: InterviewAnswer) -> InterviewAnswer:
+        stored = answer.model_copy(deep=True)
+        self.answers[stored.id] = stored
+        return stored
+
+    async def list_for_session(
+            self, user_id: UserId, session_id: InterviewSessionId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewAnswer, ...]:
+        mine = [a.model_copy(deep=True) for a in self.answers.values()
+                if a.session_id == session_id and a.user_id == user_id]
+        mine.sort(key=lambda a: str(a.id))
+        mine.sort(key=lambda a: a.answered_at)
+        return tuple(mine[:limit])
+
+
+class FakeInterviewAnswerEvaluationRepository:
+    """One evaluation per answer, keyed by derived id and owner-scoped on reads (Phase 14).
+
+    The id derives from the answer, so a re-grade overwrites the one row rather than
+    accreting a second — the idempotency `aggregate_session_readiness` rests on so a pair
+    is never counted twice. `list_for_session` is what readiness is computed from; it is
+    never authored by a provider (§33-36). Evaluation-time ordered, ties by id.
+    """
+
+    def __init__(self) -> None:
+        self.evaluations: dict[InterviewAnswerEvaluationId, InterviewAnswerEvaluation] = {}
+
+    async def get_for_answer(
+            self, user_id: UserId,
+            answer_id: InterviewAnswerId) -> InterviewAnswerEvaluation | None:
+        return next((e.model_copy(deep=True) for e in self.evaluations.values()
+                     if e.answer_id == answer_id and e.user_id == user_id), None)
+
+    async def upsert(self,
+                     evaluation: InterviewAnswerEvaluation) -> InterviewAnswerEvaluation:
+        stored = evaluation.model_copy(deep=True)
+        self.evaluations[stored.id] = stored
+        return stored
+
+    async def list_for_session(
+            self, user_id: UserId, session_id: InterviewSessionId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewAnswerEvaluation, ...]:
+        mine = [e.model_copy(deep=True) for e in self.evaluations.values()
+                if e.session_id == session_id and e.user_id == user_id]
+        mine.sort(key=lambda e: str(e.id))
+        mine.sort(key=lambda e: e.evaluated_at)
+        return tuple(mine[:limit])
+
+
+class FakeInterviewSessionSummaryRepository:
+    """One coaching summary per session, keyed by derived id and owner-scoped (Phase 14).
+
+    The id derives from the session, so completing a session twice reuses the row.
+    `list_for_user` is the readiness history a candidate watches over repeated practice
+    (§74): the stored summaries, most recent first, ties by id — the real
+    `ORDER BY created_at DESC, id`.
+    """
+
+    def __init__(self) -> None:
+        self.summaries: dict[InterviewSessionSummaryId, InterviewSessionSummary] = {}
+
+    async def get(self, user_id: UserId,
+                  session_id: InterviewSessionId) -> InterviewSessionSummary | None:
+        return next((s.model_copy(deep=True) for s in self.summaries.values()
+                     if s.session_id == session_id and s.user_id == user_id), None)
+
+    async def upsert(self,
+                     summary: InterviewSessionSummary) -> InterviewSessionSummary:
+        stored = summary.model_copy(deep=True)
+        self.summaries[stored.id] = stored
+        return stored
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewSessionSummary, ...]:
+        mine = [s.model_copy(deep=True) for s in self.summaries.values()
+                if s.user_id == user_id]
+        mine.sort(key=lambda s: str(s.id))
+        mine.sort(key=lambda s: s.created_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+
+
+

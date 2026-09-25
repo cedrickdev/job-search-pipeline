@@ -26,13 +26,16 @@ The snapshot is dynamic per-turn data, so it is fed to the model as a message by
 chat service, never baked into the versioned system prompt (`backend.app.chat.prompts`).
 """
 from typing import Final
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
 from backend.app.domain.application import Application, ApplicationState
 from backend.app.domain.candidate import CandidateProfile
+from backend.app.domain.chat import Conversation, ConversationScope
 from backend.app.domain.identifiers import (
     ApplicationId,
+    CompanyId,
     OpportunityId,
     SearchProfileId,
     UserId,
@@ -42,6 +45,7 @@ from backend.app.domain.search import SearchAreaKind, SearchProfile
 from backend.app.repositories.contracts import (
     ApplicationRepository,
     CandidateProfileRepository,
+    CompanyRepository,
     OpportunityRepository,
     SearchProfileRepository,
 )
@@ -192,19 +196,37 @@ class ChatContext(_ChatContextValue):
 class ChatContextBuilder:
     """Assembles a `ChatContext` for one account from user-scoped repository reads.
 
-    Holds only the four read-side repositories the snapshot draws on. It deliberately
-    holds no LLM connection, session or evidence repository: the type of the thing it can
-    read is what guarantees the snapshot carries no secret.
+    Holds the read-side repositories the snapshot draws on. It deliberately holds no LLM
+    connection, session or evidence repository: the type of the thing it can read is what
+    guarantees the snapshot carries no secret. `companies` is optional and trailing so a
+    caller (or a test) that only needs the `GLOBAL` snapshot need not supply it; it is
+    required in practice for a `COMPANY`-scoped turn, where a builder without it degrades
+    to the profile alone rather than leaking another company's postings.
+
+    Two build paths:
+
+    - `build(user_id)` — the whole account: profile, searches, applications, recent
+      postings. This is the `GLOBAL` snapshot.
+    - `build_for_conversation(user_id, conversation)` — the same for a `GLOBAL` thread, but
+      for an *anchored* thread it loads **only** the slice the scope names. An
+      `APPLICATION(A)` thread sees application A and its posting and nothing else; an
+      `OPPORTUNITY(X)` thread sees posting X and only the account's applications to X; a
+      `SEARCH_PROFILE(S)` thread sees only search S; a `COMPANY(C)` thread sees only the
+      account's applications and postings at employer C. Isolation is the point: a
+      scoped thread's snapshot can never carry a *different* application, posting or
+      search's id, so the model is never even shown a resource the scope forbids acting on.
     """
 
     def __init__(self, *, profiles: CandidateProfileRepository,
                  searches: SearchProfileRepository,
                  applications: ApplicationRepository,
-                 opportunities: OpportunityRepository) -> None:
+                 opportunities: OpportunityRepository,
+                 companies: CompanyRepository | None = None) -> None:
         self._profiles = profiles
         self._searches = searches
         self._applications = applications
         self._opportunities = opportunities
+        self._companies = companies
 
     async def build(self, user_id: UserId) -> ChatContext:
         """The bounded snapshot for `user_id` — every section scoped to this account."""
@@ -222,6 +244,128 @@ class ChatContextBuilder:
             applications=tuple(self._application_summary(a, by_id)
                                for a in applications),
             opportunities=tuple(self._opportunity_summary(o) for o in recent))
+
+    async def build_for_conversation(self, user_id: UserId,
+                                     conversation: Conversation) -> ChatContext:
+        """The snapshot for one thread, narrowed to what its scope names.
+
+        A `GLOBAL` thread gets the whole-account snapshot `build` returns. Every anchored
+        scope gets a snapshot restricted to the one resource it names (and, where useful,
+        the account's own applications to it) — so the model is only ever shown ids the
+        scope permits it to act on, which is the isolation the scope-aware validator then
+        enforces a second time at confirm.
+        """
+        scope = conversation.scope
+        if scope is ConversationScope.GLOBAL:
+            return await self.build(user_id)
+
+        profile = self._profile_summary(await self._profiles.get_default(user_id))
+        scope_id = conversation.scope_id
+        assert scope_id is not None  # the domain invariant guarantees this for an anchor
+        if scope is ConversationScope.APPLICATION:
+            return await self._build_for_application(
+                user_id, ApplicationId(scope_id), profile)
+        if scope is ConversationScope.OPPORTUNITY:
+            return await self._build_for_opportunity(
+                user_id, OpportunityId(scope_id), profile)
+        if scope is ConversationScope.SEARCH_PROFILE:
+            return await self._build_for_search(
+                user_id, SearchProfileId(scope_id), profile)
+        return await self._build_for_company(user_id, CompanyId(scope_id), profile)
+
+    async def scope_target_exists(self, user_id: UserId, scope: ConversationScope,
+                                  scope_id: UUID | None) -> bool:
+        """Whether an anchored scope names a resource this account may open a thread on.
+
+        The owned resources (application, search) are read `user_id`-scoped, so another
+        account's id reads as absent and the thread is refused; the shared facts
+        (opportunity, company) are only checked to *exist*, since a posting or an employer
+        belongs to no one. `GLOBAL` has no target and is always allowed. Called at thread
+        creation so a scope that names nothing the account may talk about is a 404 before
+        the thread exists — never a thread anchored to a foreign or missing resource.
+        """
+        if scope is ConversationScope.GLOBAL:
+            return scope_id is None
+        if scope_id is None:
+            return False
+        if scope is ConversationScope.APPLICATION:
+            return await self._applications.get(
+                user_id, ApplicationId(scope_id)) is not None
+        if scope is ConversationScope.SEARCH_PROFILE:
+            return await self._searches.get(
+                user_id, SearchProfileId(scope_id)) is not None
+        if scope is ConversationScope.OPPORTUNITY:
+            return await self._opportunities.get(OpportunityId(scope_id)) is not None
+        if self._companies is None:
+            return False
+        return await self._companies.get(CompanyId(scope_id)) is not None
+
+    async def _build_for_application(self, user_id: UserId, application_id: ApplicationId,
+                                     profile: ChatProfileSummary | None) -> ChatContext:
+        """Only application A and the posting it targets — never another application."""
+        application = await self._applications.get(user_id, application_id)
+        if application is None:
+            return ChatContext(profile=profile)
+        by_id = await self._resolve_targets((application,), ())
+        target = (by_id.get(application.opportunity_id)
+                  if application.opportunity_id is not None else None)
+        opportunities = ((self._opportunity_summary(target),)
+                         if target is not None else ())
+        return ChatContext(
+            profile=profile,
+            applications=(self._application_summary(application, by_id),),
+            opportunities=opportunities)
+
+    async def _build_for_opportunity(self, user_id: UserId, opportunity_id: OpportunityId,
+                                     profile: ChatProfileSummary | None) -> ChatContext:
+        """Only posting X and the account's own applications to it — never another posting."""
+        opportunity = await self._opportunities.get(opportunity_id)
+        if opportunity is None:
+            return ChatContext(profile=profile)
+        by_id = {opportunity.id: opportunity}
+        applications = await self._applications.list_for_user(
+            user_id, limit=_MAX_APPLICATIONS)
+        related = tuple(a for a in applications if a.opportunity_id == opportunity_id)
+        return ChatContext(
+            profile=profile,
+            applications=tuple(self._application_summary(a, by_id) for a in related),
+            opportunities=(self._opportunity_summary(opportunity),))
+
+    async def _build_for_search(self, user_id: UserId, search_profile_id: SearchProfileId,
+                                profile: ChatProfileSummary | None) -> ChatContext:
+        """Only saved search S — never another of the account's searches."""
+        search = await self._searches.get(user_id, search_profile_id)
+        if search is None:
+            return ChatContext(profile=profile)
+        return ChatContext(profile=profile,
+                           search_profiles=(self._search_summary(search),))
+
+    async def _build_for_company(self, user_id: UserId, company_id: CompanyId,
+                                 profile: ChatProfileSummary | None) -> ChatContext:
+        """Only the account's applications and recent postings at employer C.
+
+        `COMPANY`-scope data folds into the existing sections: there is no company field on
+        `ChatContext`, and the authoritative company id reaches the model through the
+        per-turn scope-metadata block, so the snapshot's job is only to load the account's
+        own applications to this employer and the recent postings at it — never another
+        employer's, which is the isolation the scope demands.
+        """
+        if self._companies is None or await self._companies.get(company_id) is None:
+            return ChatContext(profile=profile)
+        recent = await self._opportunities.list_recent(limit=_MAX_OPPORTUNITIES)
+        at_company = tuple(o for o in recent if o.company_id == company_id)
+        applications = await self._applications.list_for_user(
+            user_id, limit=_MAX_APPLICATIONS)
+        by_id = await self._resolve_targets(applications, at_company)
+        related = tuple(
+            a for a in applications
+            if a.opportunity_id is not None
+            and (target := by_id.get(a.opportunity_id)) is not None
+            and target.company_id == company_id)
+        return ChatContext(
+            profile=profile,
+            applications=tuple(self._application_summary(a, by_id) for a in related),
+            opportunities=tuple(self._opportunity_summary(o) for o in at_company))
 
     async def _resolve_targets(
             self, applications: tuple[Application, ...],

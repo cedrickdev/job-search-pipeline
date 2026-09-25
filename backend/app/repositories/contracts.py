@@ -64,12 +64,22 @@ from backend.app.domain.identifiers import (
     CompanyId,
     ConversationId,
     EligibilityResultId,
+    InterviewAnswerId,
+    InterviewQuestionId,
+    InterviewSessionId,
     LLMConnectionId,
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
     UserId,
     UserSessionId,
+)
+from backend.app.domain.interview import (
+    InterviewAnswer,
+    InterviewAnswerEvaluation,
+    InterviewQuestion,
+    InterviewSession,
+    InterviewSessionSummary,
 )
 from backend.app.domain.matching import MatchEvaluation
 from backend.app.domain.opportunity import Opportunity
@@ -1102,6 +1112,141 @@ class ChatActionExecutionRepository(Protocol):
 
     async def upsert(self, execution: ChatActionExecution) -> ChatActionExecution:
         """Write the audit, keyed on its own id derived from the proposal."""
+        ...
+
+
+@runtime_checkable
+class InterviewSessionRepository(Protocol):
+    """Adaptive interview-practice sessions — user-owned, `user_id` first on every read.
+
+    A session is read `WHERE user_id = ?`, so another account's id reads as `None` and
+    the service maps it to `SESSION_NOT_FOUND` rather than "forbidden" (§90). `upsert`
+    is keyed on the session's own id, so re-finalizing a lifecycle step (start, adapt,
+    complete) writes the same row rather than a second session.
+    """
+
+    async def get(self, user_id: UserId,
+                  session_id: InterviewSessionId) -> InterviewSession | None:
+        """The session, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def upsert(self, session: InterviewSession) -> InterviewSession:
+        """Write the session; the owner comes from `session.user_id`."""
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewSession, ...]:
+        """This account's sessions, most recently updated first."""
+        ...
+
+
+@runtime_checkable
+class InterviewQuestionRepository(Protocol):
+    """The questions of one session — user-owned through the session they belong to.
+
+    Written once per `(session_id, sequence)`, the pair the question id derives from, so
+    re-finalizing a turn upserts the same row rather than asking twice. `latest_sequence`
+    is what the service adds to when appending, so numbering is a query rather than a
+    count held in memory.
+    """
+
+    async def get(self, user_id: UserId,
+                  question_id: InterviewQuestionId) -> InterviewQuestion | None:
+        """The question, or `None` — including when it is not this account's."""
+        ...
+
+    async def upsert(self, question: InterviewQuestion) -> InterviewQuestion:
+        """Write the question, keyed on its own derived id."""
+        ...
+
+    async def latest_sequence(self, user_id: UserId,
+                              session_id: InterviewSessionId) -> int | None:
+        """The highest sequence in this session, or `None` if it has no questions."""
+        ...
+
+    async def list_for_session(
+            self, user_id: UserId, session_id: InterviewSessionId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewQuestion, ...]:
+        """One session's questions, sequence-ordered, or empty if not this account's."""
+        ...
+
+
+@runtime_checkable
+class InterviewAnswerRepository(Protocol):
+    """One answer per question — user-owned through the session it belongs to.
+
+    Phase 14 stores exactly one answer per question (retries are deferred), so the id is
+    derived from the question alone and a resubmit lands on the same row. `get_for_question`
+    is how the service tells an already-answered question from one still awaiting an answer.
+    """
+
+    async def get_for_question(self, user_id: UserId,
+                               question_id: InterviewQuestionId) -> InterviewAnswer | None:
+        """The answer to this question, or `None` if unanswered or not this account's."""
+        ...
+
+    async def upsert(self, answer: InterviewAnswer) -> InterviewAnswer:
+        """Write the answer, keyed on its own id derived from the question."""
+        ...
+
+    async def list_for_session(
+            self, user_id: UserId, session_id: InterviewSessionId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewAnswer, ...]:
+        """One session's answers, or empty if it is not this account's."""
+        ...
+
+
+@runtime_checkable
+class InterviewAnswerEvaluationRepository(Protocol):
+    """The structured grade of one answer — user-owned through its session.
+
+    One evaluation per answer, keyed on an id derived from the answer, so re-evaluating an
+    answer overwrites its grade rather than accreting a second. `list_for_session` is what
+    `aggregate_session_readiness` reads: readiness is computed from these rows, never
+    authored by a provider (§33-36).
+    """
+
+    async def get_for_answer(self, user_id: UserId,
+                             answer_id: InterviewAnswerId) -> InterviewAnswerEvaluation | None:
+        """The evaluation of this answer, or `None` if ungraded or not this account's."""
+        ...
+
+    async def upsert(self,
+                     evaluation: InterviewAnswerEvaluation) -> InterviewAnswerEvaluation:
+        """Write the evaluation, keyed on its own id derived from the answer."""
+        ...
+
+    async def list_for_session(
+            self, user_id: UserId, session_id: InterviewSessionId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewAnswerEvaluation, ...]:
+        """One session's evaluations, or empty if it is not this account's."""
+        ...
+
+
+@runtime_checkable
+class InterviewSessionSummaryRepository(Protocol):
+    """The closing coaching artefact of one session — user-owned, one per session.
+
+    Keyed on an id derived from the session, so completing a session twice reuses the row.
+    `list_for_user` is the readiness history a candidate watches over repeated practice
+    (§74): the stored summaries, most recent first.
+    """
+
+    async def get(self, user_id: UserId,
+                  session_id: InterviewSessionId) -> InterviewSessionSummary | None:
+        """The summary of this session, or `None` if it has none or is not this account's."""
+        ...
+
+    async def upsert(self,
+                     summary: InterviewSessionSummary) -> InterviewSessionSummary:
+        """Write the summary, keyed on its own id derived from the session."""
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[InterviewSessionSummary, ...]:
+        """This account's session summaries, most recent first — the readiness history."""
         ...
 
 

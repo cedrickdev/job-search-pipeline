@@ -140,8 +140,12 @@ class LLMTelemetryRecorder:
                               finished_at: datetime, latency_ms: int) -> None:
         connection = self._by_key.get(outcome.provider_key)
         usage = outcome.response.usage
+        # Mint the id first so it can be both the run's key and the outcome's `run_id` —
+        # a caller reads exact provenance straight off the outcome it already holds, never
+        # a "latest run for this user" query that another concurrent call could win.
+        run_id = new_llm_run_id()
         await self._runs.upsert(LLMRun(
-            id=new_llm_run_id(),
+            id=run_id,
             user_id=user_id,
             connection_id=connection.id if connection else None,
             provider_key=outcome.provider_key,
@@ -160,6 +164,7 @@ class LLMTelemetryRecorder:
             fallback_reason=outcome.fallback_reason,
             started_at=started_at,
             finished_at=finished_at))
+        outcome.run_id = run_id
 
     async def _record_failure(self, request: LLMRequest, error: LLMError, *,
                              user_id: UserId | None, provider_key: str,

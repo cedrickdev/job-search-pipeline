@@ -69,10 +69,14 @@ async def start_conversation(body: StartConversationRequest, current: CurrentSes
     """Open a new, empty chat thread for this account (§Security).
 
     201, because it creates a resource. `title` is a caption the service truncates, never
-    authority; an absent or blank one falls back to a default. The thread has no turns yet.
+    authority; an absent or blank one falls back to a default. `scope`/`scope_id` bind the
+    thread to a domain surface (default `GLOBAL`); the service validates that an anchored
+    scope names a resource this account may talk about — a foreign or missing anchor is a
+    404 — before the thread exists. The thread has no turns yet.
     """
     conversation = await service.start_conversation(
-        current.user.id, now=instant, title=body.title)
+        current.user.id, now=instant, title=body.title,
+        scope=body.scope, scope_id=body.scope_id)
     return ConversationResponse.of(conversation)
 
 

@@ -44,6 +44,7 @@ const V2_LINKS = [
   { to: '/applications', label: 'Applications', exact: false },
   { to: '/providers', label: 'Providers', exact: false },
   { to: '/chat', label: 'Career Chat', exact: false },
+  { to: '/interview', label: 'Interview', exact: false },
 ]
 
 const colorMode = useColorMode()

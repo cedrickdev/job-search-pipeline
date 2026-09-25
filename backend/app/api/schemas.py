@@ -29,6 +29,7 @@ field for it, which is a stronger guarantee than a filter somebody has to rememb
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Self, cast
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -84,6 +85,7 @@ from backend.app.domain.chat import (
     ChatMessage,
     ChatMessageRole,
     Conversation,
+    ConversationScope,
 )
 from backend.app.domain.common import (
     GeoBounds,
@@ -150,11 +152,37 @@ from backend.app.domain.identifiers import (
     ConversationId,
     DocumentVersionId,
     EvidenceId,
+    InterviewAnswerEvaluationId,
+    InterviewAnswerId,
+    InterviewQuestionId,
+    InterviewSessionId,
+    InterviewSessionSummaryId,
     LLMConnectionId,
     LLMRunId,
     OpportunityId,
     SearchProfileId,
     UserId,
+)
+from backend.app.domain.interview import (
+    DimensionEvaluation,
+    EvaluationDimension,
+    EvaluationStatus,
+    InterviewAnswer,
+    InterviewAnswerEvaluation,
+    InterviewAnswerFormat,
+    InterviewDifficulty,
+    InterviewMode,
+    InterviewPlan,
+    InterviewQuestion,
+    InterviewQuestionType,
+    InterviewSession,
+    InterviewSessionStatus,
+    InterviewSessionSummary,
+    InterviewTopic,
+    ReadinessBand,
+    ReadinessDimensionSummary,
+    SessionReadiness,
+    SessionStyle,
 )
 from backend.app.domain.matching import (
     DEFAULT_MATCH_PROFILE,
@@ -172,6 +200,7 @@ from backend.app.domain.opportunity import (
 )
 from backend.app.domain.search import SearchProfile
 from backend.app.domain.user import User, UserStatus
+from backend.app.interview.service import AnswerOutcome, InterviewTurn, SessionDetail
 from backend.app.llm.connection import (
     DEFAULT_CONNECTION_PRIORITY,
     LLMConnection,
@@ -1763,14 +1792,32 @@ class ApplicationEventListResponse(ApiModel):
 
 
 class StartConversationRequest(ApiModel):
-    """Open a new chat thread, optionally captioned from the user's opening words.
+    """Open a new chat thread, optionally captioned and optionally scoped.
 
     `title` is a caption the service truncates, never authority the model or the client
     grants itself; an absent or blank one falls back to a fixed default. There is no
     `user_id` field — the owner is the session's account (§Security).
+
+    `scope`/`scope_id` bind the thread to a domain surface and default to `GLOBAL` (no
+    anchor), so a caller that sends neither opens a global thread exactly as before the
+    corrective. The same shape invariant the domain enforces is checked here at the
+    boundary — a `GLOBAL` request with a stray `scope_id`, or an anchored one with none,
+    is a `422` rather than a bad row — and the service re-validates that the anchor names
+    a resource this account may talk about before the thread is created.
     """
 
     title: str | None = None
+    scope: ConversationScope = ConversationScope.GLOBAL
+    scope_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _scope_id_matches_scope(self) -> "StartConversationRequest":
+        if self.scope is ConversationScope.GLOBAL:
+            if self.scope_id is not None:
+                raise ValueError("a GLOBAL conversation must not carry a scope_id")
+        elif self.scope_id is None:
+            raise ValueError(f"a {self.scope.value} conversation requires a scope_id")
+        return self
 
 
 class SendMessageRequest(ApiModel):
@@ -1780,10 +1827,12 @@ class SendMessageRequest(ApiModel):
 
 
 class ConversationResponse(ApiModel):
-    """One chat thread's caption and activity — never its messages inline."""
+    """One chat thread's caption, scope and activity — never its messages inline."""
 
     id: ConversationId
     title: str
+    scope: ConversationScope
+    scope_id: UUID | None
     is_archived: bool
     created_at: datetime
     updated_at: datetime
@@ -1792,6 +1841,7 @@ class ConversationResponse(ApiModel):
     @classmethod
     def of(cls, conversation: Conversation) -> "ConversationResponse":
         return cls(id=conversation.id, title=conversation.title,
+                   scope=conversation.scope, scope_id=conversation.scope_id,
                    is_archived=conversation.is_archived,
                    created_at=conversation.created_at,
                    updated_at=conversation.updated_at,
@@ -1935,3 +1985,373 @@ class ChatStreamEventResponse(ApiModel):
             proposals=tuple(ChatActionProposalResponse.of(proposal)
                             for proposal in event.proposals),
             error_code=event.error_code, error_detail=event.error_detail)
+
+
+# --- adaptive interview simulator (Phase 14) -------------------------------------------
+#
+# The phase's one rule is visible at this boundary too: readiness leaves as an aggregated,
+# platform-computed `SessionReadinessResponse`, never a field a provider filled, and an
+# evaluation response has no readiness, probability or verdict for the same reason the
+# domain model has none. No request body carries an owner — the account is the session's,
+# resolved server-side (§Security) — and none can name a session's status, a question's
+# identity or an evaluation's grade: those are the engine's and the platform's to assign.
+
+
+class CreateInterviewSessionRequest(ApiModel):
+    """Open a practice session against one posting, grounded in the account's own profile.
+
+    The body names the profile and the posting to rehearse and the interview `mode`; `style`
+    and `difficulty` carry coaching defaults, and `language`, `application_id` and `title`
+    are optional. There is no `user_id` and no `status`: the owner is the session's account
+    and a new session is always `CREATED` — a request cannot open one already in progress.
+    """
+
+    candidate_profile_id: CandidateProfileId
+    opportunity_id: OpportunityId
+    mode: InterviewMode
+    style: SessionStyle = SessionStyle.COACHING
+    difficulty: InterviewDifficulty = InterviewDifficulty.INTERMEDIATE
+    language: LanguageCode | None = None
+    application_id: ApplicationId | None = None
+    title: str | None = None
+
+
+class SubmitTextAnswerRequest(ApiModel):
+    """One typed answer to the current question. The reply carries best-effort coaching."""
+
+    content: str
+
+
+class InterviewTopicResponse(ApiModel):
+    """One competency a plan intends to probe, and how many questions it is worth."""
+
+    label: str
+    question_type: InterviewQuestionType
+    target_questions: int
+
+    @classmethod
+    def of(cls, topic: InterviewTopic) -> "InterviewTopicResponse":
+        return cls(label=topic.label, question_type=topic.question_type,
+                   target_questions=topic.target_questions)
+
+
+class InterviewPlanResponse(ApiModel):
+    """The coverage plan a session sets out against — its topics and its intended length."""
+
+    mode: InterviewMode
+    topics: tuple[InterviewTopicResponse, ...]
+    target_question_count: int
+
+    @classmethod
+    def of(cls, plan: InterviewPlan) -> "InterviewPlanResponse":
+        return cls(mode=plan.mode,
+                   topics=tuple(InterviewTopicResponse.of(topic) for topic in plan.topics),
+                   target_question_count=plan.target_question_count)
+
+
+class InterviewSessionResponse(ApiModel):
+    """One practice session's configuration and lifecycle — never another account's.
+
+    `is_active` is surfaced so a UI knows whether the session still takes turns without
+    re-deriving it from `status`. There is no `user_id`: the owner is always the caller.
+    """
+
+    id: InterviewSessionId
+    candidate_profile_id: CandidateProfileId
+    opportunity_id: OpportunityId
+    application_id: ApplicationId | None
+    mode: InterviewMode
+    style: SessionStyle
+    difficulty: InterviewDifficulty
+    status: InterviewSessionStatus
+    is_active: bool
+    language: LanguageCode | None
+    plan: InterviewPlanResponse
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    ended_at: datetime | None
+
+    @classmethod
+    def of(cls, session: InterviewSession) -> "InterviewSessionResponse":
+        return cls(
+            id=session.id, candidate_profile_id=session.candidate_profile_id,
+            opportunity_id=session.opportunity_id, application_id=session.application_id,
+            mode=session.mode, style=session.style, difficulty=session.difficulty,
+            status=session.status, is_active=session.is_active, language=session.language,
+            plan=InterviewPlanResponse.of(session.plan), title=session.title,
+            created_at=session.created_at, updated_at=session.updated_at,
+            ended_at=session.ended_at)
+
+
+class InterviewSessionListResponse(ApiModel):
+    """This account's sessions, most recently updated first, wrapped so it can grow."""
+
+    sessions: tuple[InterviewSessionResponse, ...]
+
+    @classmethod
+    def of(cls, sessions: tuple[InterviewSession, ...]) -> "InterviewSessionListResponse":
+        return cls(sessions=tuple(InterviewSessionResponse.of(session)
+                                  for session in sessions))
+
+
+class InterviewQuestionResponse(ApiModel):
+    """One question the engine asked, at its position in the session.
+
+    The identity fields (`sequence`, `depth`, `follows_sequence`) are the engine's and are
+    exposed read-only so a client can render the adaptive chain; `is_follow_up` is surfaced
+    so it need not re-derive it from `depth`.
+    """
+
+    id: InterviewQuestionId
+    session_id: InterviewSessionId
+    sequence: int
+    question_type: InterviewQuestionType
+    difficulty: InterviewDifficulty
+    prompt: str
+    topic_label: str | None
+    follows_sequence: int | None
+    depth: int
+    is_follow_up: bool
+    generator_key: str | None
+    asked_at: datetime
+
+    @classmethod
+    def of(cls, question: InterviewQuestion) -> "InterviewQuestionResponse":
+        return cls(
+            id=question.id, session_id=question.session_id, sequence=question.sequence,
+            question_type=question.question_type, difficulty=question.difficulty,
+            prompt=question.prompt, topic_label=question.topic_label,
+            follows_sequence=question.follows_sequence, depth=question.depth,
+            is_follow_up=question.is_follow_up, generator_key=question.generator_key,
+            asked_at=question.asked_at)
+
+
+class InterviewTurnResponse(ApiModel):
+    """The next step of a session: the current question, or `null` to complete it.
+
+    `question is null` means the plan is covered or the session hit its bound — there is
+    nothing more to ask, and the client should complete the session.
+    """
+
+    session: InterviewSessionResponse
+    question: InterviewQuestionResponse | None
+
+    @classmethod
+    def of(cls, turn: InterviewTurn) -> "InterviewTurnResponse":
+        return cls(
+            session=InterviewSessionResponse.of(turn.session),
+            question=(InterviewQuestionResponse.of(turn.question)
+                      if turn.question is not None else None))
+
+
+class InterviewAnswerResponse(ApiModel):
+    """The candidate's one answer to one question — the transcript for a voice answer.
+
+    `transcript_confidence` exists only for a `VOICE` answer, and only when the transcriber
+    reported one; the raw audio is never here, because it is transcribed and discarded.
+    """
+
+    id: InterviewAnswerId
+    question_id: InterviewQuestionId
+    session_id: InterviewSessionId
+    format: InterviewAnswerFormat
+    content: str
+    transcript_confidence: float | None
+    answered_at: datetime
+
+    @classmethod
+    def of(cls, answer: InterviewAnswer) -> "InterviewAnswerResponse":
+        return cls(
+            id=answer.id, question_id=answer.question_id, session_id=answer.session_id,
+            format=answer.format, content=answer.content,
+            transcript_confidence=answer.transcript_confidence,
+            answered_at=answer.answered_at)
+
+
+class DimensionEvaluationResponse(ApiModel):
+    """One axis of one answer's grade, or an honest "not assessed".
+
+    `score is null` is never a zero: when `status` is `NOT_EVALUATED` the provider could not
+    judge this axis, and the client renders "not assessed" rather than a low bar.
+    """
+
+    dimension: EvaluationDimension
+    status: EvaluationStatus
+    score: float | None
+    notes: tuple[str, ...]
+
+    @classmethod
+    def of(cls, entry: DimensionEvaluation) -> "DimensionEvaluationResponse":
+        return cls(dimension=entry.dimension, status=entry.status,
+                   score=entry.score, notes=entry.notes)
+
+
+class InterviewAnswerEvaluationResponse(ApiModel):
+    """The coaching grade of one answer — and, pointedly, nothing about hiring.
+
+    There is no readiness, probability, or verdict field here, and there is not meant to be:
+    readiness is aggregated by the platform and exposed only on `SessionReadinessResponse`.
+    `confidence` is the evaluator's confidence in its own grading, distinct from any score.
+    """
+
+    id: InterviewAnswerEvaluationId
+    answer_id: InterviewAnswerId
+    session_id: InterviewSessionId
+    dimensions: tuple[DimensionEvaluationResponse, ...]
+    confidence: float | None
+    strengths: tuple[str, ...]
+    improvements: tuple[str, ...]
+    suggested_answer: str | None
+    evaluator_key: str | None
+    evaluated_at: datetime
+
+    @classmethod
+    def of(cls, evaluation: InterviewAnswerEvaluation) -> "InterviewAnswerEvaluationResponse":
+        return cls(
+            id=evaluation.id, answer_id=evaluation.answer_id,
+            session_id=evaluation.session_id,
+            dimensions=tuple(DimensionEvaluationResponse.of(entry)
+                             for entry in evaluation.dimensions),
+            confidence=evaluation.confidence, strengths=evaluation.strengths,
+            improvements=evaluation.improvements,
+            suggested_answer=evaluation.suggested_answer,
+            evaluator_key=evaluation.evaluator_key, evaluated_at=evaluation.evaluated_at)
+
+
+class AnswerOutcomeResponse(ApiModel):
+    """The result of submitting one answer: the answer, its coaching, and the session.
+
+    `evaluation is null` means coaching could not be produced for this answer (a provider
+    failed, or its coaching did not survive the evidence guard); the answer is still stored
+    and the session still advances, so a lost evaluation never costs the candidate their turn.
+    """
+
+    session: InterviewSessionResponse
+    answer: InterviewAnswerResponse
+    evaluation: InterviewAnswerEvaluationResponse | None
+
+    @classmethod
+    def of(cls, outcome: AnswerOutcome) -> "AnswerOutcomeResponse":
+        return cls(
+            session=InterviewSessionResponse.of(outcome.session),
+            answer=InterviewAnswerResponse.of(outcome.answer),
+            evaluation=(InterviewAnswerEvaluationResponse.of(outcome.evaluation)
+                        if outcome.evaluation is not None else None))
+
+
+class ReadinessDimensionSummaryResponse(ApiModel):
+    """How one axis fared across a whole session — the aggregated view of one dimension.
+
+    `mean_score is null` when the axis was never evaluated in the session; `evaluated_count`
+    is how many answers backed the mean, so a UI can tell "0.9 from one" from "0.9 from eight".
+    """
+
+    dimension: EvaluationDimension
+    mean_score: float | None
+    evaluated_count: int
+    weight: float
+
+    @classmethod
+    def of(cls, summary: ReadinessDimensionSummary) -> "ReadinessDimensionSummaryResponse":
+        return cls(dimension=summary.dimension, mean_score=summary.mean_score,
+                   evaluated_count=summary.evaluated_count, weight=summary.weight)
+
+
+class SessionReadinessResponse(ApiModel):
+    """A session's readiness — a coaching signal computed by the platform, not a forecast.
+
+    `overall`/`overall_percent` are `null` when nothing in the session could be evaluated, in
+    which case `band` is `UNKNOWN` — never a low band. `coverage` is a second, orthogonal axis:
+    how much of the plan the session exercised, reported beside readiness rather than folded in.
+    """
+
+    overall: float | None
+    overall_percent: int | None
+    band: ReadinessBand
+    dimensions: tuple[ReadinessDimensionSummaryResponse, ...]
+    coverage: float
+    answered_questions: int
+    evaluated_answers: int
+    profile_version: str
+    computed_at: datetime
+
+    @classmethod
+    def of(cls, readiness: SessionReadiness) -> "SessionReadinessResponse":
+        return cls(
+            overall=readiness.overall, overall_percent=readiness.overall_percent(),
+            band=readiness.band,
+            dimensions=tuple(ReadinessDimensionSummaryResponse.of(entry)
+                             for entry in readiness.dimensions),
+            coverage=readiness.coverage, answered_questions=readiness.answered_questions,
+            evaluated_answers=readiness.evaluated_answers,
+            profile_version=readiness.profile_version, computed_at=readiness.computed_at)
+
+
+class InterviewSessionSummaryResponse(ApiModel):
+    """The coaching artefact produced when a session completes.
+
+    Pairs the deterministic `readiness` with the prose that explains it — a `headline` that
+    describes the practice, never a hiring forecast — plus `strengths` and `focus_areas`.
+    """
+
+    id: InterviewSessionSummaryId
+    session_id: InterviewSessionId
+    readiness: SessionReadinessResponse
+    headline: str
+    strengths: tuple[str, ...]
+    focus_areas: tuple[str, ...]
+    questions_asked: int
+    answers_evaluated: int
+    generator_key: str | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, summary: InterviewSessionSummary) -> "InterviewSessionSummaryResponse":
+        return cls(
+            id=summary.id, session_id=summary.session_id,
+            readiness=SessionReadinessResponse.of(summary.readiness),
+            headline=summary.headline, strengths=summary.strengths,
+            focus_areas=summary.focus_areas, questions_asked=summary.questions_asked,
+            answers_evaluated=summary.answers_evaluated,
+            generator_key=summary.generator_key, created_at=summary.created_at)
+
+
+class InterviewSessionSummaryListResponse(ApiModel):
+    """A candidate's readiness history — the summaries of their completed sessions, newest first."""
+
+    summaries: tuple[InterviewSessionSummaryResponse, ...]
+
+    @classmethod
+    def of(
+            cls, summaries: tuple[InterviewSessionSummary, ...],
+    ) -> "InterviewSessionSummaryListResponse":
+        return cls(summaries=tuple(InterviewSessionSummaryResponse.of(summary)
+                                   for summary in summaries))
+
+
+class InterviewSessionDetailResponse(ApiModel):
+    """One session with its whole exchange — questions, answers, evaluations, and summary.
+
+    The read a transcript or history view composes from: everything a session holds, loaded
+    under one ownership gate, so a surface renders the full practice without extra round trips.
+    """
+
+    session: InterviewSessionResponse
+    questions: tuple[InterviewQuestionResponse, ...]
+    answers: tuple[InterviewAnswerResponse, ...]
+    evaluations: tuple[InterviewAnswerEvaluationResponse, ...]
+    summary: InterviewSessionSummaryResponse | None
+
+    @classmethod
+    def of(cls, detail: SessionDetail) -> "InterviewSessionDetailResponse":
+        return cls(
+            session=InterviewSessionResponse.of(detail.session),
+            questions=tuple(InterviewQuestionResponse.of(question)
+                            for question in detail.questions),
+            answers=tuple(InterviewAnswerResponse.of(answer)
+                          for answer in detail.answers),
+            evaluations=tuple(InterviewAnswerEvaluationResponse.of(evaluation)
+                              for evaluation in detail.evaluations),
+            summary=(InterviewSessionSummaryResponse.of(detail.summary)
+                     if detail.summary is not None else None))

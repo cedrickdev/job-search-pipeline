@@ -28,20 +28,29 @@ events as they arrive (for an SSE response) and, on the terminal event, persists
 assistant turn and yields it. `send_message` drives that to completion for a caller
 that just wants the finished turn (a test, a non-streaming client).
 """
+import re
 from collections.abc import AsyncIterator
 from datetime import datetime
 from enum import StrEnum
+from typing import Final
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
 from backend.app.chat.context import ChatContextBuilder
+from backend.app.chat.intent import allowed_action_kinds, classify_turn_intent
 from backend.app.chat.parsing import ParsedProposal, parse_turn
 from backend.app.chat.prompts import career_chat_prompt_registry
+from backend.app.chat.validators import action_within_scope
 from backend.app.domain.chat import (
+    READ_ONLY_ACTION_KINDS,
+    ChatAction,
+    ChatActionKind,
     ChatActionProposal,
     ChatMessage,
     ChatMessageRole,
     Conversation,
+    ConversationScope,
 )
 from backend.app.domain.identifiers import (
     ConversationId,
@@ -103,6 +112,22 @@ class ConversationNotFound(ChatConversationError):
 
 class EmptyChatMessage(ChatConversationError):
     """The user's message was empty or whitespace — there is no turn to run."""
+
+
+class ConversationScopeNotFound(ChatConversationError):
+    """A new thread named a scope resource this account cannot open a thread about.
+
+    Raised by `start_conversation` before the thread exists: an anchored scope
+    (`OPPORTUNITY`/`APPLICATION`/`SEARCH_PROFILE`/`COMPANY`) whose id is not this account's
+    — or does not exist at all — reads as absent rather than leaking that it exists, so a
+    foreign or missing anchor is refused before a thread is ever anchored to it. The API
+    maps this to a 404.
+    """
+
+    def __init__(self, scope: ConversationScope, scope_id: UUID | None) -> None:
+        super().__init__(f"no {scope.value} {scope_id} to open a conversation about")
+        self.scope = scope
+        self.scope_id = scope_id
 
 
 class ChatStreamEventType(StrEnum):
@@ -195,16 +220,24 @@ class ChatConversationService:
         self._prompts = prompts or career_chat_prompt_registry()
 
     async def start_conversation(self, user_id: UserId, *, now: datetime,
-                                 title: str | None = None) -> Conversation:
+                                 title: str | None = None,
+                                 scope: ConversationScope = ConversationScope.GLOBAL,
+                                 scope_id: UUID | None = None) -> Conversation:
         """Open a new, empty thread for this account, captioned from `title`.
 
         `title` is a caption the service truncates, never model-authored authority; an
-        absent or empty one falls back to a fixed default. The thread has no turns yet, so
+        absent or empty one falls back to a fixed default. `scope`/`scope_id` bind the
+        thread to a domain surface — an omitted scope is `GLOBAL` (the whole account), and
+        an anchored one is validated to name a resource this account may talk about
+        (`ConversationScopeNotFound` → 404) *before* the thread exists, so no thread is ever
+        anchored to a foreign or missing resource. The thread has no turns yet, so
         `last_message_at` stays `None` until the first message is sent.
         """
+        if not await self._context.scope_target_exists(user_id, scope, scope_id):
+            raise ConversationScopeNotFound(scope, scope_id)
         conversation = Conversation(
             id=new_conversation_id(), user_id=user_id, title=_derive_title(title),
-            created_at=now, updated_at=now)
+            scope=scope, scope_id=scope_id, created_at=now, updated_at=now)
         return await self._conversations.upsert(conversation)
 
     async def stream_turn(self, user_id: UserId, conversation_id: ConversationId,
@@ -214,9 +247,11 @@ class ChatConversationService:
         Ownership is checked first: a conversation that does not exist for this account
         raises `ConversationNotFound` before anything is written. The user's message is
         persisted at the next sequence and the thread's activity time is stamped, so even
-        a turn whose model call later fails has recorded that the user spoke. The returned
-        `ChatTurnStream` is what actually streams the answer and finalizes the assistant
-        turn when the caller iterates it.
+        a turn whose model call later fails has recorded that the user spoke. The snapshot
+        is built *for this thread's scope* (an anchored thread never sees another
+        resource's ids), and the user's own words — never any posting or page text — are
+        classified into the set of action kinds this turn may propose, which the returned
+        `ChatTurnStream` uses to gate the model's proposals before any becomes a card.
         """
         text = user_text.strip()
         if not text:
@@ -239,15 +274,16 @@ class ChatConversationService:
         await self._messages.upsert(user_message)
         await self._touch_conversation(conversation, now)
 
-        snapshot = await self._context.build(user_id)
+        snapshot = await self._context.build_for_conversation(user_id, conversation)
         request = self._compose_request(history=history, snapshot_text=snapshot.render(),
-                                        user_text=text)
+                                        user_text=text, conversation=conversation)
         recorded = self._recorder.stream(self._router, request, self._policy,
                                           user_id=user_id)
+        allowed = allowed_action_kinds(classify_turn_intent(text))
         return ChatTurnStream(service=self, conversation=conversation,
                               user_message=user_message,
                               assistant_sequence=user_sequence + 1, recorded=recorded,
-                              now=now)
+                              allowed_action_kinds=allowed, now=now)
 
     async def send_message(self, user_id: UserId, conversation_id: ConversationId,
                            user_text: str, *, now: datetime) -> ChatTurn:
@@ -307,14 +343,16 @@ class ChatConversationService:
         return await self._proposals.list_for_conversation(user_id, conversation_id)
 
     def _compose_request(self, *, history: tuple[ChatMessage, ...], snapshot_text: str,
-                         user_text: str) -> LLMRequest:
+                         user_text: str, conversation: Conversation) -> LLMRequest:
         """Build the turn's request: system prompt, replayed history, this turn's input.
 
         The system is the *versioned* `CAREER_CHAT_V1` instructions; the history is the
         recent messages as USER/ASSISTANT turns; the current turn is a single USER message
-        carrying the per-turn snapshot and the user's words, separated by a heading. There
-        is no `structured_output` — the chat streams prose — and no session resume, so a
-        turn is composed wholly from stored rows rather than a provider-held handle.
+        carrying the per-turn scope metadata, the snapshot and the user's words, separated
+        by headings. The scope block is authoritative, per-turn data — it names the resource
+        the thread is bound to — so it is composed here, dynamically, never baked into the
+        versioned template. There is no `structured_output` — the chat streams prose — and
+        no session resume, so a turn is composed wholly from stored rows.
         """
         template = self._prompts.get(PromptName.CAREER_CHAT)
         messages: list[LLMMessage] = []
@@ -324,7 +362,8 @@ class ChatConversationService:
             else:
                 messages.append(LLMMessage.assistant(message.content))
         messages.append(LLMMessage.user(
-            f"{snapshot_text}\n\n{_USER_TURN_HEADING}\n{user_text}"))
+            f"{_render_scope(conversation)}\n\n{snapshot_text}\n\n"
+            f"{_USER_TURN_HEADING}\n{user_text}"))
         return LLMRequest(
             messages=tuple(messages), system=template.instructions,
             purpose=template.purpose, prompt_name=template.name.value,
@@ -332,23 +371,31 @@ class ChatConversationService:
 
     async def _persist_assistant_turn(
             self, conversation: Conversation, recorded: RecordedStream,
-            sequence: int, now: datetime
+            sequence: int, allowed_kinds: frozenset[ChatActionKind], now: datetime
     ) -> tuple[ChatMessage, tuple[ChatActionProposal, ...]]:
         """Parse the finished stream into the stored assistant message and its proposals.
 
         The fenced proposal block is parsed out of the accumulated text (`parse_turn`),
-        never stored in the message content; the prose is stored, with a non-empty
-        fallback for a proposal-only turn. The message carries the run's telemetry
-        provenance, and each proposal is born `PROPOSED` with a derived id, so a
-        re-finalize writes the same rows.
+        never stored in the message content; the prose is stored, with a non-empty fallback
+        for a proposal-only turn. Every parsed action must clear *two* independent walls
+        before it becomes a `PROPOSED` card: the user's classified turn intent must permit
+        its kind, and it must fall inside the conversation's scope. An action failing either
+        is silently dropped here — no card, and its caption never reaches the stored content
+        — because a confirmable proposal the user never asked for is exactly what this gate
+        exists to prevent (read-only navigation clears the intent wall unconditionally, but
+        a read-only action naming a sibling resource is still dropped by the scope wall). The
+        message carries the run's telemetry provenance and each admitted proposal is born
+        `PROPOSED` with a derived id, so a re-finalize writes the same rows.
         """
         parsed = parse_turn(recorded.text)
+        admitted = tuple(proposal for proposal in parsed.proposals
+                         if _admit_proposal(conversation, allowed_kinds, proposal.action))
         run = recorded.run
         message = ChatMessage(
             id=chat_message_id(conversation.id, sequence),
             conversation_id=conversation.id, user_id=conversation.user_id,
             role=ChatMessageRole.ASSISTANT,
-            content=parsed.prose or _proposal_fallback(parsed.proposals),
+            content=parsed.prose or _proposal_fallback(admitted),
             sequence=sequence,
             llm_run_id=run.id if run is not None else None,
             provider_key=run.provider_key if run is not None else None,
@@ -356,7 +403,7 @@ class ChatConversationService:
         await self._messages.upsert(message)
         proposals = tuple(
             self._build_proposal(conversation, message, ordinal, parsed_proposal, now)
-            for ordinal, parsed_proposal in enumerate(parsed.proposals))
+            for ordinal, parsed_proposal in enumerate(admitted))
         for proposal in proposals:
             await self._proposals.upsert(proposal)
         return message, proposals
@@ -393,11 +440,14 @@ class ChatTurnStream:
 
     def __init__(self, *, service: ChatConversationService, conversation: Conversation,
                  user_message: ChatMessage, assistant_sequence: int,
-                 recorded: RecordedStream, now: datetime) -> None:
+                 recorded: RecordedStream,
+                 allowed_action_kinds: frozenset[ChatActionKind],
+                 now: datetime) -> None:
         self._service = service
         self._conversation = conversation
         self._assistant_sequence = assistant_sequence
         self._recorded = recorded
+        self._allowed_action_kinds = allowed_action_kinds
         self._now = now
         self.user_message = user_message
         self.assistant_message: ChatMessage | None = None
@@ -407,23 +457,33 @@ class ChatTurnStream:
     async def __aiter__(self) -> AsyncIterator[ChatStreamEvent]:
         """Forward tokens, then finalize the turn — the service's whole streaming footprint.
 
-        A provider that raises rather than yielding a terminal ERROR — most notably the
-        `NoProviderAvailable` an empty route raises on the first pull — is caught and turned
-        into a terminal ERROR event, so a caller iterating the turn always sees a terminal
-        event and never an exception mid-stream.
+        Prose is forwarded through a `_StreamProseFilter`, so the fenced proposal block is
+        never emitted as `TOKEN` events even though the raw text (which `parse_turn` needs)
+        keeps accumulating in `recorded.text` untouched. A provider that raises rather than
+        yielding a terminal ERROR — most notably the `NoProviderAvailable` an empty route
+        raises on the first pull — is caught and turned into a terminal ERROR event, so a
+        caller iterating the turn always sees a terminal event and never an exception
+        mid-stream.
         """
+        prose = _StreamProseFilter()
         try:
             async for event in self._recorded:
                 if event.type is StreamEventType.TEXT_DELTA and event.text is not None:
-                    yield ChatStreamEvent.token(event.text)
+                    visible = prose.feed(event.text)
+                    if visible:
+                        yield ChatStreamEvent.token(visible)
         except LLMError as error:
             yield ChatStreamEvent.errored(error.code.value, error.detail)
             return
+        tail = prose.flush()
+        if tail:
+            yield ChatStreamEvent.token(tail)
         run = self._recorded.run
         self.run = run
         if run is not None and run.status is LLMRunStatus.SUCCEEDED:
             message, proposals = await self._service._persist_assistant_turn(
-                self._conversation, self._recorded, self._assistant_sequence, self._now)
+                self._conversation, self._recorded, self._assistant_sequence,
+                self._allowed_action_kinds, self._now)
             self.assistant_message = message
             self.proposals = proposals
             yield ChatStreamEvent.completed(message, proposals)
@@ -455,12 +515,187 @@ def _proposal_fallback(proposals: tuple[ParsedProposal, ...]) -> str:
     return " ".join(proposal.summary for proposal in proposals) or _EMPTY_ANSWER_PLACEHOLDER
 
 
+# The heading of the per-turn scope block — authoritative, dynamic data composed into the
+# user message, never baked into the versioned prompt.
+_SCOPE_HEADING: str = "=== CONVERSATION SCOPE ==="
+
+
+def _admit_proposal(conversation: Conversation, allowed_kinds: frozenset[ChatActionKind],
+                    action: ChatAction) -> bool:
+    """Whether a parsed action may become a `PROPOSED` card on this turn.
+
+    Two independent walls, both of which every action must clear. The intent wall: a
+    mutating action must be a kind the user's classified turn intent permits
+    (`allowed_kinds`), while read-only navigation (`NAVIGATE`, `OPEN_INTERVIEW_PREP`)
+    mutates nothing and clears it unconditionally. The scope wall: the action must fall
+    inside the conversation's scope — and this holds for read-only actions too, because a
+    read-only hint can still name a resource (prep for a posting, a navigation carrying an
+    opportunity id), and an anchored thread must not offer one pointing at a *different*
+    resource. The executor re-checks scope and ownership at confirm, so this is the first
+    of two enforcements — a proposal the user never asked for, or one outside the thread's
+    scope, never even becomes a confirmable card.
+    """
+    intent_permits = (action.kind in READ_ONLY_ACTION_KINDS
+                      or action.kind in allowed_kinds)
+    return intent_permits and action_within_scope(
+        conversation.scope, conversation.scope_id, action)
+
+
+def _render_scope(conversation: Conversation) -> str:
+    """The authoritative per-turn scope block naming the resource the thread is bound to.
+
+    Dynamic, per-turn data — never part of the versioned prompt. It states plainly which
+    resource (if any) the thread may act on; the scope-aware gate enforces the same rule
+    whether or not the model honours the block, so this is guidance to the model, never the
+    guarantee. It carries only the scope kind and the bracketed id — no secret, no detail.
+    """
+    scope = conversation.scope
+    if scope is ConversationScope.GLOBAL:
+        return (f"{_SCOPE_HEADING}\n"
+                "This conversation is GLOBAL: you may reference any of this account's own "
+                "resources by the bracketed ids in the situation below.")
+    return (f"{_SCOPE_HEADING}\n"
+            f"This conversation is bound to {scope.value} [{conversation.scope_id}]. "
+            "Only propose actions on that one resource; anything else will be refused.")
+
+
 def _derive_title(title: str | None) -> str:
     """A short, non-empty caption from an opening message, or the default."""
     trimmed = (title or "").strip()
     if not trimmed:
         return _DEFAULT_TITLE
     return trimmed if len(trimmed) <= _MAX_TITLE_LENGTH else trimmed[:_MAX_TITLE_LENGTH - 1] + "…"
+
+
+# --- streaming proposal-fence filter ----------------------------------------
+
+# The opening fence of a proposal block, as a *line*: three-or-more backticks, optional
+# inline whitespace, the tag, optional inline whitespace, then the newline that ends the
+# line. The newline is required, so an inline mention of the word is never mistaken for a
+# fence. A loose form (no terminating newline) is used only at flush, to suppress a block
+# that opened at the very end of the stream and never received a body. The close is any run
+# of three backticks — the JSON body carries none, so the first after an open is the close.
+_STREAM_OPEN: Final = re.compile(r"`{3,}[ \t]*proposal[ \t]*\r?\n", re.IGNORECASE)
+_STREAM_OPEN_LOOSE: Final = re.compile(r"`{3,}[ \t]*proposal", re.IGNORECASE)
+_STREAM_CLOSE: Final = re.compile(r"`{3,}")
+# How far back to look for the start of a held-back opening-fence prefix. Generous: the
+# longest real prefix is "```proposal" plus a little trailing whitespace and a lone "\r".
+_MAX_OPEN_PREFIX: Final = 32
+_PROPOSAL_TAG: Final = "proposal"
+
+
+def _is_open_prefix(text: str) -> bool:
+    """Whether `text` could be the start of an opening proposal fence, still unfinished.
+
+    True for a growing backtick run, backticks followed by inline whitespace, and backticks
+    plus a *prefix* of the tag (optionally with trailing whitespace and a lone `\\r`). It
+    diverges to False as soon as the text can no longer become a fence — so a plain code
+    fence (```python) or ordinary prose ending in a backtick is released, not held forever.
+    """
+    if not text or text[0] != "`":
+        return False
+    i, n = 0, len(text)
+    while i < n and text[i] == "`":
+        i += 1
+    if i < 3:
+        return i == n  # a backtick run that may still grow to the required three
+    while i < n and text[i] in " \t":
+        i += 1
+    if i == n:
+        return True
+    j = 0
+    while i < n and j < len(_PROPOSAL_TAG) and text[i] == _PROPOSAL_TAG[j]:
+        i, j = i + 1, j + 1
+    if i == n:
+        return True  # consumed a prefix of the tag, still open
+    if j < len(_PROPOSAL_TAG):
+        return False  # diverged from the tag before finishing it
+    while i < n and text[i] in " \t":
+        i += 1
+    return i == n or (text[i] == "\r" and i + 1 == n)
+
+
+class _StreamProseState(StrEnum):
+    """Where the fence filter is: streaming prose, or swallowing a proposal block."""
+
+    PROSE = "PROSE"
+    IN_PROPOSAL = "IN_PROPOSAL"
+
+
+class _StreamProseFilter:
+    """Strips proposal fences from streamed prose while the raw text is left untouched.
+
+    The provider emits prose and, when it proposes actions, a fenced ```proposal block. The
+    prose must stream to the client token by token; the fence and its body must not. This is
+    a tiny two-state machine over the concatenated deltas: in PROSE it emits text up to an
+    opening fence, holding back only a trailing suffix that might be the start of one (so a
+    fence split across chunks is never half-emitted); in IN_PROPOSAL it emits nothing until
+    the closing fence, then returns to PROSE (so multiple blocks and trailing prose are
+    handled). An unterminated block emits nothing — fail-safe, no leak. The filter never
+    touches `recorded.text`, which keeps accumulating the raw deltas, so `parse_turn` still
+    sees the whole fenced block.
+    """
+
+    def __init__(self) -> None:
+        self._state = _StreamProseState.PROSE
+        self._buffer = ""
+
+    def feed(self, chunk: str) -> str:
+        """Absorb one delta and return the prose that is now safe to emit (maybe empty)."""
+        self._buffer += chunk
+        out: list[str] = []
+        while True:
+            if self._state is _StreamProseState.PROSE:
+                match = _STREAM_OPEN.search(self._buffer)
+                if match is None:
+                    emit, self._buffer = self._split_prose_tail(self._buffer)
+                    out.append(emit)
+                    break
+                out.append(self._buffer[:match.start()].rstrip())
+                self._buffer = self._buffer[match.end():]
+                self._state = _StreamProseState.IN_PROPOSAL
+            else:
+                match = _STREAM_CLOSE.search(self._buffer)
+                if match is None:
+                    self._buffer = _closing_tail(self._buffer)
+                    break
+                self._buffer = self._buffer[match.end():]
+                self._state = _StreamProseState.PROSE
+        return "".join(out)
+
+    def flush(self) -> str:
+        """The prose remaining once the stream ends; nothing if a block never closed."""
+        if self._state is _StreamProseState.IN_PROPOSAL:
+            self._buffer = ""
+            return ""
+        tail, self._buffer = self._buffer, ""
+        loose = _STREAM_OPEN_LOOSE.search(tail)
+        return tail[:loose.start()] if loose is not None else tail
+
+    @staticmethod
+    def _split_prose_tail(buffer: str) -> tuple[str, str]:
+        """Split PROSE `buffer` into (emit-now, hold-back), holding a possible-open suffix.
+
+        Holds back the longest trailing run that could be the start of an opening fence, so
+        a fence split across chunks completes on the next feed rather than leaking its start.
+        """
+        for start in range(max(0, len(buffer) - _MAX_OPEN_PREFIX), len(buffer)):
+            if _is_open_prefix(buffer[start:]):
+                return buffer[:start], buffer[start:]
+        return buffer, ""
+
+
+def _closing_tail(buffer: str) -> str:
+    """Inside a block: keep only a trailing partial backtick run, drop the suppressed body.
+
+    A closing fence split across chunks would otherwise be missed, so the trailing one or
+    two backticks are retained to be completed by the next delta; everything else is proposal
+    body the client must never see, and is discarded.
+    """
+    held = 0
+    while held < 2 and held < len(buffer) and buffer[-1 - held] == "`":
+        held += 1
+    return buffer[len(buffer) - held:] if held else ""
 
 
 

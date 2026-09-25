@@ -205,6 +205,12 @@ Deletion is a decision in both directions, and the two directions differ:
   provenance that revealed a duplication must survive the correction.
 - Everything a user owns is `ON DELETE CASCADE`, so "delete my account" is one
   statement. The shared posting stays: it is not the user's to delete.
+- A link to *telemetry* is `ON DELETE SET NULL`, the mirror of the first rule: from
+  Phase 14 an interview question, evaluation and summary carry a nullable `llm_run_id`
+  (and a session a `plan_llm_run_id`) referencing `llm_runs.id`, so an audit traces an
+  artefact to the exact run behind it — but pruning that run telemetry nulls the link
+  rather than cascading into a candidate's practice history. The artefact is the fact;
+  the run that produced it is the record, and losing the record must not lose the fact.
 
 Every domain rule a column group can express is *also* a named CHECK. A
 `model_validator` protects the rows that go through Python; the V1 importer, a future

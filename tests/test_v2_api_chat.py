@@ -24,12 +24,35 @@ import pytest
 
 from backend.app.chat.conversation import ChatStreamEventType
 from backend.app.chat.prompts import PROPOSAL_FENCE_TAG
+from backend.app.domain.application import (
+    Application,
+    ApplicationState,
+    build_idempotency_key,
+)
+from backend.app.domain.application_channel import ApplicationChannel
 from backend.app.domain.chat import (
     ChatActionExecutionOutcome,
     ChatActionProposalStatus,
+    ConversationScope,
+)
+from backend.app.domain.identifiers import (
+    UserId,
+    application_id,
+    default_candidate_profile_id,
+    new_application_decision_id,
 )
 from backend.app.llm.capabilities import BASELINE_CAPABILITY, Capability
 from tests.v2_api import PLACEHOLDER_ID, api_harness
+from tests.v2_builders import (
+    COMPANY,
+    NOW,
+    OPPORTUNITY,
+    OTHER_SEARCH_PROFILE,
+    OTHER_USER,
+    a_company,
+    a_search_profile,
+    an_opportunity,
+)
 from tests.v2_llm import FakeProvider
 
 pytestmark = pytest.mark.asyncio
@@ -146,7 +169,10 @@ async def test_a_turn_streams_tokens_then_a_completed_event(tmp_path):
 
         assert events[-1]["type"] == ChatStreamEventType.COMPLETED
         tokens = [e["text"] for e in events if e["type"] == ChatStreamEventType.TOKEN]
-        assert "".join(t for t in tokens if t) == reply  # raw prose+block to the client
+        streamed = "".join(t for t in tokens if t)
+        assert streamed == "Voici ma suggestion."  # only prose reaches the client
+        assert PROPOSAL_FENCE_TAG not in streamed  # the fenced block is filtered out
+        assert "kind" not in streamed  # and no JSON from the block leaks either
         message = events[-1]["message"]
         assert message["role"] == "ASSISTANT"
         assert message["content"] == "Voici ma suggestion."  # stored prose is clean
@@ -226,7 +252,8 @@ async def test_confirm_re_authorizes_a_mutation_so_a_proposal_is_not_permission(
     async with api_harness(tmp_path, chat_provider=_provider(reply)) as api:
         await api.sign_in()
         conversation_id = await _start(api)
-        proposal = _proposal_from(await _turn(api, conversation_id, "Plus loin"))
+        proposal = _proposal_from(await _turn(api, conversation_id,
+                                              "Change le rayon de recherche"))
 
         response = await api.write("POST", f"/chat/proposals/{proposal['id']}/confirm")
         assert response.status_code == 200, response.text  # a recorded, audited refusal
@@ -289,4 +316,149 @@ async def test_confirming_a_dismissed_proposal_is_409(tmp_path):
         response = await api.write("POST", f"/chat/proposals/{proposal['id']}/confirm")
         assert response.status_code == 409
         assert response.json()["error"] == "chat_proposal_not_actionable"
+
+
+# --- opening a scoped thread: the creation validation matrix (§43) ----------
+# `POST /chat/conversations` accepts an optional scope/scope_id. Two walls decide the
+# response: the schema's shape invariant (GLOBAL carries no id; an anchor requires one)
+# is a 422 before the service runs, and the service's ownership/existence check on the
+# named resource is a 404 — one status for a foreign *and* a missing anchor alike, so a
+# caller cannot probe another account's ids apart from ones that never existed.
+
+
+def _an_owned_application(user_id: UserId, *,
+                          state: ApplicationState = ApplicationState.PLANNED
+                          ) -> Application:
+    """An application owned by `user_id`, targeting the shared `OPPORTUNITY` posting."""
+    profile_id = default_candidate_profile_id(user_id)
+    key = build_idempotency_key(
+        candidate_profile_id=profile_id, channel=ApplicationChannel.BROWSER,
+        opportunity_id=OPPORTUNITY, company_id=None)
+    return Application(
+        id=application_id(key), user_id=user_id, candidate_profile_id=profile_id,
+        decision_id=new_application_decision_id(), channel=ApplicationChannel.BROWSER,
+        state=state, idempotency_key=key, opportunity_id=OPPORTUNITY,
+        company_id=None, created_at=NOW, updated_at=NOW)
+
+
+async def test_a_conversation_defaults_to_a_global_scope(tmp_path):
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        response = await api.write("POST", "/chat/conversations",
+                                   json={"title": "Ma recherche"})
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["scope"] == ConversationScope.GLOBAL
+        assert body["scope_id"] is None
+
+
+async def test_a_global_request_carrying_a_scope_id_is_422(tmp_path):
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        response = await api.write(
+            "POST", "/chat/conversations",
+            json={"title": "X", "scope": "GLOBAL", "scope_id": str(uuid4())})
+        assert response.status_code == 422
+        assert response.json()["error"] == "validation_failed"
+
+
+async def test_an_anchored_request_without_a_scope_id_is_422(tmp_path):
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        response = await api.write("POST", "/chat/conversations",
+                                   json={"title": "X", "scope": "APPLICATION"})
+        assert response.status_code == 422
+        assert response.json()["error"] == "validation_failed"
+
+
+async def test_a_thread_can_anchor_to_an_existing_opportunity(tmp_path):
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        await api.postings.upsert(an_opportunity(id=OPPORTUNITY))
+        response = await api.write(
+            "POST", "/chat/conversations",
+            json={"title": "Cette offre", "scope": "OPPORTUNITY",
+                  "scope_id": str(OPPORTUNITY)})
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["scope"] == ConversationScope.OPPORTUNITY
+        assert body["scope_id"] == str(OPPORTUNITY)
+
+
+async def test_a_thread_can_anchor_to_an_existing_company(tmp_path):
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        await api.companies.upsert(a_company())  # id defaults to COMPANY
+        response = await api.write(
+            "POST", "/chat/conversations",
+            json={"title": "Cet employeur", "scope": "COMPANY",
+                  "scope_id": str(COMPANY)})
+        assert response.status_code == 201, response.text
+        assert response.json()["scope_id"] == str(COMPANY)
+
+
+async def test_a_thread_can_anchor_to_an_owned_search(tmp_path):
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        # A search created through the account's own API is genuinely owned by it.
+        search_id = (await api.finish_onboarding()).json()["id"]
+        response = await api.write(
+            "POST", "/chat/conversations",
+            json={"title": "Cette recherche", "scope": "SEARCH_PROFILE",
+                  "scope_id": search_id})
+        assert response.status_code == 201, response.text
+        assert response.json()["scope_id"] == search_id
+
+
+async def test_a_thread_can_anchor_to_an_owned_application(tmp_path):
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        user_id = next(iter(api.users.users))
+        application = _an_owned_application(user_id)
+        await api.applications.upsert(application)
+        response = await api.write(
+            "POST", "/chat/conversations",
+            json={"title": "Cette candidature", "scope": "APPLICATION",
+                  "scope_id": str(application.id)})
+        assert response.status_code == 201, response.text
+        assert response.json()["scope_id"] == str(application.id)
+
+
+async def test_anchoring_to_a_missing_opportunity_is_404(tmp_path):
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()  # no posting seeded: the id names nothing
+        response = await api.write(
+            "POST", "/chat/conversations",
+            json={"title": "X", "scope": "OPPORTUNITY", "scope_id": str(uuid4())})
+        assert response.status_code == 404
+        assert response.json()["error"] == "conversation_scope_not_found"
+
+
+async def test_anchoring_to_another_accounts_application_is_404(tmp_path):
+    # The application exists but belongs to another account, so it reads as absent —
+    # a foreign anchor is a 404, indistinguishable from one that never existed.
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        foreign = _an_owned_application(OTHER_USER)
+        await api.applications.upsert(foreign)
+        response = await api.write(
+            "POST", "/chat/conversations",
+            json={"title": "X", "scope": "APPLICATION", "scope_id": str(foreign.id)})
+        assert response.status_code == 404
+        assert response.json()["error"] == "conversation_scope_not_found"
+
+
+async def test_anchoring_to_another_accounts_search_is_404(tmp_path):
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        await api.searches.upsert(
+            a_search_profile(id=OTHER_SEARCH_PROFILE, user_id=OTHER_USER))
+        response = await api.write(
+            "POST", "/chat/conversations",
+            json={"title": "X", "scope": "SEARCH_PROFILE",
+                  "scope_id": str(OTHER_SEARCH_PROFILE)})
+        assert response.status_code == 404
+        assert response.json()["error"] == "conversation_scope_not_found"
+
+
 

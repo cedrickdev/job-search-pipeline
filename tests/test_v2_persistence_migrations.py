@@ -59,11 +59,13 @@ V2_TABLES = frozenset({
     "llm_connections", "provider_sessions", "llm_runs",
     "conversations", "chat_messages", "chat_action_proposals",
     "chat_action_executions",
+    "interview_sessions", "interview_questions", "interview_answers",
+    "interview_answer_evaluations", "interview_session_summaries",
 })
 
 # The revision `alembic upgrade head` is expected to stop at. A revision added
 # without updating this line is a revision nobody decided to ship.
-HEAD_REVISION = "0010"
+HEAD_REVISION = "0013"
 
 # Every `geography(Point,4326)` column, by the table that holds it. One radius
 # query has to run against any of them, so they are declared identically and
@@ -670,3 +672,162 @@ def test_downgrading_0006_keeps_the_evaluation_it_left_alone(schema_engine):
     assert {"users", "candidate_profiles", "opportunities",
             "match_evaluations"} <= remaining
     assert evaluation == 0.9
+
+
+# The revision the Phase 14 provenance corrective upgrades *from*, and the one it must be
+# reversible to. A database at 0012 is a Phase 14 database that already holds interview
+# sessions, questions, answers, evaluations and summaries — but none of them yet carries the
+# exact-run provenance 0013 adds.
+PRE_PHASE_14_PROVENANCE_REVISION = "0012"
+
+# The four nullable links revision 0013 adds and 0012 knows nothing of. Each points at
+# `llm_runs.id` `ON DELETE SET NULL`, which the constraints suite proves with a populated
+# link; here they matter as columns that appear on upgrade and vanish on downgrade.
+PHASE_14_PROVENANCE_COLUMNS = frozenset({
+    ("interview_sessions", "plan_llm_run_id"),
+    ("interview_questions", "llm_run_id"),
+    ("interview_answer_evaluations", "llm_run_id"),
+    ("interview_session_summaries", "llm_run_id"),
+})
+
+# One account and the interview exchange it rehearsed, addressed by fixed ids so the seed and
+# the assertions agree. Not RFC-4122 versioned — the same shortcut every other seed here takes.
+_PHASE_14_USER = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+_PHASE_14_PROFILE = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+_PHASE_14_OPPORTUNITY = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+_PHASE_14_SESSION = "d1111111-1111-4111-8111-111111111111"
+_PHASE_14_QUESTION = "d2222222-2222-4222-8222-222222222222"
+_PHASE_14_ANSWER = "d3333333-3333-4333-8333-333333333333"
+_PHASE_14_EVALUATION = "d4444444-4444-4444-8444-444444444444"
+_PHASE_14_SUMMARY = "d5555555-5555-4555-8555-555555555555"
+
+
+def _seed_an_interview_exchange(connection):
+    """A user, profile, posting and one full interview exchange, at whatever revision runs.
+
+    Only the columns without a server default are named, so the same inserts are valid at
+    0012 (before the provenance columns) and would be at 0013 (where they default to NULL) —
+    which is the point: a database upgraded from 0012 carries pre-existing artefacts that
+    predate the provenance link, and this is that database's data.
+    """
+    connection.execute(
+        text("INSERT INTO users (id, email, password_hash)"
+             " VALUES (:id, :email, 'x')"),
+        {"id": _PHASE_14_USER, "email": "owner@example.test"})
+    connection.execute(
+        text("INSERT INTO candidate_profiles (id, user_id, display_name)"
+             " VALUES (:id, :user_id, 'Owner')"),
+        {"id": _PHASE_14_PROFILE, "user_id": _PHASE_14_USER})
+    connection.execute(
+        text("INSERT INTO opportunities (id, company_name, title, discovered_at)"
+             " VALUES (:id, 'Fixture SA', 'Ingénieur logiciel', now())"),
+        {"id": _PHASE_14_OPPORTUNITY})
+    connection.execute(
+        text("INSERT INTO interview_sessions"
+             " (id, user_id, candidate_profile_id, opportunity_id, mode, title)"
+             " VALUES (:id, :user_id, :profile_id, :opportunity_id, 'BEHAVIORAL',"
+             " 'Entretien comportemental')"),
+        {"id": _PHASE_14_SESSION, "user_id": _PHASE_14_USER,
+         "profile_id": _PHASE_14_PROFILE, "opportunity_id": _PHASE_14_OPPORTUNITY})
+    connection.execute(
+        text("INSERT INTO interview_questions"
+             " (id, session_id, user_id, sequence, question_type, difficulty, prompt,"
+             " asked_at) VALUES (:id, :session_id, :user_id, 0, 'BEHAVIORAL',"
+             " 'INTERMEDIATE', 'Parlez-moi d''un désaccord dénoué.', now())"),
+        {"id": _PHASE_14_QUESTION, "session_id": _PHASE_14_SESSION,
+         "user_id": _PHASE_14_USER})
+    connection.execute(
+        text("INSERT INTO interview_answers"
+             " (id, question_id, session_id, user_id, format, content, answered_at)"
+             " VALUES (:id, :question_id, :session_id, :user_id, 'TEXT',"
+             " 'Une réponse structurée.', now())"),
+        {"id": _PHASE_14_ANSWER, "question_id": _PHASE_14_QUESTION,
+         "session_id": _PHASE_14_SESSION, "user_id": _PHASE_14_USER})
+    connection.execute(
+        text("INSERT INTO interview_answer_evaluations"
+             " (id, answer_id, session_id, user_id, evaluated_at)"
+             " VALUES (:id, :answer_id, :session_id, :user_id, now())"),
+        {"id": _PHASE_14_EVALUATION, "answer_id": _PHASE_14_ANSWER,
+         "session_id": _PHASE_14_SESSION, "user_id": _PHASE_14_USER})
+    connection.execute(
+        text("INSERT INTO interview_session_summaries"
+             " (id, session_id, user_id, headline, questions_asked, answers_evaluated)"
+             " VALUES (:id, :session_id, :user_id, 'Séance menée avec clarté.', 1, 1)"),
+        {"id": _PHASE_14_SUMMARY, "session_id": _PHASE_14_SESSION,
+         "user_id": _PHASE_14_USER})
+
+
+def _column_names(connection, table):
+    return {column["name"] for column in inspect(connection).get_columns(table)}
+
+
+def test_upgrading_to_0013_gives_existing_artefacts_a_null_provenance(schema_engine):
+    """The 0012→0013 path: pre-existing interview artefacts gain a NULL provenance link.
+
+    An interview exchange seeded on a 0012 database — a session, a question, an answer, an
+    evaluation and a summary, none aware of any run — survives the upgrade untouched, and
+    each of the four artefacts now carries the exact-run column, NULL, because a row written
+    before the corrective has no run to point at. This is the additive, non-destructive
+    migration the corrective promises: a candidate's practice history is not rewritten to gain
+    provenance it never had.
+    """
+    reset_schema(schema_engine)
+    with schema_engine.begin() as connection:
+        command.downgrade(alembic_config(connection), PRE_PHASE_14_PROVENANCE_REVISION)
+    with schema_engine.begin() as connection:
+        # The columns do not exist yet at 0012 — the upgrade is what adds them.
+        present = {(table, column)
+                   for table, _ in PHASE_14_PROVENANCE_COLUMNS
+                   for column in _column_names(connection, table)}
+        assert not present & PHASE_14_PROVENANCE_COLUMNS
+        _seed_an_interview_exchange(connection)
+    with schema_engine.begin() as connection:
+        command.upgrade(alembic_config(connection), "head")
+    with schema_engine.connect() as connection:
+        version = connection.execute(
+            text("SELECT version_num FROM alembic_version")).scalar_one()
+        provenance = {
+            ("interview_sessions", "plan_llm_run_id"): connection.execute(text(
+                "SELECT plan_llm_run_id FROM interview_sessions")).scalar_one(),
+            ("interview_questions", "llm_run_id"): connection.execute(text(
+                "SELECT llm_run_id FROM interview_questions")).scalar_one(),
+            ("interview_answer_evaluations", "llm_run_id"): connection.execute(text(
+                "SELECT llm_run_id FROM interview_answer_evaluations")).scalar_one(),
+            ("interview_session_summaries", "llm_run_id"): connection.execute(text(
+                "SELECT llm_run_id FROM interview_session_summaries")).scalar_one(),
+        }
+    assert version == HEAD_REVISION
+    # Every one of the four artefacts is still here, and its new provenance column is NULL.
+    assert set(provenance) == PHASE_14_PROVENANCE_COLUMNS
+    assert all(value is None for value in provenance.values())
+
+
+def test_downgrading_0013_keeps_the_artefacts_it_unlinked(schema_engine):
+    """Reversibility, with the data that makes it mean something.
+
+    Downgrading to 0012 drops the four provenance columns — that is what reversing an additive
+    revision does — but the session, question, answer, evaluation and summary all survive: the
+    link to the run was nullable, so nothing that depended on it was lost. An operator who has
+    to roll the corrective back does not lose a single candidate's practice history to do it.
+    """
+    reset_schema(schema_engine)
+    with schema_engine.begin() as connection:
+        _seed_an_interview_exchange(connection)
+    with schema_engine.begin() as connection:
+        command.downgrade(alembic_config(connection), PRE_PHASE_14_PROVENANCE_REVISION)
+    with schema_engine.connect() as connection:
+        version = connection.execute(
+            text("SELECT version_num FROM alembic_version")).scalar_one()
+        columns_now = {(table, column)
+                       for table, _ in PHASE_14_PROVENANCE_COLUMNS
+                       for column in _column_names(connection, table)}
+        counts = {
+            table: connection.execute(
+                text(f"SELECT count(*) FROM {table}")).scalar_one()  # noqa: S608
+            for table in ("interview_sessions", "interview_questions",
+                          "interview_answers", "interview_answer_evaluations",
+                          "interview_session_summaries")}
+    assert version == PRE_PHASE_14_PROVENANCE_REVISION
+    # The four provenance columns are gone, and every interview row is still here.
+    assert not columns_now & PHASE_14_PROVENANCE_COLUMNS
+    assert all(count == 1 for count in counts.values()), counts

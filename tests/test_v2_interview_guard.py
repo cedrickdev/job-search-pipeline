@@ -185,3 +185,61 @@ def test_a_question_inventing_a_number_from_nowhere_still_fails_the_grounding_ga
     assert report.ok is False
     assert DocumentViolationCode.INVENTED_NUMBER in _codes(report)
 
+
+# --- the attribution gate is bilingual (English + French) ---------------------
+#
+# The same posting-fact/candidate-fact distinction must hold in French, whose grammar marks a
+# question differently — by inverting verb and pronoun ("avez-vous …") rather than pre-posing
+# an auxiliary ("have you …"). A genuine interrogative or hypothetical, in either language,
+# asks *whether* the candidate has the experience and must pass; only an assertion or a
+# possessive pins the posting's fact on the candidate and must be rejected.
+
+
+def _passes(prompt, opportunity):
+    return InterviewCoachingGuard().review_question(
+        prompt, profile=_profile(), opportunity=opportunity)
+
+
+def test_english_interrogative_and_hypothetical_questions_about_a_posting_skill_pass():
+    """'Have you worked with Kafka?' and 'How would you use Kafka?' ask, they do not assert."""
+    assert _passes("Have you worked with Kafka?", _opportunity()).ok is True
+    assert _passes("How would you use Kafka?", _opportunity()).ok is True
+
+
+def test_english_possessive_over_a_posting_skill_is_rejected():
+    """'Tell me about your Kafka experience.' pins the posting's skill on the candidate."""
+    report = _passes("Tell me about your Kafka experience.", _opportunity())
+    assert report.ok is False
+    assert DocumentViolationCode.MISATTRIBUTED_TO_CANDIDATE in _codes(report)
+
+
+def test_french_interrogative_and_hypothetical_questions_about_a_posting_skill_pass():
+    """Inversion ('Avez-vous …') and conditional ('utiliseriez-vous …') are questions, not claims."""
+    assert _passes("Avez-vous déjà travaillé avec Kafka ?", _opportunity()).ok is True
+    assert _passes("Comment utiliseriez-vous Kafka dans ce poste ?",
+                   _opportunity()).ok is True
+
+
+def test_french_possessive_over_a_posting_skill_is_rejected():
+    """'Parlez-moi de votre expérience avec Kafka.' binds the posting's skill to the candidate."""
+    report = _passes("Parlez-moi de votre expérience avec Kafka.", _opportunity())
+    assert report.ok is False
+    assert DocumentViolationCode.MISATTRIBUTED_TO_CANDIDATE in _codes(report)
+
+
+def test_english_role_reference_to_a_posting_number_passes_and_an_assertion_is_rejected():
+    """'The role involves a team of 20' passes; 'You managed a team of 20' is rejected."""
+    assert _passes("The role involves a team of 20.", _team_opportunity()).ok is True
+    report = _passes("You managed a team of 20.", _team_opportunity())
+    assert report.ok is False
+    assert DocumentViolationCode.MISATTRIBUTED_TO_CANDIDATE in _codes(report)
+
+
+def test_french_role_reference_to_a_posting_number_passes_and_an_assertion_is_rejected():
+    """'Le poste implique une équipe de 20' passes; 'Vous avez dirigé une équipe de 20' rejected."""
+    assert _passes("Le poste implique une équipe de 20 personnes.",
+                   _team_opportunity()).ok is True
+    report = _passes("Vous avez dirigé une équipe de 20 personnes.", _team_opportunity())
+    assert report.ok is False
+    assert DocumentViolationCode.MISATTRIBUTED_TO_CANDIDATE in _codes(report)
+

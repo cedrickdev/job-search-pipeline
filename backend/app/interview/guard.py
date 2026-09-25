@@ -41,17 +41,24 @@ from backend.app.domain.opportunity import Opportunity
 #
 # A question may stand on a fact the *posting* states, but it must not pin that fact on
 # the candidate as their own experience unless the candidate's evidence backs it too. The
-# tell is grammatical: a second-person *assertion of experience or possession*. These two
+# tell is grammatical: a second-person *assertion of experience or possession*. These
 # small, deterministic vocabularies are what separate "the role uses Kafka; how would you
 # approach it?" (a role reference — fine) from "tell me about your Kafka experience" or
 # "you managed a team of 20" (attribution — a fabrication when only the posting says so).
+#
+# Phase 14 is bilingual, so the layer is too: English and French get their own explicit
+# vocabularies rather than any generic translation. The grammar of attribution differs by
+# language — English asserts with "you <verb>" and a pre-posed auxiliary marks a question
+# ("*have* you worked…"), whereas French asserts with "vous <verb>" and marks a question by
+# *inverting* verb and pronoun ("*avez-vous* travaillé…") — so each language is handled on
+# its own terms below.
 
-# Second-person verbs that credit the candidate with having *done* or *held* the thing that
-# follows. Kept to experience/possession/achievement verbs on purpose: a copula ("you are
-# curious about Kafka") or a perception verb ("you know of Kafka") asserts no experience, so
-# it must not trip the gate. Present and past forms both, because "you manage" and "you
-# managed" attribute alike.
-_ACHIEVEMENT_VERBS: frozenset[str] = frozenset({
+# English second-person verbs that credit the candidate with having *done* or *held* the
+# thing that follows. Kept to experience/possession/achievement verbs on purpose: a copula
+# ("you are curious about Kafka") or a perception verb ("you know of Kafka") asserts no
+# experience, so it must not trip the gate. Present and past forms both, because "you
+# manage" and "you managed" attribute alike.
+_EN_ACHIEVEMENT_VERBS: frozenset[str] = frozenset({
     "have", "had", "own", "owned", "hold", "held", "possess", "possessed",
     "manage", "managed", "lead", "led", "build", "built", "create", "created",
     "design", "designed", "develop", "developed", "deliver", "delivered",
@@ -67,24 +74,51 @@ _ACHIEVEMENT_VERBS: frozenset[str] = frozenset({
     "produce", "produced", "coordinate", "coordinated", "operate", "operated",
 })
 
-# Tokens that, sitting immediately before "you", turn the clause hypothetical or
-# interrogative — a question about approach or a conditional, not a claim of what the
-# candidate did: "how *would* you use…", "*do* you use…", "*if* you led…". When one of
-# these precedes "you", the second-person verb that follows is not an assertion.
-_HYPOTHETICAL_BEFORE_YOU: frozenset[str] = frozenset({
-    "would", "could", "might", "should", "may", "will", "shall", "do", "does", "did",
-    "how", "if", "when", "whenever", "were", "to", "whether", "that", "suppose",
-    "imagine", "hypothetically", "not",
+# French second-person-plural verbs that assert experience. Two shapes carry it: the
+# compound past auxiliary "avez"/"aviez" ("vous *avez* dirigé…" — the whole compound past of
+# any verb), and finite present forms ("vous *gérez*…"). Deliberately *no* past participles
+# (they attach to "avez", already covered) and *no* future/conditional forms ("utiliserez",
+# "utiliseriez" — a hypothetical about the role, not a claim), and no copula "êtes" (a role
+# responsibility, not an experience). This asymmetry also means French inversion —
+# "*avez-vous* travaillé", where the finite verb sits *before* "vous" — never matches the
+# "vous <verb>" pattern, so a genuine question is not mistaken for an assertion.
+_FR_ACHIEVEMENT_VERBS: frozenset[str] = frozenset({
+    "avez", "aviez", "gérez", "gériez", "dirigez", "dirigiez", "utilisez", "utilisiez",
+    "employez", "travaillez", "travailliez", "développez", "concevez", "construisez",
+    "créez", "livrez", "déployez", "maintenez", "supervisez", "encadrez", "menez",
+    "lancez", "exploitez", "réalisez", "produisez", "coordonnez", "administrez",
+    "pilotez", "possédez", "détenez", "assurez", "conduisez",
 })
 
-# "you <achievement verb>" — a second-person assertion of experience.
+# English tokens that, sitting immediately before "you", turn the clause hypothetical or
+# interrogative — a question about approach, a conditional, or a yes/no question by
+# auxiliary inversion, not a claim of what the candidate did: "how *would* you use…", "*do*
+# you use…", "*have* you worked…", "*if* you led…". When one of these precedes "you", the
+# second-person verb that follows is not an assertion. The auxiliaries "have/has/had",
+# "do/does/did" and "can/could" are what keep a genuine question ("Have you worked with
+# Kafka?") from being read as the assertion "you worked …".
+_HYPOTHETICAL_BEFORE_YOU: frozenset[str] = frozenset({
+    "would", "could", "might", "should", "may", "will", "shall", "do", "does", "did",
+    "have", "has", "had", "can", "cannot", "how", "if", "when", "whenever", "were",
+    "to", "whether", "that", "suppose", "imagine", "hypothetically", "not",
+})
+
+# "you <achievement verb>" / "vous <achievement verb>" — a second-person assertion of
+# experience, in each language.
 _YOU_VERB_RE = re.compile(
-    r"\byou\s+(?:" + "|".join(sorted(_ACHIEVEMENT_VERBS)) + r")\b")
+    r"\byou\s+(?:" + "|".join(sorted(_EN_ACHIEVEMENT_VERBS)) + r")\b")
+_VOUS_VERB_RE = re.compile(
+    r"\bvous\s+(?:" + "|".join(sorted(_FR_ACHIEVEMENT_VERBS)) + r")\b")
 # The last word of a fragment, so the token immediately before "you" can be inspected.
 _LAST_WORD_RE = re.compile(r"([\w'’-]+)\s*$")
-# "your <up to four words> " ending right where a fact begins — a possessive that binds
-# the fact to the candidate ("your extensive Kafka experience", "your team of 20").
-_POSSESSIVE_TAIL_RE = re.compile(r"\byour\b(?:\s+[\w'’-]+){0,4}\s+$")
+# "your"/"votre"/"vos" then at most two words then the fact — a possessive that binds the
+# fact to the candidate ("your extensive Kafka experience", "your team of 20", "votre
+# expérience avec Kafka"). The window is kept short on purpose: it must bind a determiner to
+# a noun phrase it heads, not reach across a verb into a separate clause, so "your approach
+# to using Kafka" / "votre approche pour utiliser Kafka" (a question about method) does not
+# trip it.
+_POSSESSIVE_TAIL_RE = re.compile(
+    r"\b(?:your|votre|vos)\b(?:\s+[\w'’-]+){0,2}\s+$")
 # Sentence boundaries: terminal punctuation or a line break. Interview prompts are short,
 # so a clause is the right unit — attribution binds within one, not across a paragraph.
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?\n]+")
@@ -140,11 +174,13 @@ class InterviewCoachingGuard:
            mentions Kafka" from "you have Kafka experience" — both cite a term the posting
            carries. This gate can: it flags a *posting-only* fact (present in the posting,
            absent from the candidate's evidence) that the question attributes to the candidate
-           through a possessive ("your Kafka experience") or a second-person assertion of
-           experience ("you managed a team of 20"), while letting a role reference or a
-           hypothetical ("the role runs a team of 20", "how would you approach it") pass
-           (`MISATTRIBUTED_TO_CANDIDATE`). The distinction is enforced here, in code — not left
-           to the prompt.
+           through a possessive ("your Kafka experience", "votre expérience avec Kafka") or a
+           second-person assertion of experience ("you managed a team of 20", "vous avez
+           dirigé une équipe de 20"), while letting a role reference or a genuine question
+           pass ("the role runs a team of 20", "how would you approach it", "avez-vous
+           travaillé avec Kafka ?") (`MISATTRIBUTED_TO_CANDIDATE`). It works in English and
+           French — see the bilingual vocabularies above — and the distinction is enforced
+           here, in code, not left to the prompt.
 
         Run before persistence, so a question that fails is regenerated or refused, never
         stored.
@@ -214,16 +250,19 @@ class InterviewCoachingGuard:
     def _attributes_to_candidate(self, sentence_lower: str, fact_start: int) -> bool:
         """Does the clause pin the fact at `fact_start` on the candidate as their own?
 
-        Two second-person patterns count as attribution, mirroring how a person reads the
-        sentence:
+        Three second-person patterns count as attribution, mirroring how a person reads the
+        sentence in either language:
 
-        - **Possessive** — "your …" ending right at the fact ("your extensive Kafka
-          experience", "your team of 20"), within a short window so an unrelated "your
-          thoughts on the role's use of Kafka" does not bind.
-        - **Assertion of experience** — "you <achievement verb>" somewhere in the clause,
-          where "you" is not preceded by a hypothetical or interrogative marker. That marker
-          check is what lets "how would you use Kafka" and "do you know Kafka" through while
-          catching "you used Kafka" and "you have Kafka expertise".
+        - **Possessive** — "your …" / "votre …" / "vos …" ending right at the fact ("your
+          extensive Kafka experience", "votre expérience avec Kafka", "your team of 20"),
+          within a short window so an unrelated "your approach to using Kafka" does not bind.
+        - **English assertion** — "you <achievement verb>" where "you" is not preceded by a
+          hypothetical or interrogative marker. That marker check is what lets "how would you
+          use Kafka" and "have you worked with Kafka" through while catching "you used Kafka".
+        - **French assertion** — "vous <achievement verb>" that is neither an inversion
+          ("avez-vous …", the finite verb hyphenated *before* "vous") nor an "est-ce que
+          vous …" question. So "vous avez dirigé une équipe" is caught while "avez-vous
+          travaillé" and "est-ce que vous avez utilisé Kafka" pass.
         """
         before = sentence_lower[:fact_start]
         if _POSSESSIVE_TAIL_RE.search(before):
@@ -232,6 +271,13 @@ class InterviewCoachingGuard:
             preceding = _LAST_WORD_RE.search(sentence_lower[:match.start()])
             if preceding is None or preceding.group(1) not in _HYPOTHETICAL_BEFORE_YOU:
                 return True
+        for match in _VOUS_VERB_RE.finditer(sentence_lower):
+            head = sentence_lower[:match.start()]
+            if match.start() > 0 and sentence_lower[match.start() - 1] == "-":
+                continue  # inversion: "avez-vous …" is a question, not a claim
+            if "est-ce" in head:
+                continue  # "est-ce que vous …" is a question, not a claim
+            return True
         return False
 
     @staticmethod

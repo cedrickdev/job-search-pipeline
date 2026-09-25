@@ -3396,9 +3396,16 @@ export interface components {
          *     be constructed without at least one evidence id (`Field(min_length=1)`). The
          *     guard's job is the harder question the type cannot answer — whether the cited
          *     evidence *exists* (`UNKNOWN_EVIDENCE`) and whether the *words* are supported.
+         *
+         *     `MISATTRIBUTED_TO_CANDIDATE` is the one code where the offending fact is real:
+         *     an interview question may name a skill or number the *posting* states, but must
+         *     not pin it on the candidate as their own experience unless the candidate's
+         *     evidence backs it too. It is raised by `InterviewCoachingGuard.review_question`
+         *     (§10-17), never on a résumé or cover letter, where every line is already
+         *     candidate-scoped by construction.
          * @enum {string}
          */
-        DocumentViolationCode: "UNKNOWN_EVIDENCE" | "INVENTED_NUMBER" | "UNSUPPORTED_SKILL" | "INVENTED_TERM" | "ALTERED_IDENTITY";
+        DocumentViolationCode: "UNKNOWN_EVIDENCE" | "INVENTED_NUMBER" | "UNSUPPORTED_SKILL" | "INVENTED_TERM" | "ALTERED_IDENTITY" | "MISATTRIBUTED_TO_CANDIDATE";
         /**
          * EligibilityCheckResponse
          * @description One gate, evaluated — with who decided it and on what authority.

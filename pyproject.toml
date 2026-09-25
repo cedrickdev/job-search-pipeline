@@ -32,7 +32,13 @@ dependencies = [
     # `[asyncio]` pulls greenlet, which `create_async_engine` needs. The V2
     # repositories are async because the API and the workers that will call them
     # are (docs/ARCHITECTURE.md §1, §6); Alembic runs the same URL synchronously.
-    "sqlalchemy[asyncio]>=2.0.30",
+    # Capped below 2.1 on purpose: SQLAlchemy 2.1 reshaped the ORM `Select`/Row
+    # typing enough that `mypy backend` (strict) reports dozens of errors in
+    # sqlalchemy_repositories.py it does not on 2.0.x. The strict type gate is a
+    # reproducible baseline (see the quality-tool pins below), so the runtime
+    # that decides its result is pinned to the same major it was measured on;
+    # lift the cap in its own change once the annotations are ported to 2.1.
+    "sqlalchemy[asyncio]>=2.0.30,<2.1",
     "alembic>=1.13",
     # psycopg 3, not asyncpg: one driver serves both the async engine
     # (`postgresql+psycopg`) and Alembic's sync engine, so there is a single URL

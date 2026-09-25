@@ -92,6 +92,15 @@ to drill forever and the session still converges on its plan. Every question's i
 type, difficulty, sequence, depth and follow-up link — comes from the engine's `QuestionRequest`;
 the model contributes only the prompt text.
 
+An adaptive follow-up is *grounded in the grade that was actually stored* (§18-26, §53-54). Before
+a follow-up is even considered, the service loads the last answer's persisted
+`InterviewAnswerEvaluation` (`get_for_answer`, never recomputed) and hands its structured facts —
+the per-axis grades and the improvements, never any hidden reasoning — to `decide_follow_up`, so
+the probe drills into a dimension the grades left thin rather than re-deriving a judgement. When
+the last answer carries **no** evaluation (grading failed or was skipped), no adaptive follow-up
+is asked at all — the session falls through to its next planned topic rather than drilling blind.
+The `INTERVIEW_FOLLOW_UP` prompt (version `1.1`) is told to key its decision to that evaluation.
+
 ## What the model may never author, and is never given
 
 Safety here is a property of *wiring*, not of the model's good behaviour.
@@ -108,8 +117,8 @@ Safety here is a property of *wiring*, not of the model's good behaviour.
   `InterviewAnswerEvaluation`, whose schema has no readiness field and whose `extra="forbid"`
   rejects one — so a payload carrying a `readiness`, a `probability` or a hiring `verdict`
   fails to parse. Platform-owned keys (the derived id, the answer/session/user, the evaluator
-  key, the timestamp) are merged in *after* the model's, so a provider cannot forge its own id
-  or backdate a run.
+  key, the exact `llm_run_id`, the timestamp) are merged in *after* the model's, so a provider
+  cannot forge its own id, backdate a run, or claim a different run than the recorder wrote.
 - **Every answer is re-validated.** A provider's claim to have honoured a schema is never taken
   on trust: `InterviewLLM._validate` re-parses every payload against the domain model, and a
   `ValidationError` becomes a typed `STRUCTURED_OUTPUT_INVALID` whose message never quotes the
@@ -131,14 +140,30 @@ coaching prose runs through `review_supporting_prose`, applying the citation-fre
 the same tokenizer and term universe the résumé gates use. The guard is pure and deterministic,
 so the service runs it *before* persisting anything.
 
+A **generated question** is guarded too, but by a different standard, because a question is not
+coaching *about* the candidate — it is grounded in the posting, and may legitimately name a
+skill or number the posting states ("the posting mentions Kafka; how would you approach it?").
+So `review_question` widens the allowed pool with the posting's own words (`extra_corpus` on
+`review_supporting_prose`): a term or number grounded in *either* the candidate or the posting
+passes, and one grounded in neither — invented from nowhere — is caught. The gate deliberately
+does *not* distinguish "the posting mentions Kafka" from "you have Kafka experience"; that
+attribution is the question prompt's defence in depth (the `INTERVIEW_QUESTION` prompt, at
+version `1.1`, tells the model to reference the posting openly but never assert candidate
+experience the context does not support), while this deterministic gate stays authoritative for
+the invented-from-nowhere case. A question that fails the guard earns **one bounded repair** —
+regenerate, telling the model not to repeat the rejected prompt — after which a still-ungrounded
+prompt is refused `QUESTION_GROUNDING_FAILED` and never persisted (§10-17).
+
 ## Generate, then guard, then persist — and degrade, never strand
 
 The service (`backend/app/interview/service.py`) makes three orderings physical:
 
-- **Generate → guard → persist.** An evaluation's coaching and a summary's prose are guarded
-  before they are stored. A rejected evaluation is not stored at all (the answer stands,
-  ungraded); a rejected summary falls back to safe, deterministic, fact-free prose — never a
-  fabricated strength persisted as coaching.
+- **Generate → guard → persist.** A generated *question*, an evaluation's coaching and a
+  summary's prose are all guarded before they are stored. A rejected question is regenerated
+  once and then refused `QUESTION_GROUNDING_FAILED` (never a fabricated prompt persisted); a
+  rejected evaluation is not stored at all (the answer stands, ungraded); a rejected summary
+  falls back to safe, deterministic, fact-free prose — never a fabricated strength persisted as
+  coaching.
 - **A provider hiccup never strands a session.** A failed follow-up *decision* falls through to
   the next planned question; a failed *evaluation* on submit leaves the answer stored but
   un-graded (`evaluation=None`), so a lost grade never costs the candidate their turn; a failed
@@ -154,6 +179,52 @@ The strict counterpart to best-effort grading is `evaluate_answer` (the
 provider fails or the guard rejects the coaching, and it does not adapt difficulty, so a retry
 never double-counts.
 
+## A session's application must be the account's, and about the posting
+
+A session may name an `application_id` to rehearse — but only its own, and only for the very
+posting it is about. `create_session` calls `_verify_application` (§2-9, §62-63): with no
+`application_id` it short-circuits; with one, it resolves it *owner-first* through the Phase 12
+`ApplicationRepository`, so a missing application and one belonging to another account are
+indistinguishable — both `APPLICATION_NOT_FOUND` (a `404`), leaking nothing about whether the id
+exists elsewhere. A resolved application whose `opportunity_id` differs from the session's is
+`APPLICATION_OPPORTUNITY_MISMATCH` (a `409`), so an application for one role can never be
+borrowed to coach a session about another. The check runs *before* the session exists, reusing
+the Phase 12 ownership read rather than adding a second authorization path.
+
+## Concurrency: derived ids make a race collide on the primary key
+
+Two of a candidate's own clients can race the same turn, and the read-then-check both would pass
+cannot close the window. The natural key does: an answer's id derives from its question and a
+question's id from `(session_id, sequence)`, so the loser of a race inserts a row whose primary
+key already exists and its flush raises an `IntegrityError` — caught and re-raised as a typed
+refusal, never surfaced raw and never overwriting the winner (§41-43):
+
+- **Two answers to the same current question** — the loser is `QUESTION_ALREADY_ANSWERED`, and
+  the winner's immutable answer stands; exactly one answer row exists.
+- **Two `next_question` calls advancing one session** — the loser is `INTERVIEW_STATE_CONFLICT`,
+  and exactly one new question at the next sequence is recorded.
+
+`tests/test_v2_persistence_interview_engine.py` proves both against a real PostgreSQL database
+under real concurrency — the only place a cross-connection race is demonstrable — exactly as the
+Phase 12 submission-budget race is proven.
+
+## Exact provenance: which run produced each artefact
+
+`generator_key`/`evaluator_key` already recorded *which strategy* produced an artefact
+(`llm-backed/1` vs a deterministic seed). The corrective narrows that to *which exact run* did
+(§27-40): a nullable `llm_run_id` on the question, the evaluation and the summary, and a
+`plan_llm_run_id` on the session, each pointing at `llm_runs.id` — the model, the connection,
+the prompt version, keyed to the same call — so an audit traces a generated question back to the
+routed request behind it. The id is not looked up after the fact (a "latest run for this user"
+query another concurrent call could win); it rides back on the routing outcome. The recorder
+mints the run id, writes the `LLMRun`, and sets it on the `RoutingOutcome`; the adapter returns
+each artefact wrapped in an `InterviewLLMResult[T]` (value + `llm_run_id`); the service stamps it
+onto what it persists. It is honestly `None` where no run stands behind the artefact: a
+deterministic fallback summary records `llm_run_id=None` under the `deterministic-summary/1` key,
+so an audit tells model prose from platform prose without guessing. Every FK is
+`ON DELETE SET NULL`, never `CASCADE` — pruning telemetry must never delete a candidate's
+practice history as a side effect.
+
 ## Voice answers: transcribe, then discard
 
 A voice answer is not a new kind of answer — it is a text answer the candidate happened to
@@ -167,6 +238,14 @@ text is stored and graded. The session is confirmed active *before* a byte is tr
 upload is bounded (`MAX_AUDIO_BYTES`, 25 MiB) and type-checked (`ALLOWED_AUDIO_TYPES`) before
 any work, and an empty transcript is `TRANSCRIPTION_UNAVAILABLE`. whisper.cpp reports no
 confidence, so a voice answer's `transcript_confidence` is nullable and recorded honestly.
+
+When a transcriber *does* report a confidence and it falls below
+`MIN_AUTO_EVALUATE_TRANSCRIPT_CONFIDENCE` (`0.5`), the service refuses to auto-grade words it
+is not sure the candidate said (§55-61): it raises `TranscriptReviewRequired`, which the API
+returns as a `422` (`transcript_review_required`) carrying the low-confidence transcript back so
+the candidate can correct it and resubmit as text — the answer is neither stored nor graded on a
+transcript the machine doubts. A `None` confidence (whisper.cpp's usual case) does not trip the
+hold; only a reported confidence below the floor does.
 
 ## The turn pipeline
 
@@ -237,8 +316,10 @@ INTERMEDIATE < ADVANCED`; `adapt_difficulty` steps along the ladder and clamps a
 **Error codes** (`InterviewErrorCode`) — the stable refusal vocabulary the service raises and the
 API maps to status: `SESSION_NOT_FOUND`, `SESSION_NOT_ACTIVE`, `INVALID_STATUS_TRANSITION`,
 `QUESTION_NOT_FOUND`, `NO_CURRENT_QUESTION`, `QUESTION_ALREADY_ANSWERED`, `ANSWER_OUT_OF_ORDER`,
-`SESSION_LIMIT_REACHED`, `EVALUATION_UNAVAILABLE`, `QUESTION_GENERATION_UNAVAILABLE`,
-`TRANSCRIPTION_UNAVAILABLE`, `AUDIO_TOO_LARGE`, `UNSUPPORTED_AUDIO`.
+`INTERVIEW_STATE_CONFLICT`, `SESSION_LIMIT_REACHED`, `EVALUATION_UNAVAILABLE`,
+`QUESTION_GENERATION_UNAVAILABLE`, `QUESTION_GROUNDING_FAILED`, `APPLICATION_NOT_FOUND`,
+`APPLICATION_OPPORTUNITY_MISMATCH`, `TRANSCRIPT_REVIEW_REQUIRED`, `TRANSCRIPTION_UNAVAILABLE`,
+`AUDIO_TOO_LARGE`, `UNSUPPORTED_AUDIO`.
 
 ## Persisted entities
 
@@ -260,6 +341,13 @@ SQLAlchemy mappers — the domain never imports the ORM:
 CHECK constraints and indexes enforce at the row level what the domain enforces in memory (status
 in its enum, one answer per question, the plan/mode agreement), so a bad write is refused by the
 database even if it reached one.
+
+Migration `0013` (`backend/migrations/versions/rev_0013_phase_14_llm_run_provenance.py`,
+down-revision `0012`) adds the exact-provenance links: `interview_sessions.plan_llm_run_id`,
+`interview_questions.llm_run_id`, `interview_answer_evaluations.llm_run_id` and
+`interview_session_summaries.llm_run_id`, each a nullable FK to `llm_runs.id` with
+`ON DELETE SET NULL`. Nullable because a deterministic artefact stands behind no run;
+`SET NULL` because pruning telemetry must never cascade into a candidate's practice history.
 
 ## HTTP surface (`/api/v2/interview-sessions`)
 
@@ -291,11 +379,16 @@ unlisted is a `409 Conflict`, the code carried in the `error` field for the clie
 
 | Status | Codes |
 | --- | --- |
-| `404 Not Found` | `SESSION_NOT_FOUND`, `QUESTION_NOT_FOUND`, plus `interview_grounding_not_found` |
-| `409 Conflict` | `SESSION_NOT_ACTIVE`, `INVALID_STATUS_TRANSITION`, `NO_CURRENT_QUESTION`, `QUESTION_ALREADY_ANSWERED`, `ANSWER_OUT_OF_ORDER`, `SESSION_LIMIT_REACHED` |
+| `404 Not Found` | `SESSION_NOT_FOUND`, `QUESTION_NOT_FOUND`, `APPLICATION_NOT_FOUND`, plus `interview_grounding_not_found` |
+| `409 Conflict` | `SESSION_NOT_ACTIVE`, `INVALID_STATUS_TRANSITION`, `NO_CURRENT_QUESTION`, `QUESTION_ALREADY_ANSWERED`, `ANSWER_OUT_OF_ORDER`, `INTERVIEW_STATE_CONFLICT`, `APPLICATION_OPPORTUNITY_MISMATCH`, `SESSION_LIMIT_REACHED` |
 | `413 Content Too Large` | `AUDIO_TOO_LARGE` |
 | `415 Unsupported Media Type` | `UNSUPPORTED_AUDIO` |
-| `503 Service Unavailable` | `EVALUATION_UNAVAILABLE`, `QUESTION_GENERATION_UNAVAILABLE`, `TRANSCRIPTION_UNAVAILABLE` |
+| `422 Unprocessable Content` | `TRANSCRIPT_REVIEW_REQUIRED` (returned with the held transcript and its confidence) |
+| `503 Service Unavailable` | `EVALUATION_UNAVAILABLE`, `QUESTION_GENERATION_UNAVAILABLE`, `QUESTION_GROUNDING_FAILED`, `TRANSCRIPTION_UNAVAILABLE` |
+
+`TRANSCRIPT_REVIEW_REQUIRED` is raised as its own `TranscriptReviewRequired` exception, not an
+`InterviewError`: unlike every other refusal it *returns* its detail — the candidate's held
+transcript — because that transcript is the whole point of the response, not a secret to strip.
 
 `interview_grounding_not_found` answers one sentence that does not say which of the profile or the
 posting was missing, so a caller cannot probe for the existence of either.
@@ -334,6 +427,11 @@ board, LLM or transcriber (CLAUDE.md §Testing):
   V1's failures mapped to typed codes.
 - **`tests/test_v2_api_interview.py`** — the HTTP surface: status mapping, owner-as-`404`, the
   `201`s, and that no response carries a readiness the model authored.
+- **`tests/test_v2_persistence_interview_engine.py`** — the two turn races against a real
+  PostgreSQL database: two answers to one question store one and refuse the other
+  `QUESTION_ALREADY_ANSWERED`, two `next_question` calls ask one and conflict the other
+  `INTERVIEW_STATE_CONFLICT` (a barrier inside the fake LLM forces the derived-id collision), and
+  each leaves exactly one row — the property only a cross-connection race can show.
 - **`frontend/tests/nuxt/pages/interview.spec.ts`**, **`.../stores/interview.spec.ts`** and
   **`frontend/tests/e2e/interview.spec.ts`** — the page opens the latest session, grades an answer
   into coaching in place, shows readiness as a signal, and renders no probability or verdict.
@@ -349,6 +447,7 @@ board, LLM or transcriber (CLAUDE.md §Testing):
 - `backend/app/interview/service.py` — the one application service that orchestrates the pure pieces.
 - `backend/app/api/routes/interview.py` — the `/api/v2/interview-sessions` HTTP surface.
 - `backend/migrations/versions/rev_0012_phase_14_interview.py` — the five tables.
+- `backend/migrations/versions/rev_0013_phase_14_llm_run_provenance.py` — the four `SET NULL` `llm_run_id`/`plan_llm_run_id` provenance links.
 - `frontend/app/stores/interview.ts`, `frontend/app/pages/interview.vue` — the practice screen.
 
 

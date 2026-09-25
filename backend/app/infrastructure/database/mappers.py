@@ -2099,6 +2099,7 @@ def interview_session_to_row(session: InterviewSession,
     target.status = session.status
     target.language = session.language
     target.plan = session.plan.model_dump(mode="json")
+    target.plan_llm_run_id = session.plan_llm_run_id
     target.title = session.title
     target.created_at = session.created_at
     target.updated_at = session.updated_at
@@ -2122,6 +2123,8 @@ def interview_session_to_domain(row: InterviewSessionRow) -> InterviewSession:
         status=InterviewSessionStatus(row.status),
         language=row.language,
         plan=InterviewPlan.model_validate(row.plan),
+        plan_llm_run_id=(None if row.plan_llm_run_id is None
+                         else LLMRunId(row.plan_llm_run_id)),
         title=row.title,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -2146,6 +2149,7 @@ def interview_question_to_row(question: InterviewQuestion,
     target.follows_sequence = question.follows_sequence
     target.depth = question.depth
     target.generator_key = question.generator_key
+    target.llm_run_id = question.llm_run_id
     target.asked_at = question.asked_at
     return target
 
@@ -2163,6 +2167,7 @@ def interview_question_to_domain(row: InterviewQuestionRow) -> InterviewQuestion
         follows_sequence=row.follows_sequence,
         depth=row.depth,
         generator_key=row.generator_key,
+        llm_run_id=(None if row.llm_run_id is None else LLMRunId(row.llm_run_id)),
         asked_at=row.asked_at)
 
 
@@ -2212,6 +2217,7 @@ def interview_answer_evaluation_to_row(evaluation: InterviewAnswerEvaluation,
     target.improvements = list(evaluation.improvements)
     target.suggested_answer = evaluation.suggested_answer
     target.evaluator_key = evaluation.evaluator_key
+    target.llm_run_id = evaluation.llm_run_id
     target.evaluated_at = evaluation.evaluated_at
     return target
 
@@ -2236,6 +2242,7 @@ def interview_answer_evaluation_to_domain(
         improvements=tuple(row.improvements),
         suggested_answer=row.suggested_answer,
         evaluator_key=row.evaluator_key,
+        llm_run_id=(None if row.llm_run_id is None else LLMRunId(row.llm_run_id)),
         evaluated_at=row.evaluated_at)
 
 
@@ -2257,6 +2264,7 @@ def interview_session_summary_to_row(summary: InterviewSessionSummary,
     target.questions_asked = summary.questions_asked
     target.answers_evaluated = summary.answers_evaluated
     target.generator_key = summary.generator_key
+    target.llm_run_id = summary.llm_run_id
     target.created_at = summary.created_at
     return target
 
@@ -2274,6 +2282,7 @@ def interview_session_summary_to_domain(
         questions_asked=row.questions_asked,
         answers_evaluated=row.answers_evaluated,
         generator_key=row.generator_key,
+        llm_run_id=(None if row.llm_run_id is None else LLMRunId(row.llm_run_id)),
         created_at=row.created_at)
 
 

@@ -34,6 +34,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from backend.app.domain.identifiers import LLMRunId
 from backend.app.llm.capabilities import Capability
 from backend.app.llm.contracts import (
     LLMProvider,
@@ -124,6 +125,11 @@ class RoutingOutcome:
     served, more when the policy fell back. `fallback_from` and `fallback_reason` are
     set when the serving provider was not the first choice, so the telemetry run and a
     status page can show the platform switched and why (§29, §56).
+
+    `run_id` is the id of the `LLMRun` the recorder wrote for this call, set by the
+    recorder *after* it persists the run — `None` when no recorder wrapped the route, so
+    a caller that needs exact provenance (an interview artefact linking to its run) reads
+    the id straight from the outcome rather than racing a "latest run for this user" query.
     """
 
     response: LLMResponse
@@ -131,6 +137,7 @@ class RoutingOutcome:
     attempts: list[RoutingAttempt] = field(default_factory=list)
     fallback_from: str | None = None
     fallback_reason: LLMFailureCode | None = None
+    run_id: LLMRunId | None = None
 
 
 class NoProviderAvailable(LLMError):

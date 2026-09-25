@@ -49,6 +49,12 @@ from backend.app.infrastructure.database.models import (
     ConversationRow,
     EligibilityCheckRow,
     EligibilityResultRow,
+    InterviewAnswerEvaluationRow,
+    InterviewAnswerRow,
+    InterviewQuestionRow,
+    InterviewSessionRow,
+    InterviewSessionSummaryRow,
+    LLMRunRow,
     MatchDimensionScoreRow,
     MatchEvaluationRow,
     OpportunityRow,
@@ -57,6 +63,14 @@ from backend.app.infrastructure.database.models import (
     SearchProfileRow,
     UserRow,
     UserSessionRow,
+)
+from backend.app.infrastructure.database.mappers import (
+    interview_answer_evaluation_to_row,
+    interview_answer_to_row,
+    interview_question_to_row,
+    interview_session_summary_to_row,
+    interview_session_to_row,
+    llm_run_to_row,
 )
 from tests.v2_builders import (
     COMPANY,
@@ -68,7 +82,14 @@ from tests.v2_builders import (
     OTHER_OPPORTUNITY,
     OTHER_USER,
     PROFILE,
+    RUN,
     USER,
+    an_answer_evaluation,
+    an_interview_answer,
+    an_interview_question,
+    an_interview_session,
+    an_interview_session_summary,
+    an_llm_run,
 )
 from tests.v2_rows import a_candidate_profile_row, a_user_row, an_email_for
 
@@ -1045,3 +1066,87 @@ async def test_deleting_an_account_deletes_its_conversations(db_session):
     for model in (ConversationRow, ChatMessageRow, ChatActionProposalRow,
                   ChatActionExecutionRow):
         assert await _count(db_session, model) == 0, model.__tablename__
+
+
+async def seed_interview_provenance(session) -> None:
+    """A whole graded exchange, every generated artefact linked to one `LLMRun`.
+
+    The account, its profile, the posting and the run come first — the four foreign
+    keys an interview graph hangs off — then the session, its one question, the answer
+    to it and that answer's grade, and finally the closing summary. Built through the
+    mappers from valid domain values, because the point here is a cascade on well-formed
+    rows, not a rejected shape. All four provenance links point at the same run.
+    """
+    session.add(a_user_row())
+    await session.flush()
+    session.add_all([a_candidate_profile_row(), an_opportunity_row(),
+                     llm_run_to_row(an_llm_run(connection_id=None))])
+    await session.flush()
+    session.add(interview_session_to_row(an_interview_session(plan_llm_run_id=RUN)))
+    await session.flush()
+    session.add(interview_question_to_row(an_interview_question(llm_run_id=RUN)))
+    await session.flush()
+    session.add(interview_answer_to_row(an_interview_answer()))
+    await session.flush()
+    session.add_all([
+        interview_answer_evaluation_to_row(an_answer_evaluation(llm_run_id=RUN)),
+        interview_session_summary_to_row(an_interview_session_summary(llm_run_id=RUN)),
+    ])
+    await session.flush()
+
+
+async def test_deleting_a_run_unlinks_the_interview_artefacts_it_produced(db_session):
+    """`ON DELETE SET NULL` on every interview provenance link, and why it is not CASCADE.
+
+    A run is the telemetry of the call that generated a question, graded an answer or
+    wrote a summary — provenance the corrective added so an artefact is traceable to
+    exactly the call behind it. But the artefact is the candidate's practice history; the
+    run is bookkeeping about how it was produced. Pruning old telemetry must not delete a
+    session's questions and grades, so the link is severed, not the fact — the same trade
+    `llm_runs.connection_id` and `opportunities.company_id` make.
+
+    So deleting the run leaves all four artefacts standing with a `NULL` link, the honest
+    "produced by a run no longer on file" — never a dangling id, and never a lost grade.
+    """
+    await seed_interview_provenance(db_session)
+
+    await db_session.execute(delete(LLMRunRow).where(LLMRunRow.id == RUN))
+    db_session.expunge_all()
+
+    # Every artefact survives — the practice history is untouched by the pruning.
+    for model in (InterviewSessionRow, InterviewQuestionRow, InterviewAnswerRow,
+                  InterviewAnswerEvaluationRow, InterviewSessionSummaryRow):
+        assert await _count(db_session, model) == 1, model.__tablename__
+
+    # And each link the run backed now reads NULL, not a dangling reference.
+    session_run = await db_session.execute(
+        select(InterviewSessionRow.plan_llm_run_id))
+    question_run = await db_session.execute(select(InterviewQuestionRow.llm_run_id))
+    evaluation_run = await db_session.execute(
+        select(InterviewAnswerEvaluationRow.llm_run_id))
+    summary_run = await db_session.execute(select(InterviewSessionSummaryRow.llm_run_id))
+    assert session_run.scalar_one() is None
+    assert question_run.scalar_one() is None
+    assert evaluation_run.scalar_one() is None
+    assert summary_run.scalar_one() is None
+
+
+async def test_deleting_an_account_deletes_its_interview_history(db_session):
+    """"Delete my account" reaches the interview simulator, through one cascade from `users`.
+
+    A session, its questions, the answers, their grades and the summary are all the
+    account's, so each carries `user_id` and cascades from `users` — deleting the account
+    takes the whole practice history without a script that has to know the order. This is
+    the simulator's row in `test_deleting_an_account_deletes_everything`. The run, also
+    owned, goes with it; the shared posting stays.
+    """
+    await seed_interview_provenance(db_session)
+
+    await db_session.execute(delete(UserRow).where(UserRow.id == USER))
+    db_session.expunge_all()
+
+    for model in (InterviewSessionRow, InterviewQuestionRow, InterviewAnswerRow,
+                  InterviewAnswerEvaluationRow, InterviewSessionSummaryRow, LLMRunRow):
+        assert await _count(db_session, model) == 0, model.__tablename__
+    # The posting is not the account's to delete.
+    assert await _count(db_session, OpportunityRow) == 1

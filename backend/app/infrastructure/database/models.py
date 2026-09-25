@@ -2519,6 +2519,8 @@ class InterviewSessionRow(TimestampedMixin, Base):
     language: Mapped[str | None] = mapped_column(String(2))
     plan: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
+    plan_llm_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("llm_runs.id", ondelete="SET NULL"))
     title: Mapped[str]
     ended_at: Mapped[datetime | None]
 
@@ -2564,6 +2566,8 @@ class InterviewQuestionRow(TimestampedMixin, Base):
     follows_sequence: Mapped[int | None] = mapped_column(Integer)
     depth: Mapped[int] = mapped_column(SmallInteger, server_default=text("0"))
     generator_key: Mapped[str | None]
+    llm_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("llm_runs.id", ondelete="SET NULL"))
     asked_at: Mapped[datetime]
 
     session: Mapped["InterviewSessionRow"] = relationship(
@@ -2638,6 +2642,8 @@ class InterviewAnswerEvaluationRow(TimestampedMixin, Base):
         JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
     suggested_answer: Mapped[str | None]
     evaluator_key: Mapped[str | None]
+    llm_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("llm_runs.id", ondelete="SET NULL"))
     evaluated_at: Mapped[datetime]
 
 
@@ -2678,6 +2684,8 @@ class InterviewSessionSummaryRow(TimestampedMixin, Base):
     questions_asked: Mapped[int] = mapped_column(Integer)
     answers_evaluated: Mapped[int] = mapped_column(Integer)
     generator_key: Mapped[str | None]
+    llm_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("llm_runs.id", ondelete="SET NULL"))
 
 
 

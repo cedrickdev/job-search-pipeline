@@ -39,7 +39,11 @@ from backend.app.documents import ArtifactNotFound
 from backend.app.documents.generator import InsufficientEvidence
 from backend.app.domain.application_failure import ApplicationError, ApplicationFailureCode
 from backend.app.domain.interview import InterviewErrorCode
-from backend.app.interview.service import InterviewError, InterviewGroundingNotFound
+from backend.app.interview.service import (
+    InterviewError,
+    InterviewGroundingNotFound,
+    TranscriptReviewRequired,
+)
 from backend.app.llm.failures import LLMError, LLMFailureCode
 from backend.app.services.applications import (
     ApplicationDecisionMissing,
@@ -132,10 +136,14 @@ _APPLICATION_STATUS: Final[dict[ApplicationFailureCode, int]] = {
 _INTERVIEW_STATUS: Final[dict[InterviewErrorCode, int]] = {
     InterviewErrorCode.SESSION_NOT_FOUND: status.HTTP_404_NOT_FOUND,
     InterviewErrorCode.QUESTION_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    InterviewErrorCode.APPLICATION_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    InterviewErrorCode.APPLICATION_OPPORTUNITY_MISMATCH: status.HTTP_409_CONFLICT,
+    InterviewErrorCode.INTERVIEW_STATE_CONFLICT: status.HTTP_409_CONFLICT,
     InterviewErrorCode.AUDIO_TOO_LARGE: CONTENT_TOO_LARGE,
     InterviewErrorCode.UNSUPPORTED_AUDIO: UNSUPPORTED_MEDIA_TYPE,
     InterviewErrorCode.EVALUATION_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
     InterviewErrorCode.QUESTION_GENERATION_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
+    InterviewErrorCode.QUESTION_GROUNDING_FAILED: status.HTTP_503_SERVICE_UNAVAILABLE,
     InterviewErrorCode.TRANSCRIPTION_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
@@ -454,6 +462,21 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         # existence of either; the ids it carries are the client's own but are not echoed.
         return _json(status.HTTP_404_NOT_FOUND, "interview_grounding_not_found",
                      "no candidate profile and opportunity to open a session about")
+
+    @app.exception_handler(TranscriptReviewRequired)
+    async def _transcript_review_required(
+            request: Request, exc: TranscriptReviewRequired) -> JSONResponse:
+        # 422 with the transcript in the body, not a bare refusal: a voice answer transcribed
+        # below the auto-evaluate confidence is held for the candidate to read and confirm
+        # before it counts (§44-49). Nothing was recorded and readiness is untouched, so
+        # speech-to-text uncertainty never shapes the signal. The transcript is the candidate's
+        # own would-be words — not a secret, and the whole point of the response — so unlike an
+        # `InterviewError.detail` it is returned, for the client to show and let the candidate
+        # resubmit as a text answer. `confidence` rides along so a UI can explain why.
+        return _json(UNPROCESSABLE_CONTENT, exc.code.value.lower(),
+                     "the transcript's confidence was too low to grade automatically; "
+                     "please review and confirm it",
+                     transcript=exc.transcript, confidence=exc.confidence)
 
     @app.exception_handler(IntegrityError)
     async def _integrity(request: Request, exc: IntegrityError) -> JSONResponse:

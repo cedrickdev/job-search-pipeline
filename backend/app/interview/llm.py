@@ -31,13 +31,15 @@ it (§56).
 """
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, Self, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from backend.app.domain.identifiers import interview_answer_evaluation_id
+from backend.app.domain.identifiers import LLMRunId, interview_answer_evaluation_id
 from backend.app.domain.interview import (
+    EvaluationStatus,
     InterviewAnswer,
     InterviewAnswerEvaluation,
     InterviewDifficulty,
@@ -61,6 +63,22 @@ from backend.app.llm.router import LLMRouter, RoutingPolicy
 LLM_INTERVIEW_KEY = "llm-backed/1"
 
 _T = TypeVar("_T", bound=BaseModel)
+
+
+@dataclass(frozen=True)
+class InterviewLLMResult[T: BaseModel]:
+    """One re-validated artefact paired with the exact `LLMRun` that produced it (§27-40).
+
+    The adapter's public methods return this rather than a bare value so the service can
+    stamp `llm_run_id` onto what it persists without a second, race-prone "latest run for
+    this user" lookup — the id is the one the recorder wrote for *this* call, carried back
+    on the routing outcome. `llm_run_id` is `None` when no recorder wrapped the route (a
+    unit test of composition, or a provider used with telemetry off): provenance is exact
+    when it exists and honestly absent when it does not, never invented.
+    """
+
+    value: T
+    llm_run_id: LLMRunId | None = None
 
 
 class _InterviewProposal(BaseModel):
@@ -152,35 +170,40 @@ class InterviewLLM:
         return LLM_INTERVIEW_KEY
 
     async def propose_plan(self, *, context: InterviewContext,
-                           mode: InterviewMode) -> InterviewPlan:
+                           mode: InterviewMode) -> InterviewLLMResult[InterviewPlan]:
         """The coverage plan for one session, re-validated against `InterviewPlan` (§20-25).
 
         The model proposes topics; the layer stamps the session's `mode` and re-validates the
         whole against the domain — so a topic with an unknown `question_type`, a repeated
         topic, or an empty list fails to parse into a plan, exactly as it would if a test
         built one by hand. The mode is the platform's, never the model's: it is merged in
-        here, not read from the payload.
+        here, not read from the payload. The result carries the run behind the plan, which
+        the session records as `plan_llm_run_id`.
         """
         payload = "\n\n".join((
             context.render_candidate(),
             context.render_role(),
             f"=== TASK ===\nDesign the coverage plan for a {mode.value} mock interview.",
         ))
-        response = await self._run(PromptName.INTERVIEW_PLAN, payload)
+        response, run_id = await self._run(PromptName.INTERVIEW_PLAN, payload)
         data = self._json_object(response)
-        return self._validate({**data, "mode": mode}, InterviewPlan)
+        plan = self._validate({**data, "mode": mode}, InterviewPlan)
+        return InterviewLLMResult(value=plan, llm_run_id=run_id)
 
     async def generate_question(self, *, context: InterviewContext, mode: InterviewMode,
                                 question_type: InterviewQuestionType,
                                 difficulty: InterviewDifficulty,
                                 topic_label: str | None = None,
-                                already_asked: Sequence[str] = ()) -> ProposedQuestion:
+                                already_asked: Sequence[str] = ()
+                                ) -> InterviewLLMResult[ProposedQuestion]:
         """One proposed question at the engine's requested type and difficulty (§8-9, §64-72).
 
         The engine decides the type, the difficulty rung and the topic; the model writes the
         prompt. `already_asked` lets the model avoid repeating a question it has posed — a
         convenience for the model, not a guarantee the engine relies on. The return is an
-        identity-free `ProposedQuestion`; the engine assigns the id, sequence and depth.
+        identity-free `ProposedQuestion` paired with its run; the engine assigns the id,
+        sequence and depth, and — after the deterministic grounding guard clears it — records
+        the run as the question's `llm_run_id`.
         """
         task = [
             "=== TASK ===",
@@ -197,22 +220,26 @@ class InterviewLLM:
             context.render_role(),
             "\n".join(task),
         ))
-        response = await self._run(PromptName.INTERVIEW_QUESTION, payload)
-        return self._validate(self._json_object(response), ProposedQuestion)
+        response, run_id = await self._run(PromptName.INTERVIEW_QUESTION, payload)
+        proposal = self._validate(self._json_object(response), ProposedQuestion)
+        return InterviewLLMResult(value=proposal, llm_run_id=run_id)
 
     async def evaluate_answer(self, *, context: InterviewContext,
                               question: InterviewQuestion, answer: InterviewAnswer,
-                              evaluated_at: datetime) -> InterviewAnswerEvaluation:
+                              evaluated_at: datetime
+                              ) -> InterviewLLMResult[InterviewAnswerEvaluation]:
         """A full `InterviewAnswerEvaluation` for one answer — but never a readiness (§33, §93).
 
         The load-bearing method. The model returns per-axis grades and coaching prose; the
         layer merges in the fields it — not the model — owns (the deterministic id, the
-        answer/session/user the evaluation belongs to, the evaluator key, the timestamp) and
-        re-validates the whole against `InterviewAnswerEvaluation`. Because that schema has no
-        readiness field and forbids extras, a payload carrying a `readiness`, a `probability`
-        or a hiring `verdict` fails to parse here — the model cannot author readiness, the
-        platform computes it later from a whole session. Platform-owned keys are applied
-        *after* the model's, so a provider cannot forge its own id or backdate a run.
+        answer/session/user the evaluation belongs to, the evaluator key, the exact
+        `llm_run_id`, the timestamp) and re-validates the whole against
+        `InterviewAnswerEvaluation`. Because that schema has no readiness field and forbids
+        extras, a payload carrying a `readiness`, a `probability` or a hiring `verdict` fails
+        to parse here — the model cannot author readiness, the platform computes it later from
+        a whole session. Platform-owned keys are applied *after* the model's, so a provider
+        cannot forge its own id, backdate a run, or claim a different `llm_run_id` than the
+        one the recorder actually wrote for this call.
         """
         payload = "\n\n".join((
             context.render_candidate(),
@@ -223,7 +250,7 @@ class InterviewLLM:
             answer.content,
             "=== TASK ===\nGrade this answer on the dimensions you can judge.",
         ))
-        response = await self._run(PromptName.INTERVIEW_EVALUATION, payload)
+        response, run_id = await self._run(PromptName.INTERVIEW_EVALUATION, payload)
         data = self._json_object(response)
         owned = {
             "id": interview_answer_evaluation_id(answer.id),
@@ -231,20 +258,29 @@ class InterviewLLM:
             "session_id": answer.session_id,
             "user_id": answer.user_id,
             "evaluator_key": self.key,
+            "llm_run_id": run_id,
             "evaluated_at": evaluated_at,
         }
-        return self._validate({**data, **owned}, InterviewAnswerEvaluation)
+        evaluation = self._validate({**data, **owned}, InterviewAnswerEvaluation)
+        return InterviewLLMResult(value=evaluation, llm_run_id=run_id)
 
     async def decide_follow_up(self, *, context: InterviewContext,
                                question: InterviewQuestion,
-                               answer: InterviewAnswer) -> FollowUpDecision:
-        """Whether this answer warrants a follow-up, and the question if so (§26-29).
+                               answer: InterviewAnswer,
+                               evaluation: InterviewAnswerEvaluation
+                               ) -> InterviewLLMResult[FollowUpDecision]:
+        """Whether this answer warrants a follow-up, and the question if so (§18-29, §53-54).
 
-        The model sees the question and the candidate's own answer — the answer is the
-        candidate's words, so a follow-up that quotes it invents nothing. The role grounds the
-        probe; the decision is an identity-free `FollowUpDecision` whose invariant guarantees
-        a prompt and a type whenever it says to ask, so the engine never faces "ask, but no
-        question". The engine still owns whether depth allows the follow-up at all (§28).
+        The model sees the question, the candidate's own answer, and the *structured facts*
+        of the evaluation already computed for it — the per-axis grades and the improvements,
+        never any hidden chain of reasoning — so an adaptive follow-up drills into a dimension
+        the answer actually left thin rather than re-deriving a judgement (§18-26). The
+        evaluation is loaded and passed by the service, never recomputed here, and this call
+        never mutates it. The answer is the candidate's words, so a follow-up that quotes it
+        invents nothing; the role grounds the probe. The decision is an identity-free
+        `FollowUpDecision` whose invariant guarantees a prompt and a type whenever it says to
+        ask, so the engine never faces "ask, but no question". The engine still owns whether
+        depth allows the follow-up at all (§28).
         """
         payload = "\n\n".join((
             context.render_role(),
@@ -252,20 +288,25 @@ class InterviewLLM:
             question.prompt,
             "=== CANDIDATE ANSWER ===",
             answer.content,
-            "=== TASK ===\nDecide whether a single follow-up question is warranted.",
+            "=== EVALUATION OF THIS ANSWER ===",
+            _render_evaluation_facts(evaluation),
+            "=== TASK ===\nDecide whether a single follow-up question is warranted, "
+            "drilling into a dimension the evaluation marked weak or incomplete.",
         ))
-        response = await self._run(PromptName.INTERVIEW_FOLLOW_UP, payload)
-        return self._validate(self._json_object(response), FollowUpDecision)
+        response, run_id = await self._run(PromptName.INTERVIEW_FOLLOW_UP, payload)
+        decision = self._validate(self._json_object(response), FollowUpDecision)
+        return InterviewLLMResult(value=decision, llm_run_id=run_id)
 
     async def generate_summary(self, *, context: InterviewContext, mode: InterviewMode,
-                               transcript: str) -> ProposedSummary:
+                               transcript: str) -> InterviewLLMResult[ProposedSummary]:
         """The closing coaching prose for a session — the readiness is paired in by the service.
 
         The model is given a rendered transcript of the practice (the questions and answers)
         and writes a headline, strengths and focus areas *about the practice*. It is never
         given or asked for a readiness: the platform has already computed one from the grades,
         and the service pairs it with this prose. Every returned string is run through the
-        evidence guard before anything is persisted (§40-44).
+        evidence guard before anything is persisted (§40-44). The result carries the run
+        behind the prose, which the summary records as its `llm_run_id`.
         """
         payload = "\n\n".join((
             context.render_candidate(),
@@ -274,18 +315,22 @@ class InterviewLLM:
             transcript,
             "=== TASK ===\nWrite the closing coaching summary for this practice session.",
         ))
-        response = await self._run(PromptName.INTERVIEW_SUMMARY, payload)
-        return self._validate(self._json_object(response), ProposedSummary)
+        response, run_id = await self._run(PromptName.INTERVIEW_SUMMARY, payload)
+        summary = self._validate(self._json_object(response), ProposedSummary)
+        return InterviewLLMResult(value=summary, llm_run_id=run_id)
 
     # --- routing and re-validation -----------------------------------------
 
-    async def _run(self, name: PromptName, payload: str) -> LLMResponse:
-        """Render the named prompt around the payload, route it, and return the answer.
+    async def _run(self, name: PromptName, payload: str) -> tuple[LLMResponse, LLMRunId | None]:
+        """Render the named prompt around the payload, route it, and return answer + run id.
 
         The recorder wraps the router (it does not replace it), so telemetry being on or off
         changes nothing about which provider serves or how a failure propagates — an
         `LLMError` from routing is re-raised unchanged for the service to map. Rendering here,
-        from a `PromptName`, keeps the version the registry serves recorded on the run.
+        from a `PromptName`, keeps the version the registry serves recorded on the run. The
+        outcome's `run_id` — set by the recorder when it persisted the run — is returned
+        alongside the response so a caller stamps exact provenance without a follow-up query;
+        it is `None` on the no-recorder path.
         """
         request = self._prompts.get(name).render(user_content=payload)
         if self._recorder is not None:
@@ -293,7 +338,7 @@ class InterviewLLM:
                 self._router, request, self._policy, user_id=self._user_id)
         else:
             outcome = await self._router.route(request, self._policy)
-        return outcome.response
+        return outcome.response, outcome.run_id
 
     def _validate(self, data: Any, model: type[_T]) -> _T:
         """Re-validate a payload against a domain model or a proposal (§42).
@@ -344,6 +389,28 @@ class InterviewLLM:
             raise LLMError(
                 LLMFailureCode.STRUCTURED_OUTPUT_INVALID,
                 detail="the model did not return parseable JSON") from exc
+
+
+def _render_evaluation_facts(evaluation: InterviewAnswerEvaluation) -> str:
+    """The evaluation's structured facts for the follow-up prompt — grades and improvements.
+
+    Only the machine-checkable facts the platform already trusts travel into the follow-up
+    decision: each dimension's status and, when `EVALUATED`, its score (a `NOT_EVALUATED`
+    axis reads "not assessed", never a zero, keeping the domain's distinction intact), plus
+    the improvements the evaluation named. Per-dimension `notes` are deliberately omitted —
+    they are the evaluator's free-text reasoning, and the follow-up drills into *what* was
+    thin, not *how* the grader phrased it.
+    """
+    lines = ["Dimension grades:"]
+    for entry in evaluation.dimensions:
+        if entry.status is EvaluationStatus.EVALUATED and entry.score is not None:
+            lines.append(f"- {entry.dimension.value}: {entry.score:.2f}")
+        else:
+            lines.append(f"- {entry.dimension.value}: not assessed")
+    if evaluation.improvements:
+        lines.append("Improvements to probe:")
+        lines += [f"- {item}" for item in evaluation.improvements]
+    return "\n".join(lines)
 
 
 

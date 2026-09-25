@@ -562,7 +562,7 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     interview = InterviewService(
         sessions=interview_sessions, questions=interview_questions,
         answers=interview_answers, evaluations=interview_evaluations,
-        summaries=interview_summaries,
+        summaries=interview_summaries, applications=applications,
         context=InterviewContextBuilder(profiles=profiles, opportunities=postings),
         llm=interview_llm, transcriber=interview_transcriber)
     app.dependency_overrides[interview_service] = lambda: interview

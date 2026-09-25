@@ -9292,7 +9292,7 @@
         ]
       },
       "post": {
-        "description": "Plan and open a practice session against one posting, grounded in the account's profile.\n\n201, because it creates a resource. The body names the profile and posting to rehearse\nand the `mode`; the session opens `CREATED`, and the platform stamps its plan's mode so\nthe session and plan can never disagree. A foreign or missing profile/posting is a 404\n(`interview_grounding_not_found`) that does not say which was missing. No question is asked\nyet — the first `next-question` starts the exchange.",
+        "description": "Plan and open a practice session against one posting, grounded in the account's profile.\n\n201, because it creates a resource. The body names the profile and posting to rehearse\nand the `mode`; the session opens `CREATED`, and the platform stamps its plan's mode so\nthe session and plan can never disagree. A foreign or missing profile/posting is a 404\n(`interview_grounding_not_found`) that does not say which was missing. An `application_id`,\nwhen given, must be this account's and rehearse this very posting: a foreign or missing one\nis 404 (`application_not_found`), and one for a different opportunity is 409\n(`application_opportunity_mismatch`). No question is asked yet — the first `next-question`\nstarts the exchange.",
         "operationId": "create_session_api_v2_interview_sessions_post",
         "requestBody": {
           "content": {
@@ -9727,7 +9727,7 @@
     },
     "/api/v2/interview-sessions/{session_id}/voice-answers": {
       "post": {
-        "description": "Transcribe a spoken answer, then record and grade it exactly like a typed one.\n\n201, like a text answer. The session is confirmed active before a byte is transcribed, so\na dead session spends no transcription; the raw audio is transcribed and discarded, and\nonly the transcript is stored and graded. An upload larger than the transcriber accepts is\n413, an unsupported media type is 415, and a transcriber that is unavailable or returns an\nempty transcript is 503 — the audio bytes are never echoed back. The upload's declared\ncontent type is passed through as-is for the transcriber to validate.",
+        "description": "Transcribe a spoken answer, then record and grade it exactly like a typed one.\n\n201, like a text answer. The session is confirmed active before a byte is transcribed, so\na dead session spends no transcription; the raw audio is transcribed and discarded, and\nonly the transcript is stored and graded. An upload larger than the transcriber accepts is\n413, an unsupported media type is 415, and a transcriber that is unavailable or returns an\nempty transcript is 503 — the audio bytes are never echoed back. A transcript whose\nconfidence falls below the auto-evaluate threshold is 422 (`transcript_review_required`),\ncarrying the transcript for the candidate to review and resubmit as a text answer: nothing\nis recorded and readiness is untouched, so speech-to-text uncertainty never grades an\nanswer. The upload's declared content type is passed through as-is for the transcriber to\nvalidate.",
         "operationId": "submit_voice_answer_api_v2_interview_sessions__session_id__voice_answers_post",
         "parameters": [
           {

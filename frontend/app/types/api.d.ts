@@ -1127,8 +1127,11 @@ export interface paths {
          *     201, because it creates a resource. The body names the profile and posting to rehearse
          *     and the `mode`; the session opens `CREATED`, and the platform stamps its plan's mode so
          *     the session and plan can never disagree. A foreign or missing profile/posting is a 404
-         *     (`interview_grounding_not_found`) that does not say which was missing. No question is asked
-         *     yet — the first `next-question` starts the exchange.
+         *     (`interview_grounding_not_found`) that does not say which was missing. An `application_id`,
+         *     when given, must be this account's and rehearse this very posting: a foreign or missing one
+         *     is 404 (`application_not_found`), and one for a different opportunity is 409
+         *     (`application_opportunity_mismatch`). No question is asked yet — the first `next-question`
+         *     starts the exchange.
          */
         post: operations["create_session_api_v2_interview_sessions_post"];
         delete?: never;
@@ -1375,8 +1378,12 @@ export interface paths {
          *     a dead session spends no transcription; the raw audio is transcribed and discarded, and
          *     only the transcript is stored and graded. An upload larger than the transcriber accepts is
          *     413, an unsupported media type is 415, and a transcriber that is unavailable or returns an
-         *     empty transcript is 503 — the audio bytes are never echoed back. The upload's declared
-         *     content type is passed through as-is for the transcriber to validate.
+         *     empty transcript is 503 — the audio bytes are never echoed back. A transcript whose
+         *     confidence falls below the auto-evaluate threshold is 422 (`transcript_review_required`),
+         *     carrying the transcript for the candidate to review and resubmit as a text answer: nothing
+         *     is recorded and readiness is untouched, so speech-to-text uncertainty never grades an
+         *     answer. The upload's declared content type is passed through as-is for the transcriber to
+         *     validate.
          */
         post: operations["submit_voice_answer_api_v2_interview_sessions__session_id__voice_answers_post"];
         delete?: never;

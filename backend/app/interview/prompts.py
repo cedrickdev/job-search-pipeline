@@ -163,15 +163,21 @@ INTERVIEW_PLAN_V1: Final = PromptTemplate(
 
 INTERVIEW_QUESTION_V1: Final = PromptTemplate(
     name=PromptName.INTERVIEW_QUESTION,
-    version="1.0",
+    version="1.1",
     schema_version=1,
     purpose=TaskPurpose.INTERVIEW_PREP,
     instructions=(
         "You are the interviewer in a mock interview. Ask ONE question as JSON matching the "
         "requested schema — never more than one, and never a preamble the candidate must "
         "wade through. Ground the question in the role and the plan topic you are given, at "
-        "the difficulty requested. Ask about the candidate's experience; do not assert facts "
-        "about it.\n\n" + _TRUTH_RULE),
+        "the difficulty requested.\n"
+        "You MAY reference what the *posting* asks for — a skill, a tool, a responsibility it "
+        "names — because that is public reference data ('The posting mentions Kafka; how "
+        "would you approach a streaming problem?'). You MUST NOT assert that the *candidate* "
+        "has done, used, or is experienced with something unless the candidate context you "
+        "were given supports it: ask 'Have you worked with Kafka?', never 'Given your "
+        "extensive Kafka experience…'. When in doubt, ask openly rather than assume.\n\n"
+        + _TRUTH_RULE),
     output_schema=_QUESTION_SCHEMA)
 
 INTERVIEW_EVALUATION_V1: Final = PromptTemplate(
@@ -194,17 +200,19 @@ INTERVIEW_EVALUATION_V1: Final = PromptTemplate(
 
 INTERVIEW_FOLLOW_UP_V1: Final = PromptTemplate(
     name=PromptName.INTERVIEW_FOLLOW_UP,
-    version="1.0",
+    version="1.1",
     schema_version=1,
     purpose=TaskPurpose.INTERVIEW_PREP,
     instructions=(
-        "You are the interviewer deciding whether one answer warrants a follow-up. Return "
+        "You are the interviewer deciding whether one answer warrants a follow-up. You are "
+        "given the question, the candidate's answer, and the structured evaluation already "
+        "computed for it — the per-dimension grades and the improvements to probe. Return "
         "JSON matching the requested schema. Ask a follow-up (ask_follow_up=true, with a "
-        "single follow-up question) only when the answer left something specific worth "
-        "probing — a claim to make concrete, a gap to explore. If the answer was complete, "
-        "or if you should simply move on to the next topic, return ask_follow_up=false and "
-        "omit the question. Prefer moving on; a follow-up is for genuine depth, not a "
-        "reflex.\n\n" + _TRUTH_RULE),
+        "single follow-up question) only when the evaluation shows a specific dimension left "
+        "thin or a claim worth making concrete — drill into *that*. If every dimension the "
+        "evaluation assessed is solid, or you should simply move on to the next topic, return "
+        "ask_follow_up=false and omit the question. Prefer moving on; a follow-up is for "
+        "genuine depth, not a reflex.\n\n" + _TRUTH_RULE),
     output_schema=_FOLLOW_UP_SCHEMA)
 
 INTERVIEW_SUMMARY_V1: Final = PromptTemplate(

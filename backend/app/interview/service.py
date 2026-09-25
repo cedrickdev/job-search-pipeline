@@ -34,11 +34,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy.exc import IntegrityError
+
 from backend.app.domain.base import LanguageCode
 from backend.app.domain.identifiers import (
     ApplicationId,
     CandidateProfileId,
     InterviewSessionId,
+    LLMRunId,
     OpportunityId,
     UserId,
     interview_answer_id,
@@ -66,7 +69,7 @@ from backend.app.domain.interview import (
 from backend.app.interview.context import InterviewContext, InterviewContextBuilder
 from backend.app.interview.engine import InterviewQuestionEngine, QuestionRequest
 from backend.app.interview.guard import InterviewCoachingGuard
-from backend.app.interview.llm import InterviewLLM
+from backend.app.interview.llm import InterviewLLM, InterviewLLMResult, ProposedQuestion
 from backend.app.interview.transcriber import (
     InterviewAudio,
     SpeechTranscriber,
@@ -75,6 +78,7 @@ from backend.app.interview.transcriber import (
 from backend.app.llm.failures import LLMError
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
+    ApplicationRepository,
     InterviewAnswerEvaluationRepository,
     InterviewAnswerRepository,
     InterviewQuestionRepository,
@@ -97,6 +101,15 @@ _FALLBACK_SUMMARY_HEADLINE = "Practice session complete — see your readiness b
 # The longest a derived session title may be, so a session list can show it whole. A caption
 # the caller may override, never model-authored authority.
 _MAX_TITLE_LENGTH = 120
+
+# The confidence a voice transcript must clear to be auto-evaluated (§44-49). A spoken answer
+# transcribed *below* this is held for the candidate to confirm the words before any grade is
+# computed, because grading a mis-heard answer would let speech-to-text uncertainty shape
+# readiness — and STT uncertainty must never be a readiness signal. `None` confidence (a
+# transcriber, like whisper.cpp, that does not report one) is *not* below the threshold: it
+# takes the normal path, because "unknown" is not "known-low". Configurable per deployment via
+# the service's constructor; this is the default a well-calibrated transcriber clears easily.
+MIN_AUTO_EVALUATE_TRANSCRIPT_CONFIDENCE = 0.5
 
 
 class InterviewError(Exception):
@@ -130,6 +143,28 @@ class InterviewGroundingNotFound(Exception):
             f"{opportunity_id}")
         self.candidate_profile_id = candidate_profile_id
         self.opportunity_id = opportunity_id
+
+
+class TranscriptReviewRequired(Exception):
+    """A voice answer transcribed too uncertainly to auto-grade — held for confirmation (§44-49).
+
+    Raised by `submit_voice_answer` when the transcriber reported a confidence *below* the
+    auto-evaluate threshold, before anything is recorded: no answer is stored, no evaluation
+    is run, and — the load-bearing consequence — readiness is untouched, so speech-to-text
+    uncertainty never silently lowers it. The transcript rides on the exception so the API can
+    return it (a 422) for the candidate to read and confirm; confirmation is a fresh text
+    submission of the corrected words through the ordinary `submit_text_answer` path, which
+    converges voice and text into the one pipeline. Distinct from `InterviewError` because it
+    is not a refusal of the operation so much as a request for a human check, and it must carry
+    the transcript that an `InterviewError`'s secret-free `detail` deliberately never would.
+    """
+
+    def __init__(self, transcript: str, confidence: float | None) -> None:
+        super().__init__(
+            f"transcript confidence {confidence} is below the auto-evaluate threshold")
+        self.code = InterviewErrorCode.TRANSCRIPT_REVIEW_REQUIRED
+        self.transcript = transcript
+        self.confidence = confidence
 
 
 @dataclass(frozen=True)
@@ -193,21 +228,26 @@ class InterviewService:
                  answers: InterviewAnswerRepository,
                  evaluations: InterviewAnswerEvaluationRepository,
                  summaries: InterviewSessionSummaryRepository,
+                 applications: ApplicationRepository,
                  context: InterviewContextBuilder,
                  llm: InterviewLLM,
                  transcriber: SpeechTranscriber,
                  engine: InterviewQuestionEngine | None = None,
-                 guard: InterviewCoachingGuard | None = None) -> None:
+                 guard: InterviewCoachingGuard | None = None,
+                 min_auto_evaluate_transcript_confidence: float =
+                     MIN_AUTO_EVALUATE_TRANSCRIPT_CONFIDENCE) -> None:
         self._sessions = sessions
         self._questions = questions
         self._answers = answers
         self._evaluations = evaluations
         self._summaries = summaries
+        self._applications = applications
         self._context = context
         self._llm = llm
         self._transcriber = transcriber
         self._engine = engine or InterviewQuestionEngine()
         self._guard = guard or InterviewCoachingGuard()
+        self._min_transcript_confidence = min_auto_evaluate_transcript_confidence
 
     async def create_session(self, user_id: UserId, *,
                              candidate_profile_id: CandidateProfileId,
@@ -218,26 +258,31 @@ class InterviewService:
                              language: LanguageCode | None = None,
                              application_id: ApplicationId | None = None,
                              title: str | None = None) -> InterviewSession:
-        """Plan and open a `CREATED` session for one posting (§20-25).
+        """Plan and open a `CREATED` session for one posting (§20-25, §2-9, §62-63).
 
         Loads the grounding (owner-first, so a foreign or missing profile/posting raises
-        `InterviewGroundingNotFound`), asks the provider for a coverage plan and re-validates
-        it against the domain (a bad plan is `QUESTION_GENERATION_UNAVAILABLE`, never a
-        half-built session), and stores a planned-but-not-started session. The plan's mode is
-        stamped by the platform, never read from the payload, so the session and its plan can
-        never disagree.
+        `InterviewGroundingNotFound`); when an `application_id` is named, resolves it
+        owner-first and requires it to rehearse *this* session's opportunity (a foreign,
+        missing, or mismatched application is refused before the session exists); asks the
+        provider for a coverage plan and re-validates it against the domain (a bad plan is
+        `QUESTION_GENERATION_UNAVAILABLE`, never a half-built session); and stores a
+        planned-but-not-started session. The plan's mode is stamped by the platform, never
+        read from the payload, so the session and its plan can never disagree, and the run
+        that authored the plan is recorded as `plan_llm_run_id` for exact provenance (§27-40).
         """
         context = await self._context.build(
             user_id=user_id, candidate_profile_id=candidate_profile_id,
             opportunity_id=opportunity_id)
         if context is None:
             raise InterviewGroundingNotFound(candidate_profile_id, opportunity_id)
-        plan = await self._propose_plan(context, mode)
+        await self._verify_application(user_id, application_id, opportunity_id)
+        plan_result = await self._propose_plan(context, mode)
         session = InterviewSession(
             id=new_interview_session_id(), user_id=user_id,
             candidate_profile_id=candidate_profile_id, opportunity_id=opportunity_id,
             application_id=application_id, mode=mode, style=style, difficulty=difficulty,
-            status=InterviewSessionStatus.CREATED, language=language, plan=plan,
+            status=InterviewSessionStatus.CREATED, language=language, plan=plan_result.value,
+            plan_llm_run_id=plan_result.llm_run_id,
             title=_derive_title(title, context), created_at=now, updated_at=now)
         return await self._sessions.upsert(session)
 
@@ -317,12 +362,20 @@ class InterviewService:
 
     async def submit_voice_answer(self, user_id: UserId, session_id: InterviewSessionId,
                                   audio: InterviewAudio, *, now: datetime) -> AnswerOutcome:
-        """Transcribe a spoken answer, then record and grade it exactly like text (§14-17).
+        """Transcribe a spoken answer, then record and grade it exactly like text (§14-17, §44-49).
 
         The session is confirmed active *before* a byte is transcribed, so a dead session
         spends no transcription. The raw audio is transcribed and discarded by the transcriber
         itself; only the text is stored. A transcriber refusal (unavailable, too large,
         unsupported, or an empty transcript) surfaces as the matching typed `InterviewError`.
+
+        When the transcriber reports a confidence *below* the auto-evaluate threshold, the
+        answer is not recorded or graded at all: `TranscriptReviewRequired` is raised carrying
+        the transcript, so the candidate confirms the words (a fresh text submission) before
+        anything counts. This runs before `_submit`, so a mis-heard answer never reaches the
+        evaluator and speech-to-text uncertainty never touches readiness. A `None` confidence
+        (a transcriber that does not report one) is *not* treated as low — it takes the normal
+        path, because "unknown" is not "known-low".
         """
         await self._require_active(user_id, session_id)
         try:
@@ -332,6 +385,9 @@ class InterviewService:
         if not result.text.strip():
             raise InterviewError(InterviewErrorCode.TRANSCRIPTION_UNAVAILABLE,
                                  "the transcript was empty")
+        if (result.confidence is not None
+                and result.confidence < self._min_transcript_confidence):
+            raise TranscriptReviewRequired(result.text, result.confidence)
         return await self._submit(user_id, session_id,
                                   fmt=InterviewAnswerFormat.VOICE, content=result.text,
                                   transcript_confidence=result.confidence, now=now)
@@ -414,10 +470,15 @@ class InterviewService:
 
         The current question is the last one asked; if it already has an answer the submit is
         `QUESTION_ALREADY_ANSWERED` (one answer per question in Phase 14), and if no question
-        has been asked it is `NO_CURRENT_QUESTION`. The answer is stored first, then graded:
-        grading is best-effort, so a provider or guard failure yields `evaluation=None` rather
-        than losing the stored answer. A produced evaluation adapts the session's difficulty
-        for the next question (§32).
+        has been asked it is `NO_CURRENT_QUESTION`. The read-then-write check catches the
+        sequential resubmit; the `UNIQUE(question_id)` constraint catches the concurrent one —
+        two submissions that both pass the read then race to insert, where the loser's flush
+        raises an `IntegrityError` that is caught here and re-raised as the same typed
+        `QUESTION_ALREADY_ANSWERED`, never surfaced raw and never overwriting the winner's
+        immutable answer (§41-43). The answer is stored first, then graded: grading is
+        best-effort, so a provider or guard failure yields `evaluation=None` rather than losing
+        the stored answer. A produced evaluation adapts the session's difficulty for the next
+        question (§32).
         """
         session = await self._require_active(user_id, session_id)
         asked = await self._questions.list_for_session(user_id, session_id)
@@ -428,10 +489,14 @@ class InterviewService:
         if await self._answers.get_for_question(user_id, current.id) is not None:
             raise InterviewError(InterviewErrorCode.QUESTION_ALREADY_ANSWERED,
                                  "the current question already has an answer")
-        answer = await self._answers.upsert(InterviewAnswer(
-            id=interview_answer_id(current.id), question_id=current.id,
-            session_id=session.id, user_id=session.user_id, format=fmt, content=content,
-            transcript_confidence=transcript_confidence, answered_at=now))
+        try:
+            answer = await self._answers.upsert(InterviewAnswer(
+                id=interview_answer_id(current.id), question_id=current.id,
+                session_id=session.id, user_id=session.user_id, format=fmt, content=content,
+                transcript_confidence=transcript_confidence, answered_at=now))
+        except IntegrityError as exc:
+            raise InterviewError(InterviewErrorCode.QUESTION_ALREADY_ANSWERED,
+                                 "the current question already has an answer") from exc
         evaluation = await self._try_evaluate(session, current, answer, now)
         if evaluation is not None:
             session = await self._apply_difficulty(session, evaluation, now)
@@ -442,61 +507,114 @@ class InterviewService:
                             answers: Sequence[InterviewAnswer]) -> QuestionRequest | None:
         """The engine's decision for the next question: a follow-up, a primary, or nothing.
 
-        A follow-up on the last answered question is considered first, but only when the
-        engine allows it (depth and bounds) and the provider warrants it; a provider failure
-        deciding the follow-up is swallowed and the session falls through to its plan, so a
+        A follow-up on the last answered question is considered first, but only when the engine
+        allows it (depth and bounds) *and* the answer already carries a stored evaluation to
+        drill into: the persisted `InterviewAnswerEvaluation` is loaded (never recomputed) and
+        handed to the provider, so an adaptive follow-up probes a dimension the grades actually
+        left thin rather than re-deriving a judgement (§18-26, §53-54). When no evaluation was
+        produced for the last answer (grading failed or was skipped), no adaptive follow-up is
+        asked — the session falls through to its plan rather than drilling blind. A provider
+        failure deciding the follow-up is likewise swallowed and the session falls through, so a
         hiccup never stalls coverage. When no follow-up is taken, the next uncovered plan topic
-        is asked; `None` means the plan is covered or the session is out of capacity.
+        is asked; `None` means the plan is covered or the session is out of capacity. The engine
+        stays authoritative over depth, difficulty, sequence and parent-linkage; this only feeds
+        it facts and never mutates the evaluation.
         """
         if asked:
             last = asked[-1]
             by_question = {answer.question_id: answer for answer in answers}
             last_answer = by_question.get(last.id)
             if last_answer is not None and self._engine.may_follow_up(last=last, asked=asked):
-                context = await self._context_for(session)
-                try:
-                    decision = await self._llm.decide_follow_up(
-                        context=context, question=last, answer=last_answer)
-                except LLMError:
-                    decision = None
-                if decision is not None:
-                    follow_up = self._engine.next_follow_up(
-                        last=last, asked=asked, difficulty=session.difficulty,
-                        decision=decision)
-                    if follow_up is not None:
-                        return follow_up
+                evaluation = await self._evaluations.get_for_answer(
+                    session.user_id, last_answer.id)
+                if evaluation is not None:
+                    context = await self._context_for(session)
+                    try:
+                        result = await self._llm.decide_follow_up(
+                            context=context, question=last, answer=last_answer,
+                            evaluation=evaluation)
+                    except LLMError:
+                        result = None
+                    if result is not None:
+                        follow_up = self._engine.next_follow_up(
+                            last=last, asked=asked, difficulty=session.difficulty,
+                            decision=result.value)
+                        if follow_up is not None:
+                            return follow_up
         return self._engine.next_primary(
             plan=session.plan, asked=asked, difficulty=session.difficulty)
 
     async def _generate_question(self, session: InterviewSession, request: QuestionRequest,
                                  asked: Sequence[InterviewQuestion],
                                  now: datetime) -> InterviewQuestion:
-        """Realize a `QuestionRequest`: the model writes the prompt, the engine owns the rest.
+        """Realize a `QuestionRequest`: generate, guard, then persist — or a typed failure.
 
         The provider writes only the prompt text (and is told which prompts not to repeat);
         the type, difficulty, sequence, depth and follow-up link are the engine's and are
-        stamped from the request, not read from the proposal. A provider failure here is
-        `QUESTION_GENERATION_UNAVAILABLE` — there is no question to return, so this is the one
-        generation failure that surfaces rather than degrading.
+        stamped from the request, not read from the proposal. The prompt is run through the
+        deterministic grounding guard *before* it is persisted (§10-17): a question may stand
+        on the posting's own requirements, but one that asserts a candidate fact no evidence
+        supports is refused. A rejected prompt earns one bounded repair — regenerate, telling
+        the model not to repeat it — after which a still-ungrounded prompt is
+        `QUESTION_GROUNDING_FAILED`, never persisted. A provider failure generating at all is
+        `QUESTION_GENERATION_UNAVAILABLE` — there is no question to return, the one generation
+        failure that surfaces rather than degrading. The run that authored the accepted prompt
+        is recorded as the question's `llm_run_id` (§27-40). A concurrent turn that already
+        wrote a question at this sequence makes the insert collide; the loser is
+        `INTERVIEW_STATE_CONFLICT`, never a raw `IntegrityError` (§41-43).
         """
         context = await self._context_for(session)
         already_asked = tuple(question.prompt for question in asked)
-        try:
-            proposal = await self._llm.generate_question(
-                context=context, mode=session.mode, question_type=request.question_type,
-                difficulty=request.difficulty, topic_label=request.topic_label,
-                already_asked=already_asked)
-        except LLMError as exc:
-            raise InterviewError(InterviewErrorCode.QUESTION_GENERATION_UNAVAILABLE,
-                                 "the question generator is unavailable") from exc
+        result = await self._propose_question(
+            context=context, session=session, request=request, already_asked=already_asked)
+        report = self._guard.review_question(
+            result.value.prompt, profile=context.profile, opportunity=context.opportunity)
+        if not report.ok:
+            result = await self._propose_question(
+                context=context, session=session, request=request,
+                already_asked=(*already_asked, result.value.prompt))
+            report = self._guard.review_question(
+                result.value.prompt, profile=context.profile,
+                opportunity=context.opportunity)
+            if not report.ok:
+                raise InterviewError(
+                    InterviewErrorCode.QUESTION_GROUNDING_FAILED,
+                    "the generated question was not grounded in the candidate's evidence "
+                    "or the posting")
         question = InterviewQuestion(
             id=interview_question_id(session.id, request.sequence),
             session_id=session.id, user_id=session.user_id, sequence=request.sequence,
             question_type=request.question_type, difficulty=request.difficulty,
-            prompt=proposal.prompt, topic_label=request.topic_label,
+            prompt=result.value.prompt, topic_label=request.topic_label,
             follows_sequence=request.follows_sequence, depth=request.depth,
-            generator_key=self._llm.key, asked_at=now)
-        return await self._questions.upsert(question)
+            generator_key=self._llm.key, llm_run_id=result.llm_run_id, asked_at=now)
+        try:
+            return await self._questions.upsert(question)
+        except IntegrityError as exc:
+            raise InterviewError(
+                InterviewErrorCode.INTERVIEW_STATE_CONFLICT,
+                "another turn already recorded a question at this sequence") from exc
+
+    async def _propose_question(self, *, context: InterviewContext,
+                                session: InterviewSession, request: QuestionRequest,
+                                already_asked: Sequence[str]
+                                ) -> InterviewLLMResult[ProposedQuestion]:
+        """One provider-written question proposal and its run, or a typed generation failure.
+
+        The provider writes the prompt at the engine's requested type, difficulty and topic;
+        `already_asked` tells it what not to repeat, including — on a repair — the ungrounded
+        prompt just rejected. An `LLMError` becomes `QUESTION_GENERATION_UNAVAILABLE`; the
+        whole `InterviewLLMResult` is returned so the run behind the accepted prompt survives
+        to be stamped as provenance.
+        """
+        try:
+            return await self._llm.generate_question(
+                context=context, mode=session.mode, question_type=request.question_type,
+                difficulty=request.difficulty, topic_label=request.topic_label,
+                already_asked=tuple(already_asked))
+        except LLMError as exc:
+            raise InterviewError(InterviewErrorCode.QUESTION_GENERATION_UNAVAILABLE,
+                                 "the question generator is unavailable") from exc
 
     async def _try_evaluate(self, session: InterviewSession, question: InterviewQuestion,
                             answer: InterviewAnswer,
@@ -516,15 +634,19 @@ class InterviewService:
         (the schema has no such field). Every candidate-facing string is run through the Phase
         10 evidence guard *before* the evaluation is stored, so a fabricated strength or a
         drafted answer that invents a fact is refused whole: a provider failure or a guard
-        rejection is `EVALUATION_UNAVAILABLE`, and nothing ungrounded is ever persisted.
+        rejection is `EVALUATION_UNAVAILABLE`, and nothing ungrounded is ever persisted. The
+        evaluation carries the exact `llm_run_id` the recorder wrote for this call (stamped by
+        the adapter, never forgeable by the provider), so a stored grade is traceable to the
+        run behind it (§27-40).
         """
         context = await self._context_for(session)
         try:
-            evaluation = await self._llm.evaluate_answer(
+            result = await self._llm.evaluate_answer(
                 context=context, question=question, answer=answer, evaluated_at=now)
         except LLMError as exc:
             raise InterviewError(InterviewErrorCode.EVALUATION_UNAVAILABLE,
                                  "the answer evaluator is unavailable") from exc
+        evaluation = result.value
         report = self._guard.review_evaluation(
             evaluation, profile=context.profile, opportunity=context.opportunity)
         if not report.ok:
@@ -544,49 +666,82 @@ class InterviewService:
         are accepted only if the evidence guard clears them. If the provider fails or its prose
         is rejected, the summary falls back to a safe, deterministic, fact-free headline — the
         readiness, computed by the platform, is the trustworthy signal in either case and is
-        never touched by the fallback.
+        never touched by the fallback. A model-authored summary records the exact `llm_run_id`
+        behind its prose; the deterministic fallback records `llm_run_id=None` under the
+        `deterministic-summary/1` key, so an audit can tell model prose from platform prose
+        without guessing (§27-40).
         """
         def build(*, headline: str, strengths: tuple[str, ...],
-                  focus_areas: tuple[str, ...], generator_key: str) -> InterviewSessionSummary:
+                  focus_areas: tuple[str, ...], generator_key: str,
+                  llm_run_id: LLMRunId | None) -> InterviewSessionSummary:
             return InterviewSessionSummary(
                 id=interview_session_summary_id(session.id), session_id=session.id,
                 user_id=session.user_id, readiness=readiness, headline=headline,
                 strengths=strengths, focus_areas=focus_areas,
                 questions_asked=len(questions),
                 answers_evaluated=readiness.evaluated_answers,
-                generator_key=generator_key, created_at=now)
+                generator_key=generator_key, llm_run_id=llm_run_id, created_at=now)
 
         context = await self._context_for(session)
         try:
-            proposed = await self._llm.generate_summary(
+            result = await self._llm.generate_summary(
                 context=context, mode=session.mode,
                 transcript=_render_transcript(questions, answers))
         except LLMError:
-            proposed = None
-        if proposed is not None:
+            result = None
+        if result is not None:
             candidate = build(
-                headline=proposed.headline, strengths=proposed.strengths,
-                focus_areas=proposed.focus_areas, generator_key=self._llm.key)
+                headline=result.value.headline, strengths=result.value.strengths,
+                focus_areas=result.value.focus_areas, generator_key=self._llm.key,
+                llm_run_id=result.llm_run_id)
             report = self._guard.review_summary(
                 candidate, profile=context.profile, opportunity=context.opportunity)
             if report.ok:
                 return candidate
         return build(headline=_FALLBACK_SUMMARY_HEADLINE, strengths=(), focus_areas=(),
-                     generator_key=_DETERMINISTIC_SUMMARY_KEY)
+                     generator_key=_DETERMINISTIC_SUMMARY_KEY, llm_run_id=None)
 
     async def _propose_plan(self, context: InterviewContext,
-                            mode: InterviewMode) -> InterviewPlan:
+                            mode: InterviewMode) -> InterviewLLMResult[InterviewPlan]:
         """Ask the provider for a coverage plan, mapping a failure to a typed error.
 
         A plan that does not parse into the domain, or a provider that fails, is
         `QUESTION_GENERATION_UNAVAILABLE`: without a plan there is no session to open, so this
-        is a hard failure, not a degrade.
+        is a hard failure, not a degrade. The whole `InterviewLLMResult` is returned so
+        `create_session` records the exact run that authored the plan as `plan_llm_run_id`.
         """
         try:
             return await self._llm.propose_plan(context=context, mode=mode)
         except LLMError as exc:
             raise InterviewError(InterviewErrorCode.QUESTION_GENERATION_UNAVAILABLE,
                                  "the interview planner is unavailable") from exc
+
+    async def _verify_application(self, user_id: UserId,
+                                  application_id: ApplicationId | None,
+                                  opportunity_id: OpportunityId) -> None:
+        """Require a named application to be this user's and about this opportunity (§2-9, §62-63).
+
+        No `application_id` is the common case — a session need not reference an application at
+        all — and short-circuits without a read. When one is named it is resolved *owner-first*
+        through the Phase 12 `ApplicationRepository` (never globally by id), so an application
+        that is missing and one that belongs to another account are indistinguishable: both are
+        `APPLICATION_NOT_FOUND`, leaking nothing about whether the id exists elsewhere. A
+        resolved application that targets a different opportunity than the session is
+        `APPLICATION_OPPORTUNITY_MISMATCH` — a session may rehearse an application only for the
+        very posting it is about, so an application for one role can never be borrowed to coach
+        a session about another. The Phase 12 repository owns the ownership read; this adds no
+        second authorization path and duplicates none of its logic.
+        """
+        if application_id is None:
+            return
+        application = await self._applications.get(user_id, application_id)
+        if application is None:
+            raise InterviewError(InterviewErrorCode.APPLICATION_NOT_FOUND,
+                                 "no such application for this account")
+        if application.opportunity_id != opportunity_id:
+            raise InterviewError(
+                InterviewErrorCode.APPLICATION_OPPORTUNITY_MISMATCH,
+                "the application rehearses a different opportunity than this session")
 
     async def _apply_difficulty(self, session: InterviewSession,
                                 evaluation: InterviewAnswerEvaluation,

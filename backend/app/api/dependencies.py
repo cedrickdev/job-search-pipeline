@@ -613,6 +613,7 @@ async def interview_service(
         answers=SqlAlchemyInterviewAnswerRepository(session),
         evaluations=SqlAlchemyInterviewAnswerEvaluationRepository(session),
         summaries=SqlAlchemyInterviewSessionSummaryRepository(session),
+        applications=SqlAlchemyApplicationRepository(session),
         context=InterviewContextBuilder(
             profiles=SqlAlchemyCandidateProfileRepository(session),
             opportunities=SqlAlchemyOpportunityRepository(session)),

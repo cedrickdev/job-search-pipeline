@@ -37,6 +37,7 @@ from backend.app.interview.llm import (
     LLM_INTERVIEW_KEY,
     FollowUpDecision,
     InterviewLLM,
+    InterviewLLMResult,
     ProposedQuestion,
     ProposedSummary,
 )
@@ -48,6 +49,7 @@ from backend.app.llm.router import LLMRouter, PrivacyClass, RoutingPolicy
 from tests.v2_builders import (
     USER,
     a_candidate_profile,
+    an_answer_evaluation,
     an_evidence_record,
     an_interview_answer,
     an_interview_question,
@@ -114,7 +116,9 @@ async def test_propose_plan_parses_a_plan_and_the_mode_is_the_platforms():
             {"label": "motivation", "question_type": "MOTIVATION", "target_questions": 1},
         ],
     }))
-    plan = await _llm(router).propose_plan(context=_context(), mode=InterviewMode.BEHAVIORAL)
+    result = await _llm(router).propose_plan(context=_context(), mode=InterviewMode.BEHAVIORAL)
+    assert isinstance(result, InterviewLLMResult)
+    plan = result.value
     assert isinstance(plan, InterviewPlan)
     assert plan.mode is InterviewMode.BEHAVIORAL
     assert provider.calls == 1  # it actually routed to the provider
@@ -123,10 +127,12 @@ async def test_propose_plan_parses_a_plan_and_the_mode_is_the_platforms():
 async def test_generate_question_returns_an_identity_free_proposal():
     """A question comes back as a `ProposedQuestion`: text and type, but no id/sequence/depth."""
     router, _ = _local_router(_QUESTION_JSON)
-    proposal = await _llm(router).generate_question(
+    result = await _llm(router).generate_question(
         context=_context(), mode=InterviewMode.BEHAVIORAL,
         question_type=InterviewQuestionType.BEHAVIORAL,
         difficulty=InterviewDifficulty.INTERMEDIATE, topic_label="past teamwork")
+    assert isinstance(result, InterviewLLMResult)
+    proposal = result.value
     assert isinstance(proposal, ProposedQuestion)
     assert proposal.prompt
     assert proposal.question_type is InterviewQuestionType.BEHAVIORAL
@@ -143,8 +149,9 @@ async def test_decide_follow_up_parses_a_warranted_decision():
         "prompt": "Qu'auriez-vous fait différemment ?",
         "question_type": "SITUATIONAL",
     }))
-    decision = await _llm(router).decide_follow_up(
-        context=_context(), question=an_interview_question(), answer=an_interview_answer())
+    decision = (await _llm(router).decide_follow_up(
+        context=_context(), question=an_interview_question(), answer=an_interview_answer(),
+        evaluation=an_answer_evaluation())).value
     assert isinstance(decision, FollowUpDecision)
     assert decision.ask_follow_up is True
     assert decision.prompt
@@ -154,8 +161,9 @@ async def test_decide_follow_up_parses_a_warranted_decision():
 async def test_decide_follow_up_accepts_a_clean_no():
     """`ask_follow_up=false` is a first-class answer — no prompt, no type, and that is valid."""
     router, _ = _local_router(json.dumps({"ask_follow_up": False}))
-    decision = await _llm(router).decide_follow_up(
-        context=_context(), question=an_interview_question(), answer=an_interview_answer())
+    decision = (await _llm(router).decide_follow_up(
+        context=_context(), question=an_interview_question(), answer=an_interview_answer(),
+        evaluation=an_answer_evaluation())).value
     assert decision.ask_follow_up is False
     assert decision.prompt is None
 
@@ -163,8 +171,8 @@ async def test_decide_follow_up_accepts_a_clean_no():
 async def test_generate_summary_parses_the_coaching_prose():
     """A summary is the prose only — headline, strengths, focus — and never a readiness."""
     router, _ = _local_router(_SUMMARY_JSON)
-    summary = await _llm(router).generate_summary(
-        context=_context(), mode=InterviewMode.BEHAVIORAL, transcript="Q1 / R1")
+    summary = (await _llm(router).generate_summary(
+        context=_context(), mode=InterviewMode.BEHAVIORAL, transcript="Q1 / R1")).value
     assert isinstance(summary, ProposedSummary)
     assert summary.headline
     assert not hasattr(summary, "readiness")
@@ -184,8 +192,9 @@ async def test_evaluate_answer_parses_and_the_platform_owns_the_identity_fields(
         "evaluator_key": "forged/9",
     }))
     answer = an_interview_answer()
-    evaluation = await _llm(router).evaluate_answer(
-        context=_context(), question=an_interview_question(), answer=answer, evaluated_at=NOW)
+    evaluation = (await _llm(router).evaluate_answer(
+        context=_context(), question=an_interview_question(), answer=answer,
+        evaluated_at=NOW)).value
     assert isinstance(evaluation, InterviewAnswerEvaluation)
     assert evaluation.id == interview_answer_evaluation_id(answer.id)
     assert evaluation.evaluator_key == LLM_INTERVIEW_KEY
@@ -231,7 +240,7 @@ async def test_decide_follow_up_refuses_ask_with_no_question():
     with pytest.raises(LLMError) as caught:
         await _llm(router).decide_follow_up(
             context=_context(), question=an_interview_question(),
-            answer=an_interview_answer())
+            answer=an_interview_answer(), evaluation=an_answer_evaluation())
     assert caught.value.code is LLMFailureCode.STRUCTURED_OUTPUT_INVALID
 
 
@@ -275,7 +284,7 @@ async def test_the_routed_request_stamps_the_prompt_and_carries_evidence_and_fen
         difficulty=InterviewDifficulty.INTERMEDIATE)
     request = provider.seen[0]
     assert request.prompt_name == "interview_question"
-    assert request.prompt_version == "1.0"
+    assert request.prompt_version == "1.1"
     assert request.structured_output is not None
     payload = request.messages[0].content
     for record in context.profile.evidence:
@@ -316,9 +325,59 @@ async def test_generation_through_the_recorder_writes_a_run():
     assert len(runs.runs) == 1
     run = next(iter(runs.runs.values()))
     assert run.prompt_name == "interview_question"
-    assert run.prompt_version == "1.0"
+    assert run.prompt_version == "1.1"
     assert run.user_id == USER
     assert run.provider_key == "local_llm"
+
+
+# --- provenance: the result carries the exact run, and it cannot be forged --
+
+async def test_the_result_carries_the_exact_run_that_produced_it():
+    """`InterviewLLMResult.llm_run_id` is the very run the recorder wrote — not a re-query."""
+    router, _ = _local_router(_QUESTION_JSON)
+    runs = FakeLLMRunRepository()
+    recorder = LLMTelemetryRecorder(runs=runs)
+    llm = InterviewLLM(router=router, policy=_LOCAL, recorder=recorder, user_id=USER)
+    result = await llm.generate_question(
+        context=_context(), mode=InterviewMode.BEHAVIORAL,
+        question_type=InterviewQuestionType.BEHAVIORAL,
+        difficulty=InterviewDifficulty.INTERMEDIATE)
+    assert len(runs.runs) == 1
+    (written,) = runs.runs.values()
+    assert result.llm_run_id == written.id
+
+
+async def test_without_a_recorder_the_run_id_is_honestly_absent():
+    """No recorder wrapping the route means no run to point at — `llm_run_id` is `None`, never faked."""
+    router, _ = _local_router(_QUESTION_JSON)
+    result = await _llm(router).generate_question(
+        context=_context(), mode=InterviewMode.BEHAVIORAL,
+        question_type=InterviewQuestionType.BEHAVIORAL,
+        difficulty=InterviewDifficulty.INTERMEDIATE)
+    assert result.llm_run_id is None
+
+
+async def test_an_evaluation_cannot_forge_its_own_run_id():
+    """A `llm_run_id` smuggled into the payload is overridden by the run the recorder wrote.
+
+    The evaluation carries provenance itself; the platform-owned merge applies the recorder's
+    real run id *after* the model's data, so a provider cannot claim a run it did not produce.
+    """
+    forged = "00000000-0000-0000-0000-000000000000"
+    router, _ = _local_router(json.dumps({
+        "dimensions": [{"dimension": "CLARITY", "status": "EVALUATED", "score": 0.8}],
+        "llm_run_id": forged,
+    }))
+    runs = FakeLLMRunRepository()
+    recorder = LLMTelemetryRecorder(runs=runs)
+    llm = InterviewLLM(router=router, policy=_LOCAL, recorder=recorder, user_id=USER)
+    result = await llm.evaluate_answer(
+        context=_context(), question=an_interview_question(),
+        answer=an_interview_answer(), evaluated_at=NOW)
+    (written,) = runs.runs.values()
+    assert result.llm_run_id == written.id
+    assert result.value.llm_run_id == written.id
+    assert str(result.value.llm_run_id) != forged
 
 
 async def test_the_interview_key_names_the_strategy_not_the_model():

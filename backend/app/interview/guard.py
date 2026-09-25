@@ -59,6 +59,28 @@ class InterviewCoachingGuard:
         return self._review_texts(self._summary_texts(summary),
                                   profile=profile, opportunity=opportunity)
 
+    def review_question(self, prompt: str, *, profile: CandidateProfile,
+                        opportunity: Opportunity) -> DocumentGuardReport:
+        """The verdict on a generated question's text, *before* it is persisted (§10-17).
+
+        A question is not coaching prose about the candidate — it is grounded in the posting,
+        and may legitimately reference a skill or a number the posting states ("the posting
+        mentions Kafka; how would you approach it?"). So the posting text rides in as
+        `extra_corpus`, widening the allowed pool beyond the candidate's own evidence: a term
+        or number grounded in *either* the candidate or the posting passes, and one grounded
+        in neither — a fabrication invented from nowhere — is caught. The guard cannot tell
+        "the posting mentions Kafka" from "you have Kafka experience"; that attribution is the
+        question prompt's defence in depth, while this deterministic gate stays authoritative
+        for the invented-from-nowhere case. Run before persistence, so a question that fails
+        is regenerated or refused, never stored.
+        """
+        violations = self._guard.review_supporting_prose(
+            prompt, profile=profile, opportunity=opportunity, label="question",
+            extra_corpus=self._posting_corpus(opportunity))
+        if violations:
+            return DocumentGuardReport(ok=False, violations=tuple(violations))
+        return DocumentGuardReport(ok=True)
+
     def _review_texts(self, texts: list[tuple[str, str]], *,
                       profile: CandidateProfile,
                       opportunity: Opportunity) -> DocumentGuardReport:
@@ -95,3 +117,17 @@ class InterviewCoachingGuard:
         for index, focus in enumerate(summary.focus_areas, start=1):
             texts.append((focus, f"focus area {index}"))
         return texts
+
+    @staticmethod
+    def _posting_corpus(opportunity: Opportunity) -> str:
+        """The posting's own words — the legitimately citable ground a question may stand on.
+
+        Company, title, each sought skill and the description, mirroring what
+        `InterviewContext.render_role` shows the model, so the corpus the guard widens by
+        matches the reference the question was generated against.
+        """
+        parts: list[str] = [opportunity.company_name, opportunity.title]
+        parts += [req.skill for req in opportunity.skill_requirements]
+        if opportunity.description:
+            parts.append(opportunity.description)
+        return "\n".join(parts)

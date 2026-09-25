@@ -49,6 +49,7 @@ from backend.app.domain.identifiers import (
     InterviewQuestionId,
     InterviewSessionId,
     InterviewSessionSummaryId,
+    LLMRunId,
     OpportunityId,
     UserId,
 )
@@ -290,12 +291,31 @@ class InterviewErrorCode(StrEnum):
     NO_CURRENT_QUESTION = "NO_CURRENT_QUESTION"
     QUESTION_ALREADY_ANSWERED = "QUESTION_ALREADY_ANSWERED"
     ANSWER_OUT_OF_ORDER = "ANSWER_OUT_OF_ORDER"
+    # Two writers raced for the same session state — a second question at a sequence, a second
+    # answer to a question — and the loser is refused rather than surfacing a raw IntegrityError
+    # or overwriting the winner (§41-43). The natural key made the collision physical; this
+    # names it so a caller retries against the state the winner committed.
+    INTERVIEW_STATE_CONFLICT = "INTERVIEW_STATE_CONFLICT"
     SESSION_LIMIT_REACHED = "SESSION_LIMIT_REACHED"
     EVALUATION_UNAVAILABLE = "EVALUATION_UNAVAILABLE"
     QUESTION_GENERATION_UNAVAILABLE = "QUESTION_GENERATION_UNAVAILABLE"
+    # A generated question failed the deterministic evidence guard even after one repair —
+    # it is refused rather than persisted, so a session never records a question that
+    # asserts a candidate fact no evidence supports (§10-17).
+    QUESTION_GROUNDING_FAILED = "QUESTION_GROUNDING_FAILED"
+    # The session named an `application_id` that does not resolve for this user — missing or
+    # owned by someone else, deliberately one code so the two are indistinguishable (§2-9).
+    APPLICATION_NOT_FOUND = "APPLICATION_NOT_FOUND"
+    # The named application is this user's, but rehearses a different opportunity than the
+    # session — refused so a session can never borrow another role's application (§62-63).
+    APPLICATION_OPPORTUNITY_MISMATCH = "APPLICATION_OPPORTUNITY_MISMATCH"
     TRANSCRIPTION_UNAVAILABLE = "TRANSCRIPTION_UNAVAILABLE"
     AUDIO_TOO_LARGE = "AUDIO_TOO_LARGE"
     UNSUPPORTED_AUDIO = "UNSUPPORTED_AUDIO"
+    # A voice answer transcribed with a confidence below the auto-evaluate threshold — held
+    # for the candidate to confirm the transcript, never auto-graded, so speech-to-text
+    # uncertainty never silently shapes readiness (§44-49).
+    TRANSCRIPT_REVIEW_REQUIRED = "TRANSCRIPT_REVIEW_REQUIRED"
 
 
 # --- the coverage plan -----------------------------------------------------------------
@@ -365,7 +385,9 @@ class InterviewQuestion(DomainModel):
     deep it sits, bounded by `MAX_FOLLOW_UP_DEPTH`. `generator_key` is provenance — which
     strategy produced the text — kept as a plain string for the same reason
     `MatchEvaluation.evaluator_key` is, so a deterministic seed question is told apart from a
-    model-authored one when auditing.
+    model-authored one when auditing. `llm_run_id` narrows that to the *exact* `LLMRun` that
+    produced it (the model, the connection, the prompt version), nullable because a question
+    with no model behind it has no run to point at (§27-40).
     """
 
     id: InterviewQuestionId
@@ -379,6 +401,7 @@ class InterviewQuestion(DomainModel):
     follows_sequence: Annotated[int, Field(ge=0)] | None = None
     depth: Annotated[int, Field(ge=0, le=MAX_FOLLOW_UP_DEPTH)] = 0
     generator_key: NonEmptyStr | None = None
+    llm_run_id: LLMRunId | None = None
     asked_at: UtcDatetime
 
     @model_validator(mode="after")
@@ -487,6 +510,7 @@ class InterviewAnswerEvaluation(DomainModel):
     improvements: tuple[NonEmptyStr, ...] = ()
     suggested_answer: NonEmptyStr | None = None
     evaluator_key: NonEmptyStr | None = None
+    llm_run_id: LLMRunId | None = None
     evaluated_at: UtcDatetime
 
     @model_validator(mode="after")
@@ -804,7 +828,8 @@ class InterviewSession(DomainModel):
 
     `status` is the lifecycle (§6). `ended_at` is set exactly when the session reaches a
     terminal state and never before — the invariant makes "is this session over?" a fact of
-    the data rather than a convention a caller might forget.
+    the data rather than a convention a caller might forget. `plan_llm_run_id` is the exact
+    `LLMRun` that produced the coverage plan, nullable for a plan with no model behind it.
     """
 
     id: InterviewSessionId
@@ -818,6 +843,7 @@ class InterviewSession(DomainModel):
     status: InterviewSessionStatus = InterviewSessionStatus.CREATED
     language: LanguageCode | None = None
     plan: InterviewPlan
+    plan_llm_run_id: LLMRunId | None = None
     title: NonEmptyStr
     created_at: UtcDatetime
     updated_at: UtcDatetime
@@ -860,7 +886,9 @@ class InterviewSessionSummary(DomainModel):
     All of the prose is run through the Phase 10 evidence guard before this is persisted, so a
     summary can never assert a candidate fact the profile does not support (§40-44).
     `questions_asked` and `answers_evaluated` are the session's shape at a glance, and feed the
-    readiness history a candidate watches over repeated practice (§74).
+    readiness history a candidate watches over repeated practice (§74). `llm_run_id` is the
+    exact `LLMRun` behind the prose, null when a deterministic fallback wrote the summary and
+    `generator_key` reads `deterministic-summary/1` (§27-40, §68).
     """
 
     id: InterviewSessionSummaryId
@@ -873,4 +901,5 @@ class InterviewSessionSummary(DomainModel):
     questions_asked: Annotated[int, Field(ge=0)]
     answers_evaluated: Annotated[int, Field(ge=0)]
     generator_key: NonEmptyStr | None = None
+    llm_run_id: LLMRunId | None = None
     created_at: UtcDatetime

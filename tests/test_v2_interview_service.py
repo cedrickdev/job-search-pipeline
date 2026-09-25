@@ -20,7 +20,21 @@ from datetime import UTC, datetime
 
 import pytest
 
+from backend.app.domain.application import (
+    Application,
+    ApplicationState,
+    build_idempotency_key,
+)
+from backend.app.domain.application_channel import ApplicationChannel
 from backend.app.domain.common import SkillRequirement
+from backend.app.domain.identifiers import (
+    ApplicationId,
+    OpportunityId,
+    UserId,
+    application_id,
+    new_application_decision_id,
+    new_llm_run_id,
+)
 from backend.app.domain.interview import (
     InterviewAnswerFormat,
     InterviewDifficulty,
@@ -29,12 +43,17 @@ from backend.app.domain.interview import (
     InterviewQuestionType,
     InterviewSessionStatus,
 )
-from backend.app.interview.llm import ProposedSummary
-from backend.app.interview.service import InterviewError, InterviewGroundingNotFound
+from backend.app.interview.llm import FollowUpDecision, ProposedSummary
+from backend.app.interview.service import (
+    InterviewError,
+    InterviewGroundingNotFound,
+    TranscriptReviewRequired,
+)
 from backend.app.interview.transcriber import DeterministicTranscriber, InterviewAudio
 from backend.app.llm.failures import LLMError, LLMFailureCode
 from tests.v2_builders import (
     OPPORTUNITY,
+    OTHER_OPPORTUNITY,
     OTHER_USER,
     PROFILE,
     USER,
@@ -62,6 +81,25 @@ async def _create(harness, *, mode=InterviewMode.BEHAVIORAL, now=T0):
     """Open a session over the harness's seeded grounding — the start of every flow."""
     return await harness.service.create_session(
         USER, candidate_profile_id=PROFILE, opportunity_id=OPPORTUNITY, mode=mode, now=now)
+
+
+def _an_application(*, user_id: UserId = USER,
+                    opportunity_id: OpportunityId | None = OPPORTUNITY,
+                    state: ApplicationState = ApplicationState.PLANNED) -> Application:
+    """A Phase 12 application for one posting, keyed the way the real engine keys it.
+
+    The id derives from the idempotency key, exactly as production does, so the row a test
+    seeds is the one `_verify_application` would resolve. `opportunity_id` is what the
+    coherence check compares against the session's posting.
+    """
+    key = build_idempotency_key(
+        candidate_profile_id=PROFILE, channel=ApplicationChannel.BROWSER,
+        opportunity_id=opportunity_id, company_id=None)
+    return Application(
+        id=application_id(key), user_id=user_id, candidate_profile_id=PROFILE,
+        decision_id=new_application_decision_id(), channel=ApplicationChannel.BROWSER,
+        state=state, idempotency_key=key, opportunity_id=opportunity_id,
+        created_at=T0, updated_at=T0)
 
 
 # APPEND-MARKER
@@ -344,6 +382,215 @@ async def test_abandon_moves_to_terminal_and_refuses_a_second_time():
     with pytest.raises(InterviewError) as caught:
         await harness.service.abandon_session(USER, session.id, now=T3)
     assert caught.value.code is InterviewErrorCode.INVALID_STATUS_TRANSITION
+
+
+# --- an application reference must be this account's and about this posting --
+
+async def test_create_session_binds_a_matching_application():
+    """A session may rehearse an application that is this account's and about this posting."""
+    harness = build_interview_service()
+    application = _an_application(opportunity_id=OPPORTUNITY)
+    harness.applications.applications[application.id] = application
+    session = await harness.service.create_session(
+        USER, candidate_profile_id=PROFILE, opportunity_id=OPPORTUNITY,
+        mode=InterviewMode.BEHAVIORAL, now=T0, application_id=application.id)
+    assert session.application_id == application.id
+
+
+async def test_create_session_with_a_missing_application_is_not_found():
+    """An application id that resolves to nothing is refused before the session exists."""
+    harness = build_interview_service()
+    missing = _an_application().id  # computed, but never seeded
+    with pytest.raises(InterviewError) as caught:
+        await harness.service.create_session(
+            USER, candidate_profile_id=PROFILE, opportunity_id=OPPORTUNITY,
+            mode=InterviewMode.BEHAVIORAL, now=T0, application_id=missing)
+    assert caught.value.code is InterviewErrorCode.APPLICATION_NOT_FOUND
+
+
+async def test_create_session_with_a_foreign_application_is_indistinguishably_not_found():
+    """Another account's application reads as absent — the read is owner-first, leaking nothing."""
+    harness = build_interview_service()
+    foreign = _an_application(user_id=OTHER_USER, opportunity_id=OPPORTUNITY)
+    harness.applications.applications[foreign.id] = foreign
+    with pytest.raises(InterviewError) as caught:
+        await harness.service.create_session(
+            USER, candidate_profile_id=PROFILE, opportunity_id=OPPORTUNITY,
+            mode=InterviewMode.BEHAVIORAL, now=T0, application_id=foreign.id)
+    assert caught.value.code is InterviewErrorCode.APPLICATION_NOT_FOUND
+
+
+async def test_create_session_with_a_cross_opportunity_application_is_a_mismatch():
+    """An application about another posting cannot be borrowed to coach this session."""
+    harness = build_interview_service()
+    other = _an_application(opportunity_id=OTHER_OPPORTUNITY)
+    harness.applications.applications[other.id] = other
+    with pytest.raises(InterviewError) as caught:
+        await harness.service.create_session(
+            USER, candidate_profile_id=PROFILE, opportunity_id=OPPORTUNITY,
+            mode=InterviewMode.BEHAVIORAL, now=T0, application_id=other.id)
+    assert caught.value.code is InterviewErrorCode.APPLICATION_OPPORTUNITY_MISMATCH
+
+
+# --- a generated question is grounded before it is ever persisted (§10-17) ---
+
+async def test_a_question_that_invents_a_candidate_fact_is_never_persisted():
+    """A prompt asserting a candidate fact no evidence backs is refused, and nothing is stored.
+
+    The number "250" is nowhere in the sparse profile or the posting, so the grounding guard
+    rejects the prompt; the one bounded repair regenerates the same fabrication, and the turn
+    fails `QUESTION_GROUNDING_FAILED` rather than persisting an ungrounded question.
+    """
+    harness = build_interview_service(
+        profile=a_candidate_profile(),  # sparse: no evidence corpus
+        llm=FakeInterviewLLM(
+            question_prompt="Parlez-moi de la fois où vous avez dirigé 250 ingénieurs."))
+    session = await _create(harness)
+    with pytest.raises(InterviewError) as caught:
+        await harness.service.next_question(USER, session.id, now=T1)
+    assert caught.value.code is InterviewErrorCode.QUESTION_GROUNDING_FAILED
+    assert harness.llm.calls["generate_question"] == 2  # one repair attempt, then it gives up
+    assert await harness.questions.list_for_session(USER, session.id) == ()
+
+
+async def test_a_question_may_stand_on_a_posting_requirement():
+    """A question grounded in the posting's own requirement is allowed — that is not fabrication."""
+    harness = build_interview_service(
+        opportunity=an_opportunity(skill_requirements=(SkillRequirement(skill="Kafka"),)),
+        llm=FakeInterviewLLM(
+            question_prompt="Comment aborderiez-vous l'usage de Kafka pour ce poste ?"))
+    session = await _create(harness)
+    turn = await harness.service.next_question(USER, session.id, now=T1)
+    assert turn.question is not None
+    assert "Kafka" in turn.question.prompt
+    assert harness.llm.calls["generate_question"] == 1  # cleared on the first try
+
+
+async def test_a_repaired_question_that_becomes_grounded_is_persisted():
+    """The bounded repair is real: a second, grounded proposal is accepted and stored."""
+    llm = FakeInterviewLLM()
+    # First proposal fabricates a number; the fake's next proposal (variante B) is clean.
+    llm._question_prompt = "Décrivez une situation professionnelle marquante."
+    original_generate = llm.generate_question
+    calls = {"n": 0}
+
+    async def _fabricate_once(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            llm._question_prompt = "Parlez d'un projet de 250 personnes que vous avez mené."
+        else:
+            llm._question_prompt = "Décrivez une situation professionnelle marquante."
+        return await original_generate(**kwargs)
+
+    llm.generate_question = _fabricate_once  # type: ignore[method-assign]
+    harness = build_interview_service(profile=a_candidate_profile(), llm=llm)
+    session = await _create(harness)
+    turn = await harness.service.next_question(USER, session.id, now=T1)
+    assert turn.question is not None
+    assert "250" not in turn.question.prompt
+    assert calls["n"] == 2  # it took the one repair
+
+
+# --- an adaptive follow-up consumes the persisted evaluation (§18-26) --------
+
+async def test_an_adaptive_follow_up_consumes_the_persisted_evaluation():
+    """The follow-up decision is handed the stored grade of the last answer, never a recomputation."""
+    harness = build_interview_service(llm=FakeInterviewLLM(
+        follow_up=FollowUpDecision(ask_follow_up=True, prompt="Et concrètement, comment ?",
+                                   question_type=InterviewQuestionType.SITUATIONAL)))
+    session, first = await _ask_first(harness)
+    outcome = await harness.service.submit_text_answer(USER, session.id, "Une réponse.", now=T2)
+    assert outcome.evaluation is not None
+    turn = await harness.service.next_question(USER, session.id, now=T3)
+    # The follow-up was decided from the evaluation the service persisted for the answer.
+    assert harness.llm.calls["decide_follow_up"] == 1
+    consumed = harness.llm.last_follow_up_evaluation
+    assert consumed is not None
+    assert consumed.id == outcome.evaluation.id
+    assert consumed.answer_id == outcome.answer.id
+    # And the engine shaped it as a follow-up drilling the first question one rung deeper.
+    assert turn.question is not None
+    assert turn.question.depth == 1
+    assert turn.question.follows_sequence == first.sequence
+
+
+async def test_without_an_evaluation_no_adaptive_follow_up_is_asked():
+    """A lost evaluation means the session falls through to its plan, never drilling blind."""
+    harness = build_interview_service(llm=FakeInterviewLLM(
+        evaluation_error=_invalid_output(),
+        follow_up=FollowUpDecision(ask_follow_up=True, prompt="Et ensuite ?",
+                                   question_type=InterviewQuestionType.SITUATIONAL)))
+    session, _ = await _ask_first(harness)
+    outcome = await harness.service.submit_text_answer(USER, session.id, "Une réponse.", now=T2)
+    assert outcome.evaluation is None  # grading failed, nothing persisted
+    turn = await harness.service.next_question(USER, session.id, now=T3)
+    assert harness.llm.calls["decide_follow_up"] == 0  # never even asked, with no grade to show
+    assert turn.question is not None
+    assert turn.question.depth == 0  # a fresh planned-topic primary, not a follow-up
+    assert turn.question.follows_sequence is None
+
+
+# --- provenance: every artifact records the run that produced it (§27-40) ----
+
+async def test_each_artifact_records_the_run_that_produced_it():
+    """Plan, question, evaluation and summary each carry the exact `llm_run_id` behind them."""
+    run_id = new_llm_run_id()
+    harness = build_interview_service(llm=FakeInterviewLLM(llm_run_id=run_id))
+    session = await _create(harness)
+    assert session.plan_llm_run_id == run_id
+    turn = await harness.service.next_question(USER, session.id, now=T1)
+    assert turn.question is not None and turn.question.llm_run_id == run_id
+    outcome = await harness.service.submit_text_answer(USER, session.id, "Une réponse.", now=T2)
+    assert outcome.evaluation is not None and outcome.evaluation.llm_run_id == run_id
+    summary = await harness.service.complete_session(USER, session.id, now=T3)
+    assert summary.llm_run_id == run_id
+
+
+async def test_a_deterministic_fallback_summary_records_no_run():
+    """When the coaching prose is rejected, the safe summary is honest about having no run."""
+    fabricated = ProposedSummary(
+        headline="Excellente maîtrise technique.",
+        focus_areas=("approfondir Kafka pour ce poste",))  # Kafka is claimable, unbacked
+    harness = build_interview_service(
+        opportunity=an_opportunity(skill_requirements=(SkillRequirement(skill="Kafka"),)),
+        llm=FakeInterviewLLM(llm_run_id=new_llm_run_id(), summary=fabricated))
+    session, _ = await _ask_first(harness)
+    await harness.service.submit_text_answer(USER, session.id, "Une réponse.", now=T2)
+    summary = await harness.service.complete_session(USER, session.id, now=T3)
+    assert summary.llm_run_id is None  # no model authored the persisted prose
+    assert summary.generator_key != harness.llm.key
+
+
+# --- a low-confidence voice transcript is held for review, never graded ------
+
+async def test_a_low_confidence_transcript_requires_review_and_records_nothing():
+    """A transcript below the auto-evaluate floor is held: no answer, no grade, no readiness move."""
+    transcriber = DeterministicTranscriber(
+        transcripts={b"muffled": "Peut-être que j'ai fait quelque chose comme ça."},
+        confidence=0.2)
+    harness = build_interview_service(transcriber=transcriber, min_transcript_confidence=0.5)
+    session, question = await _ask_first(harness)
+    audio = InterviewAudio(content=b"muffled", content_type="audio/webm")
+    with pytest.raises(TranscriptReviewRequired) as caught:
+        await harness.service.submit_voice_answer(USER, session.id, audio, now=T2)
+    assert caught.value.confidence == 0.2
+    assert caught.value.transcript  # the words ride back for the candidate to confirm
+    assert await harness.answers.get_for_question(USER, question.id) is None
+    readiness = await harness.service.session_readiness(USER, session.id, now=T3)
+    assert readiness.answered_questions == 0  # STT uncertainty never touched readiness
+
+
+async def test_a_transcript_with_no_confidence_is_graded_normally():
+    """`None` confidence is "unknown", not "known-low": it takes the ordinary grading path."""
+    transcriber = DeterministicTranscriber(
+        transcripts={b"clip": "Voici ma réponse claire."}, confidence=None)
+    harness = build_interview_service(transcriber=transcriber, min_transcript_confidence=0.5)
+    session, _ = await _ask_first(harness)
+    audio = InterviewAudio(content=b"clip", content_type="audio/webm")
+    outcome = await harness.service.submit_voice_answer(USER, session.id, audio, now=T2)
+    assert outcome.answer.format is InterviewAnswerFormat.VOICE
+    assert outcome.answer.transcript_confidence is None
+    assert outcome.evaluation is not None
 
 
 

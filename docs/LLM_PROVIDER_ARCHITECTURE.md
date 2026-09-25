@@ -308,6 +308,15 @@ persistence is a side effect a service owns. Three properties hold:
 - **A failure is recorded, typed and secret-free, then re-raised.** The recorder does
   not swallow the error; a caller's own failure handling is unchanged by telemetry
   being on.
+- **The run's id rides back on the outcome, so a caller can attribute provenance.** The
+  recorder mints the `LLMRun`'s id, writes the row, and sets it on the `RoutingOutcome`
+  as `run_id` — the caller reads it off the outcome rather than issuing a "latest run for
+  this user" query a concurrent call could win. This is the seam Phase 14 uses to stamp
+  the exact run onto a generated question, evaluation or summary: the interview adapter
+  returns each artefact in an `InterviewLLMResult[T]` (value + `run_id`), and the service
+  persists that id as a `SET NULL` FK to `llm_runs.id`. A run is honestly absent — `None`
+  on the outcome — only where none was made (a call the router refused, or a deterministic
+  fallback the platform authored without a provider).
 
 A call the router *refused* before trying any provider (`NoProviderAvailable`) is not
 an LLM call and gets no run — there was no provider to attribute one to. A `CANCELLED`

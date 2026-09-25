@@ -130,7 +130,8 @@ class CandidateEvidenceGuard:
 
     def review_supporting_prose(
             self, text: str, *, profile: CandidateProfile,
-            opportunity: Opportunity, label: str = "text"
+            opportunity: Opportunity, label: str = "text",
+            extra_corpus: str = ""
             ) -> tuple[DocumentGuardViolation, ...]:
         """Truth gate for un-cited coaching prose (Phase 14 §40-44, reusing this guard).
 
@@ -145,11 +146,24 @@ class CandidateEvidenceGuard:
         fabrication is caught identically — the point of reusing this guard rather than
         writing a second, weaker one.
 
+        `extra_corpus` widens the allowed pool with text that is legitimately citable even
+        though it is not the candidate's own evidence — the posting the practice rehearses,
+        for a generated *question* (§10-17). A question may reference a skill or a number the
+        posting states ("the posting mentions Kafka; how would you approach it?") without that
+        being a fabrication, so the posting text is appended to the corpus both gates check.
+        It deliberately does *not* distinguish "the posting mentions Kafka" from "you have
+        Kafka experience": attribution is the prompt's defence in depth, while this gate stays
+        the authoritative catch for a term or number grounded in *neither* the candidate nor
+        the posting. It is empty for evaluation and summary prose, which speaks only of the
+        candidate.
+
         Returns every violation rather than the first, so a caller can reject a whole
         coaching payload and report all of its problems at once. Pure and deterministic, so
         the interview service runs it before persisting a thing.
         """
         corpus = self._evidence_corpus(profile)
+        if extra_corpus:
+            corpus = f"{corpus}\n{extra_corpus.lower()}"
         universe = self._term_universe(profile, opportunity)
         issues: list[DocumentGuardViolation] = []
 

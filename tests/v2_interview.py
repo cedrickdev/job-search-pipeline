@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from backend.app.domain.candidate import CandidateProfile
-from backend.app.domain.identifiers import interview_answer_evaluation_id
+from backend.app.domain.identifiers import LLMRunId, interview_answer_evaluation_id
 from backend.app.domain.interview import (
     DimensionEvaluation,
     EvaluationDimension,
@@ -48,14 +48,19 @@ from backend.app.interview.guard import InterviewCoachingGuard
 from backend.app.interview.llm import (
     LLM_INTERVIEW_KEY,
     FollowUpDecision,
+    InterviewLLMResult,
     ProposedQuestion,
     ProposedSummary,
 )
-from backend.app.interview.service import InterviewService
+from backend.app.interview.service import (
+    MIN_AUTO_EVALUATE_TRANSCRIPT_CONFIDENCE,
+    InterviewService,
+)
 from backend.app.interview.transcriber import DeterministicTranscriber, SpeechTranscriber
 from backend.app.llm.failures import LLMError
 from tests.v2_builders import a_candidate_profile, an_opportunity
 from tests.v2_fakes import (
+    FakeApplicationRepository,
     FakeCandidateProfileRepository,
     FakeInterviewAnswerEvaluationRepository,
     FakeInterviewAnswerRepository,
@@ -110,6 +115,7 @@ class FakeInterviewLLM:
             follow_up: FollowUpDecision | None = None,
             follow_ups: Sequence[FollowUpDecision] = (),
             summary: ProposedSummary | None = None,
+            llm_run_id: LLMRunId | None = None,
             plan_error: LLMError | None = None,
             question_error: LLMError | None = None,
             evaluation_error: LLMError | None = None,
@@ -127,6 +133,7 @@ class FakeInterviewLLM:
                            else FollowUpDecision(ask_follow_up=False))
         self._follow_ups = list(follow_ups)
         self._summary = summary
+        self._llm_run_id = llm_run_id
         self.plan_error = plan_error
         self.question_error = question_error
         self.evaluation_error = evaluation_error
@@ -135,61 +142,74 @@ class FakeInterviewLLM:
         self.calls: dict[str, int] = {
             "propose_plan": 0, "generate_question": 0, "evaluate_answer": 0,
             "decide_follow_up": 0, "generate_summary": 0}
+        # The structured evaluation the service handed the last follow-up decision, so a test
+        # can prove the follow-up consumed the persisted grades rather than recomputing them.
+        self.last_follow_up_evaluation: InterviewAnswerEvaluation | None = None
         self._question_serial = 0
     @property
     def key(self) -> str:
         return LLM_INTERVIEW_KEY
 
     async def propose_plan(self, *, context: InterviewContext,
-                           mode: InterviewMode) -> InterviewPlan:
+                           mode: InterviewMode) -> InterviewLLMResult[InterviewPlan]:
         self.calls["propose_plan"] += 1
         if self.plan_error is not None:
             raise self.plan_error
-        return self._plan if self._plan is not None else _default_plan(mode)
+        plan = self._plan if self._plan is not None else _default_plan(mode)
+        return InterviewLLMResult(value=plan, llm_run_id=self._llm_run_id)
 
     async def generate_question(self, *, context: InterviewContext, mode: InterviewMode,
                                 question_type: InterviewQuestionType,
                                 difficulty: InterviewDifficulty,
                                 topic_label: str | None = None,
-                                already_asked: Sequence[str] = ()) -> ProposedQuestion:
+                                already_asked: Sequence[str] = ()
+                                ) -> InterviewLLMResult[ProposedQuestion]:
         self.calls["generate_question"] += 1
         if self.question_error is not None:
             raise self.question_error
         self._question_serial += 1
         focus = f" [{topic_label}]" if topic_label else ""
-        return ProposedQuestion(
-            prompt=f"{self._question_prompt}{focus} (#{self._question_serial})",
+        # A non-numeric variant marker keeps successive prompts distinct without planting a
+        # bare number the grounding guard would (rightly) flag as unsupported by the evidence
+        # — the fake's uniqueness trick must not itself look like a fabricated figure.
+        marker = chr(ord("A") + (self._question_serial - 1) % 26)
+        proposal = ProposedQuestion(
+            prompt=f"{self._question_prompt}{focus} (variante {marker})",
             question_type=question_type, difficulty=difficulty, topic_label=topic_label)
+        return InterviewLLMResult(value=proposal, llm_run_id=self._llm_run_id)
 
     async def evaluate_answer(self, *, context: InterviewContext,
                               question: InterviewQuestion, answer: InterviewAnswer,
-                              evaluated_at: datetime) -> InterviewAnswerEvaluation:
+                              evaluated_at: datetime
+                              ) -> InterviewLLMResult[InterviewAnswerEvaluation]:
         self.calls["evaluate_answer"] += 1
         if self.evaluation_error is not None:
             raise self.evaluation_error
-        return self._build_evaluation(answer, evaluated_at)
+        evaluation = self._build_evaluation(answer, evaluated_at)
+        return InterviewLLMResult(value=evaluation, llm_run_id=self._llm_run_id)
 
     async def decide_follow_up(self, *, context: InterviewContext,
                                question: InterviewQuestion,
-                               answer: InterviewAnswer) -> FollowUpDecision:
+                               answer: InterviewAnswer,
+                               evaluation: InterviewAnswerEvaluation
+                               ) -> InterviewLLMResult[FollowUpDecision]:
         self.calls["decide_follow_up"] += 1
+        self.last_follow_up_evaluation = evaluation
         if self.follow_up_error is not None:
             raise self.follow_up_error
-        if self._follow_ups:
-            return self._follow_ups.pop(0)
-        return self._follow_up
+        decision = self._follow_ups.pop(0) if self._follow_ups else self._follow_up
+        return InterviewLLMResult(value=decision, llm_run_id=self._llm_run_id)
 
     async def generate_summary(self, *, context: InterviewContext, mode: InterviewMode,
-                               transcript: str) -> ProposedSummary:
+                               transcript: str) -> InterviewLLMResult[ProposedSummary]:
         self.calls["generate_summary"] += 1
         if self.summary_error is not None:
             raise self.summary_error
-        if self._summary is not None:
-            return self._summary
-        return ProposedSummary(
+        summary = self._summary if self._summary is not None else ProposedSummary(
             headline="Séance de pratique menée avec clarté.",
             strengths=("garde une structure nette",),
             focus_areas=("préciser davantage les exemples",))
+        return InterviewLLMResult(value=summary, llm_run_id=self._llm_run_id)
     def _build_evaluation(self, answer: InterviewAnswer,
                           evaluated_at: datetime) -> InterviewAnswerEvaluation:
         """Build the evaluation the platform-owned fields and all, as the adapter would.
@@ -214,7 +234,7 @@ class FakeInterviewLLM:
             dimensions=dimensions, confidence=self.evaluation_confidence,
             strengths=self.evaluation_strengths, improvements=self.evaluation_improvements,
             suggested_answer=self.evaluation_suggested_answer,
-            evaluator_key=self.key, evaluated_at=evaluated_at)
+            evaluator_key=self.key, llm_run_id=self._llm_run_id, evaluated_at=evaluated_at)
 
 
 @dataclass
@@ -234,6 +254,7 @@ class InterviewHarness:
     answers: FakeInterviewAnswerRepository
     evaluations: FakeInterviewAnswerEvaluationRepository
     summaries: FakeInterviewSessionSummaryRepository
+    applications: FakeApplicationRepository
     profiles: FakeCandidateProfileRepository
     opportunities: FakeOpportunityRepository
     llm: FakeInterviewLLM
@@ -247,6 +268,7 @@ def build_interview_service(
         transcriber: SpeechTranscriber | None = None,
         engine: InterviewQuestionEngine | None = None,
         guard: InterviewCoachingGuard | None = None,
+        min_transcript_confidence: float = MIN_AUTO_EVALUATE_TRANSCRIPT_CONFIDENCE,
         seed_grounding: bool = True) -> InterviewHarness:
     """A ready `InterviewService` over in-memory repositories, its grounding seeded.
 
@@ -255,7 +277,9 @@ def build_interview_service(
     empty so `create_session` raises `InterviewGroundingNotFound`. The LLM defaults to a
     `FakeInterviewLLM` whose answers are strong and un-fabricated; the transcriber to a
     `DeterministicTranscriber`. The engine and guard default to the real, stateless ones — the
-    flow tests exercise the true adaptive and truth-gating behaviour, not a stub of it.
+    flow tests exercise the true adaptive and truth-gating behaviour, not a stub of it. The
+    application repository starts empty; an application-coherence test seeds it directly on the
+    harness. `min_transcript_confidence` lets a voice-review test pin the auto-evaluate floor.
     """
     profile = profile if profile is not None else a_candidate_profile()
     opportunity = opportunity if opportunity is not None else an_opportunity()
@@ -271,20 +295,22 @@ def build_interview_service(
     answers = FakeInterviewAnswerRepository()
     evaluations = FakeInterviewAnswerEvaluationRepository()
     summaries = FakeInterviewSessionSummaryRepository()
+    applications = FakeApplicationRepository()
 
     llm = llm if llm is not None else FakeInterviewLLM()
     transcriber = transcriber if transcriber is not None else DeterministicTranscriber()
 
     service = InterviewService(
         sessions=sessions, questions=questions, answers=answers,
-        evaluations=evaluations, summaries=summaries,
+        evaluations=evaluations, summaries=summaries, applications=applications,
         context=InterviewContextBuilder(profiles=profiles, opportunities=opportunities),
-        llm=llm, transcriber=transcriber, engine=engine, guard=guard)
+        llm=llm, transcriber=transcriber, engine=engine, guard=guard,
+        min_auto_evaluate_transcript_confidence=min_transcript_confidence)
 
     return InterviewHarness(
         service=service, sessions=sessions, questions=questions, answers=answers,
-        evaluations=evaluations, summaries=summaries, profiles=profiles,
-        opportunities=opportunities, llm=llm, transcriber=transcriber,
+        evaluations=evaluations, summaries=summaries, applications=applications,
+        profiles=profiles, opportunities=opportunities, llm=llm, transcriber=transcriber,
         profile=profile, opportunity=opportunity)
 
 

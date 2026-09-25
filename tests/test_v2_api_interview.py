@@ -17,7 +17,18 @@ pas celui d'un provider.
 import pytest
 
 from backend.app.api.dependencies import CSRF_HEADER
-from backend.app.domain.identifiers import default_candidate_profile_id
+from backend.app.domain.application import (
+    Application,
+    ApplicationState,
+    build_idempotency_key,
+)
+from backend.app.domain.application_channel import ApplicationChannel
+from backend.app.domain.common import SkillRequirement
+from backend.app.domain.identifiers import (
+    application_id,
+    default_candidate_profile_id,
+    new_application_decision_id,
+)
 from backend.app.domain.interview import InterviewErrorCode
 from backend.app.interview.transcriber import (
     DeterministicTranscriber,
@@ -27,7 +38,7 @@ from backend.app.interview.transcriber import (
 )
 from backend.app.llm.failures import LLMError, LLMFailureCode
 from tests.v2_api import api_harness
-from tests.v2_builders import OPPORTUNITY, a_candidate_profile, an_opportunity
+from tests.v2_builders import OPPORTUNITY, OTHER_OPPORTUNITY, a_candidate_profile, an_opportunity
 from tests.v2_interview import FakeInterviewLLM
 
 pytestmark = pytest.mark.asyncio
@@ -61,11 +72,37 @@ async def _ground(api):
     return profile_id
 
 
-async def _create(api, *, profile_id, opportunity_id=OPPORTUNITY, mode="BEHAVIORAL"):
+async def _create(api, *, profile_id, opportunity_id=OPPORTUNITY, mode="BEHAVIORAL",
+                  application_id=None):
     """POST a create-session body; the response is returned unasserted for a status check."""
-    return await api.write("POST", "/interview-sessions", json={
+    body = {
         "candidate_profile_id": str(profile_id),
-        "opportunity_id": str(opportunity_id), "mode": mode})
+        "opportunity_id": str(opportunity_id), "mode": mode}
+    if application_id is not None:
+        body["application_id"] = str(application_id)
+    return await api.write("POST", "/interview-sessions", json=body)
+
+
+async def _seed_application(api, *, profile_id, opportunity_id=OPPORTUNITY, owner=None):
+    """Seed a Phase 12 application, keyed exactly as the real engine keys it.
+
+    The id derives from the idempotency key, so the seeded row is the one the service resolves
+    owner-first when a create body names it. `owner` defaults to the signed-in account.
+    """
+    from datetime import UTC, datetime
+
+    owner_id = owner if owner is not None else next(iter(api.users.users))
+    key = build_idempotency_key(
+        candidate_profile_id=profile_id, channel=ApplicationChannel.BROWSER,
+        opportunity_id=opportunity_id, company_id=None)
+    instant = datetime(2026, 4, 1, 9, 0, tzinfo=UTC)
+    application = Application(
+        id=application_id(key), user_id=owner_id, candidate_profile_id=profile_id,
+        decision_id=new_application_decision_id(), channel=ApplicationChannel.BROWSER,
+        state=ApplicationState.PLANNED, idempotency_key=key,
+        opportunity_id=opportunity_id, company_id=None, created_at=instant, updated_at=instant)
+    await api.applications.upsert(application)
+    return application
 
 
 async def _open(api):
@@ -154,6 +191,55 @@ async def test_a_failed_plan_generation_is_503(tmp_path):
         response = await _create(api, profile_id=profile_id)
         assert response.status_code == 503
         assert response.json()["error"] == "question_generation_unavailable"
+
+
+async def test_creating_a_session_binding_a_matching_application_is_201(tmp_path):
+    """A create naming an application this account owns for this posting is accepted."""
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        profile_id = await _ground(api)
+        application = await _seed_application(api, profile_id=profile_id)
+        response = await _create(api, profile_id=profile_id, application_id=application.id)
+        assert response.status_code == 201, response.text
+
+
+async def test_creating_a_session_with_a_missing_application_is_404(tmp_path):
+    """An application id that resolves to nothing — missing or another account's — is a 404."""
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        profile_id = await _ground(api)
+        phantom = build_idempotency_key(
+            candidate_profile_id=profile_id, channel=ApplicationChannel.BROWSER,
+            opportunity_id=OPPORTUNITY, company_id=None)
+        response = await _create(
+            api, profile_id=profile_id, application_id=application_id(phantom))
+        assert response.status_code == 404
+        assert response.json()["error"] == "application_not_found"
+
+
+async def test_creating_a_session_with_a_cross_opportunity_application_is_409(tmp_path):
+    """An application about another posting cannot ground this session — a 409 mismatch."""
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        profile_id = await _ground(api)
+        other = await _seed_application(
+            api, profile_id=profile_id, opportunity_id=OTHER_OPPORTUNITY)
+        response = await _create(api, profile_id=profile_id, application_id=other.id)
+        assert response.status_code == 409
+        assert response.json()["error"] == "application_opportunity_mismatch"
+
+
+async def test_a_question_grounding_failure_is_503(tmp_path):
+    """A question the guard cannot ground — even after one repair — is a 503, never persisted."""
+    llm = FakeInterviewLLM(
+        question_prompt="Parlez-moi de la fois où vous avez dirigé 250 ingénieurs.")
+    async with api_harness(tmp_path, interview_llm=llm) as api:
+        session_id = await _open(api)
+        response = await api.write(
+            "POST", f"/interview-sessions/{session_id}/next-question")
+        assert response.status_code == 503
+        assert response.json()["error"] == "question_grounding_failed"
+        assert api.interview_questions.questions == {}  # nothing ungrounded was stored
 
 
 # --- listing, history ordering, and the ask/answer loop ---------------------
@@ -285,6 +371,27 @@ async def test_an_empty_transcript_is_503(tmp_path):
             api, session_id, content=b"silence", content_type="audio/webm")
         assert response.status_code == 503
         assert response.json()["error"] == "transcription_unavailable"
+
+
+async def test_a_low_confidence_voice_answer_is_422_carrying_the_transcript(tmp_path):
+    """A transcript below the auto-evaluate floor is a 422 review, recording nothing.
+
+    The transcript rides back so the candidate can confirm the words and resubmit as text;
+    no answer is written and readiness is untouched, so speech-to-text doubt never grades.
+    """
+    transcriber = DeterministicTranscriber(
+        transcripts={b"muffled": "Peut-être un truc comme ça, je crois."}, confidence=0.2)
+    async with api_harness(tmp_path, interview_transcriber=transcriber) as api:
+        session_id = await _open(api)
+        await _ask(api, session_id)
+        response = await _voice(
+            api, session_id, content=b"muffled", content_type="audio/webm")
+        assert response.status_code == 422
+        body = response.json()
+        assert body["error"] == "transcript_review_required"
+        assert body["transcript"] == "Peut-être un truc comme ça, je crois."
+        assert body["confidence"] == 0.2
+        assert api.interview_answers.answers == {}  # nothing recorded
 
 
 # --- readiness and closing: a coaching signal, computed by the platform -----

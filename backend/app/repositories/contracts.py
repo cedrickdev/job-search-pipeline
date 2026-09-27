@@ -773,6 +773,44 @@ class LLMConnectionRepository(Protocol):
 
 
 @runtime_checkable
+class CredentialRotationStore(Protocol):
+    """Every stored credential, for an operator re-encrypting them under a new key (§22).
+
+    Deliberately NOT user-scoped, and the one credential path that is: a key rotation
+    re-encrypts every account's stored credential, so it reads across owners. It is
+    reachable only from the offline rotation CLI, never from a request handler, and it
+    exposes exactly two operations — stream the rows that carry a credential, and
+    rewrite one row's ciphertext and version — so it cannot be turned into a cross-user
+    read of anything but a credential that is already opaque ciphertext.
+    """
+
+    async def list_credentialed(
+        self, *, after_id: LLMConnectionId | None = None,
+        limit: int = DEFAULT_LIMIT,
+    ) -> tuple[LLMConnection, ...]:
+        """Connections that carry a stored credential, by id, for keyset paging.
+
+        Only rows whose `encrypted_api_key` is set are returned — a CLI or keyless
+        connection has nothing to rotate. `after_id` resumes strictly after the last id
+        a previous batch returned, so a rotation walks the whole table in `limit`-sized
+        pages without holding it all in memory and without reprocessing a row it just
+        rewrote (re-encryption does not change the id it pages by).
+        """
+        ...
+
+    async def reencrypt(self, connection_id: LLMConnectionId, *,
+                        ciphertext: str, secret_version: int) -> bool:
+        """Replace one connection's stored ciphertext and version; `True` if it changed.
+
+        A targeted update of exactly those two columns, so a rotation cannot disturb the
+        single-default unique index or any other field. The write is conditioned on the
+        row still carrying a credential, so a credential cleared out from under a
+        rotation is a no-op rather than a resurrection.
+        """
+        ...
+
+
+@runtime_checkable
 class ProviderSessionRepository(Protocol):
     """Provider-side sessions — user-owned, keyed by connection and conversation (§4)."""
 

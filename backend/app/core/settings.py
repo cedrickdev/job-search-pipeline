@@ -36,7 +36,12 @@ from datetime import timedelta
 from os import environ
 from typing import Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# The version tag the credential cipher writes new ciphertext under. Imported from the
+# crypto module (a leaf that depends only on `cryptography` and Pydantic) so the
+# "current secret version" has one source of truth rather than a literal repeated here.
+from backend.app.llm.secrets import CURRENT_SECRET_VERSION
 
 # Matches docker-compose.yml. Not a secret: the port is bound to 127.0.0.1 and
 # the credentials exist only in that file, which is why it is safe to write here
@@ -200,6 +205,16 @@ DEFAULT_DOCUMENT_ARTIFACT_ROOT: Final[str] = "var/document_artifacts"
 # local providers never needs it, so its absence is not an error until a credential
 # has to be encrypted.
 LLM_SECRET_KEY_VARIABLE: Final[str] = "JOBSEARCH_LLM_SECRET_KEY"  # noqa: S105 — an env var name, not a credential
+# The version tag `JOBSEARCH_LLM_SECRET_KEY` writes new ciphertext under, and the
+# previous keys a rotation keeps available so values written under an earlier version
+# still decrypt (Phase 16 §22). During a rotation an operator sets the new key in
+# `JOBSEARCH_LLM_SECRET_KEY`, bumps `..._VERSION`, and moves the old key to
+# `..._V<N>` (e.g. `JOBSEARCH_LLM_SECRET_KEY_V1`); the rotation CLI then re-encrypts
+# every stored credential at the new version. The `_V<N>` scheme takes digits only,
+# so it never collides with the `_VERSION` variable.
+LLM_SECRET_KEY_VERSION_VARIABLE: Final[str] = "JOBSEARCH_LLM_SECRET_KEY_VERSION"  # noqa: S105 — an env var name, not a credential
+_LLM_SECRET_PREVIOUS_KEY_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^JOBSEARCH_LLM_SECRET_KEY_V(\d+)$")
 
 # The Stripe billing adapter's credentials and endpoint (Phase 16 §11-13). The API key
 # authorises calls *out* (opening a checkout or portal); the webhook secret verifies calls *in*.
@@ -408,32 +423,70 @@ class LLMSecretSettings(BaseModel):
     """The master key for encrypting stored LLM credentials — env-sourced, never DB.
 
     Frozen and closed like every settings model, and with the same custom repr rule
-    as `DatabaseSettings`: the key is excluded from the repr so a traceback that
-    renders this object cannot print it. `master_key` is optional because a
+    as `DatabaseSettings`: no key material is ever printed, so a traceback that
+    renders this object cannot leak one. `master_key` is optional because a
     deployment using only CLI and keyless local providers never encrypts anything;
     the service raises a clear error only if a credential must be stored while it is
     absent, rather than failing at startup for a feature the deployment does not use.
+
+    `active_version` is the tag new ciphertext is written under, and `previous_keys`
+    holds the older-version keys a rotation keeps available so a value stored under an
+    earlier version still decrypts (Phase 16 §22). Outside a rotation window both are
+    the default: version 1 and no previous keys. A previous key registered under the
+    active version would silently shadow the active key, so it is refused here.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     master_key: str | None = Field(default=None, repr=False)
+    active_version: int = Field(default=CURRENT_SECRET_VERSION, ge=1)
+    # version -> key, the keys a rotation can still decrypt with. `repr=False` and
+    # never surfaced: a version list is safe to log, the keys are not.
+    previous_keys: Mapping[int, str] = Field(default_factory=dict, repr=False)
 
     @property
     def has_key(self) -> bool:
         return bool(self.master_key)
 
+    @model_validator(mode="after")
+    def _previous_keys_are_strictly_older(self) -> Self:
+        if self.active_version in self.previous_keys:
+            raise ValueError(
+                f"a previous key is registered under the active version "
+                f"{self.active_version}; a rotation moves the old key to a lower "
+                "version and sets the new key as active")
+        return self
+
     def __repr__(self) -> str:
-        return f"LLMSecretSettings(master_key={'set' if self.has_key else 'unset'!r})"
+        versions = sorted(self.previous_keys)
+        return (f"LLMSecretSettings(master_key={'set' if self.has_key else 'unset'!r}, "
+                f"active_version={self.active_version!r}, "
+                f"previous_versions={versions!r})")
 
     __str__ = __repr__
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
-        """Read the master key from the environment, leaving it unset when absent."""
+        """Read the active key, its version, and any rotation-window previous keys.
+
+        A previous key is any `JOBSEARCH_LLM_SECRET_KEY_V<N>` with a positive integer
+        `N` — the version it decrypts. The active version defaults to
+        `CURRENT_SECRET_VERSION`; an operator bumps it only during a rotation.
+        """
         source = environ if env is None else env
         value = source.get(LLM_SECRET_KEY_VARIABLE, "").strip()
-        return cls(master_key=value or None)
+        previous: dict[int, str] = {}
+        for name, raw in source.items():
+            match = _LLM_SECRET_PREVIOUS_KEY_PATTERN.match(name)
+            key = raw.strip()
+            if match is None or not key:
+                continue
+            previous[int(match.group(1))] = key
+        return cls(
+            master_key=value or None,
+            active_version=_read_int(source, LLM_SECRET_KEY_VERSION_VARIABLE,
+                                     CURRENT_SECRET_VERSION),
+            previous_keys=previous)
 
 
 class StripeSettings(BaseModel):

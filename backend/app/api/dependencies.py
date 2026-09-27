@@ -376,6 +376,10 @@ def llm_cipher(
     encrypts nothing — so it is cached under a sentinel to tell "resolved to no cipher"
     apart from "not resolved yet", and the connection service raises a clear
     `LLMSecretKeyUnavailable` only if a credential must actually be stored without one.
+
+    The cipher is built at the configured `active_version` and carries any rotation
+    `previous_keys`, so during a rotation window a credential stored under an earlier
+    version still decrypts while new writes land at the active version (Phase 16 §22).
     """
     cached = getattr(request.app.state, LLM_CIPHER_ATTRIBUTE, None)
     if isinstance(cached, FernetSecretCipher):
@@ -383,7 +387,10 @@ def llm_cipher(
     if cached == _NO_CIPHER:
         return None
     resolved: SecretCipher | None = (
-        FernetSecretCipher(settings.master_key) if settings.master_key else None)
+        FernetSecretCipher(settings.master_key,
+                           version=settings.active_version,
+                           older=dict(settings.previous_keys))
+        if settings.master_key else None)
     setattr(request.app.state, LLM_CIPHER_ATTRIBUTE,
             resolved if resolved is not None else _NO_CIPHER)
     return resolved

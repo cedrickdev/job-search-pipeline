@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 
 from backend.app.api import API_V2_PREFIX
+from backend.app.billing.errors import BillingError, BillingErrorCode
 from backend.app.career.errors import CareerError, CareerErrorCode
 from backend.app.chat.conversation import (
     ConversationNotFound,
@@ -170,6 +171,20 @@ _CAREER_STATUS: Final[dict[CareerErrorCode, int]] = {
     CareerErrorCode.STRATEGY_PROPOSAL_STALE: status.HTTP_409_CONFLICT,
     CareerErrorCode.STRATEGY_TARGET_NOT_FOUND: status.HTTP_409_CONFLICT,
     CareerErrorCode.SENSITIVE_CONFIRMATION_REQUIRED: status.HTTP_409_CONFLICT,
+}
+
+# Which HTTP status each billing refusal becomes (Phase 16, §4, §8). A commercial quota that is
+# exhausted is 402 Payment Required, not 429: unlike an `ApplicationPolicy` rate limit — a
+# transient budget that refills on a short wait (429) — a plan quota is resolved by upgrading or
+# by the period resetting, so a surface should offer an upgrade rather than retry. It is the
+# commercial clause of the effective-permission AND, never a safety verdict — raising it says
+# nothing about whether the action was safe (§4). A `PLAN_CATALOGUE_MISSING` is a 500: the
+# free-tier plan the resolver falls back to is unseeded, which is a deployment fault, not a
+# well-formed request's. An unmapped code defaults to 409 in the handler; the body's `error` is
+# the code lowercased, the same closed vocabulary the services raise.
+_BILLING_STATUS: Final[dict[BillingErrorCode, int]] = {
+    BillingErrorCode.QUOTA_EXCEEDED: status.HTTP_402_PAYMENT_REQUIRED,
+    BillingErrorCode.PLAN_CATALOGUE_MISSING: status.HTTP_500_INTERNAL_SERVER_ERROR,
 }
 
 
@@ -500,6 +515,17 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         # nothing sensitive. The status comes from the code; the body's `error` is the code
         # lowercased, the same closed vocabulary the services raise.
         status_code = _CAREER_STATUS.get(exc.code, status.HTTP_409_CONFLICT)
+        return _json(status_code, exc.code.value.lower(), exc.detail)
+
+    @app.exception_handler(BillingError)
+    async def _billing_error(request: Request, exc: BillingError) -> JSONResponse:
+        # A typed, secret-free billing refusal (Phase 16). `detail` is composed by the service
+        # from the domain's own vocabulary — entitlement keys, ceilings, billing-period labels and
+        # fixed sentences, never a provider message or a payload (§4, §90) — so returning it echoes
+        # nothing sensitive. The status comes from the code; `QUOTA_EXCEEDED` is 402 (offer an
+        # upgrade, not a retry) and never means the action was unsafe — the domain gates are
+        # separate clauses that ran regardless (§4). The body's `error` is the code lowercased.
+        status_code = _BILLING_STATUS.get(exc.code, status.HTTP_409_CONFLICT)
         return _json(status_code, exc.code.value.lower(), exc.detail)
 
     @app.exception_handler(InterviewGroundingNotFound)

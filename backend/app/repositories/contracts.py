@@ -53,6 +53,7 @@ from backend.app.domain.company import (
 from backend.app.domain.decision import ApplicationDecision
 from backend.app.domain.documents import CandidateDocument, CandidateDocumentType
 from backend.app.domain.eligibility import EligibilityResult
+from backend.app.domain.entitlement import EntitlementKey, Plan
 from backend.app.domain.geo import GeoSearchQuery, GeoStatus, RemoteScope
 from backend.app.domain.identifiers import (
     ApplicationDecisionId,
@@ -72,8 +73,10 @@ from backend.app.domain.identifiers import (
     LLMConnectionId,
     MatchEvaluationId,
     OpportunityId,
+    PlanId,
     SearchProfileId,
     StrategyChangeProposalId,
+    SubscriptionId,
     UserId,
     UserSessionId,
 )
@@ -95,6 +98,8 @@ from backend.app.domain.strategy_change import (
     StrategyChangeExecution,
     StrategyChangeProposal,
 )
+from backend.app.domain.subscription import Subscription
+from backend.app.domain.usage import UsageEvent
 from backend.app.domain.user import User, UserSession
 from backend.app.llm.connection import LLMConnection
 from backend.app.llm.sessions import ProviderSession
@@ -1456,5 +1461,176 @@ class StrategyChangeExecutionRepository(Protocol):
     async def upsert(self, execution: StrategyChangeExecution) -> StrategyChangeExecution:
         """Write the audit, keyed on its own id derived from the proposal."""
         ...
+
+
+# Phase 16. The three contracts below are what the SaaS billing spine persists:
+# `commercial entitlement → server-side quota check → existing domain service →
+# authoritative usage event`. A plan is a *shared* catalogue fact and so takes no
+# `user_id` — the same exception `OpportunityRepository` and `CompanyRepository`
+# make, for the same reason (§17, §21). A subscription and a usage event are
+# user-owned, so `user_id` comes first on every read, exactly like the Phase
+# 4/10/12/13/14/15 tables. Nothing here can *widen* a safety rule: these stores
+# answer "what did this account pay for" and "how much has it consumed", one clause
+# of the effective-permission AND, never the whole verdict (§4).
+
+
+@runtime_checkable
+class PlanRepository(Protocol):
+    """The commercial plan catalogue — a shared fact, so nothing here takes a `user_id`.
+
+    A plan is what the platform *sells*, not something an account owns: two subscribers on
+    the `pro` plan reference one row, so — like `Opportunity` and `Company` — it is
+    deliberately not user-scoped (§21). The id derives from the `slug`, so seeding the
+    catalogue is an idempotent upsert: re-running the seed updates the one `free`/`pro`/`scale`
+    row rather than minting a second. The frontend defines none of this; it reads the catalogue
+    the backend serves (§17, §61).
+    """
+
+    async def get(self, plan_id: PlanId) -> Plan | None:
+        """The plan and all of its entitlements, or `None`."""
+        ...
+
+    async def get_by_slug(self, slug: str) -> Plan | None:
+        """The plan registered under this business key, or `None`.
+
+        The lookup the free-tier fallback and the seed both use: `slug` is the stable
+        identity `plan_id` derives from, so finding "the free plan" is a keyed read rather
+        than a scan for a price of zero.
+        """
+        ...
+
+    async def upsert(self, plan: Plan) -> Plan:
+        """Write the plan and reconcile its entitlements.
+
+        The seed's write path: keyed on the id `slug` derives, so re-seeding updates the row
+        in place and an entitlement dropped from the plan is deleted by the cascade. Returns
+        what is now stored, which is how a caller learns an entitlement it did not include has
+        gone.
+        """
+        ...
+
+    async def list_active(self, *, public_only: bool = False,
+                          limit: int = DEFAULT_LIMIT) -> tuple[Plan, ...]:
+        """Plans that may still be subscribed to, cheapest first — the catalogue read.
+
+        `is_active` plans only: a retired plan stays in the store so existing subscriptions
+        keep resolving, but it is never offered for a new checkout. `public_only` narrows to
+        the pricing surface (`is_public`), hiding the internal free tier and any operator-only
+        plan; it is a parameter rather than a separate method so one ordered query serves both
+        the pricing page and an admin listing. Ordered by price then slug, so the page is
+        stable and reads low-to-high.
+        """
+        ...
+
+
+@runtime_checkable
+class SubscriptionRepository(Protocol):
+    """One account's commercial relationship with a billing provider — user-owned (§10-16).
+
+    `user_id` comes first on every read, so another account's subscription reads as absent and
+    an upsert cannot take one over. The id derives from the provider's own subscription handle
+    (`subscription_id`), so every event about one subscription lands on one row — an upsert,
+    like every other store. The model holds no write authority over anything but its own state:
+    losing a paid subscription narrows an account's quotas, it never deletes data and never
+    touches an `ApplicationPolicy` (§16).
+    """
+
+    async def get(self, user_id: UserId,
+                  subscription_id: SubscriptionId) -> Subscription | None:
+        """The subscription, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def get_current(self, user_id: UserId) -> Subscription | None:
+        """The subscription the entitlement resolver reads for this account, or `None`.
+
+        The most recently updated subscription that has *not* reached `CANCELED` — a canceled
+        subscription grants nothing and the account is on the free tier, so it is excluded here
+        rather than returned only to be discarded. A `PAST_DUE` or an expired
+        `CANCEL_AT_PERIOD_END` row *is* returned: whether it still grants the paid plan is a
+        clock question the resolver answers with `grants_plan_entitlements(as_of)`, never this
+        query. `None` means the account has no live commercial relationship and resolves to the
+        free plan's ceilings.
+        """
+        ...
+
+    async def upsert(self, subscription: Subscription) -> Subscription:
+        """Write the subscription; the owner comes from `subscription.user_id`.
+
+        Keyed on the id the provider handle derives, so a webhook applying a new state updates
+        the one row. Ordering an out-of-order redelivery against what is stored is the service's
+        job (`Subscription.supersedes`); this only persists the state the service decided to
+        apply.
+        """
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[Subscription, ...]:
+        """This user's subscriptions, most recently updated first — the billing history."""
+        ...
+
+
+@runtime_checkable
+class UsageEventRepository(Protocol):
+    """The append-only, idempotent metering ledger — user-owned, the quota check's ground truth.
+
+    This is the *authoritative usage event* end of the spine (§5-9). It offers no `upsert` and
+    no `update`: an event is `add`ed once and never mutated, and a correction is a new
+    compensating event. Every read is user-scoped, so one account cannot read another's
+    consumption. `sum_for_period` under `lock_usage_budget` is the concurrency-safe reservation
+    that mirrors `ApplicationRepository.lock_submission_budget` /
+    `count_active_submissions_since`: it makes a per-period quota's count → decide → write atomic
+    against another worker of the same account, so two racing metered actions cannot both read
+    the budget as free.
+    """
+
+    async def add(self, event: UsageEvent) -> UsageEvent:
+        """Record one measured consumption, or return the event a re-meter already wrote (§7, §9).
+
+        The owner comes from `event.user_id`. Idempotent by construction: the id derives from a
+        deterministic `idempotency_key`, so metering the same source twice — a retried handler, a
+        redelivered task — composes the same primary key. The insert runs inside a SAVEPOINT; on
+        the common path it succeeds and the fresh row is returned, and when a concurrent unit of
+        work already committed the same event the insert trips `UNIQUE (idempotency_key)`, the
+        SAVEPOINT rolls back leaving the outer transaction intact, and the event that won the race
+        is read back and returned. So re-metering collapses onto one row, the account is charged
+        once, and no raw integrity error escapes — the ledger twin of
+        `CareerRecommendationRepository.add`. There is no path that writes a `0`: an unmeasurable
+        call writes no event at all (§5), enforced by the domain's `quantity >= 1`.
+        """
+        ...
+
+    async def lock_usage_budget(self, user_id: UserId) -> None:
+        """Serialize this account's per-period quota reservations against other workers.
+
+        Taken before the period sum and held to the end of the caller's transaction, it makes
+        `sum_for_period` → quota decision → `add` atomic for one account, so two workers racing
+        the last unit of a period's allowance cannot both read the budget as free and both consume
+        (§8). A no-op ordering primitive — it guards nothing on its own; the sum that follows does.
+        A DB implementation is a transaction-scoped advisory lock keyed on the user, released
+        automatically when the transaction commits or rolls back, in its own lock namespace so it
+        never collides with the submission-budget lock a submission also takes.
+        """
+        ...
+
+    async def sum_for_period(self, user_id: UserId, entitlement_key: EntitlementKey,
+                             billing_period: str) -> int:
+        """How much of one entitlement this account has consumed in one billing window (§8).
+
+        The `already_used` a per-period `Entitlement.quota_permits` check reads: the sum of every
+        event's `quantity` for this `(user_id, entitlement_key, billing_period)` — the exact shape
+        the composite index serves. `0` when nothing has been metered, never `None`, so a first
+        consumption in a fresh period compares against a real zero. Must be called under
+        `lock_usage_budget` for the reservation to be race-safe; on its own it is a plain query the
+        caller composes into the count → decide → write sequence its transaction controls.
+        """
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[UsageEvent, ...]:
+        """This user's usage events, most recently occurred first — the consumption feed."""
+        ...
+
 
 

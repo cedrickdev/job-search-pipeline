@@ -103,6 +103,12 @@ from backend.app.domain.eligibility import (
     EligibilityStatus,
     RuleAuthority,
 )
+from backend.app.domain.entitlement import (
+    BillingInterval,
+    Entitlement,
+    EntitlementKey,
+    Plan,
+)
 from backend.app.domain.identifiers import (
     SURROGATE_KEY_NAMESPACE,
     ApplicationDecisionId,
@@ -136,12 +142,15 @@ from backend.app.domain.identifiers import (
     LLMRunId,
     MatchEvaluationId,
     OpportunityId,
+    PlanId,
     ProviderSessionId,
     RoleClassificationId,
     SearchProfileId,
     StrategyChangeExecutionId,
     StrategyChangeProposalId,
     SubmissionAttemptId,
+    SubscriptionId,
+    UsageEventId,
     UserId,
     UserSessionId,
 )
@@ -202,6 +211,8 @@ from backend.app.domain.strategy_change import (
     StrategyChangeProposalStatus,
     StrategyChangeTarget,
 )
+from backend.app.domain.subscription import Subscription, SubscriptionStatus
+from backend.app.domain.usage import UsageEvent, UsageSourceType
 from backend.app.domain.user import User, UserSession, UserStatus
 from backend.app.infrastructure.database.models import (
     ApplicationDecisionRow,
@@ -242,6 +253,8 @@ from backend.app.infrastructure.database.models import (
     MatchEvaluationRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
+    PlanEntitlementRow,
+    PlanRow,
     ProviderSessionRow,
     RoleClassificationRow,
     SearchAreaRow,
@@ -249,6 +262,8 @@ from backend.app.infrastructure.database.models import (
     StrategyChangeExecutionRow,
     StrategyChangeProposalRow,
     SubmissionAttemptRow,
+    SubscriptionRow,
+    UsageEventRow,
     UserRow,
     UserSessionRow,
 )
@@ -334,6 +349,18 @@ def search_area_row_id(search_profile_id: SearchProfileId, ordinal: int) -> UUID
     """
     return uuid5(SURROGATE_KEY_NAMESPACE,
                  f"search_area:{search_profile_id}:{ordinal}")
+
+
+def plan_entitlement_row_id(plan_id: PlanId, key: EntitlementKey) -> UUID:
+    """The stable key of one entitlement of one plan.
+
+    Keyed by `(plan_id, key)` — the pair `uq_plan_entitlements_plan_id_key` covers — for the
+    reason `dimension_score_row_id` exists: re-seeding a plan must update the rows already there
+    rather than insert duplicates. `Entitlement` is a value object carrying no id of its own, and
+    a plan grants each key at most once, so the key is the natural discriminator within a plan.
+    """
+    return uuid5(SURROGATE_KEY_NAMESPACE,
+                 f"plan_entitlement:{plan_id}:{key.value}")
 
 
 
@@ -2585,6 +2612,149 @@ def strategy_change_execution_to_domain(
         detail=row.detail,
         result_ref=row.result_ref,
         created_at=row.created_at)
+
+
+def _plan_entitlement_to_row(entitlement: Entitlement, plan_id: PlanId,
+                             row: PlanEntitlementRow | None = None) -> PlanEntitlementRow:
+    """One `Entitlement` onto its row, its id derived from `(plan_id, key)`.
+
+    `limit=None` (the domain's *unlimited*) maps straight to a NULL `entitlement_limit`, distinct
+    from `0`; the column is renamed because `limit` is reserved. Matched by `key` within the plan,
+    so re-seeding updates the existing row rather than inserting a second for the same capability.
+    """
+    target = (PlanEntitlementRow(id=plan_entitlement_row_id(plan_id, entitlement.key))
+              if row is None else row)
+    target.plan_id = plan_id
+    target.key = entitlement.key
+    target.entitlement_limit = entitlement.limit
+    return target
+
+
+def _plan_entitlement_to_domain(row: PlanEntitlementRow) -> Entitlement:
+    return Entitlement(key=EntitlementKey(row.key), limit=row.entitlement_limit)
+
+
+def plan_to_row(plan: Plan, row: PlanRow | None = None) -> PlanRow:
+    """A `Plan` and its entitlements onto rows. The id is derived from `slug`, so re-seeding the
+    catalogue updates the one row in place. `created_at`/`updated_at` are domain facts (a revised
+    plan advances `updated_at`), so `updated_at` is forced into every UPDATE for the reason
+    `application_to_row` states. Existing entitlements are matched by `key` — the natural key the
+    derived child id and the unique constraint both rest on — so a re-persist updates the rows
+    already there and any dropped entitlement is deleted by the cascade."""
+    target = PlanRow(id=plan.id) if row is None else row
+    target.slug = plan.slug
+    target.name = plan.name
+    target.description = plan.description
+    target.price_amount_cents = plan.price_amount_cents
+    target.currency = plan.currency
+    target.billing_interval = plan.billing_interval
+    target.external_price_id = plan.external_price_id
+    target.is_public = plan.is_public
+    target.is_active = plan.is_active
+    target.created_at = plan.created_at
+    target.updated_at = plan.updated_at
+    existing = ({} if row is None
+                else {EntitlementKey(child.key): child for child in row.entitlements})
+    target.entitlements = [
+        _plan_entitlement_to_row(item, plan.id, existing.get(item.key))
+        for item in plan.entitlements]
+    if row is not None:
+        flag_modified(target, "updated_at")
+    return target
+
+
+def plan_to_domain(row: PlanRow) -> Plan:
+    return Plan(
+        id=PlanId(row.id),
+        slug=row.slug,
+        name=row.name,
+        description=row.description,
+        price_amount_cents=row.price_amount_cents,
+        currency=row.currency,
+        billing_interval=(None if row.billing_interval is None
+                          else BillingInterval(row.billing_interval)),
+        external_price_id=row.external_price_id,
+        entitlements=tuple(_plan_entitlement_to_domain(child) for child in row.entitlements),
+        is_public=row.is_public,
+        is_active=row.is_active,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def subscription_to_row(subscription: Subscription,
+                        row: SubscriptionRow | None = None) -> SubscriptionRow:
+    """A `Subscription` onto its row. The id is derived from the provider handle, so every event
+    about one subscription lands here. `created_at`/`updated_at` are domain facts (a status
+    transition or a renewal moves `updated_at`), so `updated_at` is forced into every UPDATE for
+    the reason `application_to_row` states — and `provider_event_at`/`provider_event_sequence`
+    record the provenance the out-of-order guard reads before it ever writes."""
+    target = SubscriptionRow(id=subscription.id) if row is None else row
+    target.user_id = subscription.user_id
+    target.plan_id = subscription.plan_id
+    target.status = subscription.status
+    target.provider = subscription.provider
+    target.external_customer_id = subscription.external_customer_id
+    target.external_subscription_id = subscription.external_subscription_id
+    target.current_period_start = subscription.current_period_start
+    target.current_period_end = subscription.current_period_end
+    target.cancel_at_period_end = subscription.cancel_at_period_end
+    target.provider_event_at = subscription.provider_event_at
+    target.provider_event_sequence = subscription.provider_event_sequence
+    target.created_at = subscription.created_at
+    target.updated_at = subscription.updated_at
+    if row is not None:
+        flag_modified(target, "updated_at")
+    return target
+
+
+def subscription_to_domain(row: SubscriptionRow) -> Subscription:
+    return Subscription(
+        id=SubscriptionId(row.id),
+        user_id=UserId(row.user_id),
+        plan_id=PlanId(row.plan_id),
+        status=SubscriptionStatus(row.status),
+        provider=row.provider,
+        external_customer_id=row.external_customer_id,
+        external_subscription_id=row.external_subscription_id,
+        current_period_start=row.current_period_start,
+        current_period_end=row.current_period_end,
+        cancel_at_period_end=row.cancel_at_period_end,
+        provider_event_at=row.provider_event_at,
+        provider_event_sequence=row.provider_event_sequence,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def usage_event_to_row(event: UsageEvent,
+                       row: UsageEventRow | None = None) -> UsageEventRow:
+    """A `UsageEvent` onto its row. Append-only — the id is derived from the idempotency key, so
+    a re-meter collides here rather than double-charging — so this is written once and never
+    mutated: `occurred_at` is the domain instant and the mixin timestamps are row bookkeeping."""
+    target = UsageEventRow(id=event.id) if row is None else row
+    target.user_id = event.user_id
+    target.entitlement_key = event.entitlement_key
+    target.quantity = event.quantity
+    target.source_type = event.source_type
+    target.source_id = event.source_id
+    target.occurred_at = event.occurred_at
+    target.billing_period = event.billing_period
+    target.idempotency_key = event.idempotency_key
+    target.detail = event.detail
+    return target
+
+
+def usage_event_to_domain(row: UsageEventRow) -> UsageEvent:
+    return UsageEvent(
+        id=UsageEventId(row.id),
+        user_id=UserId(row.user_id),
+        entitlement_key=EntitlementKey(row.entitlement_key),
+        quantity=row.quantity,
+        source_type=UsageSourceType(row.source_type),
+        source_id=row.source_id,
+        occurred_at=row.occurred_at,
+        billing_period=row.billing_period,
+        idempotency_key=row.idempotency_key,
+        detail=row.detail)
 
 
 

@@ -64,6 +64,7 @@ from backend.app.domain.geo import (
     remote_scope_of,
 )
 from backend.app.domain.eligibility import EligibilityResult
+from backend.app.domain.entitlement import EntitlementKey, Plan
 from backend.app.domain.interview import (
     InterviewAnswer,
     InterviewAnswerEvaluation,
@@ -97,12 +98,15 @@ from backend.app.domain.identifiers import (
     LLMRunId,
     MatchEvaluationId,
     OpportunityId,
+    PlanId,
     ProviderSessionId,
     RoleClassificationId,
     SearchProfileId,
     StrategyChangeExecutionId,
     StrategyChangeProposalId,
     SubmissionAttemptId,
+    SubscriptionId,
+    UsageEventId,
     UserId,
     UserSessionId,
 )
@@ -117,6 +121,8 @@ from backend.app.domain.strategy_change import (
     StrategyChangeProposal,
     StrategyChangeProposalStatus,
 )
+from backend.app.domain.subscription import Subscription, SubscriptionStatus
+from backend.app.domain.usage import UsageEvent
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.llm.connection import LLMConnection
 from backend.app.llm.sessions import ProviderSession
@@ -155,6 +161,7 @@ from backend.app.repositories.contracts import (
     OpportunityGeoResult,
     OpportunityNearby,
     OpportunityRepository,
+    PlanRepository,
     ProviderSessionRepository,
     RoleClassificationRepository,
     SearchProfileRepository,
@@ -162,6 +169,8 @@ from backend.app.repositories.contracts import (
     StrategyChangeExecutionRepository,
     StrategyChangeProposalRepository,
     SubmissionAttemptRepository,
+    SubscriptionRepository,
+    UsageEventRepository,
     UserRepository,
 )
 
@@ -188,7 +197,8 @@ def _implements_contracts() -> tuple[
         InterviewAnswerEvaluationRepository, InterviewSessionSummaryRepository,
         ApplicationOutcomeRepository, RoleClassificationRepository,
         CareerRecommendationRepository, StrategyChangeProposalRepository,
-        StrategyChangeExecutionRepository]:
+        StrategyChangeExecutionRepository, PlanRepository,
+        SubscriptionRepository, UsageEventRepository]:
     """Structural conformance, the same guard `sqlalchemy_repositories` carries.
 
     A fake whose signature drifted from the `Protocol` would still run — Python
@@ -215,7 +225,9 @@ def _implements_contracts() -> tuple[
             FakeApplicationOutcomeRepository(), FakeRoleClassificationRepository(),
             FakeCareerRecommendationRepository(),
             FakeStrategyChangeProposalRepository(),
-            FakeStrategyChangeExecutionRepository())
+            FakeStrategyChangeExecutionRepository(),
+            FakePlanRepository(), FakeSubscriptionRepository(),
+            FakeUsageEventRepository())
 
 
 def _meters_between(one: GeoPoint, other: GeoPoint) -> float:
@@ -1824,6 +1836,142 @@ class FakeStrategyChangeExecutionRepository:
         stored = execution.model_copy(deep=True)
         self.executions[stored.id] = stored
         return stored
+
+
+class FakePlanRepository:
+    """The commercial catalogue, keyed by id and shared — no `user_id` (§46).
+
+    A plan is not owned by a user, so its reads carry none, the one exception the
+    company/opportunity catalogues also make. `upsert` keys on the plan's id, which
+    derives from its slug, so re-seeding the catalogue lands on the one row rather than
+    duplicating a tier — the fake cannot represent a slug collision any more than
+    `uq_plans_slug` can. `list_active` returns cheapest-first (free tiers, priced NULL,
+    at the head) with slug breaking ties, the shape the pricing page reads.
+    """
+
+    def __init__(self) -> None:
+        self.plans: dict[PlanId, Plan] = {}
+
+    async def get(self, plan_id: PlanId) -> Plan | None:
+        found = self.plans.get(plan_id)
+        return None if found is None else found.model_copy(deep=True)
+
+    async def get_by_slug(self, slug: str) -> Plan | None:
+        return next((p.model_copy(deep=True) for p in self.plans.values()
+                     if p.slug == slug), None)
+
+    async def upsert(self, plan: Plan) -> Plan:
+        stored = plan.model_copy(deep=True)
+        self.plans[stored.id] = stored
+        return stored
+
+    async def list_active(self, *, public_only: bool = False,
+                          limit: int = DEFAULT_LIMIT) -> tuple[Plan, ...]:
+        mine = [p.model_copy(deep=True) for p in self.plans.values()
+                if p.is_active and (not public_only or p.is_public)]
+        # Slug first as the stable tie-break, then price with NULL (the free tier)
+        # ahead of any amount — the real `ORDER BY price_amount_cents NULLS FIRST, slug`.
+        mine.sort(key=lambda p: p.slug)
+        mine.sort(key=lambda p: (p.price_amount_cents is not None,
+                                 p.price_amount_cents or 0))
+        return tuple(mine[:limit])
+
+
+class FakeSubscriptionRepository:
+    """A user's subscriptions, keyed by id and owner-scoped on every read (§47).
+
+    `get` and `get_current` refuse another account's row exactly where the contract
+    says. `get_current` returns the most recently updated subscription that is not
+    `CANCELED`, leaving whether it still grants entitlements as of a given instant to
+    `Subscription.grants_plan_entitlements` — the fake selects the row, the domain
+    decides access. `upsert` keys on the subscription's id, derived from `(provider,
+    external_subscription_id)`, so a redelivered webhook lands on the one row.
+    """
+
+    def __init__(self) -> None:
+        self.subscriptions: dict[SubscriptionId, Subscription] = {}
+
+    async def get(self, user_id: UserId,
+                  subscription_id: SubscriptionId) -> Subscription | None:
+        found = self.subscriptions.get(subscription_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def get_current(self, user_id: UserId) -> Subscription | None:
+        mine = [s for s in self.subscriptions.values()
+                if s.user_id == user_id
+                and s.status is not SubscriptionStatus.CANCELED]
+        if not mine:
+            return None
+        # Most recently updated first, ties by id — the real
+        # `ORDER BY updated_at DESC, id LIMIT 1`.
+        mine.sort(key=lambda s: str(s.id))
+        mine.sort(key=lambda s: s.updated_at, reverse=True)
+        return mine[0].model_copy(deep=True)
+
+    async def upsert(self, subscription: Subscription) -> Subscription:
+        stored = subscription.model_copy(deep=True)
+        self.subscriptions[stored.id] = stored
+        return stored
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[Subscription, ...]:
+        mine = [s.model_copy(deep=True) for s in self.subscriptions.values()
+                if s.user_id == user_id]
+        mine.sort(key=lambda s: str(s.id))
+        mine.sort(key=lambda s: s.updated_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeUsageEventRepository:
+    """The append-only usage ledger, keyed by id and owner-scoped on reads (§48).
+
+    Write-once by construction: only `add`, which honours the idempotency the id
+    encodes — a second event carrying the same `idempotency_key` returns the stored one
+    rather than a second row, the convergence the real `add` reaches when a concurrent
+    insert loses the race on `uq_usage_events_idempotency_key`. `sum_for_period` totals a
+    period's quantity, the reservation base; `lock_usage_budget` is a no-op here because a
+    fake runs one unit of work with no second worker to serialize against — the atomicity
+    it buys is a property of the real database, asserted in the concurrent PostgreSQL test.
+    """
+
+    def __init__(self) -> None:
+        self.events: dict[UsageEventId, UsageEvent] = {}
+
+    async def add(self, event: UsageEvent) -> UsageEvent:
+        existing = await self._by_idempotency_key(event.user_id, event.idempotency_key)
+        if existing is not None:
+            return existing
+        stored = event.model_copy(deep=True)
+        self.events[stored.id] = stored
+        return stored
+
+    async def _by_idempotency_key(self, user_id: UserId,
+                                  idempotency_key: str) -> UsageEvent | None:
+        return next((e.model_copy(deep=True) for e in self.events.values()
+                     if e.user_id == user_id
+                     and e.idempotency_key == idempotency_key), None)
+
+    async def lock_usage_budget(self, user_id: UserId) -> None:
+        return None
+
+    async def sum_for_period(self, user_id: UserId, entitlement_key: EntitlementKey,
+                             billing_period: str) -> int:
+        return sum(e.quantity for e in self.events.values()
+                   if e.user_id == user_id
+                   and e.entitlement_key is entitlement_key
+                   and e.billing_period == billing_period)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[UsageEvent, ...]:
+        mine = [e.model_copy(deep=True) for e in self.events.values()
+                if e.user_id == user_id]
+        # Most recently occurred first, ties by id — the real
+        # `ORDER BY occurred_at DESC, id`.
+        mine.sort(key=lambda e: str(e.id))
+        mine.sort(key=lambda e: e.occurred_at, reverse=True)
+        return tuple(mine[:limit])
 
 
 

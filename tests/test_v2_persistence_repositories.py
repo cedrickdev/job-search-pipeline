@@ -45,6 +45,9 @@ from backend.app.domain.identifiers import (
     OpportunityId,
 )
 from backend.app.domain.matching import DimensionScore, MatchDimension
+from backend.app.domain.entitlement import EntitlementKey
+from backend.app.domain.subscription import SubscriptionStatus
+from backend.app.domain.usage import UsageSourceType
 from backend.app.infrastructure.database.engine import (
     create_session_factory,
     session_scope,
@@ -66,9 +69,13 @@ from backend.app.infrastructure.database.models import (
     MatchEvaluationRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
+    PlanEntitlementRow,
+    PlanRow,
     RoleClassificationRow,
     StrategyChangeExecutionRow,
     StrategyChangeProposalRow,
+    SubscriptionRow,
+    UsageEventRow,
     UserRow,
 )
 from backend.app.repositories.sqlalchemy_repositories import (
@@ -84,9 +91,12 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyEligibilityResultRepository,
     SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
+    SqlAlchemyPlanRepository,
     SqlAlchemyRoleClassificationRepository,
     SqlAlchemyStrategyChangeExecutionRepository,
     SqlAlchemyStrategyChangeProposalRepository,
+    SqlAlchemySubscriptionRepository,
+    SqlAlchemyUsageEventRepository,
 )
 from tests.v2_builders import (
     APPLICATION,
@@ -104,11 +114,15 @@ from tests.v2_builders import (
     OTHER_PROFILE,
     OTHER_RECOMMENDATION,
     OTHER_STRATEGY_PROPOSAL,
+    OTHER_SUBSCRIPTION,
     OTHER_USER,
     POLICY,
+    PRO_PLAN,
     PROFILE,
     RECOMMENDATION,
+    RUN,
     STRATEGY_PROPOSAL,
+    SUBSCRIPTION,
     USER,
     a_career_recommendation,
     a_chat_action_execution,
@@ -119,13 +133,17 @@ from tests.v2_builders import (
     a_company_location,
     a_conversation,
     a_decision,
+    a_plan,
     a_policy,
     a_recommendation_evidence,
     a_role_classification,
     a_source_record,
     a_strategy_change_execution,
     a_strategy_change_proposal,
+    a_subscription,
+    a_usage_event,
     an_eligibility_result,
+    an_entitlement,
     an_evaluation,
     an_opportunity,
     an_application_outcome,
@@ -1087,3 +1105,210 @@ async def test_a_strategy_execution_is_written_once_per_proposal(
     stored = await strategy_executions.get(USER, STRATEGY_PROPOSAL)
     assert stored is not None and stored.succeeded
     assert await strategy_executions.get(OTHER_USER, STRATEGY_PROPOSAL) is None
+
+
+# --------------------------------------------------------------------------
+# Phase 16 — the commercial repositories. `plans` is a shared catalogue with no
+# `user_id`; `subscriptions` and `usage_events` are user-scoped like every entity.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def plans(db_session):
+    return SqlAlchemyPlanRepository(db_session)
+
+
+@pytest.fixture
+def subscriptions(db_session):
+    return SqlAlchemySubscriptionRepository(db_session)
+
+
+@pytest.fixture
+def usage_events(db_session):
+    return SqlAlchemyUsageEventRepository(db_session)
+
+
+@pytest_asyncio.fixture
+async def commercial_accounts(db_session):
+    """Two accounts and the `pro` plan: the foreign keys a subscription needs.
+
+    A plan is shared and carries no `user_id`; a subscription references both a plan and
+    a user, and a usage event references a user — so two accounts let the scoping tests
+    prove one account cannot read the other's commercial rows.
+    """
+    db_session.add_all([a_user_row(display_name="owner"),
+                        a_user_row(id=OTHER_USER, display_name="somebody else")])
+    await db_session.flush()
+    await SqlAlchemyPlanRepository(db_session).upsert(a_plan())
+    await db_session.flush()
+
+
+async def test_a_plan_and_its_entitlements_come_back_by_id_and_by_slug(plans):
+    """The catalogue read, whole-object: the entitlement children round-trip with it.
+
+    A plan is shared, so neither `get` nor `get_by_slug` is scoped to a user — the same
+    exception the opportunity catalogue makes. Equality covers the entitlement collection,
+    so a ceiling dropped on the way through the child rows fails here.
+    """
+    written = await plans.upsert(a_plan())
+    assert written == a_plan()
+    assert await plans.get(PRO_PLAN) == a_plan()
+    assert await plans.get_by_slug("pro") == a_plan()
+
+
+async def test_re_seeding_a_plan_updates_one_row_and_reconciles_its_entitlements(
+        db_session, plans):
+    """Re-seeding the catalogue updates the plan in place and drops removed ceilings.
+
+    The id derives from the slug, so a second seed is an UPDATE, not a duplicate; the
+    entitlements are matched by key, so an entitlement no longer granted is deleted by the
+    delete-orphan cascade rather than lingering as a ceiling the plan no longer offers.
+    """
+    await plans.upsert(a_plan())
+    await plans.upsert(a_plan(name="Plan Pro (révisé)", entitlements=(
+        an_entitlement(key=EntitlementKey.APPLICATION_SUBMISSIONS, limit=250),)))
+    assert await _count(db_session, PlanRow) == 1
+    assert await _count(db_session, PlanEntitlementRow) == 1
+    stored = await plans.get(PRO_PLAN)
+    assert stored is not None and stored.name == "Plan Pro (révisé)"
+    assert stored.entitlement_for(EntitlementKey.APPLICATION_SUBMISSIONS).limit == 250
+    assert stored.entitlement_for(EntitlementKey.LLM_TOKENS) is None
+
+
+async def test_list_active_orders_the_free_tier_first_then_by_price(plans):
+    """The pricing surface's order: cheapest first, the free tier (NULL price) at the head.
+
+    `nulls_first` puts the free plan ahead of every priced one and price ascending orders
+    the rest, so the page reads free → pro → scale regardless of insertion order.
+    """
+    await plans.upsert(a_plan(slug="scale", price_amount_cents=4900))
+    await plans.upsert(a_plan())
+    await plans.upsert(a_plan(slug="free", price_amount_cents=None, currency=None,
+                             billing_interval=None, entitlements=(
+                                 an_entitlement(
+                                     key=EntitlementKey.APPLICATION_SUBMISSIONS, limit=5),)))
+    listed = await plans.list_active()
+    assert [p.slug for p in listed] == ["free", "pro", "scale"]
+
+
+async def test_list_active_hides_retired_plans_and_public_only_hides_private_ones(plans):
+    """`is_active` gates new checkouts; `public_only` gates the public pricing surface.
+
+    A retired plan (`is_active=False`) never appears — a stale checkout cannot pick it —
+    while a private-but-active plan (`is_public=False`) is offered to a direct link but
+    hidden from the public page.
+    """
+    await plans.upsert(a_plan())
+    await plans.upsert(a_plan(slug="hidden", is_public=False))
+    await plans.upsert(a_plan(slug="retired", is_active=False))
+    everything_active = await plans.list_active()
+    assert {p.slug for p in everything_active} == {"pro", "hidden"}
+    public = await plans.list_active(public_only=True)
+    assert {p.slug for p in public} == {"pro"}
+
+
+async def test_a_subscription_is_reported_as_absent_to_another_user(
+        commercial_accounts, subscriptions):
+    """A subscription is user data: a stranger naming its id reads `None`, not the row."""
+    written = await subscriptions.upsert(a_subscription())
+    assert await subscriptions.get(USER, written.id) == written
+    assert await subscriptions.get(OTHER_USER, written.id) is None
+
+
+async def test_a_redelivered_webhook_updates_the_one_subscription_row(
+        db_session, commercial_accounts, subscriptions):
+    """Every event about one subscription lands on one row — webhook idempotency.
+
+    The id derives from the provider handle, so a later event upserts the row already
+    there rather than colliding on `uq_subscriptions_provider_external_subscription_id`.
+    """
+    await subscriptions.upsert(a_subscription())
+    await subscriptions.upsert(a_subscription(status=SubscriptionStatus.PAST_DUE,
+                                              updated_at=LATER))
+    assert await _count(db_session, SubscriptionRow) == 1
+    stored = await subscriptions.get(USER, SUBSCRIPTION)
+    assert stored is not None and stored.status is SubscriptionStatus.PAST_DUE
+
+
+async def test_get_current_excludes_canceled_and_returns_the_most_recent(
+        commercial_accounts, subscriptions):
+    """The account's live subscription: the newest non-`CANCELED` row.
+
+    A canceled subscription is history, not the current relationship, so it is excluded;
+    among the rest the most recently updated wins, and the clock-based access decision is
+    left to the resolver, not the query.
+    """
+    await subscriptions.upsert(a_subscription(
+        status=SubscriptionStatus.CANCELED, updated_at=LATER,
+        cancel_at_period_end=False))
+    await subscriptions.upsert(a_subscription(
+        id=OTHER_SUBSCRIPTION, external_subscription_id="sub_test_0002",
+        status=SubscriptionStatus.ACTIVE, updated_at=NOW))
+    current = await subscriptions.get_current(USER)
+    assert current is not None and current.id == OTHER_SUBSCRIPTION
+
+
+async def test_the_subscription_list_scopes_to_its_owner(
+        commercial_accounts, subscriptions):
+    """`list_for_user` returns one account's subscriptions and never another's."""
+    await subscriptions.upsert(a_subscription())
+    await subscriptions.upsert(a_subscription(
+        id=OTHER_SUBSCRIPTION, external_subscription_id="sub_test_0002",
+        user_id=OTHER_USER))
+    assert [s.id for s in await subscriptions.list_for_user(USER)] == [SUBSCRIPTION]
+    assert [s.id for s in await subscriptions.list_for_user(OTHER_USER)] == \
+        [OTHER_SUBSCRIPTION]
+
+
+async def test_a_usage_event_is_reported_as_absent_to_another_user(
+        commercial_accounts, usage_events):
+    """The metering ledger is user data: another account neither lists nor sums it."""
+    await usage_events.add(a_usage_event())
+    assert [e.source_id for e in await usage_events.list_for_user(USER)] == \
+        [str(APPLICATION)]
+    assert await usage_events.list_for_user(OTHER_USER) == ()
+    assert await usage_events.sum_for_period(
+        OTHER_USER, EntitlementKey.APPLICATION_SUBMISSIONS, "2026-03") == 0
+
+
+async def test_re_metering_the_same_consumption_collapses_onto_one_row(
+        db_session, commercial_accounts, usage_events):
+    """A retried meter of the same source converges on one row rather than double-charging.
+
+    The id derives from the idempotency key, so the second `add` collides inside its
+    SAVEPOINT and reads the winning row back — the append-only ledger's idempotency (§7, §9).
+    """
+    first = await usage_events.add(a_usage_event())
+    again = await usage_events.add(a_usage_event(detail="retried, same source"))
+    assert again.id == first.id
+    assert await _count(db_session, UsageEventRow) == 1
+
+
+async def test_sum_for_period_totals_only_the_matching_key_and_window(
+        commercial_accounts, usage_events):
+    """A per-period sum counts one entitlement in one window — the quota check's read.
+
+    Events for another key, another period, or another account are all excluded, so the
+    sum is exactly "how much of this entitlement has this account consumed in this window".
+    """
+    await usage_events.add(a_usage_event(source_id="app-a", quantity=1))
+    await usage_events.add(a_usage_event(source_id="app-b", quantity=1))
+    # Another key, same period — excluded from the submissions sum.
+    await usage_events.add(a_usage_event(
+        entitlement_key=EntitlementKey.LLM_TOKENS, source_type=UsageSourceType.LLM_RUN,
+        source_id=str(RUN), quantity=4096))
+    # Same key, a different period — excluded from March's sum.
+    await usage_events.add(a_usage_event(source_id="app-c", billing_period="2026-04"))
+    assert await usage_events.sum_for_period(
+        USER, EntitlementKey.APPLICATION_SUBMISSIONS, "2026-03") == 2
+    assert await usage_events.sum_for_period(
+        USER, EntitlementKey.LLM_TOKENS, "2026-03") == 4096
+
+
+async def test_the_usage_list_is_most_recently_occurred_first(
+        commercial_accounts, usage_events):
+    """The ledger reads newest-first — the order a usage history surface shows."""
+    await usage_events.add(a_usage_event(source_id="older", occurred_at=NOW))
+    await usage_events.add(a_usage_event(source_id="newer", occurred_at=LATER))
+    listed = await usage_events.list_for_user(USER)
+    assert [e.source_id for e in listed] == ["newer", "older"]

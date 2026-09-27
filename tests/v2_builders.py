@@ -103,6 +103,7 @@ from backend.app.domain.identifiers import (
     OpportunityId,
     SearchProfileId,
     StrategyChangeProposalId,
+    SubscriptionId,
     UserId,
     application_outcome_id,
     candidate_document_id,
@@ -115,9 +116,12 @@ from backend.app.domain.identifiers import (
     interview_answer_id,
     interview_question_id,
     interview_session_summary_id,
+    plan_id,
     provider_session_id,
     role_classification_id,
     strategy_change_execution_id,
+    subscription_id,
+    usage_event_id,
 )
 from backend.app.domain.decision import (
     ApplicationDecision,
@@ -163,6 +167,18 @@ from backend.app.domain.strategy_change import (
     StrategyChangeExecutionOutcome,
     StrategyChangeProposal,
     StrategyChangeProposalStatus,
+)
+from backend.app.domain.entitlement import (
+    BillingInterval,
+    Entitlement,
+    EntitlementKey,
+    Plan,
+)
+from backend.app.domain.subscription import Subscription, SubscriptionStatus
+from backend.app.domain.usage import (
+    UsageEvent,
+    UsageSourceType,
+    build_usage_idempotency_key,
 )
 from backend.app.llm.connection import LLMConnection, LLMProviderType
 from backend.app.llm.contracts import TaskPurpose
@@ -210,6 +226,15 @@ OTHER_RECOMMENDATION = CareerRecommendationId(UUID("00000000-0000-4000-8000-0000
 STRATEGY_PROPOSAL = StrategyChangeProposalId(UUID("00000000-0000-4000-8000-000000000101"))
 OTHER_STRATEGY_PROPOSAL = StrategyChangeProposalId(
     UUID("00000000-0000-4000-8000-000000000102"))
+# A plan's id is derived from its stable slug (`plan_id`) and a subscription's from the
+# provider's own subscription handle (`subscription_id`), so the builders derive both from
+# their natural keys rather than pinning a bare UUID — a re-seed or a redelivered webhook
+# lands on the same id the service would compute, which is the whole point of the derivation.
+FREE_PLAN = plan_id("free")
+PRO_PLAN = plan_id("pro")
+OTHER_PLAN = plan_id("scale")
+SUBSCRIPTION = subscription_id("stripe", "sub_test_0001")
+OTHER_SUBSCRIPTION = subscription_id("stripe", "sub_test_0002")
 
 # Somewhere real, so a distance a test asserts on can be checked against a map.
 LAUSANNE = GeoPoint(latitude=46.5197, longitude=6.6323)
@@ -1051,6 +1076,106 @@ def a_strategy_change_execution(*, proposal_id=STRATEGY_PROPOSAL, **overrides):
     }
     fields.update(overrides)
     return StrategyChangeExecution(**fields)
+
+
+def an_entitlement(*, key=EntitlementKey.APPLICATION_SUBMISSIONS, limit=5, **overrides):
+    """One capability ceiling on a plan. Defaults to a finite 5 submissions; `limit=None` is
+    unlimited."""
+    fields = {"key": key, "limit": limit}
+    fields.update(overrides)
+    return Entitlement(**fields)
+
+
+def a_plan(*, slug="pro", entitlements=None, **overrides):
+    """A server-authoritative plan owned by no one, its id derived from `slug`.
+
+    Defaults to a paid monthly `pro` plan granting a finite submission and token allowance; a
+    free plan passes `slug="free"`, `price_amount_cents=None`, `currency=None`,
+    `billing_interval=None` and its own smaller `entitlements`. The `external_price_id` is the
+    opaque handle the billing adapter maps to a provider price — a fixture value here, never a
+    real Stripe id.
+    """
+    resolved = (entitlements if entitlements is not None else (
+        an_entitlement(key=EntitlementKey.APPLICATION_SUBMISSIONS, limit=100),
+        an_entitlement(key=EntitlementKey.LLM_TOKENS, limit=1_000_000),
+        an_entitlement(key=EntitlementKey.ACTIVE_SEARCH_PROFILES, limit=10),
+    ))
+    fields = {
+        "id": plan_id(slug),
+        "slug": slug,
+        "name": f"Plan {slug.title()}",
+        "description": None,
+        "price_amount_cents": 1900,
+        "currency": "CHF",
+        "billing_interval": BillingInterval.MONTHLY,
+        "external_price_id": f"price_fixture_{slug}",
+        "entitlements": resolved,
+        "is_public": True,
+        "is_active": True,
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return Plan(**fields)
+
+
+def a_subscription(*, id=SUBSCRIPTION, plan=PRO_PLAN, **overrides):
+    """One account's `ACTIVE` subscription to a plan, backed by the `stripe` provider.
+
+    Defaults to an active subscription owned by `USER` with a bounded paid window `[NOW, +30d)`
+    and the provider handles a webhook would carry. A trialing/past-due/canceled state passes
+    `status=`; the internal free tier passes `provider="internal"`, `external_*=None` and an
+    unset window. `provider_event_at` seeds the out-of-order guard.
+    """
+    fields = {
+        "id": id,
+        "user_id": USER,
+        "plan_id": plan,
+        "status": SubscriptionStatus.ACTIVE,
+        "provider": "stripe",
+        "external_customer_id": "cus_fixture_0001",
+        "external_subscription_id": "sub_test_0001",
+        "current_period_start": NOW,
+        "current_period_end": datetime(2026, 3, 31, 9, 30, tzinfo=UTC),
+        "cancel_at_period_end": False,
+        "provider_event_at": NOW,
+        "provider_event_sequence": 1,
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return Subscription(**fields)
+
+
+def a_usage_event(*, entitlement_key=EntitlementKey.APPLICATION_SUBMISSIONS,
+                  source_type=UsageSourceType.APPLICATION_SUBMISSION,
+                  source_id=None, quantity=1, **overrides):
+    """One measured consumption owned by `USER`, its id derived from its idempotency key.
+
+    Defaults to a single application submission in the `2026-03` period. The idempotency key and
+    the id both derive from `(entitlement_key, source_type, source_id)`, so re-metering the same
+    source collapses onto one row — the model refuses an id or key that does not match the fact.
+    `source_id` defaults to the fixture `APPLICATION`'s id; an LLM-token event passes
+    `entitlement_key=EntitlementKey.LLM_TOKENS, source_type=UsageSourceType.LLM_RUN,
+    source_id=str(RUN), quantity=<measured tokens>`.
+    """
+    resolved_source = source_id if source_id is not None else str(APPLICATION)
+    idempotency_key = build_usage_idempotency_key(
+        entitlement_key=entitlement_key, source_type=source_type, source_id=resolved_source)
+    fields = {
+        "id": usage_event_id(idempotency_key),
+        "user_id": USER,
+        "entitlement_key": entitlement_key,
+        "quantity": quantity,
+        "source_type": source_type,
+        "source_id": resolved_source,
+        "occurred_at": NOW,
+        "billing_period": "2026-03",
+        "idempotency_key": idempotency_key,
+        "detail": None,
+    }
+    fields.update(overrides)
+    return UsageEvent(**fields)
 
 
 

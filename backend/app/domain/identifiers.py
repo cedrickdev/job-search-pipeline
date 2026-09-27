@@ -67,6 +67,10 @@ CareerRecommendationId = NewType("CareerRecommendationId", UUID)
 CareerRecommendationEvidenceId = NewType("CareerRecommendationEvidenceId", UUID)
 StrategyChangeProposalId = NewType("StrategyChangeProposalId", UUID)
 StrategyChangeExecutionId = NewType("StrategyChangeExecutionId", UUID)
+PlanId = NewType("PlanId", UUID)
+SubscriptionId = NewType("SubscriptionId", UUID)
+SubscriptionEventId = NewType("SubscriptionEventId", UUID)
+UsageEventId = NewType("UsageEventId", UUID)
 
 
 def new_user_id() -> UserId:
@@ -604,3 +608,70 @@ def strategy_change_execution_id(
     """
     return StrategyChangeExecutionId(
         uuid5(SURROGATE_KEY_NAMESPACE, f"strategy_change_execution:{proposal_id}"))
+
+
+def plan_id(slug: str) -> PlanId:
+    """The id of one commercial plan, derived from its stable slug (Phase 16 §2).
+
+    Derived rather than random, for the reason `default_candidate_profile_id` is: the plan
+    catalogue is server-authoritative and seeded from code, so re-running the seed for the
+    `free` or `pro` plan must land on the one row rather than minting a second. The slug is the
+    plan's stable business key (`free`, `pro`, `scale`); pricing and entitlements may be revised
+    in place under it, but the identity a subscription's foreign key points at never moves.
+
+    Random ids are deliberately not offered: a plan with no slug is a plan nothing can seed
+    idempotently or reference by name, which the catalogue never wants.
+    """
+    return PlanId(uuid5(SURROGATE_KEY_NAMESPACE, f"plan:{slug}"))
+
+
+def subscription_id(provider_key: str, external_subscription_id: str) -> SubscriptionId:
+    """The id of one subscription, derived from the provider's own handle for it (§10-16).
+
+    Derived rather than random, and this is the load-bearing half of webhook idempotency: the
+    provider's subscription identifier is stable across every event it sends about that
+    subscription, so `customer.subscription.updated` arriving twice — a retry, an out-of-order
+    redelivery — computes the same id and updates the one row rather than opening a second. The
+    provider key scopes it, because two billing providers numbering their subscriptions
+    independently are not describing the same commercial relationship.
+
+    `new_subscription_id` is not offered: a subscription always mirrors a provider-side object,
+    and a random one would be a subscription no webhook could ever find again to update.
+    """
+    return SubscriptionId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"subscription:{provider_key}:{external_subscription_id}"))
+
+
+def subscription_event_id(provider_key: str, external_event_id: str) -> SubscriptionEventId:
+    """The id of one processed billing webhook event, from the provider's event id (§13).
+
+    Derived rather than random, and this is what makes webhook processing idempotent by
+    construction: a provider stamps every webhook with its own unique event id, so a redelivered
+    event computes the same id and collides on the primary key instead of being applied twice.
+    The provider key scopes it so two providers' event-id spaces never alias. The database's
+    UNIQUE on this id is the second half — it catches a hand-written row that bypassed this
+    function — but the derivation is what makes the common path idempotent rather than racing.
+    """
+    return SubscriptionEventId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"subscription_event:{provider_key}:{external_event_id}"))
+
+
+def usage_event_id(idempotency_key: str) -> UsageEventId:
+    """The id of one metered usage event, derived from its idempotency key (§5-9).
+
+    Derived rather than random, and this is the load-bearing half of idempotent metering: the
+    id *is* a function of the idempotency key `build_usage_idempotency_key` composes for the
+    capability that produced the usage, so metering the same source twice — a retried handler,
+    a redelivered task — computes the same id and collides on the primary key instead of
+    charging the account twice for one action. The database's UNIQUE on this id is the second
+    half; the derivation makes the common path idempotent by construction rather than by a
+    caught race.
+
+    `idempotency_key` is the value `build_usage_idempotency_key` composes; it is passed in
+    rather than recomputed here for the reason every derivation in this module keeps its
+    key-shaping rules out of the id factory — this module knows about UUIDs and must not grow a
+    dependency on the vocabulary that shapes the key.
+    """
+    return UsageEventId(uuid5(SURROGATE_KEY_NAMESPACE, f"usage_event:{idempotency_key}"))

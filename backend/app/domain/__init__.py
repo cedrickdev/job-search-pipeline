@@ -37,5 +37,8 @@ The modules, in dependency order:
 - `role` — the deterministic role-family classification and its provenance;
 - `analytics` — the deterministic funnel, conversion, timing and dimension metrics;
 - `recommendation` — evidence-backed, zero-authority suggestions drawn from the metrics;
-- `strategy_change` — the spine's only mutation: typed, approved edits to a search or policy.
+- `strategy_change` — the spine's only mutation: typed, approved edits to a search or policy;
+- `entitlement` — the commercial permission layer: `Plan` and the `Entitlement`s it grants;
+- `subscription` — one account's normalized, webhook-authoritative relationship with a plan;
+- `usage` — the append-only, idempotent ledger of what each metered capability consumed.
 """

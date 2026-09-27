@@ -46,7 +46,11 @@ from backend.app.domain.identifiers import (
     EligibilityResultId,
     EvidenceId,
     MatchEvaluationId,
+    PlanId,
 )
+from backend.app.domain.entitlement import EntitlementKey
+from backend.app.domain.subscription import SubscriptionStatus
+from backend.app.domain.usage import UsageSourceType
 from backend.app.domain.matching import DimensionScore, MatchDimension
 from backend.app.domain.analytics import DimensionKind, RateKind, TimingKind
 from backend.app.domain.outcome import OutcomeKind, OutcomeSource, OutcomeStatus
@@ -92,6 +96,9 @@ from backend.app.infrastructure.database.mappers import (
     match_evaluation_to_row,
     opportunity_to_domain,
     opportunity_to_row,
+    plan_entitlement_row_id,
+    plan_to_domain,
+    plan_to_row,
     reasons_from_json,
     reasons_to_json,
     role_classification_to_domain,
@@ -101,6 +108,10 @@ from backend.app.infrastructure.database.mappers import (
     strategy_change_execution_to_row,
     strategy_change_proposal_to_domain,
     strategy_change_proposal_to_row,
+    subscription_to_domain,
+    subscription_to_row,
+    usage_event_to_domain,
+    usage_event_to_row,
 )
 from backend.app.infrastructure.database.models import (
     CompanyLocationRow,
@@ -128,14 +139,18 @@ from tests.v2_builders import (
     a_company,
     a_company_location,
     a_conversation,
+    a_plan,
     a_reason,
     a_recommendation_evidence,
     a_role_classification,
     a_strategy_change_execution,
     a_strategy_change_proposal,
+    a_subscription,
+    a_usage_event,
     an_answer_evaluation,
     an_application_outcome,
     an_eligibility_result,
+    an_entitlement,
     an_evaluation,
     an_interview_question,
     an_interview_session,
@@ -979,3 +994,167 @@ def test_a_rejected_execution_reads_back_with_its_absent_columns_none():
         strategy_change_execution_to_row(execution))
     assert read_back == execution
     assert not read_back.succeeded
+
+
+# --------------------------------------------------------------------------
+# Phase 16 — the commercial layer. A plan carries a child collection of
+# entitlements; a subscription and a usage event are flat, user-owned rows.
+# --------------------------------------------------------------------------
+
+
+def test_a_plan_survives_the_trip_to_the_tables_and_back():
+    """A paid plan and its entitlements onto rows and back, whole-object equality.
+
+    The entitlements are a child collection, so this proves the `plan_entitlements`
+    rows round-trip too — a ceiling dropped or reordered on the way through would fail
+    here, which a column-by-column check on the parent alone would miss.
+    """
+    plan = a_plan()
+    assert plan_to_domain(plan_to_row(plan)) == plan
+
+
+def test_a_free_plan_carries_no_price_currency_or_interval():
+    """The free tier reads back with all three price columns `None`, not zero-or-empty.
+
+    A free plan sets neither `price_amount_cents` nor `currency` nor `billing_interval`;
+    the mapper must preserve that absence rather than inventing a `0`/`""`/an interval the
+    domain's price validator would then reject on the way back in.
+    """
+    plan = a_plan(slug="free", price_amount_cents=None, currency=None,
+                  billing_interval=None,
+                  entitlements=(an_entitlement(key=EntitlementKey.APPLICATION_SUBMISSIONS,
+                                               limit=5),))
+    row = plan_to_row(plan)
+    assert (row.price_amount_cents, row.currency, row.billing_interval) == \
+        (None, None, None)
+    read_back = plan_to_domain(row)
+    assert read_back == plan
+    assert read_back.is_free
+
+
+def test_an_unlimited_entitlement_is_a_null_limit_distinct_from_zero():
+    """`limit=None` (unlimited) maps to a NULL column, never conflated with `0`.
+
+    Unlimited and "none of this capability" are different grants; the mapper keeps them
+    apart by writing `NULL` for the first, so a top plan's uncapped allowance does not read
+    back as a zero ceiling.
+    """
+    plan = a_plan(entitlements=(
+        an_entitlement(key=EntitlementKey.LLM_TOKENS, limit=None),
+        an_entitlement(key=EntitlementKey.APPLICATION_SUBMISSIONS, limit=0)))
+    row = plan_to_row(plan)
+    by_key = {child.key: child.entitlement_limit for child in row.entitlements}
+    assert by_key[EntitlementKey.LLM_TOKENS] is None
+    assert by_key[EntitlementKey.APPLICATION_SUBMISSIONS] == 0
+    read_back = plan_to_domain(row)
+    assert read_back.entitlement_for(EntitlementKey.LLM_TOKENS).is_unlimited
+    assert read_back.entitlement_for(EntitlementKey.APPLICATION_SUBMISSIONS).limit == 0
+
+
+def test_an_entitlement_child_id_is_derived_from_its_plan_and_key():
+    """The surrogate key a re-seed must reproduce: `(plan_id, key)`, not a random id.
+
+    Re-persisting the same plan has to update the entitlement row already there rather than
+    inserting a second for the same capability, so the child id is a pure function of the
+    plan and the key — the derivation the unique constraint rests on.
+    """
+    plan = a_plan()
+    row = plan_to_row(plan)
+    for child in row.entitlements:
+        assert child.id == plan_entitlement_row_id(PlanId(plan.id), child.key)
+
+
+def test_re_persisting_a_plan_updates_its_row_and_advances_updated_at():
+    """A second `plan_to_row` onto the loaded row mutates in place, forcing `updated_at`.
+
+    The mapper takes the existing row so a re-seed is an UPDATE, not a duplicate insert; the
+    entitlement children are matched by key and updated in place, and a revised plan's later
+    `updated_at` reaches the column that a bare no-change UPDATE would otherwise skip.
+    """
+    original = a_plan()
+    row = plan_to_row(original)
+    revised = a_plan(name="Plan Pro (révisé)", updated_at=LATER,
+                     entitlements=(an_entitlement(key=EntitlementKey.APPLICATION_SUBMISSIONS,
+                                                  limit=250),))
+    same_row = plan_to_row(revised, row)
+    assert same_row is row
+    assert same_row.name == "Plan Pro (révisé)"
+    assert same_row.updated_at == LATER
+    assert [(c.key, c.entitlement_limit) for c in same_row.entitlements] == \
+        [(EntitlementKey.APPLICATION_SUBMISSIONS, 250)]
+
+
+def test_a_subscription_survives_the_trip_to_the_row_and_back():
+    """A provider-backed subscription with its full window and provenance, round-tripped."""
+    subscription = a_subscription()
+    assert subscription_to_domain(subscription_to_row(subscription)) == subscription
+
+
+def test_an_internal_free_subscription_reads_back_with_its_absent_columns_none():
+    """The internal tier has no provider handle and no window; both survive as `None`.
+
+    An operator-granted or free-tier subscription carries `provider="internal"`, no external
+    handles and an unbounded window — the mapper must not fabricate a customer id or a period,
+    or the both-or-neither window validator would reject the read-back.
+    """
+    subscription = a_subscription(
+        provider="internal", external_customer_id=None, external_subscription_id=None,
+        current_period_start=None, current_period_end=None,
+        provider_event_at=None, provider_event_sequence=None,
+        status=SubscriptionStatus.ACTIVE)
+    row = subscription_to_row(subscription)
+    assert (row.external_customer_id, row.external_subscription_id) == (None, None)
+    assert (row.current_period_start, row.current_period_end) == (None, None)
+    read_back = subscription_to_domain(row)
+    assert read_back == subscription
+    assert not read_back.is_provider_backed
+
+
+def test_re_persisting_a_subscription_updates_its_row_and_advances_updated_at():
+    """A webhook-driven status change onto the loaded row mutates in place, forcing `updated_at`.
+
+    Every event about one subscription lands on one row (the id is the provider handle), so a
+    later event is an UPDATE; the mapper forces the advanced `updated_at` so a status transition
+    that changes nothing else still records when it happened.
+    """
+    original = a_subscription()
+    row = subscription_to_row(original)
+    lapsed = a_subscription(status=SubscriptionStatus.PAST_DUE, updated_at=LATER)
+    same_row = subscription_to_row(lapsed, row)
+    assert same_row is row
+    assert same_row.status is SubscriptionStatus.PAST_DUE
+    assert same_row.updated_at == LATER
+
+
+def test_a_usage_event_survives_the_trip_to_the_row_and_back():
+    """One measured submission onto its append-only row and back, whole-object equality."""
+    event = a_usage_event()
+    assert usage_event_to_domain(usage_event_to_row(event)) == event
+
+
+def test_a_usage_event_with_no_detail_reads_back_with_a_null_detail():
+    """The optional audit note is absent on most events and must survive as `None`.
+
+    `detail` is a free-text note a metering call may attach; the common case leaves it unset,
+    and the mapper must store that as `NULL` rather than an empty string the `NonEmptyStr`
+    domain field would reject on the way back.
+    """
+    event = a_usage_event(detail=None)
+    row = usage_event_to_row(event)
+    assert row.detail is None
+    assert usage_event_to_domain(row) == event
+
+
+def test_an_llm_token_usage_event_carries_its_measured_quantity():
+    """A token meter round-trips its measured count and its `LLM_RUN` provenance.
+
+    LLM tokens are metered from the `LLMRun` telemetry the platform already records, so a
+    token event's `quantity` is the measured count and its source points back at the run —
+    both must survive so a per-period token sum stays auditable to the runs that spent them.
+    """
+    event = a_usage_event(entitlement_key=EntitlementKey.LLM_TOKENS,
+                          source_type=UsageSourceType.LLM_RUN,
+                          source_id=str(RUN), quantity=4096)
+    read_back = usage_event_to_domain(usage_event_to_row(event))
+    assert read_back == event
+    assert read_back.quantity == 4096

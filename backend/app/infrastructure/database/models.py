@@ -103,6 +103,7 @@ from backend.app.domain.eligibility import (
     EligibilityStatus,
     RuleAuthority,
 )
+from backend.app.domain.entitlement import BillingInterval, EntitlementKey
 from backend.app.domain.geo import GeocodingOutcome
 from backend.app.domain.interview import (
     InterviewAnswerFormat,
@@ -128,6 +129,8 @@ from backend.app.domain.strategy_change import (
     StrategyChangeProposalStatus,
     StrategyChangeTarget,
 )
+from backend.app.domain.subscription import INTERNAL_BILLING_PROVIDER, SubscriptionStatus
+from backend.app.domain.usage import UsageSourceType
 from backend.app.domain.user import UserStatus
 from backend.app.infrastructure.database.base import Base, TimestampedMixin
 from backend.app.llm.connection import LLMProviderType
@@ -3021,5 +3024,196 @@ class StrategyChangeExecutionRow(TimestampedMixin, Base):
     observed_target_version: Mapped[datetime | None]
     detail: Mapped[str | None]
     result_ref: Mapped[str | None]
+
+
+# `Plan.price_amount_cents`/`currency`/`billing_interval` are all-or-nothing, the flattened form
+# of `Plan._entitlements_and_price_are_coherent`: a price with no currency could not be charged,
+# a currency with no price prices nothing, and a *paid* plan (a positive amount) with no interval
+# is a subscription with no renewal cadence. A free plan sets an absent (or explicit-zero) amount
+# and neither currency nor interval, so the zero case is admitted on both clauses.
+_PLAN_PRICE_ALL_OR_NOTHING: Final[str] = (
+    "(price_amount_cents IS NULL AND currency IS NULL)"
+    " OR (price_amount_cents IS NOT NULL AND currency IS NOT NULL)"
+)
+
+_PLAN_PAID_CARRIES_AN_INTERVAL: Final[str] = (
+    "price_amount_cents IS NULL OR price_amount_cents = 0 OR billing_interval IS NOT NULL"
+)
+
+# `Subscription`'s billing window is both-or-neither and forward-running, the flattened form of
+# `Subscription._window_and_timestamps_are_coherent`: an unbounded window is the internal free
+# tier, a bounded one must name both ends and end after it starts.
+_SUBSCRIPTION_WINDOW_BOTH_OR_NEITHER: Final[str] = (
+    "(current_period_start IS NULL AND current_period_end IS NULL)"
+    " OR (current_period_start IS NOT NULL AND current_period_end IS NOT NULL)"
+)
+
+
+class PlanRow(TimestampedMixin, Base):
+    """One server-authoritative commercial plan — the catalogue a subscription points at (§2-4).
+
+    Shared, not user-owned: a plan is a fact about what the platform sells, so two accounts on the
+    `pro` plan reference one row and it carries no `user_id`. The id derives from its `slug`,
+    so re-seeding updates the one `free`/`pro`/`scale` row in place rather than minting
+    a second — the `UNIQUE (slug)` is the database half of that identity. `price_amount_cents`,
+    `currency` and `billing_interval` are all-or-nothing (the two CHECKs restate `Plan`'s price
+    validator: a price needs a currency, a *paid* price needs an interval, a free plan sets none of
+    them); `currency` is `VARCHAR(3)` with the ISO-4217 CHECK the domain's `CurrencyCode` validates.
+    `is_public` gates the pricing surface and `is_active` gates new checkouts — a retired plan stays
+    so existing subscriptions keep resolving. `entitlements` is the child collection, matched by
+    `(plan_id, key)` and reassigned wholesale on save. `created_at`/`updated_at` are domain facts (a
+    revised plan advances `updated_at`), so the mapper forces `updated_at` into every UPDATE and the
+    CHECK holds the order.
+    """
+
+    __tablename__ = "plans"
+    __table_args__ = (
+        UniqueConstraint("slug"),
+        CheckConstraint("price_amount_cents IS NULL OR price_amount_cents >= 0",
+                        name="price_amount_cents_non_negative"),
+        CheckConstraint(_PLAN_PRICE_ALL_OR_NOTHING, name="price_all_or_nothing"),
+        CheckConstraint(_PLAN_PAID_CARRIES_AN_INTERVAL, name="paid_carries_an_interval"),
+        _code_format("currency", "^[A-Z]{3}$"),
+        CheckConstraint("updated_at >= created_at", name="updated_at_after_created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    slug: Mapped[str]
+    name: Mapped[str]
+    description: Mapped[str | None]
+    price_amount_cents: Mapped[int | None] = mapped_column(Integer)
+    currency: Mapped[str | None] = mapped_column(String(3))
+    billing_interval: Mapped[BillingInterval | None] = mapped_column(
+        enum_column(BillingInterval, "billing_interval"))
+    external_price_id: Mapped[str | None]
+    is_public: Mapped[bool] = mapped_column(server_default=text("true"))
+    is_active: Mapped[bool] = mapped_column(server_default=text("true"))
+
+    entitlements: Mapped[list["PlanEntitlementRow"]] = relationship(
+        back_populates="plan", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="PlanEntitlementRow.key")
+
+
+class PlanEntitlementRow(TimestampedMixin, Base):
+    """One capability ceiling a plan grants — an `Entitlement` value object as a row (§2-4).
+
+    Parent-owned by `plans`: an entitlement is *what a plan is*, reached only through the plan that
+    grants it, so it carries no `user_id` and cascades from its plan. `UNIQUE (plan_id, key)` is the
+    natural key the row id derives from (`plan_entitlement_row_id`) and the database half of the
+    domain rule that a plan grants each key at most once — re-seeding a plan updates the existing
+    rows in place. `entitlement_limit` is nullable because `NULL` is the domain's *unlimited*, a
+    real and deliberate value distinct from `0` ("none of this capability"); the CHECK holds it
+    non-negative when present. The column is `entitlement_limit`, not `limit`, because `limit` is a
+    reserved word. Written with its parent and matched by natural key, so the mixin timestamps are
+    row bookkeeping.
+    """
+
+    __tablename__ = "plan_entitlements"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "key"),
+        CheckConstraint("entitlement_limit IS NULL OR entitlement_limit >= 0",
+                        name="entitlement_limit_non_negative"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    plan_id: Mapped[UUID] = mapped_column(
+        ForeignKey("plans.id", ondelete="CASCADE"))
+    key: Mapped[EntitlementKey] = mapped_column(
+        enum_column(EntitlementKey, "entitlement_key"))
+    entitlement_limit: Mapped[int | None] = mapped_column(Integer)
+
+    plan: Mapped["PlanRow"] = relationship(back_populates="entitlements", lazy="raise")
+
+
+class SubscriptionRow(TimestampedMixin, Base):
+    """One account's normalized, webhook-authoritative subscription to a plan (§10-16).
+
+    User-owned, read `WHERE user_id = ?`, cascading from `users`. The id derives from the provider's
+    own handle (`subscription_id`), so every event about one subscription lands on one row — the
+    load-bearing half of webhook idempotency, guarded a second time by `UNIQUE (provider,
+    external_subscription_id)` for the provider-backed case (internal free rows carry a NULL handle,
+    which a unique constraint treats as distinct). The `plan_id` FK cascades because a plan is
+    retired via `is_active`, never hard-deleted, and a subscription's plan reference is NOT NULL so
+    `SET NULL` is not an option. `status` is the normalized lifecycle; the billing window
+    (`current_period_start`/`current_period_end`) is both-or-neither and forward-running and
+    `CANCEL_AT_PERIOD_END` must carry the cancel flag (the CHECKs restate `Subscription`'s window
+    validator). `provider`, `external_customer_id` and `external_subscription_id` are the adapter's
+    opaque handles, never interpreted here; `provider_event_at`/`provider_event_sequence` are the
+    provenance the out-of-order guard reads. `created_at`/`updated_at` are domain facts, so the
+    mapper forces `updated_at` into every UPDATE.
+    """
+
+    __tablename__ = "subscriptions"
+    __table_args__ = (
+        UniqueConstraint("provider", "external_subscription_id"),
+        CheckConstraint(_SUBSCRIPTION_WINDOW_BOTH_OR_NEITHER, name="window_both_or_neither"),
+        CheckConstraint(
+            "current_period_start IS NULL OR current_period_end > current_period_start",
+            name="window_runs_forward"),
+        CheckConstraint(
+            "status <> 'CANCEL_AT_PERIOD_END' OR cancel_at_period_end",
+            name="cancel_at_period_end_carries_the_flag"),
+        CheckConstraint("provider_event_sequence IS NULL OR provider_event_sequence >= 0",
+                        name="provider_event_sequence_non_negative"),
+        CheckConstraint("updated_at >= created_at", name="updated_at_after_created_at"),
+        Index("ix_subscriptions_user_id", "user_id"),
+        Index("ix_subscriptions_plan_id", "plan_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    plan_id: Mapped[UUID] = mapped_column(
+        ForeignKey("plans.id", ondelete="CASCADE"))
+    status: Mapped[SubscriptionStatus] = mapped_column(
+        enum_column(SubscriptionStatus, "subscription_status"))
+    provider: Mapped[str] = mapped_column(
+        server_default=text(f"'{INTERNAL_BILLING_PROVIDER}'"))
+    external_customer_id: Mapped[str | None]
+    external_subscription_id: Mapped[str | None]
+    current_period_start: Mapped[datetime | None]
+    current_period_end: Mapped[datetime | None]
+    cancel_at_period_end: Mapped[bool] = mapped_column(server_default=text("false"))
+    provider_event_at: Mapped[datetime | None]
+    provider_event_sequence: Mapped[int | None] = mapped_column(Integer)
+
+
+class UsageEventRow(TimestampedMixin, Base):
+    """One append-only, idempotent fact of measured consumption — the metering ledger (§5-9).
+
+    User-owned, read `WHERE user_id = ?`, cascading from `users`. The id derives from the
+    `idempotency_key` (`usage_event_id`), so metering the same source twice collides on the primary
+    key rather than double-charging; `UNIQUE (idempotency_key)` is the second half of that guard,
+    catching a row whose id was written by hand. `quantity` is `>= 1` by CHECK — an unmeasurable
+    call writes *no* event rather than a fabricated `0` (§5), so a stored row is always real,
+    positive, measured consumption. The composite index on `(user_id, entitlement_key,
+    billing_period)` is exactly the per-period quota sum's lookup: "how much of this entitlement has
+    this user consumed in this window". Append-only — written once, never mutated — so the mixin
+    timestamps are row bookkeeping and `occurred_at` is the domain instant the consumption happened.
+    """
+
+    __tablename__ = "usage_events"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key"),
+        CheckConstraint("quantity >= 1", name="quantity_positive"),
+        Index("ix_usage_events_user_id_entitlement_key_billing_period",
+              "user_id", "entitlement_key", "billing_period"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    entitlement_key: Mapped[EntitlementKey] = mapped_column(
+        enum_column(EntitlementKey, "entitlement_key"))
+    quantity: Mapped[int] = mapped_column(Integer)
+    source_type: Mapped[UsageSourceType] = mapped_column(
+        enum_column(UsageSourceType, "usage_source_type"))
+    source_id: Mapped[str]
+    occurred_at: Mapped[datetime]
+    billing_period: Mapped[str]
+    idempotency_key: Mapped[str]
+    detail: Mapped[str | None]
+
 
 

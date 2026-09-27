@@ -60,8 +60,16 @@ TABLES = Base.metadata.tables
 # 7 §33 is what keeps that safe — the enrichment pass geocodes `opportunities` and
 # `company_locations` only, so no candidate's private address is ever normalized
 # into a key in this table.
+#
+# `plans` (Phase 16) is shared for the plainest reason of all: a plan is a fact about
+# what the platform *sells*, not about any one account. Two users on the `pro` plan
+# reference one catalogue row, its id derives from its `slug` so re-seeding is
+# idempotent, and what a particular account is subscribed to lives in `subscriptions`
+# (user-owned) — never here. A `user_id` on `plans` would be a per-user price list,
+# which §17's server-authoritative catalogue is explicitly not.
 SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
-                 "geocoding_cache", "opportunities", "opportunity_source_records")
+                 "geocoding_cache", "opportunities", "opportunity_source_records",
+                 "plans")
 
 # Rows one user owns, named by the `user_id` Phase 4's authorization filter reads.
 # `candidate_documents` (Phase 10) carries `user_id` denormalized beside its
@@ -93,6 +101,14 @@ SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
 # single cascade. `career_recommendation_evidence` is the exception, owned through its parent
 # recommendation (below). None of these is the Phase 12 execution lifecycle: an outcome is a
 # fact about hiring, kept in its own table with its own enums (§2, §84).
+#
+# The Phase 16 SaaS tables split across the groups by what they describe. `subscriptions` (one
+# account's live link to a plan) and `usage_events` (the append-only metering ledger) are
+# user-owned: "my current plan" and "how much of this entitlement have I used this period" are
+# each a `WHERE user_id = :current_user` read, and the cascade from `users` keeps account
+# deletion one statement even though a subscription's provider handle and a usage event's
+# idempotency key both derive its id. The plan catalogue they reference is a shared fact
+# (`plans`, above) and the entitlements a plan grants are parent-owned by it (below).
 USER_OWNED_TABLES = ("application_decisions", "application_outcomes",
                      "application_policies", "applications",
                      "candidate_documents", "candidate_profiles",
@@ -104,7 +120,7 @@ USER_OWNED_TABLES = ("application_decisions", "application_outcomes",
                      "interview_sessions", "llm_connections", "match_evaluations",
                      "provider_sessions", "role_classifications", "search_profiles",
                      "strategy_change_executions", "strategy_change_proposals",
-                     "user_sessions")
+                     "subscriptions", "usage_events", "user_sessions")
 
 # Telemetry rows: user-attributable, but not user-owned. `llm_runs` (Phase 11)
 # carries a `user_id` so a user can list their own calls, but it is *nullable* — a
@@ -129,6 +145,11 @@ TELEMETRY_TABLES = ("llm_runs",)
 # through the `career_recommendations` row that cites it: the evidence exists to justify one
 # recommendation and cascades with it, so a `user_id` column would be the forgettable second
 # copy the other parent-owned tables avoid.
+#
+# `plan_entitlements` (Phase 16) is *what a plan is* — the capability ceilings a plan grants —
+# reached only through the `plans` row that grants them. It carries no `user_id` because a plan
+# is a shared catalogue fact, not user data; it cascades from its plan, and `(plan_id, key)` is
+# the natural key that keeps re-seeding a plan idempotent.
 PARENT_OWNED_TABLES = {
     "application_events": "applications",
     "submission_attempts": "applications",
@@ -143,6 +164,7 @@ PARENT_OWNED_TABLES = {
     "document_versions": "candidate_documents",
     "eligibility_checks": "eligibility_results",
     "match_dimension_scores": "match_evaluations",
+    "plan_entitlements": "plans",
     "search_areas": "search_profiles",
 }
 
@@ -170,7 +192,7 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_forty_seven_v2_tables():
+def test_the_metadata_holds_exactly_the_fifty_one_v2_tables():
     """A tripwire on the shape of the schema itself.
 
     `models.py` is the only place a V2 table may be declared, so the four ownership
@@ -180,7 +202,7 @@ def test_the_metadata_holds_exactly_the_forty_seven_v2_tables():
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
         PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | {"users"}
-    assert len(TABLES) == 47
+    assert len(TABLES) == 51
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
@@ -414,6 +436,7 @@ def test_free_text_columns_are_text_not_varchar():
                      ("geocoding_cache", "provider"),
                      ("interview_sessions", "language"),
                      ("opportunities", "location_country"),
+                     ("plans", "currency"),
                      ("search_areas", "country"),
                      ("user_sessions", "token_digest"),
                      ("user_sessions", "csrf_token_digest")}

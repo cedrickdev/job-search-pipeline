@@ -58,6 +58,7 @@ from backend.app.domain.company import (
 from backend.app.domain.decision import ApplicationDecision
 from backend.app.domain.documents import CandidateDocument, CandidateDocumentType
 from backend.app.domain.eligibility import EligibilityResult
+from backend.app.domain.entitlement import EntitlementKey, Plan
 from backend.app.domain.geo import (
     GeoSearchQuery,
     GeoStatus,
@@ -82,9 +83,11 @@ from backend.app.domain.identifiers import (
     LLMConnectionId,
     MatchEvaluationId,
     OpportunityId,
+    PlanId,
     SearchProfileId,
     StrategyChangeProposalId,
     SubmissionAttemptId,
+    SubscriptionId,
     UserId,
     UserSessionId,
 )
@@ -107,6 +110,8 @@ from backend.app.domain.strategy_change import (
     StrategyChangeProposal,
     StrategyChangeProposalStatus,
 )
+from backend.app.domain.subscription import Subscription, SubscriptionStatus
+from backend.app.domain.usage import UsageEvent
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.infrastructure.database.mappers import (
     application_decision_to_domain,
@@ -162,6 +167,8 @@ from backend.app.infrastructure.database.mappers import (
     match_evaluation_to_row,
     opportunity_to_domain,
     opportunity_to_row,
+    plan_to_domain,
+    plan_to_row,
     provider_session_to_domain,
     provider_session_to_row,
     role_classification_to_domain,
@@ -174,6 +181,10 @@ from backend.app.infrastructure.database.mappers import (
     strategy_change_proposal_to_row,
     submission_attempt_to_domain,
     submission_attempt_to_row,
+    subscription_to_domain,
+    subscription_to_row,
+    usage_event_to_domain,
+    usage_event_to_row,
     user_session_to_domain,
     user_session_to_row,
     user_to_domain,
@@ -208,12 +219,15 @@ from backend.app.infrastructure.database.models import (
     MatchEvaluationRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
+    PlanRow,
     ProviderSessionRow,
     RoleClassificationRow,
     SearchProfileRow,
     StrategyChangeExecutionRow,
     StrategyChangeProposalRow,
     SubmissionAttemptRow,
+    SubscriptionRow,
+    UsageEventRow,
     UserRow,
     UserSessionRow,
 )
@@ -263,6 +277,7 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
         LLMRunRepository,
         MatchEvaluationRepository,
         OpportunityRepository,
+        PlanRepository,
         ProviderSessionRepository,
         RoleClassificationRepository,
         SearchProfileRepository,
@@ -270,6 +285,8 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
         StrategyChangeExecutionRepository,
         StrategyChangeProposalRepository,
         SubmissionAttemptRepository,
+        SubscriptionRepository,
+        UsageEventRepository,
         UserRepository,
     )
 
@@ -289,7 +306,8 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
             "InterviewAnswerRepository", "InterviewAnswerEvaluationRepository",
             "InterviewSessionSummaryRepository", "ApplicationOutcomeRepository",
             "RoleClassificationRepository", "CareerRecommendationRepository",
-            "StrategyChangeProposalRepository", "StrategyChangeExecutionRepository"]:
+            "StrategyChangeProposalRepository", "StrategyChangeExecutionRepository",
+            "PlanRepository", "SubscriptionRepository", "UsageEventRepository"]:
         """Structural conformance, enforced by `mypy backend`.
 
         The `Protocol`s in `contracts` are satisfied by shape, so nothing would
@@ -329,7 +347,10 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
                 SqlAlchemyRoleClassificationRepository(session),
                 SqlAlchemyCareerRecommendationRepository(session),
                 SqlAlchemyStrategyChangeProposalRepository(session),
-                SqlAlchemyStrategyChangeExecutionRepository(session))
+                SqlAlchemyStrategyChangeExecutionRepository(session),
+                SqlAlchemyPlanRepository(session),
+                SqlAlchemySubscriptionRepository(session),
+                SqlAlchemyUsageEventRepository(session))
 
 
 def _rows_affected(result: Result[Any]) -> int:
@@ -2420,5 +2441,200 @@ class SqlAlchemyStrategyChangeExecutionRepository:
         self._session.add(row)
         await self._session.flush()
         return strategy_change_execution_to_domain(row)
+
+
+class SqlAlchemyPlanRepository:
+    """`PlanRepository` over an `AsyncSession`.
+
+    A shared catalogue, so no method carries a `user_id` — the same exception
+    `SqlAlchemyOpportunityRepository` makes. `PlanRow.entitlements` is `lazy="raise"`,
+    so every read eager-loads them: `plan_to_domain` needs the children, and an upsert
+    needs the stored children to reconcile against.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    def _base_select(self) -> Select[tuple[PlanRow]]:
+        return select(PlanRow).options(selectinload(PlanRow.entitlements))
+
+    async def _row(self, plan_id: PlanId) -> PlanRow | None:
+        result = await self._session.execute(
+            self._base_select().where(PlanRow.id == plan_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, plan_id: PlanId) -> Plan | None:
+        row = await self._row(plan_id)
+        return None if row is None else plan_to_domain(row)
+
+    async def get_by_slug(self, slug: str) -> Plan | None:
+        result = await self._session.execute(
+            self._base_select().where(PlanRow.slug == slug))
+        row = result.scalar_one_or_none()
+        return None if row is None else plan_to_domain(row)
+
+    async def upsert(self, plan: Plan) -> Plan:
+        # The id derives from the slug, so a re-seed of the catalogue loads the existing
+        # row and updates it in place rather than colliding on `uq_plans_slug`.
+        row = plan_to_row(plan, await self._row(plan.id))
+        self._session.add(row)
+        await self._session.flush()
+        return plan_to_domain(row)
+
+    async def list_active(self, *, public_only: bool = False,
+                          limit: int = DEFAULT_LIMIT) -> tuple[Plan, ...]:
+        statement = self._base_select().where(PlanRow.is_active.is_(True))
+        if public_only:
+            statement = statement.where(PlanRow.is_public.is_(True))
+        result = await self._session.execute(
+            # Cheapest first, slug to break the tie so equal prices order stably.
+            # `nulls_first` puts the free tier (NULL price) at the head of the page.
+            statement.order_by(
+                PlanRow.price_amount_cents.asc().nulls_first(), PlanRow.slug)
+            .limit(limit))
+        return tuple(plan_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemySubscriptionRepository:
+    """`SubscriptionRepository` over an `AsyncSession`, `user_id` on every read.
+
+    The upsert loads by `(user_id, id)`, so a write can never reach across accounts —
+    exactly as `SqlAlchemyApplicationRepository` does. `get_current` excludes `CANCELED`
+    and returns the most recently updated remaining row, leaving the clock-based access
+    decision (`Subscription.grants_plan_entitlements`) to the resolver, not the query.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   subscription_id: SubscriptionId) -> SubscriptionRow | None:
+        result = await self._session.execute(
+            select(SubscriptionRow).where(
+                SubscriptionRow.id == subscription_id,
+                SubscriptionRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  subscription_id: SubscriptionId) -> Subscription | None:
+        row = await self._row(user_id, subscription_id)
+        return None if row is None else subscription_to_domain(row)
+
+    async def get_current(self, user_id: UserId) -> Subscription | None:
+        result = await self._session.execute(
+            select(SubscriptionRow)
+            .where(SubscriptionRow.user_id == user_id,
+                   SubscriptionRow.status != SubscriptionStatus.CANCELED.value)
+            .order_by(SubscriptionRow.updated_at.desc(), SubscriptionRow.id)
+            .limit(1))
+        row = result.scalar_one_or_none()
+        return None if row is None else subscription_to_domain(row)
+
+    async def upsert(self, subscription: Subscription) -> Subscription:
+        # The id derives from `(provider, external_subscription_id)`, so a redelivered
+        # webhook loads the existing row and updates it rather than colliding on
+        # `uq_subscriptions_provider_external_subscription_id`.
+        row = subscription_to_row(
+            subscription, await self._row(subscription.user_id, subscription.id))
+        self._session.add(row)
+        await self._session.flush()
+        return subscription_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[Subscription, ...]:
+        result = await self._session.execute(
+            select(SubscriptionRow)
+            .where(SubscriptionRow.user_id == user_id)
+            .order_by(SubscriptionRow.updated_at.desc(), SubscriptionRow.id)
+            .limit(limit))
+        return tuple(subscription_to_domain(row) for row in result.scalars())
+
+
+_USAGE_BUDGET_LOCK_NAMESPACE = 0x55534147  # "USAG" — namespaces this lock class.
+
+
+def _usage_budget_lock_key(user_id: UserId) -> int:
+    """A stable signed int4 advisory-lock key for one user's per-period usage budget.
+
+    The twin of `_submission_budget_lock_key` in its own namespace, so the two locks
+    never serialize against each other: `pg_advisory_xact_lock(int4, int4)` takes a
+    namespace and a key, and folding the user's first four bytes into a signed int4 maps
+    one account to one key. A collision between two different users only serializes them
+    against each other briefly, which is harmless; the same user always maps to the same
+    key, which is all the reservation needs. The lock is per user, not per entitlement,
+    so a user's concurrent meterings of different entitlements serialize too — rarely,
+    and always safely.
+    """
+    return int.from_bytes(user_id.bytes[:4], "big", signed=True)
+
+
+class SqlAlchemyUsageEventRepository:
+    """`UsageEventRepository` over an `AsyncSession`, `user_id` on every read.
+
+    Append-only: the only write is `add`, which inserts inside a SAVEPOINT so a
+    concurrent re-meter of the same consumption converges on one row rather than raising
+    — the ledger twin of `SqlAlchemyCareerRecommendationRepository.add`. `sum_for_period`
+    read under `lock_usage_budget` is the concurrency-safe reservation that mirrors the
+    submission-budget advisory lock: it makes a per-period quota's count → decide → write
+    atomic against another worker of the same account.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, event: UsageEvent) -> UsageEvent:
+        row = usage_event_to_row(event)
+        try:
+            async with self._session.begin_nested():
+                self._session.add(row)
+                await self._session.flush()
+        except IntegrityError:
+            # A concurrent unit of work already metered this exact consumption: the id
+            # (and `uq_usage_events_idempotency_key`) collided. The SAVEPOINT rolled
+            # back and the outer transaction is intact, so the event that won the race
+            # is read back and returned — re-metering collapses onto one row rather than
+            # double-charging.
+            existing = await self._by_idempotency_key(
+                event.user_id, event.idempotency_key)
+            if existing is None:
+                raise
+            return existing
+        return usage_event_to_domain(row)
+
+    async def _by_idempotency_key(self, user_id: UserId,
+                                  idempotency_key: str) -> UsageEvent | None:
+        result = await self._session.execute(
+            select(UsageEventRow).where(
+                UsageEventRow.idempotency_key == idempotency_key,
+                UsageEventRow.user_id == user_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else usage_event_to_domain(row)
+
+    async def lock_usage_budget(self, user_id: UserId) -> None:
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(
+                _USAGE_BUDGET_LOCK_NAMESPACE,
+                _usage_budget_lock_key(user_id))))
+
+    async def sum_for_period(self, user_id: UserId, entitlement_key: EntitlementKey,
+                             billing_period: str) -> int:
+        # Call under `lock_usage_budget`: the sum a reservation decides against must be
+        # stable for the count → decide → write it wraps. COALESCE turns an empty period
+        # into 0 rather than NULL.
+        result = await self._session.execute(
+            select(func.coalesce(func.sum(UsageEventRow.quantity), 0))
+            .where(UsageEventRow.user_id == user_id,
+                   UsageEventRow.entitlement_key == entitlement_key.value,
+                   UsageEventRow.billing_period == billing_period))
+        return int(result.scalar_one())
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[UsageEvent, ...]:
+        result = await self._session.execute(
+            select(UsageEventRow)
+            .where(UsageEventRow.user_id == user_id)
+            .order_by(UsageEventRow.occurred_at.desc(), UsageEventRow.id)
+            .limit(limit))
+        return tuple(usage_event_to_domain(row) for row in result.scalars())
 
 

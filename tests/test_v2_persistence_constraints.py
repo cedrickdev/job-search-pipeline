@@ -33,6 +33,7 @@ from backend.app.domain.eligibility import (
     EligibilityStatus,
     RuleAuthority,
 )
+from backend.app.domain.entitlement import BillingInterval, EntitlementKey
 from backend.app.domain.matching import MatchDimension
 from backend.app.domain.opportunity import OpportunityType
 from backend.app.domain.search import SearchAreaKind
@@ -52,6 +53,8 @@ from backend.app.domain.strategy_change import (
     StrategyChangeKind,
     StrategyChangeTarget,
 )
+from backend.app.domain.subscription import SubscriptionStatus
+from backend.app.domain.usage import UsageSourceType
 from backend.app.infrastructure.database.models import (
     ApplicationOutcomeRow,
     ApplicationRow,
@@ -79,11 +82,15 @@ from backend.app.infrastructure.database.models import (
     MatchEvaluationRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
+    PlanEntitlementRow,
+    PlanRow,
     RoleClassificationRow,
     SearchAreaRow,
     SearchProfileRow,
     StrategyChangeExecutionRow,
     StrategyChangeProposalRow,
+    SubscriptionRow,
+    UsageEventRow,
     UserRow,
     UserSessionRow,
 )
@@ -103,15 +110,19 @@ from tests.v2_builders import (
     COMPANY_LOCATION,
     DECISION,
     EVALUATION,
+    FREE_PLAN,
     LATER,
     LAUSANNE,
     NOW,
     OPPORTUNITY,
     OTHER_OPPORTUNITY,
+    OTHER_SUBSCRIPTION,
     OTHER_USER,
     POLICY,
+    PRO_PLAN,
     PROFILE,
     RUN,
+    SUBSCRIPTION,
     USER,
     a_decision,
     a_policy,
@@ -156,6 +167,11 @@ SECOND_EVIDENCE = UUID("00000000-0000-4000-8000-0000000000f7")
 STRATEGY_PROPOSAL = UUID("00000000-0000-4000-8000-0000000000f8")
 STRATEGY_EXECUTION = UUID("00000000-0000-4000-8000-0000000000f9")
 SECOND_STRATEGY_EXECUTION = UUID("00000000-0000-4000-8000-0000000000fa")
+PLAN_ENTITLEMENT = UUID("00000000-0000-4000-8000-0000000000fb")
+SECOND_PLAN_ENTITLEMENT = UUID("00000000-0000-4000-8000-0000000000fc")
+USAGE_EVENT = UUID("00000000-0000-4000-8000-0000000000fd")
+SECOND_USAGE_EVENT = UUID("00000000-0000-4000-8000-0000000000fe")
+SECOND_PLAN = UUID("00000000-0000-4000-8000-0000000000ff")
 
 # Two distinct SHA-256 digests, written out rather than computed: what the CHECK
 # polices is the *shape* stored, so a literal that a reader can count is the point.
@@ -1519,3 +1535,316 @@ async def test_deleting_an_account_deletes_its_career_intelligence(db_session):
         assert await _count(db_session, model) == 0, model.__tablename__
     # The posting is not the account's to delete.
     assert await _count(db_session, OpportunityRow) == 1
+
+
+# --------------------------------------------------------------------------
+# Phase 16 — the commercial tables. `plans`/`plan_entitlements` are shared; a
+# `subscription` and a `usage_event` are the account's, cascading from `users`.
+# --------------------------------------------------------------------------
+
+
+def a_plan_row(**overrides) -> PlanRow:
+    """A valid paid monthly plan, its price/currency/interval all present.
+
+    Each test overrides exactly the columns whose combination one CHECK is meant to
+    reject, so a failure names one rule rather than whichever of the price family the
+    database happened to evaluate first.
+    """
+    columns = {"id": PRO_PLAN, "slug": "pro", "name": "Plan Pro",
+               "price_amount_cents": 1900, "currency": "CHF",
+               "billing_interval": BillingInterval.MONTHLY}
+    columns.update(overrides)
+    return PlanRow(**columns)
+
+
+def a_plan_entitlement_row(**overrides) -> PlanEntitlementRow:
+    """One finite ceiling on the seeded plan — the child the plan's cascade reaches."""
+    columns = {"id": PLAN_ENTITLEMENT, "plan_id": PRO_PLAN,
+               "key": EntitlementKey.APPLICATION_SUBMISSIONS, "entitlement_limit": 5}
+    columns.update(overrides)
+    return PlanEntitlementRow(**columns)
+
+
+def a_subscription_row(**overrides) -> SubscriptionRow:
+    """One ACTIVE `stripe` subscription owned by `USER`, its paid window bounded.
+
+    The window is both-set and forward-running and the cancel flag is off, so a test
+    trips exactly the window/flag/sequence CHECK it overrides for.
+    """
+    columns = {"id": SUBSCRIPTION, "user_id": USER, "plan_id": PRO_PLAN,
+               "status": SubscriptionStatus.ACTIVE, "provider": "stripe",
+               "external_customer_id": "cus_fixture", "external_subscription_id": "sub_1",
+               "current_period_start": NOW, "current_period_end": LATER,
+               "cancel_at_period_end": False, "provider_event_at": NOW,
+               "provider_event_sequence": 1}
+    columns.update(overrides)
+    return SubscriptionRow(**columns)
+
+
+def a_usage_event_row(**overrides) -> UsageEventRow:
+    """One measured submission owned by `USER`, positive quantity, a real period."""
+    columns = {"id": USAGE_EVENT, "user_id": USER,
+               "entitlement_key": EntitlementKey.APPLICATION_SUBMISSIONS,
+               "quantity": 1, "source_type": UsageSourceType.APPLICATION_SUBMISSION,
+               "source_id": str(APPLICATION), "occurred_at": NOW,
+               "billing_period": "2026-03", "idempotency_key": "usage-fixture-key"}
+    columns.update(overrides)
+    return UsageEventRow(**columns)
+
+
+async def seed_plan(session) -> None:
+    """The one plan an entitlement or a subscription foreign key points at."""
+    session.add(a_plan_row())
+    await session.flush()
+
+
+async def seed_account_and_plan(session) -> None:
+    """A user and a plan: the two foreign keys a subscription needs."""
+    session.add(a_user_row())
+    await seed_plan(session)
+
+
+async def test_a_priced_plan_without_a_currency_is_refused(db_session):
+    """`price_all_or_nothing`: an amount with no currency could not be charged.
+
+    A price and a currency are all-or-nothing (a free plan sets neither); an amount
+    without the currency to denominate it is the half-stated price the CHECK refuses.
+    The interval is present so `paid_carries_an_interval` does not fire first.
+    """
+    await refuses(db_session, a_plan_row(currency=None), "ck_plans_price_all_or_nothing")
+
+
+async def test_a_paid_plan_without_a_billing_interval_is_refused(db_session):
+    """`paid_carries_an_interval`: a positive price is a subscription and needs a cadence.
+
+    A *paid* plan with no `billing_interval` is a recurring charge with no renewal
+    period — the incoherent state the CHECK refuses. Price and currency are both set so
+    `price_all_or_nothing` stands.
+    """
+    await refuses(db_session, a_plan_row(billing_interval=None),
+                  "ck_plans_paid_carries_an_interval")
+
+
+async def test_a_currency_that_is_not_an_iso_code_is_refused(db_session):
+    """`currency_format`: the column holds the ISO-4217 shape the domain validates."""
+    await refuses(db_session, a_plan_row(currency="chf"), "ck_plans_currency_format")
+
+
+async def test_a_negative_price_is_refused(db_session):
+    """`price_amount_cents_non_negative`: a plan cannot cost less than nothing."""
+    await refuses(db_session, a_plan_row(price_amount_cents=-1),
+                  "ck_plans_price_amount_cents_non_negative")
+
+
+async def test_a_free_plan_sets_neither_price_nor_currency_nor_interval(db_session):
+    """The other side of the price CHECKs: a free plan with all three absent is admitted.
+
+    `price_amount_cents`, `currency` and `billing_interval` all NULL satisfies both the
+    all-or-nothing and the paid-carries clauses, so the free tier is a plan the table
+    accepts — the row the pricing surface offers at the top.
+    """
+    db_session.add(a_plan_row(id=FREE_PLAN, slug="free", name="Plan Free",
+                              price_amount_cents=None, currency=None,
+                              billing_interval=None))
+    await db_session.flush()
+    assert await _count(db_session, PlanRow) == 1
+
+
+async def test_one_slug_is_one_plan(db_session):
+    """`UNIQUE (slug)`: re-seeding a plan updates its row, never mints a second.
+
+    The plan id derives from the slug, so a repeated seed writes the same row; a second
+    row claiming a taken slug under a different id is the duplicate this constraint stops.
+    """
+    db_session.add(a_plan_row())
+    await db_session.flush()
+    await refuses(db_session, a_plan_row(id=SECOND_PLAN), "uq_plans_slug")
+
+
+async def test_a_plan_updated_before_it_was_created_is_refused(db_session):
+    """`updated_at_after_created_at`: a plan's revision cannot predate its creation."""
+    await refuses(db_session, a_plan_row(created_at=LATER, updated_at=NOW),
+                  "ck_plans_updated_at_after_created_at")
+
+
+async def test_a_negative_entitlement_limit_is_refused(db_session):
+    """`entitlement_limit_non_negative`: a ceiling is a count, never below zero.
+
+    `NULL` is the domain's *unlimited* and stands; a negative limit is the value the
+    CHECK refuses.
+    """
+    await seed_plan(db_session)
+    await refuses(db_session, a_plan_entitlement_row(entitlement_limit=-1),
+                  "ck_plan_entitlements_entitlement_limit_non_negative")
+
+
+async def test_a_plan_grants_each_entitlement_key_once(db_session):
+    """`UNIQUE (plan_id, key)`: one plan states each capability's ceiling exactly once."""
+    await seed_plan(db_session)
+    db_session.add(a_plan_entitlement_row())
+    await db_session.flush()
+    await refuses(db_session, a_plan_entitlement_row(id=SECOND_PLAN_ENTITLEMENT),
+                  "uq_plan_entitlements_plan_id_key")
+
+
+async def test_an_entitlement_for_no_plan_is_refused(db_session):
+    """`fk_plan_entitlements_plan_id_plans`: an entitlement is reached only through its plan."""
+    await refuses(db_session, a_plan_entitlement_row(),
+                  "fk_plan_entitlements_plan_id_plans")
+
+
+async def test_deleting_a_plan_deletes_its_entitlements(db_session):
+    """The plan→entitlement cascade: retiring a plan's row takes the ceilings it named.
+
+    A plan is normally retired via `is_active`, not deleted — but the FK is `CASCADE`, so
+    a genuine delete of the catalogue row does not orphan its entitlement children.
+    """
+    await seed_plan(db_session)
+    db_session.add(a_plan_entitlement_row())
+    await db_session.flush()
+    await db_session.execute(delete(PlanRow).where(PlanRow.id == PRO_PLAN))
+    db_session.expunge_all()
+    assert await _count(db_session, PlanEntitlementRow) == 0
+
+
+async def test_a_subscription_window_with_only_one_end_is_refused(db_session):
+    """`window_both_or_neither`: a billing window names both ends or neither.
+
+    A start with no end (or an end with no start) is a half-open window the table
+    refuses; the unbounded case is the internal free tier, admitted elsewhere.
+    """
+    await seed_account_and_plan(db_session)
+    await refuses(db_session, a_subscription_row(current_period_end=None),
+                  "ck_subscriptions_window_both_or_neither")
+
+
+async def test_a_subscription_window_that_ends_before_it_starts_is_refused(db_session):
+    """`window_runs_forward`: a paid period cannot end before it began."""
+    await seed_account_and_plan(db_session)
+    await refuses(db_session,
+                  a_subscription_row(current_period_start=LATER, current_period_end=NOW),
+                  "ck_subscriptions_window_runs_forward")
+
+
+async def test_a_cancel_at_period_end_status_must_carry_the_flag(db_session):
+    """`cancel_at_period_end_carries_the_flag`: the status and the flag cannot disagree.
+
+    A `CANCEL_AT_PERIOD_END` subscription that leaves `cancel_at_period_end` false is a
+    contradiction between the lifecycle and the flag the resolver reads — refused here.
+    """
+    await seed_account_and_plan(db_session)
+    await refuses(db_session,
+                  a_subscription_row(status=SubscriptionStatus.CANCEL_AT_PERIOD_END,
+                                     cancel_at_period_end=False),
+                  "ck_subscriptions_cancel_at_period_end_carries_the_flag")
+
+
+async def test_a_negative_provider_event_sequence_is_refused(db_session):
+    """`provider_event_sequence_non_negative`: the out-of-order guard's counter is a count."""
+    await seed_account_and_plan(db_session)
+    await refuses(db_session, a_subscription_row(provider_event_sequence=-1),
+                  "ck_subscriptions_provider_event_sequence_non_negative")
+
+
+async def test_a_subscription_updated_before_it_was_created_is_refused(db_session):
+    """`updated_at_after_created_at`: a subscription's revision cannot predate its creation."""
+    await seed_account_and_plan(db_session)
+    await refuses(db_session, a_subscription_row(created_at=LATER, updated_at=NOW),
+                  "ck_subscriptions_updated_at_after_created_at")
+
+
+async def test_one_provider_subscription_handle_is_one_row(db_session):
+    """`UNIQUE (provider, external_subscription_id)`: a redelivered webhook lands on one row.
+
+    A provider's subscription handle identifies one subscription; a second row under the
+    same `(provider, external_subscription_id)` is the duplicate a replayed event would
+    otherwise create.
+    """
+    await seed_account_and_plan(db_session)
+    db_session.add(a_subscription_row())
+    await db_session.flush()
+    await refuses(db_session, a_subscription_row(id=OTHER_SUBSCRIPTION),
+                  "uq_subscriptions_provider_external_subscription_id")
+
+
+async def test_internal_free_subscriptions_carry_a_null_handle_and_do_not_collide(
+        db_session):
+    """The internal free tier has no provider handle, and NULLs never collide.
+
+    Two accounts on the internal free tier both carry `external_subscription_id = NULL`,
+    which a UNIQUE constraint treats as distinct — so the free tier is not capped at one
+    account by the very constraint that dedupes provider webhooks.
+    """
+    db_session.add_all([a_user_row(), a_user_row(id=OTHER_USER)])
+    await seed_plan(db_session)
+    db_session.add(a_subscription_row(
+        id=SUBSCRIPTION, user_id=USER, provider="internal",
+        external_customer_id=None, external_subscription_id=None,
+        current_period_start=None, current_period_end=None,
+        provider_event_at=None, provider_event_sequence=None))
+    db_session.add(a_subscription_row(
+        id=OTHER_SUBSCRIPTION, user_id=OTHER_USER, provider="internal",
+        external_customer_id=None, external_subscription_id=None,
+        current_period_start=None, current_period_end=None,
+        provider_event_at=None, provider_event_sequence=None))
+    await db_session.flush()
+    assert await _count(db_session, SubscriptionRow) == 2
+
+
+async def test_a_subscription_for_no_plan_is_refused(db_session):
+    """`fk_subscriptions_plan_id_plans`: a subscription always points at a real plan."""
+    db_session.add(a_user_row())
+    await db_session.flush()
+    await refuses(db_session, a_subscription_row(), "fk_subscriptions_plan_id_plans")
+
+
+async def test_a_non_positive_usage_quantity_is_refused(db_session):
+    """`quantity_positive`: a metered event exists only for real, positive consumption.
+
+    An unmeasurable call writes *no* event rather than a fabricated `0`, so the table
+    refuses a zero (or negative) quantity — a stored row is always measured consumption.
+    """
+    await seed_account(db_session)
+    await refuses(db_session, a_usage_event_row(quantity=0),
+                  "ck_usage_events_quantity_positive")
+
+
+async def test_one_idempotency_key_is_one_usage_event(db_session):
+    """`UNIQUE (idempotency_key)`: re-metering the same source collapses onto one row.
+
+    The event id derives from the idempotency key, so a retried meter writes the same
+    row; a second row under a taken key — written by hand — is what this constraint stops,
+    the second half of the guard the derived id already gives.
+    """
+    await seed_account(db_session)
+    db_session.add(a_usage_event_row())
+    await db_session.flush()
+    await refuses(db_session, a_usage_event_row(id=SECOND_USAGE_EVENT),
+                  "uq_usage_events_idempotency_key")
+
+
+async def test_a_usage_event_for_no_account_is_refused(db_session):
+    """`fk_usage_events_user_id_users`: every metered fact is owned by a real account."""
+    await refuses(db_session, a_usage_event_row(), "fk_usage_events_user_id_users")
+
+
+async def test_deleting_an_account_deletes_its_commercial_data(db_session):
+    """"Delete my account" reaches the subscription and the usage ledger, via one cascade.
+
+    A subscription and a usage event are the account's, so each carries `user_id` and
+    cascades from `users`; deleting the account takes both. The shared plan and its
+    entitlements are the platform's, not the account's, and stay.
+    """
+    await seed_account_and_plan(db_session)
+    db_session.add(a_plan_entitlement_row())
+    db_session.add(a_subscription_row())
+    db_session.add(a_usage_event_row())
+    await db_session.flush()
+
+    await db_session.execute(delete(UserRow).where(UserRow.id == USER))
+    db_session.expunge_all()
+    assert await _count(db_session, SubscriptionRow) == 0
+    assert await _count(db_session, UsageEventRow) == 0
+    # The catalogue is the platform's; it is not the account's to delete.
+    assert await _count(db_session, PlanRow) == 1
+    assert await _count(db_session, PlanEntitlementRow) == 1

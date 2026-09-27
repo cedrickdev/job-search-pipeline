@@ -57,10 +57,13 @@ from backend.app.api import API_V2_PREFIX
 from backend.app.api.cookies import COOKIE_PATH
 from backend.app.api.dependencies import (
     CSRF_HEADER,
+    application_policy_service,
     application_service,
     assessment_service,
     auth_settings,
     authentication_service,
+    career_analytics_service,
+    career_recommendation_engine,
     chat_action_executor,
     chat_conversation_service,
     company_directory_service,
@@ -72,10 +75,18 @@ from backend.app.api.dependencies import (
     llm_connection_service,
     now,
     onboarding_service,
+    outcome_service,
+    role_classification_service,
     session_factory,
+    strategy_proposal_service,
 )
 from backend.app.companies.orchestrator import CompanyDiscoveryOrchestrator
 from backend.app.companies.registry import CompanyProviderRegistry
+from backend.app.career.analytics import CareerAnalyticsService
+from backend.app.career.outcomes import OutcomeService
+from backend.app.career.recommendations import CareerRecommendationEngine
+from backend.app.career.roles import RoleClassificationService
+from backend.app.career.strategy import StrategyProposalService
 from backend.app.chat.context import ChatContextBuilder
 from backend.app.chat.conversation import ChatConversationService
 from backend.app.chat.executor import ChatActionExecutor
@@ -98,6 +109,7 @@ from backend.app.interview.transcriber import (
     SpeechTranscriber,
 )
 from backend.app.services.applications import ApplicationService
+from backend.app.services.application_policy import ApplicationPolicyService
 from backend.app.services.assessment import AssessmentService
 from backend.app.services.authentication import AuthenticationService
 from backend.app.services.company_directory import CompanyDirectoryService
@@ -116,10 +128,12 @@ from server.app import create_app
 from tests.v2_fakes import (
     FakeApplicationDecisionRepository,
     FakeApplicationEventRepository,
+    FakeApplicationOutcomeRepository,
     FakeApplicationPolicyRepository,
     FakeApplicationRepository,
     FakeCandidateDocumentRepository,
     FakeCandidateProfileRepository,
+    FakeCareerRecommendationRepository,
     FakeCareerSiteRepository,
     FakeChatActionExecutionRepository,
     FakeChatActionProposalRepository,
@@ -137,8 +151,11 @@ from tests.v2_fakes import (
     FakeLLMRunRepository,
     FakeMatchEvaluationRepository,
     FakeOpportunityRepository,
+    FakeRoleClassificationRepository,
     FakeSearchProfileRepository,
     FakeSessionRepository,
+    FakeStrategyChangeExecutionRepository,
+    FakeStrategyChangeProposalRepository,
     FakeSubmissionAttemptRepository,
     FakeUserRepository,
 )
@@ -301,6 +318,15 @@ class Harness:
     interview_summaries: FakeInterviewSessionSummaryRepository
     interview_llm: FakeInterviewLLM
     interview_transcriber: SpeechTranscriber
+    # The Phase 15 career-intelligence stores, exposed so a test can seed a matured outcome or
+    # a manual role verdict and then assert on what a report, a recommendation run or a strategy
+    # approval persisted. `career_outcomes` is kept structurally apart from `applications` on
+    # purpose: a test proves a recorded rejection never touched an `Application.state`.
+    career_outcomes: FakeApplicationOutcomeRepository
+    role_classifications: FakeRoleClassificationRepository
+    career_recommendations: FakeCareerRecommendationRepository
+    strategy_proposals: FakeStrategyChangeProposalRepository
+    strategy_executions: FakeStrategyChangeExecutionRepository
 
     def url(self, path: str) -> str:
         """A V2 path, prefixed once so no test spells `/api/v2` itself."""
@@ -443,6 +469,18 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     interview_answers = FakeInterviewAnswerRepository()
     interview_evaluations = FakeInterviewAnswerEvaluationRepository()
     interview_summaries = FakeInterviewSessionSummaryRepository()
+    # The Phase 15 career-intelligence stores. Each is owner-scoped on its own reads and
+    # deliberately independent of the rest: outcomes are the real-world hiring process and are
+    # kept structurally apart from `applications` (a Phase 12 execution store), so a recorded
+    # `REJECTED` can never drive an application to `FAILED` — the separation the whole phase
+    # rests on. The analytics service *reads* `applications`, `postings` and these two, and is
+    # forbidden to write any of them; the recommendation store is write-once; and the two
+    # strategy stores are the propose/approve audit the human-gated change flows through.
+    career_outcomes = FakeApplicationOutcomeRepository()
+    role_classifications = FakeRoleClassificationRepository()
+    career_recommendations = FakeCareerRecommendationRepository()
+    strategy_proposals = FakeStrategyChangeProposalRepository()
+    strategy_executions = FakeStrategyChangeExecutionRepository()
     directory = CompanyDirectoryService(companies, career_sites, discoveries)
     # The assessment service reads the real country packs — the CH pack is what the
     # legal-safety path exercises — over the fake verdict stores. `build_country_packs`
@@ -534,7 +572,9 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
         conversations=conversations, messages=chat_messages, proposals=chat_proposals,
         context=ChatContextBuilder(
             profiles=profiles, searches=searches, applications=applications,
-            opportunities=postings, companies=companies),
+            opportunities=postings, companies=companies,
+            recommendations=career_recommendations,
+            strategy_proposals=strategy_proposals),
         router=LLMRouter(chat_registry),
         recorder=LLMTelemetryRecorder(runs=chat_runs),
         policy=RoutingPolicy(privacy=PrivacyClass.EXTERNAL_ALLOWED))
@@ -566,6 +606,31 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
         context=InterviewContextBuilder(profiles=profiles, opportunities=postings),
         llm=interview_llm, transcriber=interview_transcriber)
     app.dependency_overrides[interview_service] = lambda: interview
+    # --- Phase 15 career-intelligence loop ------------------------------------
+    # The five career services over the fakes, composed exactly as the dependencies do.
+    # `OutcomeService` reads `applications` only to check ownership before recording a hiring
+    # fact — it is handed no execution repository, so it cannot write an `ApplicationState`.
+    # `CareerAnalyticsService` reads outcomes, applications, role classifications and postings
+    # and writes nothing. `CareerRecommendationEngine` reasons only over that analytics report
+    # and merely *adds* to the write-once recommendation store. `StrategyProposalService` is
+    # the human-gated spine: approving a proposal re-runs the *same* `OnboardingService` and
+    # `ApplicationPolicyService` the routes use, so the loop can never expand a policy on its
+    # own — it reuses the `onboarding` local built above for exactly that reason.
+    outcome_workflow = OutcomeService(career_outcomes, applications)
+    role_workflow = RoleClassificationService(role_classifications, postings)
+    analytics = CareerAnalyticsService(
+        career_outcomes, applications, role_classifications, postings)
+    recommendation_engine = CareerRecommendationEngine(
+        analytics=analytics, recommendations=career_recommendations)
+    policy_workflow = ApplicationPolicyService(application_policies)
+    strategy_workflow = StrategyProposalService(
+        strategy_proposals, strategy_executions, onboarding, policy_workflow)
+    app.dependency_overrides[outcome_service] = lambda: outcome_workflow
+    app.dependency_overrides[role_classification_service] = lambda: role_workflow
+    app.dependency_overrides[career_analytics_service] = lambda: analytics
+    app.dependency_overrides[career_recommendation_engine] = lambda: recommendation_engine
+    app.dependency_overrides[application_policy_service] = lambda: policy_workflow
+    app.dependency_overrides[strategy_proposal_service] = lambda: strategy_workflow
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:
@@ -590,7 +655,12 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
                       interview_evaluations=interview_evaluations,
                       interview_summaries=interview_summaries,
                       interview_llm=interview_llm,
-                      interview_transcriber=interview_transcriber)
+                      interview_transcriber=interview_transcriber,
+                      career_outcomes=career_outcomes,
+                      role_classifications=role_classifications,
+                      career_recommendations=career_recommendations,
+                      strategy_proposals=strategy_proposals,
+                      strategy_executions=strategy_executions)
 
 
 def operations(app: FastAPI, *, under: str) -> tuple[tuple[str, str], ...]:

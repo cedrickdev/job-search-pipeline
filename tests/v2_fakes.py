@@ -74,9 +74,11 @@ from backend.app.domain.interview import (
 from backend.app.domain.identifiers import (
     ApplicationDecisionId,
     ApplicationId,
+    ApplicationOutcomeId,
     ApplicationPolicyId,
     CandidateDocumentId,
     CandidateProfileId,
+    CareerRecommendationId,
     CareerSiteId,
     ChatActionExecutionId,
     ChatActionProposalId,
@@ -96,14 +98,25 @@ from backend.app.domain.identifiers import (
     MatchEvaluationId,
     OpportunityId,
     ProviderSessionId,
+    RoleClassificationId,
     SearchProfileId,
+    StrategyChangeExecutionId,
+    StrategyChangeProposalId,
     SubmissionAttemptId,
     UserId,
     UserSessionId,
 )
 from backend.app.domain.matching import MatchEvaluation
 from backend.app.domain.opportunity import Opportunity
+from backend.app.domain.outcome import ApplicationOutcome
+from backend.app.domain.recommendation import CareerRecommendation
+from backend.app.domain.role import RoleClassification
 from backend.app.domain.search import SearchProfile
+from backend.app.domain.strategy_change import (
+    StrategyChangeExecution,
+    StrategyChangeProposal,
+    StrategyChangeProposalStatus,
+)
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.llm.connection import LLMConnection
 from backend.app.llm.sessions import ProviderSession
@@ -112,10 +125,12 @@ from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
     ApplicationDecisionRepository,
     ApplicationEventRepository,
+    ApplicationOutcomeRepository,
     ApplicationPolicyRepository,
     ApplicationRepository,
     CandidateDocumentRepository,
     CandidateProfileRepository,
+    CareerRecommendationRepository,
     CareerSiteRepository,
     ChatActionExecutionRepository,
     ChatActionProposalRepository,
@@ -141,8 +156,11 @@ from backend.app.repositories.contracts import (
     OpportunityNearby,
     OpportunityRepository,
     ProviderSessionRepository,
+    RoleClassificationRepository,
     SearchProfileRepository,
     SessionRepository,
+    StrategyChangeExecutionRepository,
+    StrategyChangeProposalRepository,
     SubmissionAttemptRepository,
     UserRepository,
 )
@@ -167,7 +185,10 @@ def _implements_contracts() -> tuple[
         ChatMessageRepository, ChatActionProposalRepository,
         ChatActionExecutionRepository, InterviewSessionRepository,
         InterviewQuestionRepository, InterviewAnswerRepository,
-        InterviewAnswerEvaluationRepository, InterviewSessionSummaryRepository]:
+        InterviewAnswerEvaluationRepository, InterviewSessionSummaryRepository,
+        ApplicationOutcomeRepository, RoleClassificationRepository,
+        CareerRecommendationRepository, StrategyChangeProposalRepository,
+        StrategyChangeExecutionRepository]:
     """Structural conformance, the same guard `sqlalchemy_repositories` carries.
 
     A fake whose signature drifted from the `Protocol` would still run — Python
@@ -190,7 +211,11 @@ def _implements_contracts() -> tuple[
             FakeChatActionExecutionRepository(), FakeInterviewSessionRepository(),
             FakeInterviewQuestionRepository(), FakeInterviewAnswerRepository(),
             FakeInterviewAnswerEvaluationRepository(),
-            FakeInterviewSessionSummaryRepository())
+            FakeInterviewSessionSummaryRepository(),
+            FakeApplicationOutcomeRepository(), FakeRoleClassificationRepository(),
+            FakeCareerRecommendationRepository(),
+            FakeStrategyChangeProposalRepository(),
+            FakeStrategyChangeExecutionRepository())
 
 
 def _meters_between(one: GeoPoint, other: GeoPoint) -> float:
@@ -1592,6 +1617,194 @@ class FakeInterviewSessionSummaryRepository:
         mine.sort(key=lambda s: str(s.id))
         mine.sort(key=lambda s: s.created_at, reverse=True)
         return tuple(mine[:limit])
+
+
+class FakeApplicationOutcomeRepository:
+    """Real-world hiring facts, keyed by id and owner-scoped on every read (§2, §84).
+
+    Kept deliberately apart from `FakeApplicationRepository`: nothing here reads or writes an
+    `ApplicationState`, so a `REJECTED` outcome recorded here can never drive an application to
+    `FAILED` — the separation the whole phase rests on is structural in the fake as it is in
+    the SQL. `upsert` keys on the outcome's derived id (from `(application_id, outcome_key)`),
+    so recording the same milestone twice collapses onto one row and a retraction or supersede
+    is a status flip on that same row. `list_for_application` returns every recorded status
+    oldest-first (the correction history a timeline shows); `list_for_user` is the analytics
+    input, most-recently-occurred first.
+    """
+
+    def __init__(self) -> None:
+        self.outcomes: dict[ApplicationOutcomeId, ApplicationOutcome] = {}
+
+    async def get(self, user_id: UserId,
+                  outcome_id: ApplicationOutcomeId) -> ApplicationOutcome | None:
+        found = self.outcomes.get(outcome_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def upsert(self, outcome: ApplicationOutcome) -> ApplicationOutcome:
+        stored = outcome.model_copy(deep=True)
+        self.outcomes[stored.id] = stored
+        return stored
+
+    async def list_for_application(
+            self, user_id: UserId, application_id: ApplicationId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ApplicationOutcome, ...]:
+        mine = [o.model_copy(deep=True) for o in self.outcomes.values()
+                if o.application_id == application_id and o.user_id == user_id]
+        # Oldest-first, ties by id ascending — the real `ORDER BY occurred_at, id`.
+        mine.sort(key=lambda o: (o.occurred_at, str(o.id)))
+        return tuple(mine[:limit])
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ApplicationOutcome, ...]:
+        mine = [o.model_copy(deep=True) for o in self.outcomes.values()
+                if o.user_id == user_id]
+        # Most recently occurred first, ties by id ascending — the real
+        # `ORDER BY occurred_at DESC, id`.
+        mine.sort(key=lambda o: str(o.id))
+        mine.sort(key=lambda o: o.occurred_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeRoleClassificationRepository:
+    """Per-opportunity role verdicts, keyed by id and owner-scoped on reads (§18).
+
+    `get` and `upsert` both resolve by the `(user_id, opportunity_id)` pair the id derives
+    from, so re-classifying an opportunity — a deterministic backfill or a manual correction —
+    lands on the one row. `list_for_user` orders by the last update, so a freshly corrected
+    role surfaces first.
+    """
+
+    def __init__(self) -> None:
+        self.classifications: dict[RoleClassificationId, RoleClassification] = {}
+
+    async def get(self, user_id: UserId,
+                  opportunity_id: OpportunityId) -> RoleClassification | None:
+        return next((c.model_copy(deep=True)
+                     for c in self.classifications.values()
+                     if c.opportunity_id == opportunity_id and c.user_id == user_id), None)
+
+    async def upsert(self, classification: RoleClassification) -> RoleClassification:
+        stored = classification.model_copy(deep=True)
+        self.classifications[stored.id] = stored
+        return stored
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[RoleClassification, ...]:
+        mine = [c.model_copy(deep=True) for c in self.classifications.values()
+                if c.user_id == user_id]
+        # Most recently updated first, ties by id ascending — the real
+        # `ORDER BY updated_at DESC, id`.
+        mine.sort(key=lambda c: str(c.id))
+        mine.sort(key=lambda c: c.updated_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+# ROLE_FAKES_APPENDED
+
+
+class FakeCareerRecommendationRepository:
+    """Evidence-backed suggestions, keyed by id and owner-scoped on reads (§26-33).
+
+    Write-once by construction: a recommendation is a fresh observation with a random id, so
+    there is only `add` and no `upsert` — a re-run produces a new recommendation rather than
+    mutating a prior one. Its evidence rides in the one call, so the "evidence or nothing"
+    guarantee survives the round trip (the deep copy carries the whole aggregate). `list_for_
+    user` is most-recently-created first.
+    """
+
+    def __init__(self) -> None:
+        self.recommendations: dict[CareerRecommendationId, CareerRecommendation] = {}
+
+    async def add(self, recommendation: CareerRecommendation) -> CareerRecommendation:
+        stored = recommendation.model_copy(deep=True)
+        self.recommendations[stored.id] = stored
+        return stored
+
+    async def get(self, user_id: UserId,
+                  recommendation_id: CareerRecommendationId) -> CareerRecommendation | None:
+        found = self.recommendations.get(recommendation_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[CareerRecommendation, ...]:
+        mine = [r.model_copy(deep=True) for r in self.recommendations.values()
+                if r.user_id == user_id]
+        # Most recently created first, ties by id ascending — the real
+        # `ORDER BY created_at DESC, id`.
+        mine.sort(key=lambda r: str(r.id))
+        mine.sort(key=lambda r: r.created_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeStrategyChangeProposalRepository:
+    """Approved-or-not strategy edits, keyed by id and owner-scoped on reads (§34-45).
+
+    The `get` the executor performs before applying a change scopes on the proposal's own
+    `user_id`, so a confirmation naming another account's proposal reads as absent and is
+    refused. `upsert` keys on the proposal's id, so an approve, dismiss or expire is a status
+    flip on the one row. `list_for_user` orders most-recently-updated first; `open_only`
+    restricts to `PROPOSED` proposals — what a pending-suggestions surface and an expiry sweep
+    read.
+    """
+
+    def __init__(self) -> None:
+        self.proposals: dict[StrategyChangeProposalId, StrategyChangeProposal] = {}
+
+    async def get(self, user_id: UserId,
+                  proposal_id: StrategyChangeProposalId) -> StrategyChangeProposal | None:
+        found = self.proposals.get(proposal_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def upsert(self, proposal: StrategyChangeProposal) -> StrategyChangeProposal:
+        stored = proposal.model_copy(deep=True)
+        self.proposals[stored.id] = stored
+        return stored
+
+    async def list_for_user(
+            self, user_id: UserId, *, open_only: bool = False,
+            limit: int = DEFAULT_LIMIT) -> tuple[StrategyChangeProposal, ...]:
+        mine = [p.model_copy(deep=True) for p in self.proposals.values()
+                if p.user_id == user_id
+                and (not open_only
+                     or p.status is StrategyChangeProposalStatus.PROPOSED)]
+        # Most recently updated first, ties by id ascending — the real
+        # `ORDER BY updated_at DESC, id`.
+        mine.sort(key=lambda p: str(p.id))
+        mine.sort(key=lambda p: p.updated_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeStrategyChangeExecutionRepository:
+    """Execution audits, keyed on the derived id (from the proposal alone), owner-scoped (§45).
+
+    A double-confirmed proposal upserts the one row rather than recording two attempts — the
+    idempotency the executor rests on — because the id derives from the proposal. `get` finds
+    the audit by proposal id, scoped to the owner, which is how the executor detects an
+    already-applied proposal.
+    """
+
+    def __init__(self) -> None:
+        self.executions: dict[StrategyChangeExecutionId, StrategyChangeExecution] = {}
+
+    async def get(self, user_id: UserId,
+                  proposal_id: StrategyChangeProposalId) -> StrategyChangeExecution | None:
+        return next((e.model_copy(deep=True) for e in self.executions.values()
+                     if e.proposal_id == proposal_id and e.user_id == user_id), None)
+
+    async def upsert(self,
+                     execution: StrategyChangeExecution) -> StrategyChangeExecution:
+        stored = execution.model_copy(deep=True)
+        self.executions[stored.id] = stored
+        return stored
 
 
 

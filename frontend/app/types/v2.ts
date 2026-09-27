@@ -370,6 +370,138 @@ export type EvaluationStatus = Schemas['EvaluationStatus']
 /** `UNKNOWN | EARLY | DEVELOPING | PROGRESSING | POLISHED` — the readiness band, a signal not a score. */
 export type ReadinessBand = Schemas['ReadinessBand']
 
+// --- Phase 15: outcome tracking & career intelligence loop ---------------------------
+//
+// The four links of the spine, over the wire: an outcome recorded against an application
+// (observe), the self-describing analytics report (measure), the evidence-backed
+// recommendations drawn from it (recommend), and the human-approved strategy proposal that
+// is the loop's only mutation. Every type is an alias into the generated document, like the
+// phases above: a field the backend renames fails `nuxt typecheck` here after
+// `npm run gen:api`. Two invariants are visible in the shapes themselves — an outcome
+// carries no `ApplicationState` (a rejection never touches the Phase 12 execution lifecycle),
+// and a recommendation carries no target or execution (turning it into a change is a
+// separate, explicitly approved proposal) — docs/CAREER_INTELLIGENCE.md.
+
+/** One recorded real-world milestone against an application — never its execution state. */
+export type ApplicationOutcome = Schemas['ApplicationOutcomeResponse']
+
+/** One application's outcomes oldest-first — every status, so corrections stay in the record. */
+export type ApplicationOutcomeList = Schemas['ApplicationOutcomeListResponse']
+
+/** The body that records one milestone: its kind, when it happened, and an optional note. */
+export type RecordOutcomeRequest = Schemas['RecordOutcomeRequest']
+
+/** The body that supersedes a mistaken outcome with a corrected one. */
+export type CorrectOutcomeRequest = Schemas['CorrectOutcomeRequest']
+
+/** The nine hiring milestones — `ACKNOWLEDGED` … `REJECTED`, `WITHDRAWN`. */
+export type OutcomeKind = Schemas['OutcomeKind']
+
+/** Who reported the milestone — `MANUAL_USER | EMAIL | ATS | IMPORTED`. */
+export type OutcomeSource = Schemas['OutcomeSource']
+
+/** `EFFECTIVE | SUPERSEDED | RETRACTED` — an outcome's standing in the record. */
+export type OutcomeStatus = Schemas['OutcomeStatus']
+
+/** One account's role-family verdict on one opportunity — deterministic or corrected. */
+export type RoleClassification = Schemas['RoleClassificationResponse']
+
+/** This account's classifications, most recently updated first. */
+export type RoleClassificationList = Schemas['RoleClassificationListResponse']
+
+/** The body that records a human's explicit role family, outranking the rule. */
+export type SetRoleClassificationRequest = Schemas['SetRoleClassificationRequest']
+
+/** The closed set of role families the analytics slices by. */
+export type RoleFamily = Schemas['RoleFamily']
+
+/** `DETERMINISTIC_TITLE | MANUAL` — how a classification was arrived at. */
+export type RoleFamilyProvenance = Schemas['RoleFamilyProvenance']
+
+/** The whole self-describing report: funnel, rates, timings, breakdowns, stamped with a version. */
+export type CareerAnalytics = Schemas['CareerAnalyticsResponse']
+
+/** The submitted→accepted funnel with its window and maturity censoring. */
+export type CareerFunnel = Schemas['CareerFunnelResponse']
+
+/** How many applications reached one funnel stage. */
+export type FunnelStageCount = Schemas['FunnelStageCountResponse']
+
+/** The seven funnel stages — `SUBMITTED` … `ACCEPTED`. */
+export type FunnelStage = Schemas['FunnelStage']
+
+/** One conversion rate as a fraction of matured applications — `rate` null when undefined. */
+export type ConversionRate = Schemas['ConversionRateResponse']
+
+/** `RESPONSE | INTERVIEW_CONVERSION | OFFER_CONVERSION | ACCEPTANCE`. */
+export type RateKind = Schemas['RateKind']
+
+/** Median and quartile days-to-milestone over the applications that reached it. */
+export type TimingStat = Schemas['TimingStatResponse']
+
+/** The four timings — `TIME_TO_FIRST_RESPONSE` … `TIME_TO_DECISION`. */
+export type TimingKind = Schemas['TimingKind']
+
+/** Every slice of the funnel along one dimension — the raw material a recommendation cites. */
+export type DimensionBreakdown = Schemas['DimensionBreakdownResponse']
+
+/** One slice of a breakdown — one role family or source — with its own rates. */
+export type DimensionCell = Schemas['DimensionCellResponse']
+
+/** `ROLE_FAMILY | SOURCE | OPPORTUNITY_TYPE | DOCUMENT_STRATEGY` — the axes analytics slices by. */
+export type DimensionKind = Schemas['DimensionKind']
+
+/** The span of application dates a report was computed over — both ends may be absent. */
+export type ObservationWindow = Schemas['ObservationWindowResponse']
+
+/** How many applications are old enough to have plausibly resolved, and how many are not. */
+export type MaturityCensoring = Schemas['MaturityCensoringResponse']
+
+/** An evidence-backed suggestion — and nothing it can execute. */
+export type CareerRecommendation = Schemas['CareerRecommendationResponse']
+
+/** This account's recommendations, most recent first. */
+export type CareerRecommendationList = Schemas['CareerRecommendationListResponse']
+
+/** One metric a recommendation cites, with its own numbers — the auditable citation. */
+export type RecommendationEvidence = Schemas['RecommendationEvidenceResponse']
+
+/** The eight recommendation kinds — `PRIORITIZE_ROLE_FAMILY` … `REVIEW_INTERVIEW_PREPARATION`. */
+export type RecommendationKind = Schemas['RecommendationKind']
+
+/** `LOW | MEDIUM | HIGH` — how much evidence stands behind a suggestion. */
+export type RecommendationConfidence = Schemas['RecommendationConfidence']
+
+/** One approved-or-not edit to a search or policy — its diff, sensitivity and lifecycle. */
+export type StrategyChangeProposal = Schemas['StrategyChangeProposalResponse']
+
+/** A set of proposals — the pending queue or the full history. */
+export type StrategyChangeProposalList = Schemas['StrategyChangeProposalListResponse']
+
+/** One proposal paired with its execution record, if it has been acted on. */
+export type StrategyChangeProposalDetail = Schemas['StrategyChangeProposalDetailResponse']
+
+/** The record of one attempt to apply a confirmed proposal — the executor's audit. */
+export type StrategyChangeExecution = Schemas['StrategyChangeExecutionResponse']
+
+/** One field a proposal moves, rendered before → after. */
+export type FieldChange = Schemas['FieldChangeResponse']
+
+/** The seven change kinds — `SET_SEARCH_RADIUS` … `SET_MINIMUM_SCORE`. */
+export type StrategyChangeKind = Schemas['StrategyChangeKind']
+
+/** `SEARCH_PROFILE | APPLICATION_POLICY` — what a proposal edits. */
+export type StrategyChangeTarget = Schemas['StrategyChangeTarget']
+
+/** `PROPOSED | EXECUTED | REJECTED | FAILED | DISMISSED | EXPIRED` — a proposal's lifecycle. */
+export type StrategyChangeProposalStatus = Schemas['StrategyChangeProposalStatus']
+
+/** `SUCCEEDED | REJECTED | FAILED` — how one approval attempt ended. */
+export type StrategyChangeExecutionOutcome = Schemas['StrategyChangeExecutionOutcome']
+
+/** The approval body: `confirm_sensitive` clears the second gate a loosening change needs. */
+export type ApproveStrategyChangeRequest = Schemas['ApproveStrategyChangeRequest']
+
 /**
  * Every `error` slug `/api/v2` can answer with, as one union.
  *
@@ -423,7 +555,13 @@ export type V2ErrorCode =
   | 'no_current_question'
   | 'not_authenticated'
   | 'onboarding_incomplete'
+  | 'opportunity_not_found'
+  | 'outcome_not_effective'
+  | 'outcome_not_found'
   | 'output_limit_exceeded'
+  | 'proposal_expired'
+  | 'proposal_not_found'
+  | 'proposal_not_open'
   | 'provider_auth_required'
   | 'provider_cancelled'
   | 'provider_content_filtered'
@@ -436,10 +574,14 @@ export type V2ErrorCode =
   | 'question_already_answered'
   | 'question_generation_unavailable'
   | 'question_not_found'
+  | 'role_classification_not_found'
   | 'search_profile_not_found'
+  | 'sensitive_confirmation_required'
   | 'session_limit_reached'
   | 'session_not_active'
   | 'session_not_found'
+  | 'strategy_proposal_stale'
+  | 'strategy_target_not_found'
   | 'structured_output_invalid'
   | 'transcription_unavailable'
   | 'unsupported_audio'

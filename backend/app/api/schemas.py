@@ -56,6 +56,21 @@ from backend.app.discovery.contracts import (
     SourceHealth,
     SourceHealthStatus,
 )
+from backend.app.domain.analytics import (
+    CareerAnalytics,
+    CareerFunnel,
+    ConversionRate,
+    DimensionBreakdown,
+    DimensionCell,
+    DimensionKind,
+    FunnelStage,
+    FunnelStageCount,
+    MaturityCensoring,
+    ObservationWindow,
+    RateKind,
+    TimingKind,
+    TimingStat,
+)
 from backend.app.domain.application import (
     Application,
     ApplicationState,
@@ -67,7 +82,7 @@ from backend.app.domain.application_event import (
     ApplicationEventActor,
     ApplicationEventType,
 )
-from backend.app.domain.base import CountryCode, LanguageCode
+from backend.app.domain.base import CountryCode, LanguageCode, UtcDatetime
 from backend.app.domain.candidate import (
     CandidateClaim,
     CandidateEvidence,
@@ -142,8 +157,10 @@ from backend.app.domain.geo import (
 )
 from backend.app.domain.identifiers import (
     ApplicationId,
+    ApplicationOutcomeId,
     CandidateDocumentId,
     CandidateProfileId,
+    CareerRecommendationId,
     ChatActionExecutionId,
     ChatActionProposalId,
     ChatMessageId,
@@ -160,7 +177,10 @@ from backend.app.domain.identifiers import (
     LLMConnectionId,
     LLMRunId,
     OpportunityId,
+    RoleClassificationId,
     SearchProfileId,
+    StrategyChangeExecutionId,
+    StrategyChangeProposalId,
     UserId,
 )
 from backend.app.domain.interview import (
@@ -198,7 +218,34 @@ from backend.app.domain.opportunity import (
     OpportunityType,
     WorkplaceMode,
 )
+from backend.app.domain.outcome import (
+    ApplicationOutcome,
+    OutcomeKind,
+    OutcomeSource,
+    OutcomeStatus,
+)
+from backend.app.domain.recommendation import (
+    CareerRecommendation,
+    RecommendationConfidence,
+    RecommendationEvidence,
+    RecommendationKind,
+)
+from backend.app.domain.role import (
+    RoleClassification,
+    RoleFamily,
+    RoleFamilyProvenance,
+)
 from backend.app.domain.search import SearchProfile
+from backend.app.domain.strategy_change import (
+    FieldChange,
+    StrategyChange,
+    StrategyChangeExecution,
+    StrategyChangeExecutionOutcome,
+    StrategyChangeKind,
+    StrategyChangeProposal,
+    StrategyChangeProposalStatus,
+    StrategyChangeTarget,
+)
 from backend.app.domain.user import User, UserStatus
 from backend.app.interview.service import AnswerOutcome, InterviewTurn, SessionDetail
 from backend.app.llm.connection import (
@@ -2355,3 +2402,502 @@ class InterviewSessionDetailResponse(ApiModel):
                               for evaluation in detail.evaluations),
             summary=(InterviewSessionSummaryResponse.of(detail.summary)
                      if detail.summary is not None else None))
+
+
+# --- outcome tracking & career intelligence loop (Phase 15) ----------------------------
+#
+# The phase's foundational separation is visible at this boundary too: an outcome is a fact
+# about the *hiring process*, never the Phase 12 execution lifecycle, so no response here
+# carries an `ApplicationState` and no request can set one (§2, §84). The owner is never in a
+# path or a body — it is the account resolved from the session (§Security) — and no request
+# body carries a `user_id`, an `id`, a timestamp the platform stamps, or an outcome/proposal
+# status: those are the services' to assign. Analytics leaves as a self-describing, versioned
+# report; a recommendation leaves with the evidence it cites and its derived confidence, never
+# a hiring probability; a strategy proposal leaves with its before→after diff and whether it
+# loosens a brake, so a surface can gate a sensitive expansion behind a second confirmation.
+
+
+class RecordOutcomeRequest(ApiModel):
+    """Record one real-world milestone against an application (§7-8, §46).
+
+    `occurred_at` is when the event happened in the world and must be timezone-aware — a naive
+    instant is a 422 here rather than a 500 in the domain. There is no `recorded_at`: the
+    platform stamps when it learned of the fact. `source` defaults to the common case, the
+    candidate recording it themselves.
+    """
+
+    kind: OutcomeKind
+    occurred_at: UtcDatetime
+    source: OutcomeSource = OutcomeSource.MANUAL_USER
+    detail: str | None = Field(default=None, min_length=1)
+
+
+class CorrectOutcomeRequest(ApiModel):
+    """Supersede a mistaken outcome with a corrected one (§9, §64).
+
+    Names the corrected `kind` and `occurred_at`; the predecessor is the path's outcome, and the
+    correction points back at it. `occurred_at` must be timezone-aware.
+    """
+
+    kind: OutcomeKind
+    occurred_at: UtcDatetime
+    detail: str | None = Field(default=None, min_length=1)
+
+
+class ApplicationOutcomeResponse(ApiModel):
+    """One recorded milestone in an application's hiring process — never its execution state.
+
+    `is_effective`/`is_terminal`/`is_correction` are surfaced so a timeline need not re-derive
+    them. There is no `user_id`: the owner is always the caller.
+    """
+
+    id: ApplicationOutcomeId
+    application_id: ApplicationId
+    kind: OutcomeKind
+    source: OutcomeSource
+    status: OutcomeStatus
+    occurred_at: datetime
+    recorded_at: datetime
+    supersedes_id: ApplicationOutcomeId | None
+    detail: str | None
+    is_effective: bool
+    is_terminal: bool
+    is_correction: bool
+
+    @classmethod
+    def of(cls, outcome: ApplicationOutcome) -> "ApplicationOutcomeResponse":
+        return cls(
+            id=outcome.id, application_id=outcome.application_id, kind=outcome.kind,
+            source=outcome.source, status=outcome.status, occurred_at=outcome.occurred_at,
+            recorded_at=outcome.recorded_at, supersedes_id=outcome.supersedes_id,
+            detail=outcome.detail, is_effective=outcome.is_effective,
+            is_terminal=outcome.is_terminal, is_correction=outcome.is_correction)
+
+
+class ApplicationOutcomeListResponse(ApiModel):
+    """One application's outcomes oldest-first — every status, so a timeline keeps corrections."""
+
+    outcomes: tuple[ApplicationOutcomeResponse, ...]
+
+    @classmethod
+    def of(cls, outcomes: tuple[ApplicationOutcome, ...]) -> "ApplicationOutcomeListResponse":
+        return cls(outcomes=tuple(ApplicationOutcomeResponse.of(o) for o in outcomes))
+
+
+class SetRoleClassificationRequest(ApiModel):
+    """A human's explicit role family for one opportunity, outranking the rule (§18).
+
+    A manual classification must name a family — the domain refuses one that does not — so this
+    body has no nullable option: to leave a role unclassified is to not set it manually at all.
+    """
+
+    role_family: RoleFamily
+
+
+class RoleClassificationResponse(ApiModel):
+    """One account's role-family verdict on one opportunity — deterministic or corrected (§18).
+
+    `role_family` is nullable: an unclassified role is a real, honest state, never a catch-all.
+    `is_manual` is surfaced so a UI can tell a human's correction from a machine guess without
+    re-deriving it from `provenance`.
+    """
+
+    id: RoleClassificationId
+    opportunity_id: OpportunityId
+    role_family: RoleFamily | None
+    provenance: RoleFamilyProvenance
+    is_manual: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, classification: RoleClassification) -> "RoleClassificationResponse":
+        return cls(
+            id=classification.id, opportunity_id=classification.opportunity_id,
+            role_family=classification.role_family, provenance=classification.provenance,
+            is_manual=classification.is_manual, created_at=classification.created_at,
+            updated_at=classification.updated_at)
+
+
+class RoleClassificationListResponse(ApiModel):
+    """This account's classifications, most recently updated first — a surface to review."""
+
+    classifications: tuple[RoleClassificationResponse, ...]
+
+    @classmethod
+    def of(cls, items: tuple[RoleClassification, ...]) -> "RoleClassificationListResponse":
+        return cls(classifications=tuple(RoleClassificationResponse.of(c) for c in items))
+
+
+class ObservationWindowResponse(ApiModel):
+    """The span of application dates a report was computed over — both ends may be absent.
+
+    `is_empty` is surfaced so a surface can render "no applications yet" without inferring it
+    from two nulls.
+    """
+
+    earliest_applied_at: datetime | None
+    latest_applied_at: datetime | None
+    is_empty: bool
+
+    @classmethod
+    def of(cls, window: ObservationWindow) -> "ObservationWindowResponse":
+        return cls(earliest_applied_at=window.earliest_applied_at,
+                   latest_applied_at=window.latest_applied_at, is_empty=window.is_empty)
+
+
+class MaturityCensoringResponse(ApiModel):
+    """How many applications are old enough to have plausibly resolved, and how many are not.
+
+    Conversion rates read against `mature_count`, not `total_count`: a week-old application that
+    has not heard back is censored, not a rejection, so a rate is not deflated by fresh sends.
+    """
+
+    observation_horizon_days: int
+    as_of: datetime
+    mature_count: int
+    censored_count: int
+    total_count: int
+
+    @classmethod
+    def of(cls, censoring: MaturityCensoring) -> "MaturityCensoringResponse":
+        return cls(observation_horizon_days=censoring.observation_horizon_days,
+                   as_of=censoring.as_of, mature_count=censoring.mature_count,
+                   censored_count=censoring.censored_count, total_count=censoring.total_count)
+
+
+class FunnelStageCountResponse(ApiModel):
+    """How many applications reached one funnel stage (each stage counts the furthest reached)."""
+
+    stage: FunnelStage
+    applications: int
+
+    @classmethod
+    def of(cls, count: FunnelStageCount) -> "FunnelStageCountResponse":
+        return cls(stage=count.stage, applications=count.applications)
+
+
+class CareerFunnelResponse(ApiModel):
+    """The submitted→accepted funnel with its window and maturity censoring (§25-27, §51)."""
+
+    stages: tuple[FunnelStageCountResponse, ...]
+    window: ObservationWindowResponse
+    censoring: MaturityCensoringResponse
+
+    @classmethod
+    def of(cls, funnel: CareerFunnel) -> "CareerFunnelResponse":
+        return cls(stages=tuple(FunnelStageCountResponse.of(s) for s in funnel.stages),
+                   window=ObservationWindowResponse.of(funnel.window),
+                   censoring=MaturityCensoringResponse.of(funnel.censoring))
+
+
+class ConversionRateResponse(ApiModel):
+    """One conversion rate as a fraction of matured applications (§28-31).
+
+    `rate` is null when the denominator is zero — an undefined rate is not zero. `rate_percent`
+    is the same figure rounded for display, and `sample_size` is the denominator so a surface can
+    show how much evidence stands behind the number.
+    """
+
+    kind: RateKind
+    numerator: int
+    denominator: int
+    rate: float | None
+    rate_percent: int | None
+    sample_size: int
+
+    @classmethod
+    def of(cls, rate: ConversionRate) -> "ConversionRateResponse":
+        return cls(kind=rate.kind, numerator=rate.numerator, denominator=rate.denominator,
+                   rate=rate.rate, rate_percent=rate.rate_percent(), sample_size=rate.sample_size)
+
+
+class TimingStatResponse(ApiModel):
+    """Median and quartile days-to-milestone over the applications that reached it (§32-34).
+
+    All three day figures are null until the sample exists; `sample_size` says how many
+    applications the medians rest on.
+    """
+
+    kind: TimingKind
+    sample_size: int
+    median_days: float | None
+    p25_days: float | None
+    p75_days: float | None
+
+    @classmethod
+    def of(cls, timing: TimingStat) -> "TimingStatResponse":
+        return cls(kind=timing.kind, sample_size=timing.sample_size,
+                   median_days=timing.median_days, p25_days=timing.p25_days,
+                   p75_days=timing.p75_days)
+
+
+class DimensionCellResponse(ApiModel):
+    """One slice of a breakdown — e.g. one role family or one source — with its rates (§35-38).
+
+    `key` is null for the bucket of applications that have no value on the dimension (an
+    unclassified role, say); it is never an empty string. `rates` holds the same rate kinds the
+    top-level report does, recomputed within the slice.
+    """
+
+    dimension: DimensionKind
+    key: str | None
+    applications: int
+    rates: tuple[ConversionRateResponse, ...]
+
+    @classmethod
+    def of(cls, cell: DimensionCell) -> "DimensionCellResponse":
+        return cls(dimension=cell.dimension, key=cell.key, applications=cell.applications,
+                   rates=tuple(ConversionRateResponse.of(r) for r in cell.rates))
+
+
+class DimensionBreakdownResponse(ApiModel):
+    """Every slice of the funnel along one dimension — the raw material a recommendation cites."""
+
+    dimension: DimensionKind
+    cells: tuple[DimensionCellResponse, ...]
+
+    @classmethod
+    def of(cls, breakdown: DimensionBreakdown) -> "DimensionBreakdownResponse":
+        return cls(dimension=breakdown.dimension,
+                   cells=tuple(DimensionCellResponse.of(c) for c in breakdown.cells))
+
+
+class CareerAnalyticsResponse(ApiModel):
+    """The whole self-describing report: funnel, rates, timings, breakdowns (§24, §49-52).
+
+    `analytics_version` pins which computation produced these figures, so a stored recommendation
+    can be read against the very report that justified it. There is no `user_id`: the report is
+    always the caller's. `computed_at` is when the snapshot was taken — the numbers are a
+    point-in-time read of an ever-moving process, not a durable record.
+    """
+
+    analytics_version: str
+    window: ObservationWindowResponse
+    funnel: CareerFunnelResponse
+    rates: tuple[ConversionRateResponse, ...]
+    timings: tuple[TimingStatResponse, ...]
+    breakdowns: tuple[DimensionBreakdownResponse, ...]
+    computed_at: datetime
+
+    @classmethod
+    def of(cls, analytics: CareerAnalytics) -> "CareerAnalyticsResponse":
+        return cls(
+            analytics_version=analytics.analytics_version,
+            window=ObservationWindowResponse.of(analytics.window),
+            funnel=CareerFunnelResponse.of(analytics.funnel),
+            rates=tuple(ConversionRateResponse.of(r) for r in analytics.rates),
+            timings=tuple(TimingStatResponse.of(t) for t in analytics.timings),
+            breakdowns=tuple(DimensionBreakdownResponse.of(b) for b in analytics.breakdowns),
+            computed_at=analytics.computed_at)
+
+
+class RecommendationEvidenceResponse(ApiModel):
+    """One metric a recommendation cites, with its own numbers — the auditable citation (§62).
+
+    Carries exactly one metric shape (a `rate_kind` or a `timing_kind`, never both, mirroring
+    the domain), the slice it was measured in, and the raw counts, so a reader can trace the
+    claim back to the analytics report. `dimension_key` is null for a dimension's unclassified
+    slice; a null `dimension` is an overall metric.
+    """
+
+    ordinal: int
+    dimension: DimensionKind | None
+    dimension_key: str | None
+    rate_kind: RateKind | None
+    timing_kind: TimingKind | None
+    numerator: int | None
+    denominator: int | None
+    median_days: float | None
+    sample_size: int
+    detail: str
+
+    @classmethod
+    def of(cls, evidence: RecommendationEvidence) -> "RecommendationEvidenceResponse":
+        return cls(
+            ordinal=evidence.ordinal, dimension=evidence.dimension,
+            dimension_key=evidence.dimension_key, rate_kind=evidence.rate_kind,
+            timing_kind=evidence.timing_kind, numerator=evidence.numerator,
+            denominator=evidence.denominator, median_days=evidence.median_days,
+            sample_size=evidence.sample_size, detail=evidence.detail)
+
+
+class CareerRecommendationResponse(ApiModel):
+    """An evidence-backed suggestion — and nothing it can execute (§26-33).
+
+    `confidence` and `min_evidence_sample_size` are derived properties, never stored, surfaced
+    so a UI shows how much evidence stands behind the suggestion without recomputing it.
+    `analytics_version` pins the report it was drawn from. There is no `user_id`, and this object
+    carries no target profile, policy or execution: turning it into a change is a
+    `StrategyChangeProposal` the user approves explicitly.
+    """
+
+    id: CareerRecommendationId
+    kind: RecommendationKind
+    analytics_version: str
+    summary: str
+    detail: str | None
+    evidence: tuple[RecommendationEvidenceResponse, ...]
+    confidence: RecommendationConfidence
+    min_evidence_sample_size: int
+    generator_key: str | None
+    llm_run_id: LLMRunId | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, recommendation: CareerRecommendation) -> "CareerRecommendationResponse":
+        return cls(
+            id=recommendation.id, kind=recommendation.kind,
+            analytics_version=recommendation.analytics_version, summary=recommendation.summary,
+            detail=recommendation.detail,
+            evidence=tuple(RecommendationEvidenceResponse.of(e) for e in recommendation.evidence),
+            confidence=recommendation.confidence,
+            min_evidence_sample_size=recommendation.min_evidence_sample_size,
+            generator_key=recommendation.generator_key, llm_run_id=recommendation.llm_run_id,
+            created_at=recommendation.created_at)
+
+
+class CareerRecommendationListResponse(ApiModel):
+    """This account's recommendations, most recent first — the surface a user reviews."""
+
+    recommendations: tuple[CareerRecommendationResponse, ...]
+
+    @classmethod
+    def of(cls, items: tuple[CareerRecommendation, ...]) -> "CareerRecommendationListResponse":
+        return cls(recommendations=tuple(CareerRecommendationResponse.of(r) for r in items))
+
+
+class ProposeStrategyChangeRequest(ApiModel):
+    """Draft a proposal to change one search or policy — the spine's only mutation entry (§34-45).
+
+    The body carries the typed `change` (the discriminated union, validated at this boundary so a
+    `kind` the platform does not offer is a 422, never a silently widened match) and the human
+    `summary` a surface shows. The owner, the target, the target's version precondition and the
+    lifecycle are the service's to supply from the session and the live target — there is no
+    field here to set a `user_id`, a `target_version` or a `status`. `source_recommendation_id`
+    optionally links the draft back to the recommendation that motivated it.
+    """
+
+    change: StrategyChange
+    summary: str = Field(min_length=1)
+    source_recommendation_id: CareerRecommendationId | None = None
+
+
+class ApproveStrategyChangeRequest(ApiModel):
+    """Confirm a proposal for execution, optionally clearing a sensitive-change second gate (§43).
+
+    `confirm_sensitive` defaults to `False`: a proposal that loosens a safety brake (widening what
+    the platform may apply to, raising a cap, lowering the score floor) is refused with
+    `SENSITIVE_CONFIRMATION_REQUIRED` unless the caller sets this, so a loosening edit always costs
+    a deliberate second acknowledgement. A non-sensitive proposal ignores it.
+    """
+
+    confirm_sensitive: bool = False
+
+
+class FieldChangeResponse(ApiModel):
+    """One field a proposal moves, rendered before → after for a human to read (§37)."""
+
+    field: str
+    before: str
+    after: str
+
+    @classmethod
+    def of(cls, change: FieldChange) -> "FieldChangeResponse":
+        return cls(field=change.field, before=change.before, after=change.after)
+
+
+class StrategyChangeProposalResponse(ApiModel):
+    """One approved-or-not edit to a search or policy — its diff, sensitivity and lifecycle (§34).
+
+    Surfaces the queryable identity (`target`, `target_id`), the `change_kind` discriminator and
+    the human `summary`, plus the two things a surface must gate on: `is_sensitive` (whether it
+    loosens a safety brake) and `field_changes` (the before → after of exactly the fields that
+    move). The raw change payload is deliberately not echoed — a client renders the diff, not the
+    typed levers — and there is no `user_id`. `is_open` says whether it may still be acted on.
+    """
+
+    id: StrategyChangeProposalId
+    target: StrategyChangeTarget
+    target_id: UUID
+    change_kind: StrategyChangeKind
+    summary: str
+    status: StrategyChangeProposalStatus
+    is_open: bool
+    is_sensitive: bool
+    field_changes: tuple[FieldChangeResponse, ...]
+    target_version: datetime
+    source_recommendation_id: CareerRecommendationId | None
+    generator_key: str | None
+    llm_run_id: LLMRunId | None
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
+
+    @classmethod
+    def of(cls, proposal: StrategyChangeProposal) -> "StrategyChangeProposalResponse":
+        return cls(
+            id=proposal.id, target=proposal.target, target_id=proposal.target_id,
+            change_kind=proposal.change.kind, summary=proposal.summary, status=proposal.status,
+            is_open=proposal.is_open, is_sensitive=proposal.is_sensitive,
+            field_changes=tuple(FieldChangeResponse.of(c) for c in proposal.diff()),
+            target_version=proposal.target_version,
+            source_recommendation_id=proposal.source_recommendation_id,
+            generator_key=proposal.generator_key, llm_run_id=proposal.llm_run_id,
+            created_at=proposal.created_at, updated_at=proposal.updated_at,
+            expires_at=proposal.expires_at)
+
+
+class StrategyChangeExecutionResponse(ApiModel):
+    """The record of one attempt to apply a confirmed proposal — the executor's audit (§45).
+
+    `succeeded` is surfaced so a UI need not re-derive it from `outcome`; `observed_target_version`
+    is the version the executor checked the staleness precondition against. There is no `user_id`.
+    """
+
+    id: StrategyChangeExecutionId
+    proposal_id: StrategyChangeProposalId
+    outcome: StrategyChangeExecutionOutcome
+    succeeded: bool
+    observed_target_version: datetime | None
+    detail: str | None
+    result_ref: str | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, execution: StrategyChangeExecution) -> "StrategyChangeExecutionResponse":
+        return cls(
+            id=execution.id, proposal_id=execution.proposal_id, outcome=execution.outcome,
+            succeeded=execution.succeeded,
+            observed_target_version=execution.observed_target_version, detail=execution.detail,
+            result_ref=execution.result_ref, created_at=execution.created_at)
+
+
+class StrategyChangeProposalDetailResponse(ApiModel):
+    """One proposal with its execution record, if it has been acted on (§44-45).
+
+    Pairing the two here avoids an "execution not found" code and a second round-trip: a
+    `PROPOSED`, `DISMISSED` or `EXPIRED` proposal simply carries a null `execution`, while an
+    `EXECUTED`/`REJECTED`/`FAILED` one carries the audit of the attempt that closed it.
+    """
+
+    proposal: StrategyChangeProposalResponse
+    execution: StrategyChangeExecutionResponse | None
+
+    @classmethod
+    def of(cls, proposal: StrategyChangeProposal,
+           execution: StrategyChangeExecution | None) -> "StrategyChangeProposalDetailResponse":
+        return cls(
+            proposal=StrategyChangeProposalResponse.of(proposal),
+            execution=(StrategyChangeExecutionResponse.of(execution)
+                       if execution is not None else None))
+
+
+class StrategyChangeProposalListResponse(ApiModel):
+    """A set of proposals — pending (most recent first) or the full history a surface reviews."""
+
+    proposals: tuple[StrategyChangeProposalResponse, ...]
+
+    @classmethod
+    def of(cls, items: tuple[StrategyChangeProposal, ...]) -> "StrategyChangeProposalListResponse":
+        return cls(proposals=tuple(StrategyChangeProposalResponse.of(p) for p in items))

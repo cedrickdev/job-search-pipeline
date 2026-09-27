@@ -16,6 +16,7 @@ from backend.app.api.dependencies import reject_cross_site_writes
 from backend.app.api.routes import (
     applications,
     auth,
+    career,
     chat,
     companies,
     documents,
@@ -25,6 +26,9 @@ from backend.app.api.routes import (
     matches,
     me,
     onboarding,
+    outcomes,
+    roles,
+    strategy,
 )
 
 
@@ -44,4 +48,8 @@ def create_v2_router() -> APIRouter:
     router.include_router(applications.router)
     router.include_router(chat.router)
     router.include_router(interview.router)
+    router.include_router(outcomes.router)
+    router.include_router(roles.router)
+    router.include_router(career.router)
+    router.include_router(strategy.router)
     return router

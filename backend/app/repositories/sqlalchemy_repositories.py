@@ -66,9 +66,11 @@ from backend.app.domain.geo import (
 from backend.app.domain.identifiers import (
     ApplicationDecisionId,
     ApplicationId,
+    ApplicationOutcomeId,
     ApplicationPolicyId,
     CandidateDocumentId,
     CandidateProfileId,
+    CareerRecommendationId,
     ChatActionProposalId,
     CompanyId,
     ConversationId,
@@ -80,6 +82,7 @@ from backend.app.domain.identifiers import (
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
+    StrategyChangeProposalId,
     SubmissionAttemptId,
     UserId,
     UserSessionId,
@@ -93,14 +96,24 @@ from backend.app.domain.interview import (
 )
 from backend.app.domain.matching import MatchEvaluation
 from backend.app.domain.opportunity import Opportunity, WorkplaceMode
+from backend.app.domain.outcome import ApplicationOutcome
 from backend.app.domain.policy import ApplicationPolicy
+from backend.app.domain.recommendation import CareerRecommendation
+from backend.app.domain.role import RoleClassification
 from backend.app.domain.search import SearchProfile
+from backend.app.domain.strategy_change import (
+    StrategyChangeExecution,
+    StrategyChangeProposal,
+    StrategyChangeProposalStatus,
+)
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.infrastructure.database.mappers import (
     application_decision_to_domain,
     application_decision_to_row,
     application_event_to_domain,
     application_event_to_row,
+    application_outcome_to_domain,
+    application_outcome_to_row,
     application_policy_to_domain,
     application_policy_to_row,
     application_to_domain,
@@ -109,6 +122,8 @@ from backend.app.infrastructure.database.mappers import (
     candidate_document_to_row,
     candidate_profile_to_domain,
     candidate_profile_to_row,
+    career_recommendation_to_domain,
+    career_recommendation_to_row,
     career_site_to_domain,
     career_site_to_row,
     chat_action_execution_to_domain,
@@ -148,8 +163,14 @@ from backend.app.infrastructure.database.mappers import (
     opportunity_to_row,
     provider_session_to_domain,
     provider_session_to_row,
+    role_classification_to_domain,
+    role_classification_to_row,
     search_profile_to_domain,
     search_profile_to_row,
+    strategy_change_execution_to_domain,
+    strategy_change_execution_to_row,
+    strategy_change_proposal_to_domain,
+    strategy_change_proposal_to_row,
     submission_attempt_to_domain,
     submission_attempt_to_row,
     user_session_to_domain,
@@ -160,10 +181,12 @@ from backend.app.infrastructure.database.mappers import (
 from backend.app.infrastructure.database.models import (
     ApplicationDecisionRow,
     ApplicationEventRow,
+    ApplicationOutcomeRow,
     ApplicationPolicyRow,
     ApplicationRow,
     CandidateDocumentRow,
     CandidateProfileRow,
+    CareerRecommendationRow,
     ChatActionExecutionRow,
     ChatActionProposalRow,
     ChatMessageRow,
@@ -185,7 +208,10 @@ from backend.app.infrastructure.database.models import (
     OpportunityRow,
     OpportunitySourceRecordRow,
     ProviderSessionRow,
+    RoleClassificationRow,
     SearchProfileRow,
+    StrategyChangeExecutionRow,
+    StrategyChangeProposalRow,
     SubmissionAttemptRow,
     UserRow,
     UserSessionRow,
@@ -213,10 +239,12 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
     from backend.app.repositories.contracts import (
         ApplicationDecisionRepository,
         ApplicationEventRepository,
+        ApplicationOutcomeRepository,
         ApplicationPolicyRepository,
         ApplicationRepository,
         CandidateDocumentRepository,
         CandidateProfileRepository,
+        CareerRecommendationRepository,
         CareerSiteRepository,
         ChatActionExecutionRepository,
         ChatActionProposalRepository,
@@ -235,8 +263,11 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
         MatchEvaluationRepository,
         OpportunityRepository,
         ProviderSessionRepository,
+        RoleClassificationRepository,
         SearchProfileRepository,
         SessionRepository,
+        StrategyChangeExecutionRepository,
+        StrategyChangeProposalRepository,
         SubmissionAttemptRepository,
         UserRepository,
     )
@@ -255,7 +286,9 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
             "ChatActionProposalRepository", "ChatActionExecutionRepository",
             "InterviewSessionRepository", "InterviewQuestionRepository",
             "InterviewAnswerRepository", "InterviewAnswerEvaluationRepository",
-            "InterviewSessionSummaryRepository"]:
+            "InterviewSessionSummaryRepository", "ApplicationOutcomeRepository",
+            "RoleClassificationRepository", "CareerRecommendationRepository",
+            "StrategyChangeProposalRepository", "StrategyChangeExecutionRepository"]:
         """Structural conformance, enforced by `mypy backend`.
 
         The `Protocol`s in `contracts` are satisfied by shape, so nothing would
@@ -290,7 +323,12 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
                 SqlAlchemyInterviewQuestionRepository(session),
                 SqlAlchemyInterviewAnswerRepository(session),
                 SqlAlchemyInterviewAnswerEvaluationRepository(session),
-                SqlAlchemyInterviewSessionSummaryRepository(session))
+                SqlAlchemyInterviewSessionSummaryRepository(session),
+                SqlAlchemyApplicationOutcomeRepository(session),
+                SqlAlchemyRoleClassificationRepository(session),
+                SqlAlchemyCareerRecommendationRepository(session),
+                SqlAlchemyStrategyChangeProposalRepository(session),
+                SqlAlchemyStrategyChangeExecutionRepository(session))
 
 
 def _rows_affected(result: Result[Any]) -> int:
@@ -2118,5 +2156,234 @@ class SqlAlchemyInterviewSessionSummaryRepository:
             .limit(limit))
         return tuple(interview_session_summary_to_domain(row)
                      for row in result.scalars())
+
+
+class SqlAlchemyApplicationOutcomeRepository:
+    """`ApplicationOutcomeRepository` over an `AsyncSession`, `user_id` on every read.
+
+    A hiring-process fact, stored well apart from the Phase 12 execution lifecycle: this
+    class touches `application_outcomes` and nothing on `ApplicationRow`, so a `REJECTED`
+    outcome recorded here can never move an application to `FAILED` (§2, §84). The upsert
+    loads by `(user_id, id)`, so a write can never reach across accounts and recording the
+    same milestone twice — or flipping one to `RETRACTED`/`SUPERSEDED` — writes the one row.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   outcome_id: ApplicationOutcomeId) -> ApplicationOutcomeRow | None:
+        result = await self._session.execute(
+            select(ApplicationOutcomeRow).where(
+                ApplicationOutcomeRow.id == outcome_id,
+                ApplicationOutcomeRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  outcome_id: ApplicationOutcomeId) -> ApplicationOutcome | None:
+        row = await self._row(user_id, outcome_id)
+        return None if row is None else application_outcome_to_domain(row)
+
+    async def upsert(self, outcome: ApplicationOutcome) -> ApplicationOutcome:
+        row = application_outcome_to_row(
+            outcome, await self._row(outcome.user_id, outcome.id))
+        self._session.add(row)
+        await self._session.flush()
+        return application_outcome_to_domain(row)
+
+    async def list_for_application(
+            self, user_id: UserId, application_id: ApplicationId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ApplicationOutcome, ...]:
+        result = await self._session.execute(
+            select(ApplicationOutcomeRow)
+            .where(ApplicationOutcomeRow.application_id == application_id,
+                   ApplicationOutcomeRow.user_id == user_id)
+            .order_by(ApplicationOutcomeRow.occurred_at, ApplicationOutcomeRow.id)
+            .limit(limit))
+        return tuple(application_outcome_to_domain(row) for row in result.scalars())
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ApplicationOutcome, ...]:
+        result = await self._session.execute(
+            select(ApplicationOutcomeRow)
+            .where(ApplicationOutcomeRow.user_id == user_id)
+            .order_by(ApplicationOutcomeRow.occurred_at.desc(),
+                      ApplicationOutcomeRow.id)
+            .limit(limit))
+        return tuple(application_outcome_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyRoleClassificationRepository:
+    """`RoleClassificationRepository` over an `AsyncSession`, `user_id` on every read.
+
+    The upsert loads by `(user_id, opportunity_id)`, so a write can never reach across
+    accounts and re-classifying an opportunity — deterministic backfill or a manual
+    correction — writes the one row. `list_for_user` orders by the last update, so a
+    freshly corrected role surfaces first.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   opportunity_id: OpportunityId) -> RoleClassificationRow | None:
+        result = await self._session.execute(
+            select(RoleClassificationRow).where(
+                RoleClassificationRow.opportunity_id == opportunity_id,
+                RoleClassificationRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  opportunity_id: OpportunityId) -> RoleClassification | None:
+        row = await self._row(user_id, opportunity_id)
+        return None if row is None else role_classification_to_domain(row)
+
+    async def upsert(self, classification: RoleClassification) -> RoleClassification:
+        row = role_classification_to_row(
+            classification,
+            await self._row(classification.user_id, classification.opportunity_id))
+        self._session.add(row)
+        await self._session.flush()
+        return role_classification_to_domain(row)
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[RoleClassification, ...]:
+        result = await self._session.execute(
+            select(RoleClassificationRow)
+            .where(RoleClassificationRow.user_id == user_id)
+            .order_by(RoleClassificationRow.updated_at.desc(),
+                      RoleClassificationRow.id)
+            .limit(limit))
+        return tuple(role_classification_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyCareerRecommendationRepository:
+    """`CareerRecommendationRepository` over an `AsyncSession`, `user_id` on every read.
+
+    A recommendation is an immutable snapshot with a random id, so this class only inserts —
+    there is no `upsert` to take one over. Its evidence is `lazy="raise"`, so every read
+    eager-loads it: the "evidence or nothing" guarantee is what makes the round trip
+    meaningful, and a forgotten load would raise here rather than drop the evidence silently.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    def _base_select(self) -> Select[tuple[CareerRecommendationRow]]:
+        return select(CareerRecommendationRow).options(
+            selectinload(CareerRecommendationRow.evidence))
+
+    async def add(self, recommendation: CareerRecommendation) -> CareerRecommendation:
+        row = career_recommendation_to_row(recommendation)
+        self._session.add(row)
+        await self._session.flush()
+        return career_recommendation_to_domain(row)
+
+    async def get(self, user_id: UserId,
+                  recommendation_id: CareerRecommendationId) -> CareerRecommendation | None:
+        result = await self._session.execute(
+            self._base_select().where(
+                CareerRecommendationRow.id == recommendation_id,
+                CareerRecommendationRow.user_id == user_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else career_recommendation_to_domain(row)
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[CareerRecommendation, ...]:
+        result = await self._session.execute(
+            self._base_select()
+            .where(CareerRecommendationRow.user_id == user_id)
+            .order_by(CareerRecommendationRow.created_at.desc(),
+                      CareerRecommendationRow.id)
+            .limit(limit))
+        return tuple(career_recommendation_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyStrategyChangeProposalRepository:
+    """`StrategyChangeProposalRepository` over an `AsyncSession`, `user_id` on every read.
+
+    A proposal carries its own `user_id`, so the `get` the executor performs before applying
+    a change scopes on it — a confirmation naming another account's proposal reads as absent
+    and is refused. The upsert loads by `(user_id, id)`, so a write can never reach across
+    accounts and an approve, dismiss or expire is a status flip on the one row.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   proposal_id: StrategyChangeProposalId) -> StrategyChangeProposalRow | None:
+        result = await self._session.execute(
+            select(StrategyChangeProposalRow).where(
+                StrategyChangeProposalRow.id == proposal_id,
+                StrategyChangeProposalRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  proposal_id: StrategyChangeProposalId) -> StrategyChangeProposal | None:
+        row = await self._row(user_id, proposal_id)
+        return None if row is None else strategy_change_proposal_to_domain(row)
+
+    async def upsert(self, proposal: StrategyChangeProposal) -> StrategyChangeProposal:
+        row = strategy_change_proposal_to_row(
+            proposal, await self._row(proposal.user_id, proposal.id))
+        self._session.add(row)
+        await self._session.flush()
+        return strategy_change_proposal_to_domain(row)
+
+    async def list_for_user(
+            self, user_id: UserId, *, open_only: bool = False,
+            limit: int = DEFAULT_LIMIT) -> tuple[StrategyChangeProposal, ...]:
+        statement = select(StrategyChangeProposalRow).where(
+            StrategyChangeProposalRow.user_id == user_id)
+        if open_only:
+            statement = statement.where(
+                StrategyChangeProposalRow.status
+                == StrategyChangeProposalStatus.PROPOSED.value)
+        statement = statement.order_by(
+            StrategyChangeProposalRow.updated_at.desc(),
+            StrategyChangeProposalRow.id).limit(limit)
+        result = await self._session.execute(statement)
+        return tuple(strategy_change_proposal_to_domain(row)
+                     for row in result.scalars())
+
+
+class SqlAlchemyStrategyChangeExecutionRepository:
+    """`StrategyChangeExecutionRepository` over an `AsyncSession`, `user_id` on reads.
+
+    Keyed on the proposal's id (the execution id derives from it alone), so a double-confirmed
+    proposal upserts the one row rather than recording two attempts — the idempotency the
+    executor rests on. The `get` that detects an already-applied proposal scopes on the
+    audit's own `user_id`.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, execution_id: UUID) -> StrategyChangeExecutionRow | None:
+        result = await self._session.execute(
+            select(StrategyChangeExecutionRow).where(
+                StrategyChangeExecutionRow.id == execution_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  proposal_id: StrategyChangeProposalId) -> StrategyChangeExecution | None:
+        result = await self._session.execute(
+            select(StrategyChangeExecutionRow).where(
+                StrategyChangeExecutionRow.proposal_id == proposal_id,
+                StrategyChangeExecutionRow.user_id == user_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else strategy_change_execution_to_domain(row)
+
+    async def upsert(self,
+                     execution: StrategyChangeExecution) -> StrategyChangeExecution:
+        row = strategy_change_execution_to_row(
+            execution, await self._row(execution.id))
+        self._session.add(row)
+        await self._session.flush()
+        return strategy_change_execution_to_domain(row)
 
 

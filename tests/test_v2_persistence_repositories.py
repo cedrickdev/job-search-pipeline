@@ -23,6 +23,11 @@ from sqlalchemy.exc import IntegrityError, StatementError
 
 from backend.app.domain.common import Location, Reason, ReasonImpact
 from backend.app.domain.chat import ChatActionProposalStatus, ChatMessageRole
+from backend.app.domain.application import ApplicationState
+from backend.app.domain.application_channel import ApplicationChannel
+from backend.app.domain.outcome import OutcomeKind, OutcomeStatus
+from backend.app.domain.role import RoleFamily, RoleFamilyProvenance
+from backend.app.domain.strategy_change import StrategyChangeProposalStatus
 from backend.app.domain.eligibility import (
     DeterminationSource,
     EligibilityCheck,
@@ -45,7 +50,11 @@ from backend.app.infrastructure.database.engine import (
     session_scope,
 )
 from backend.app.infrastructure.database.models import (
+    ApplicationOutcomeRow,
+    ApplicationRow,
     CandidateProfileRow,
+    CareerRecommendationEvidenceRow,
+    CareerRecommendationRow,
     ChatActionExecutionRow,
     ChatActionProposalRow,
     ChatMessageRow,
@@ -57,9 +66,16 @@ from backend.app.infrastructure.database.models import (
     MatchEvaluationRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
+    RoleClassificationRow,
+    StrategyChangeExecutionRow,
+    StrategyChangeProposalRow,
     UserRow,
 )
 from backend.app.repositories.sqlalchemy_repositories import (
+    SqlAlchemyApplicationDecisionRepository,
+    SqlAlchemyApplicationOutcomeRepository,
+    SqlAlchemyApplicationPolicyRepository,
+    SqlAlchemyCareerRecommendationRepository,
     SqlAlchemyChatActionExecutionRepository,
     SqlAlchemyChatActionProposalRepository,
     SqlAlchemyChatMessageRepository,
@@ -68,8 +84,12 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyEligibilityResultRepository,
     SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
+    SqlAlchemyRoleClassificationRepository,
+    SqlAlchemyStrategyChangeExecutionRepository,
+    SqlAlchemyStrategyChangeProposalRepository,
 )
 from tests.v2_builders import (
+    APPLICATION,
     COMPANY,
     COMPANY_LOCATION,
     CONVERSATION,
@@ -80,10 +100,17 @@ from tests.v2_builders import (
     NOW,
     OPPORTUNITY,
     OTHER_CONVERSATION,
+    OTHER_OPPORTUNITY,
     OTHER_PROFILE,
+    OTHER_RECOMMENDATION,
+    OTHER_STRATEGY_PROPOSAL,
     OTHER_USER,
+    POLICY,
     PROFILE,
+    RECOMMENDATION,
+    STRATEGY_PROPOSAL,
     USER,
+    a_career_recommendation,
     a_chat_action_execution,
     a_chat_action_proposal,
     a_chat_message,
@@ -91,10 +118,17 @@ from tests.v2_builders import (
     a_company,
     a_company_location,
     a_conversation,
+    a_decision,
+    a_policy,
+    a_recommendation_evidence,
+    a_role_classification,
     a_source_record,
+    a_strategy_change_execution,
+    a_strategy_change_proposal,
     an_eligibility_result,
     an_evaluation,
     an_opportunity,
+    an_application_outcome,
 )
 from tests.v2_rows import a_candidate_profile_row, a_user_row
 
@@ -789,3 +823,257 @@ async def test_an_execution_is_written_once_per_proposal(
     stored = await executions.get(USER, proposal.id)
     assert stored is not None
     assert await executions.get(OTHER_USER, proposal.id) is None
+
+
+# --- Phase 15 outcome tracking and the career-intelligence loop --------------
+# Outcomes are real-world hiring facts kept well apart from the Phase 12 execution
+# lifecycle (§2, §84): they hang off an `applications` row but touch no
+# `ApplicationState`. Recommendations and their evidence are written whole and never
+# mutated; a proposal is the one link an approval may flip off `PROPOSED`.
+
+
+@pytest.fixture
+def outcomes(db_session):
+    return SqlAlchemyApplicationOutcomeRepository(db_session)
+
+
+@pytest.fixture
+def role_classifications(db_session):
+    return SqlAlchemyRoleClassificationRepository(db_session)
+
+
+@pytest.fixture
+def recommendations(db_session):
+    return SqlAlchemyCareerRecommendationRepository(db_session)
+
+
+@pytest.fixture
+def strategy_proposals(db_session):
+    return SqlAlchemyStrategyChangeProposalRepository(db_session)
+
+
+@pytest.fixture
+def strategy_executions(db_session):
+    return SqlAlchemyStrategyChangeExecutionRepository(db_session)
+
+
+@pytest_asyncio.fixture
+async def career_prerequisites(db_session):
+    """The foreign-key targets the career loop hangs off: two accounts, a profile and
+    two opportunities (a second so the by-role list has two rows to order)."""
+    db_session.add_all([a_user_row(display_name="owner"),
+                        a_user_row(id=OTHER_USER, display_name="somebody else")])
+    await db_session.flush()
+    db_session.add(a_candidate_profile_row(display_name="candidate"))
+    await db_session.flush()
+    postings = SqlAlchemyOpportunityRepository(db_session)
+    await postings.upsert(an_opportunity())
+    await postings.upsert(an_opportunity(
+        id=OTHER_OPPORTUNITY, title="Data analyst",
+        source=a_source_record(external_id="posting-2"),
+        dedup_fingerprint="fingerprint-2"))
+    await db_session.flush()
+
+
+@pytest_asyncio.fixture
+async def outcome_application(db_session, career_prerequisites):
+    """A persisted `applications` row (id `APPLICATION`) an outcome can point at.
+
+    Its FK chain — a policy and a decision — is seeded through their repositories, then
+    the application itself is inserted directly at the id the outcome builder targets, so
+    the hiring-process fact has a live row to reference without the execution engine.
+    """
+    policy = await SqlAlchemyApplicationPolicyRepository(db_session).upsert(a_policy())
+    decision = await SqlAlchemyApplicationDecisionRepository(db_session).upsert(
+        a_decision(policy_id=policy.id))
+    db_session.add(ApplicationRow(
+        id=APPLICATION, user_id=USER, candidate_profile_id=PROFILE,
+        decision_id=decision.id, channel=ApplicationChannel.BROWSER.value,
+        state=ApplicationState.PLANNED.value, idempotency_key="outcome-fixture-key",
+        opportunity_id=OPPORTUNITY, policy_id=policy.id,
+        created_at=NOW, updated_at=NOW))
+    await db_session.flush()
+
+
+async def test_an_outcome_is_reported_as_absent_to_another_user(
+        outcome_application, outcomes):
+    """A hiring fact is user data: a stranger naming its id reads `None`, not the row."""
+    outcome = await outcomes.upsert(an_application_outcome())
+    assert await outcomes.get(USER, outcome.id) == outcome
+    assert await outcomes.get(OTHER_USER, outcome.id) is None
+
+
+async def test_recording_the_same_milestone_twice_updates_one_row(
+        db_session, outcome_application, outcomes):
+    """The id derives from `(application_id, outcome_key)`, so a re-record collapses.
+
+    A double-click or a retried request recording the same `INTERVIEW` at the same instant
+    lands on the one row rather than inventing a second milestone.
+    """
+    await outcomes.upsert(an_application_outcome())
+    await outcomes.upsert(an_application_outcome(detail="same milestone, retried"))
+    assert await _count(db_session, ApplicationOutcomeRow) == 1
+
+
+async def test_retracting_an_outcome_is_a_status_flip_not_a_delete(
+        db_session, outcome_application, outcomes):
+    """A mistake is corrected by flipping the row to `RETRACTED`, never by deleting it.
+
+    The retraction keeps the same id, so the upsert lands on the row already there — the
+    audit survives, and a funnel simply stops counting it (§9, §64).
+    """
+    outcome = await outcomes.upsert(an_application_outcome())
+    await outcomes.upsert(outcome.retracted(at=LATER))
+    assert await _count(db_session, ApplicationOutcomeRow) == 1
+    stored = await outcomes.get(USER, outcome.id)
+    assert stored is not None and stored.status is OutcomeStatus.RETRACTED
+
+
+async def test_the_application_timeline_is_oldest_first(outcome_application, outcomes):
+    """One application's outcomes come back oldest-first — the order a timeline reads."""
+    await outcomes.upsert(an_application_outcome(kind=OutcomeKind.SCREEN, occurred_at=NOW))
+    await outcomes.upsert(
+        an_application_outcome(kind=OutcomeKind.INTERVIEW, occurred_at=LATER))
+    timeline = await outcomes.list_for_application(USER, APPLICATION)
+    assert [o.kind for o in timeline] == [OutcomeKind.SCREEN, OutcomeKind.INTERVIEW]
+
+
+async def test_the_user_outcome_list_is_most_recently_occurred_first(
+        outcome_application, outcomes):
+    """The analytics input is most-recently-occurred first, and only the owner's."""
+    await outcomes.upsert(an_application_outcome(kind=OutcomeKind.SCREEN, occurred_at=NOW))
+    await outcomes.upsert(
+        an_application_outcome(kind=OutcomeKind.INTERVIEW, occurred_at=LATER))
+    listed = await outcomes.list_for_user(USER)
+    assert [o.kind for o in listed] == [OutcomeKind.INTERVIEW, OutcomeKind.SCREEN]
+    assert await outcomes.list_for_user(OTHER_USER) == ()
+
+
+# PHASE15_REPOSITORIES_PART1
+
+
+async def test_a_classification_is_scoped_to_the_user_who_made_it(
+        career_prerequisites, role_classifications):
+    """A role verdict is per-user: another account has not classified the opportunity."""
+    stored = await role_classifications.upsert(a_role_classification())
+    assert await role_classifications.get(USER, OPPORTUNITY) == stored
+    assert await role_classifications.get(OTHER_USER, OPPORTUNITY) is None
+
+
+async def test_re_classifying_an_opportunity_updates_the_one_row(
+        db_session, career_prerequisites, role_classifications):
+    """Keyed on `(user_id, opportunity_id)`, so a manual correction overwrites the row.
+
+    A deterministic verdict the user then corrects by hand does not accrete a second row —
+    the `MANUAL` provenance and its family replace the deterministic ones in place.
+    """
+    await role_classifications.upsert(a_role_classification())
+    await role_classifications.upsert(a_role_classification(
+        role_family=RoleFamily.DATA_AND_ANALYTICS,
+        provenance=RoleFamilyProvenance.MANUAL, updated_at=LATER))
+    assert await _count(db_session, RoleClassificationRow) == 1
+    stored = await role_classifications.get(USER, OPPORTUNITY)
+    assert stored is not None
+    assert stored.provenance is RoleFamilyProvenance.MANUAL
+    assert stored.role_family is RoleFamily.DATA_AND_ANALYTICS
+
+
+async def test_the_classification_list_is_most_recently_updated_first(
+        career_prerequisites, role_classifications):
+    """The by-role list surfaces the freshest verdict first — most-recently-updated order."""
+    await role_classifications.upsert(a_role_classification(updated_at=NOW))
+    await role_classifications.upsert(a_role_classification(
+        opportunity_id=OTHER_OPPORTUNITY, role_family=RoleFamily.DATA_AND_ANALYTICS,
+        updated_at=LATER))
+    listed = await role_classifications.list_for_user(USER)
+    assert [c.opportunity_id for c in listed] == [OTHER_OPPORTUNITY, OPPORTUNITY]
+
+
+async def test_a_recommendation_and_its_evidence_round_trip_scoped_to_owner(
+        career_prerequisites, recommendations):
+    """Add writes the aggregate whole; a scoped read brings back its evidence, or `None`.
+
+    The evidence is `lazy="raise"`, so a forgotten eager-load would raise rather than
+    silently drop the citations — the "evidence or nothing" guarantee survives the trip.
+    """
+    recommendation = a_career_recommendation(evidence=(
+        a_recommendation_evidence(ordinal=0),
+        a_recommendation_evidence(
+            ordinal=1, dimension_key=RoleFamily.SOFTWARE_ENGINEERING.value,
+            numerator=3, denominator=40, sample_size=40,
+            detail="Software Engineering : 3 réponses sur 40 candidatures.")))
+    stored = await recommendations.add(recommendation)
+    assert stored == recommendation
+    read_back = await recommendations.get(USER, recommendation.id)
+    assert read_back == recommendation
+    assert len(read_back.evidence) == 2
+    assert await recommendations.get(OTHER_USER, recommendation.id) is None
+
+
+async def test_the_recommendation_list_is_most_recently_created_first(
+        career_prerequisites, recommendations):
+    """Two snapshots coexist — a recommendation is added, never taken over — newest first."""
+    await recommendations.add(a_career_recommendation(created_at=NOW))
+    await recommendations.add(a_career_recommendation(
+        id=OTHER_RECOMMENDATION,
+        evidence=(a_recommendation_evidence(recommendation_id=OTHER_RECOMMENDATION),),
+        created_at=LATER))
+    listed = await recommendations.list_for_user(USER)
+    assert [r.id for r in listed] == [OTHER_RECOMMENDATION, RECOMMENDATION]
+
+
+async def test_a_strategy_proposal_is_reported_as_absent_to_another_user(
+        career_prerequisites, strategy_proposals):
+    """The scoped `get` the executor runs before applying a change.
+
+    A confirmation naming another account's proposal reads as absent and is refused, rather
+    than trusted because the request carried the id — the spine's only mutation stays owned.
+    """
+    proposal = await strategy_proposals.upsert(a_strategy_change_proposal())
+    assert await strategy_proposals.get(USER, proposal.id) == proposal
+    assert await strategy_proposals.get(OTHER_USER, proposal.id) is None
+
+
+async def test_confirming_a_strategy_proposal_updates_the_one_row(
+        db_session, career_prerequisites, strategy_proposals):
+    """An approval flips `status` off `PROPOSED` on the row already there, not a new one."""
+    proposal = await strategy_proposals.upsert(a_strategy_change_proposal())
+    assert proposal.is_open is True
+    executed = await strategy_proposals.upsert(proposal.executed(at=LATER))
+    assert executed.status is StrategyChangeProposalStatus.EXECUTED
+    assert executed.is_open is False
+    assert await _count(db_session, StrategyChangeProposalRow) == 1
+
+
+async def test_open_only_lists_the_still_confirmable_proposals(
+        career_prerequisites, strategy_proposals):
+    """`open_only` restricts to `PROPOSED` — a pending-suggestions surface and expiry sweep.
+
+    A confirmed proposal drops out of the open list while staying in the full one, so its
+    audit is never lost; the full list is most-recently-updated first.
+    """
+    await strategy_proposals.upsert(a_strategy_change_proposal(updated_at=NOW))
+    await strategy_proposals.upsert(a_strategy_change_proposal(
+        id=OTHER_STRATEGY_PROPOSAL,
+        status=StrategyChangeProposalStatus.EXECUTED, updated_at=LATER))
+    open_only = await strategy_proposals.list_for_user(USER, open_only=True)
+    assert [p.id for p in open_only] == [STRATEGY_PROPOSAL]
+    everything = await strategy_proposals.list_for_user(USER)
+    assert [p.id for p in everything] == [OTHER_STRATEGY_PROPOSAL, STRATEGY_PROPOSAL]
+
+
+async def test_a_strategy_execution_is_written_once_per_proposal(
+        db_session, career_prerequisites, strategy_proposals, strategy_executions):
+    """A double-confirm collapses onto one audit row — the executor's idempotency.
+
+    The execution id derives from the proposal alone, so a second attempt upserts the same
+    row rather than recording two, and a stranger cannot read it by the proposal's id.
+    """
+    await strategy_proposals.upsert(a_strategy_change_proposal())
+    await strategy_executions.upsert(a_strategy_change_execution())
+    await strategy_executions.upsert(
+        a_strategy_change_execution(detail="second confirm ignored"))
+    assert await _count(db_session, StrategyChangeExecutionRow) == 1
+    stored = await strategy_executions.get(USER, STRATEGY_PROPOSAL)
+    assert stored is not None and stored.succeeded
+    assert await strategy_executions.get(OTHER_USER, STRATEGY_PROPOSAL) is None

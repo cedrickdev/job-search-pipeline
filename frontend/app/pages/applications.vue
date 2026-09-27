@@ -19,7 +19,10 @@
   **The trail is shown on demand.** A row shows its state; expanding it fetches that
   application's append-only history — created, prepared, gate-evaluated, submitted — so
   the "why" behind a REQUIRES_HUMAN or a refusal is one click away without loading every
-  application's events up front.
+  application's events up front. The same expansion also holds the outcome timeline
+  (Phase 15): the real-world milestones a recruiter produces — a screen, an interview, an
+  offer, a rejection. Those are a separate record and never move the lifecycle state above;
+  a rejection is a recorded outcome, not a FAILED application (docs/CAREER_INTELLIGENCE.md).
 -->
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
@@ -207,7 +210,16 @@ function toggleTrail(applicationId: string): void {
           {{ rowErrors[app.id] }}
         </p>
 
-        <ApplicationTrail v-if="openTrailId === app.id" :application-id="app.id" />
+        <div v-if="openTrailId === app.id" class="application__expanded">
+          <section class="application__section">
+            <h3 class="application__section-title">Execution trail</h3>
+            <ApplicationTrail :application-id="app.id" />
+          </section>
+          <section class="application__section">
+            <h3 class="application__section-title">Outcomes</h3>
+            <OutcomeTimeline :application-id="app.id" />
+          </section>
+        </div>
       </li>
     </ul>
   </section>
@@ -223,6 +235,9 @@ function toggleTrail(applicationId: string): void {
 .application__actions { display: flex; align-items: center; gap: 0.5rem; }
 .application__channel, .application__target, .application__attempts { font-size: 0.85rem; color: var(--ui-text-muted, #6b7280); }
 .application__error { color: var(--ui-error, #dc2626); font-size: 0.85rem; margin-top: 0.5rem; }
+.application__expanded { display: flex; flex-direction: column; gap: 0.5rem; }
+.application__section { display: flex; flex-direction: column; }
+.application__section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ui-text-muted, #6b7280); margin: 0.5rem 0 0; }
 .applications__empty { color: var(--ui-text-muted, #6b7280); }
 .applications__error { color: var(--ui-error, #dc2626); }
 </style>

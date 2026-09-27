@@ -48,7 +48,23 @@ from backend.app.domain.identifiers import (
     MatchEvaluationId,
 )
 from backend.app.domain.matching import DimensionScore, MatchDimension
+from backend.app.domain.analytics import DimensionKind, RateKind, TimingKind
+from backend.app.domain.outcome import OutcomeKind, OutcomeSource, OutcomeStatus
+from backend.app.domain.recommendation import RecommendationKind
+from backend.app.domain.role import RoleFamily, RoleFamilyProvenance
+from backend.app.domain.strategy_change import (
+    SetMinimumScoreChange,
+    SetPolicyOpportunityTypesChange,
+    StrategyChangeExecutionOutcome,
+    StrategyChangeProposalStatus,
+    StrategyChangeTarget,
+)
+from backend.app.domain.opportunity import OpportunityType
 from backend.app.infrastructure.database.mappers import (
+    application_outcome_to_domain,
+    application_outcome_to_row,
+    career_recommendation_to_domain,
+    career_recommendation_to_row,
     chat_action_execution_to_domain,
     chat_action_execution_to_row,
     chat_action_proposal_to_domain,
@@ -78,7 +94,13 @@ from backend.app.infrastructure.database.mappers import (
     opportunity_to_row,
     reasons_from_json,
     reasons_to_json,
+    role_classification_to_domain,
+    role_classification_to_row,
     source_record_row_id,
+    strategy_change_execution_to_domain,
+    strategy_change_execution_to_row,
+    strategy_change_proposal_to_domain,
+    strategy_change_proposal_to_row,
 )
 from backend.app.infrastructure.database.models import (
     CompanyLocationRow,
@@ -90,10 +112,15 @@ from tests.v2_builders import (
     COMPANY_LOCATION,
     ELIGIBILITY,
     EVALUATION,
+    LATER,
     OPPORTUNITY,
     OTHER_OPPORTUNITY,
+    POLICY,
+    RECOMMENDATION,
     RUN,
     SEARCH_PROFILE,
+    STRATEGY_PROPOSAL,
+    a_career_recommendation,
     a_chat_action_execution,
     a_chat_action_proposal,
     a_chat_message,
@@ -102,7 +129,12 @@ from tests.v2_builders import (
     a_company_location,
     a_conversation,
     a_reason,
+    a_recommendation_evidence,
+    a_role_classification,
+    a_strategy_change_execution,
+    a_strategy_change_proposal,
     an_answer_evaluation,
+    an_application_outcome,
     an_eligibility_result,
     an_evaluation,
     an_interview_question,
@@ -683,3 +715,267 @@ def test_a_deterministic_fallback_summary_reads_back_with_a_null_run():
     assert read_back == summary
     assert read_back.llm_run_id is None
     assert read_back.generator_key == "deterministic-summary/1"
+
+
+# --- Phase 15: outcomes are hiring facts, never an execution state ----------
+#
+# The whole phase turns on one line these mappers must not cross: an
+# `ApplicationOutcome` is a real-world hiring milestone, and it touches no
+# `ApplicationState`. A round trip is where the outcome's two timestamps —
+# `occurred_at` (in the world) and `recorded_at` (when we learned) — must both
+# survive strictly apart, and where the key-matches-the-fact invariant is
+# re-checked on the way back so a corrupted row fails loudly rather than skewing
+# a funnel.
+
+
+def test_an_outcome_survives_the_trip_to_the_row_and_back():
+    """Every column, both timestamps kept apart, and the whole object equal."""
+    outcome = an_application_outcome()
+    read_back = application_outcome_to_domain(application_outcome_to_row(outcome))
+    assert read_back == outcome
+    assert read_back.occurred_at != read_back.recorded_at
+
+
+def test_a_correction_outcome_round_trips_with_its_supersedes_link():
+    """A correction keys on the outcome it replaces, and that link must survive.
+
+    Its `outcome_key` is `correction:{supersedes_id}` rather than the kind, so the trip
+    has to carry `supersedes_id` and the reconstructed key must still match the fact.
+    """
+    original = an_application_outcome()
+    correction = an_application_outcome(
+        kind=OutcomeKind.OFFER_RECEIVED, supersedes_id=original.id,
+        status=OutcomeStatus.EFFECTIVE)
+    read_back = application_outcome_to_domain(application_outcome_to_row(correction))
+    assert read_back == correction
+    assert read_back.supersedes_id == original.id
+    assert read_back.is_correction
+
+
+def test_an_outcome_with_no_detail_reads_back_with_none():
+    """The optional free-text note is absent for most outcomes and must not become ''."""
+    outcome = an_application_outcome(detail=None)
+    read_back = application_outcome_to_domain(application_outcome_to_row(outcome))
+    assert read_back == outcome
+    assert read_back.detail is None
+
+
+def test_retracting_an_outcome_writes_onto_the_row_and_never_deletes_it():
+    """A retraction is a status flip at the same id — the mapper mutates the row in place.
+
+    `row is target` is what makes the repository an upsert of the one row rather than an
+    insert of a second, so the append-only history the phase promises is structural here.
+    """
+    row = application_outcome_to_row(an_application_outcome())
+    assert row.status is OutcomeStatus.EFFECTIVE
+    retracted = an_application_outcome(status=OutcomeStatus.RETRACTED)
+    updated = application_outcome_to_row(retracted, row)
+    assert updated is row
+    assert updated.status is OutcomeStatus.RETRACTED
+
+
+def test_a_stored_outcome_whose_key_no_longer_matches_is_refused_on_the_way_back():
+    """The key-matches-the-fact invariant is re-checked on read, beside the row that has it.
+
+    A row whose `outcome_key` drifted from its kind/occurred_at/supersedes_id must fail
+    here rather than being counted into a funnel it no longer honestly describes.
+    """
+    row = application_outcome_to_row(an_application_outcome())
+    row.outcome_key = "INTERVIEW:not-the-real-instant"
+    with pytest.raises(ValidationError):
+        application_outcome_to_domain(row)
+
+
+def test_a_role_classification_survives_the_trip_to_the_row_and_back():
+    """Every column, including the provenance that tells a machine guess from a correction."""
+    classification = a_role_classification()
+    read_back = role_classification_to_domain(role_classification_to_row(classification))
+    assert read_back == classification
+
+
+def test_an_unclassified_role_round_trips_as_none_never_a_catch_all():
+    """A title the rule could not place is honestly `None`, not a folded-in bucket.
+
+    The deterministic classifier may leave a role unclassified; that `None` must survive
+    the trip rather than being coalesced into some catch-all family a lossy mapper invents.
+    """
+    classification = a_role_classification(
+        role_family=None, provenance=RoleFamilyProvenance.DETERMINISTIC_TITLE)
+    read_back = role_classification_to_domain(role_classification_to_row(classification))
+    assert read_back == classification
+    assert read_back.role_family is None
+
+
+def test_correcting_a_classification_writes_onto_the_row_and_forces_updated_at():
+    """A manual correction advances `updated_at`; the mapper mutates the row in place.
+
+    `row is target` keeps the repository an upsert on the `(user_id, opportunity_id)` pair,
+    and `updated_at` is forced into the UPDATE so a correction at the insert instant is not
+    lost — the reason the freshly corrected row can surface first in `list_for_user`.
+    """
+    row = role_classification_to_row(a_role_classification())
+    assert row.provenance is RoleFamilyProvenance.DETERMINISTIC_TITLE
+    corrected = a_role_classification(
+        role_family=RoleFamily.DATA_AND_ANALYTICS,
+        provenance=RoleFamilyProvenance.MANUAL, updated_at=LATER)
+    updated = role_classification_to_row(corrected, row)
+    assert updated is row
+    assert updated.provenance is RoleFamilyProvenance.MANUAL
+    assert updated.role_family is RoleFamily.DATA_AND_ANALYTICS
+
+
+# PHASE15_MAPPERS_PART1
+
+
+def test_a_recommendation_survives_the_trip_with_its_evidence():
+    """Equality over the whole aggregate — a field added and forgotten fails right here.
+
+    "Evidence or nothing" is what the trip must preserve: a recommendation read back
+    without its citations would be exactly the ungrounded suggestion the phase forbids.
+    """
+    recommendation = a_career_recommendation()
+    read_back = career_recommendation_to_domain(
+        career_recommendation_to_row(recommendation))
+    assert read_back == recommendation
+    assert len(read_back.evidence) == 1
+
+
+def test_a_recommendation_carries_a_rate_and_a_timing_citation_through_the_trip():
+    """Two evidence shapes side by side: a rate (numerator/denominator) and a timing
+    (median_days). Each obeys the one-metric rule, and both must survive JSONB-free
+    columns as the exact shape written, ordinals and all."""
+    rate = a_recommendation_evidence(ordinal=0)
+    timing = a_recommendation_evidence(
+        ordinal=1, rate_kind=None, timing_kind=TimingKind.TIME_TO_INTERVIEW,
+        numerator=None, denominator=None, median_days=18.5,
+        detail="Data & Analytics : 18,5 jours jusqu'au premier entretien.")
+    recommendation = a_career_recommendation(evidence=(rate, timing))
+    read_back = career_recommendation_to_domain(
+        career_recommendation_to_row(recommendation))
+    assert read_back == recommendation
+    assert {item.ordinal for item in read_back.evidence} == {0, 1}
+
+
+def test_re_persisting_a_recommendation_reuses_the_evidence_rows_by_ordinal():
+    """The mapper reconciles children by `ordinal`, the natural key the derived id rests on.
+
+    A second pass onto the loaded row updates the evidence rows already there rather than
+    accreting duplicates, and an evidence item dropped from the domain object drops from
+    the collection — the same reconciliation the match-evaluation dimensions get.
+    """
+    two = a_career_recommendation(evidence=(
+        a_recommendation_evidence(ordinal=0),
+        a_recommendation_evidence(
+            ordinal=1, dimension_key=RoleFamily.SOFTWARE_ENGINEERING.value,
+            numerator=3, denominator=40, sample_size=40,
+            detail="Software Engineering : 3 réponses sur 40 candidatures.")))
+    row = career_recommendation_to_row(two)
+    assert len(row.evidence) == 2
+
+    one = a_career_recommendation(evidence=(a_recommendation_evidence(ordinal=0),))
+    updated = career_recommendation_to_row(one, row)
+    assert updated is row
+    assert [child.ordinal for child in updated.evidence] == [0]
+
+
+def test_a_proposal_survives_the_trip_with_its_change_re_validated():
+    """The typed change must round-trip through the JSONB column and re-validate.
+
+    Equality over the whole object, so a field added to `StrategyChangeProposal` and
+    forgotten fails here; the `search_profile_id` UUID inside the change has to survive
+    a column that has no UUID type.
+    """
+    proposal = a_strategy_change_proposal()
+    read_back = strategy_change_proposal_to_domain(
+        strategy_change_proposal_to_row(proposal))
+    assert read_back == proposal
+    assert read_back.change.target_ref == SEARCH_PROFILE
+
+
+def test_the_denormalised_target_and_kind_columns_equal_the_change():
+    """`target`/`kind` are indexed columns written from the same validated change as the
+    JSONB, so the two can never drift — asserted across a search edit and a policy edit."""
+    search = a_strategy_change_proposal()
+    search_row = strategy_change_proposal_to_row(search)
+    assert search_row.target is StrategyChangeTarget.SEARCH_PROFILE
+    assert search_row.kind is search.change.kind
+    assert search_row.change["kind"] == search.change.kind.value
+
+    policy_change = SetMinimumScoreChange(
+        application_policy_id=POLICY, minimum_overall_score=0.55,
+        before_minimum_overall_score=0.70)
+    policy = a_strategy_change_proposal(
+        change=policy_change, summary="Abaisser le seuil de score minimal.")
+    policy_row = strategy_change_proposal_to_row(policy)
+    assert policy_row.target is StrategyChangeTarget.APPLICATION_POLICY
+    assert policy_row.kind is policy_change.kind
+    assert policy_row.target_id == POLICY
+
+
+def test_approving_a_proposal_writes_onto_the_row_and_forces_updated_at():
+    """A confirm moves `status` off `PROPOSED`; the mapper must mutate the row in place.
+
+    `row is target` is what keeps the repository an upsert rather than an insert of a
+    second proposal, and `updated_at` is forced into the UPDATE so the transition is not
+    lost under a same-instant insert.
+    """
+    row = strategy_change_proposal_to_row(a_strategy_change_proposal())
+    assert row.status is StrategyChangeProposalStatus.PROPOSED
+    executed = a_strategy_change_proposal(status=StrategyChangeProposalStatus.EXECUTED,
+                                          updated_at=LATER)
+    updated = strategy_change_proposal_to_row(executed, row)
+    assert updated is row
+    assert updated.status is StrategyChangeProposalStatus.EXECUTED
+
+
+def test_a_stored_change_whose_kind_left_the_grammar_is_refused_on_the_way_back():
+    """JSONB accepts any shape, so the read-back re-validates against the closed union.
+
+    A payload whose `kind` is no longer a member must fail here, loudly, rather than reach
+    an executor branch that no longer exists and be applied as a half-understood edit.
+    """
+    row = strategy_change_proposal_to_row(a_strategy_change_proposal())
+    row.change = {"kind": "SET_EVERYTHING", "search_profile_id": str(SEARCH_PROFILE)}
+    with pytest.raises(ValidationError):
+        strategy_change_proposal_to_domain(row)
+
+
+def test_a_proposal_row_reconstructs_its_change_from_the_payload():
+    """The union is selected by the `kind` inside the JSONB, not by the column.
+
+    A row carrying a policy-opportunity-types payload comes back the right member with its
+    typed lists intact, which is what proves the mapper trusts the validated payload.
+    """
+    change = SetPolicyOpportunityTypesChange(
+        application_policy_id=POLICY,
+        allowed_opportunity_types=(OpportunityType.FULL_TIME, OpportunityType.INTERNSHIP),
+        before_allowed_opportunity_types=(OpportunityType.FULL_TIME,))
+    proposal = a_strategy_change_proposal(
+        change=change, summary="Autoriser les stages en plus des postes fixes.")
+    read_back = strategy_change_proposal_to_domain(
+        strategy_change_proposal_to_row(proposal))
+    assert isinstance(read_back.change, SetPolicyOpportunityTypesChange)
+    assert read_back.change.allowed_opportunity_types == (
+        OpportunityType.FULL_TIME, OpportunityType.INTERNSHIP)
+    assert read_back.is_sensitive
+
+
+def test_a_strategy_execution_survives_the_trip_to_the_row_and_back():
+    """The executor's audit, including the observed version and the result handle."""
+    execution = a_strategy_change_execution()
+    read_back = strategy_change_execution_to_domain(
+        strategy_change_execution_to_row(execution))
+    assert read_back == execution
+    assert read_back.succeeded
+
+
+def test_a_rejected_execution_reads_back_with_its_absent_columns_none():
+    """A refused-at-revalidation attempt may carry no result and no observed version, and
+    those absent columns must read back as `None` rather than empty strings."""
+    execution = a_strategy_change_execution(
+        outcome=StrategyChangeExecutionOutcome.REJECTED,
+        observed_target_version=None, detail=None, result_ref=None)
+    read_back = strategy_change_execution_to_domain(
+        strategy_change_execution_to_row(execution))
+    assert read_back == execution
+    assert not read_back.succeeded

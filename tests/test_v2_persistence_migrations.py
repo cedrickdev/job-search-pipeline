@@ -61,11 +61,14 @@ V2_TABLES = frozenset({
     "chat_action_executions",
     "interview_sessions", "interview_questions", "interview_answers",
     "interview_answer_evaluations", "interview_session_summaries",
+    "application_outcomes", "role_classifications",
+    "career_recommendations", "career_recommendation_evidence",
+    "strategy_change_proposals", "strategy_change_executions",
 })
 
 # The revision `alembic upgrade head` is expected to stop at. A revision added
 # without updating this line is a revision nobody decided to ship.
-HEAD_REVISION = "0013"
+HEAD_REVISION = "0014"
 
 # Every `geography(Point,4326)` column, by the table that holds it. One radius
 # query has to run against any of them, so they are declared identically and

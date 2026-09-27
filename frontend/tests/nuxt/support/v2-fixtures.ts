@@ -14,6 +14,8 @@ import type {
   ApplicationEvent,
   ApplicationEventList,
   ApplicationList,
+  ApplicationOutcome,
+  ApplicationOutcomeList,
   CandidateClaim,
   CandidateDocument,
   CandidateDocumentList,
@@ -21,6 +23,9 @@ import type {
   CandidateEvidenceList,
   CandidateProfile,
   CandidateProfileDraft,
+  CareerAnalytics,
+  CareerRecommendation,
+  CareerRecommendationList,
   ChatActionExecution,
   ChatActionProposal,
   ChatActionProposalList,
@@ -54,11 +59,16 @@ import type {
   OnboardingState,
   OpportunityGeoItem,
   OpportunityGeoResponse,
+  RecommendationEvidence,
   SearchProfile,
   SearchProfileDraft,
   SessionReadiness,
   SessionWindow,
   SignedIn,
+  StrategyChangeExecution,
+  StrategyChangeProposal,
+  StrategyChangeProposalDetail,
+  StrategyChangeProposalList,
 } from '~/types/v2'
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
@@ -81,6 +91,10 @@ const QUESTION_ID = '2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b'
 const ANSWER_ID = '3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c'
 const INTERVIEW_EVALUATION_ID = '4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d'
 const SUMMARY_ID = '5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e'
+const OUTCOME_ID = '6f6f6f6f-6f6f-4f6f-8f6f-6f6f6f6f6f6f'
+const RECOMMENDATION_ID = '7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a7a'
+const STRATEGY_PROPOSAL_ID = '8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b'
+const STRATEGY_EXECUTION_ID = '9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c9c'
 
 export function account(overrides: Partial<Account> = {}): Account {
   return {
@@ -859,6 +873,213 @@ export function interviewDetail(
     answers: [],
     evaluations: [],
     summary: null,
+    ...overrides,
+  }
+}
+
+// --- Phase 15: outcomes, analytics, recommendations and strategy proposals ------------
+//
+// The default outcome is an effective ACKNOWLEDGED milestone — the shape the timeline offers correct
+// and retract on. A superseded or retracted row is written by overriding `status`/`is_effective`. The
+// analytics default is a small but matured, non-empty funnel, so a test reads real rates rather than
+// the empty state (written with `window.is_empty`). The recommendation cites one rate as its evidence
+// and carries nothing it can execute; the strategy proposal defaults to a non-sensitive search edit,
+// with `is_sensitive: true` written for the loosening case the approval gate treats specially. No real
+// personal data — every value is invented.
+
+/** One recorded milestone. The default is an effective ACKNOWLEDGED outcome, open to correction. */
+export function applicationOutcome(
+  overrides: Partial<ApplicationOutcome> = {}): ApplicationOutcome {
+  return {
+    id: OUTCOME_ID,
+    application_id: APPLICATION_ID,
+    kind: 'ACKNOWLEDGED',
+    source: 'MANUAL_USER',
+    status: 'EFFECTIVE',
+    occurred_at: '2026-03-05T09:00:00Z',
+    recorded_at: '2026-03-05T09:05:00Z',
+    supersedes_id: null,
+    detail: null,
+    is_effective: true,
+    is_terminal: false,
+    is_correction: false,
+    ...overrides,
+  }
+}
+
+/** One application's outcomes, oldest first, wrapped. */
+export function applicationOutcomeList(
+  outcomes: ApplicationOutcome[] = [applicationOutcome()],
+): ApplicationOutcomeList {
+  return { outcomes }
+}
+/**
+ * The funnel report. The default is a small, matured funnel — 10 submitted narrowing to 1 accepted —
+ * so a test reads real rates and timings rather than the empty state. The empty state is written by
+ * overriding `window`/`funnel` with `is_empty: true`.
+ */
+export function careerAnalytics(overrides: Partial<CareerAnalytics> = {}): CareerAnalytics {
+  const window = {
+    earliest_applied_at: '2026-02-01T09:00:00Z',
+    latest_applied_at: '2026-03-01T09:00:00Z',
+    is_empty: false,
+  }
+  return {
+    analytics_version: 'career-analytics/1.0',
+    window,
+    funnel: {
+      window,
+      censoring: {
+        as_of: '2026-03-20T09:00:00Z',
+        observation_horizon_days: 30,
+        mature_count: 10,
+        censored_count: 2,
+        total_count: 12,
+      },
+      stages: [
+        { stage: 'SUBMITTED', applications: 10 },
+        { stage: 'ACKNOWLEDGED', applications: 6 },
+        { stage: 'SCREEN', applications: 4 },
+        { stage: 'ASSESSMENT', applications: 3 },
+        { stage: 'INTERVIEW', applications: 2 },
+        { stage: 'OFFER', applications: 1 },
+        { stage: 'ACCEPTED', applications: 1 },
+      ],
+    },
+    rates: [
+      { kind: 'RESPONSE', numerator: 6, denominator: 10, rate: 0.6, rate_percent: 60, sample_size: 10 },
+      { kind: 'INTERVIEW_CONVERSION', numerator: 2, denominator: 10, rate: 0.2, rate_percent: 20, sample_size: 10 },
+      { kind: 'OFFER_CONVERSION', numerator: 1, denominator: 10, rate: 0.1, rate_percent: 10, sample_size: 10 },
+      { kind: 'ACCEPTANCE', numerator: 1, denominator: 1, rate: 1, rate_percent: 100, sample_size: 1 },
+    ],
+    timings: [
+      { kind: 'TIME_TO_FIRST_RESPONSE', median_days: 4, p25_days: 2, p75_days: 7, sample_size: 6 },
+      { kind: 'TIME_TO_INTERVIEW', median_days: 12, p25_days: 9, p75_days: 15, sample_size: 2 },
+      { kind: 'TIME_TO_OFFER', median_days: 21, p25_days: 21, p75_days: 21, sample_size: 1 },
+      { kind: 'TIME_TO_DECISION', median_days: 28, p25_days: 28, p75_days: 28, sample_size: 1 },
+    ],
+    breakdowns: [
+      {
+        dimension: 'ROLE_FAMILY',
+        cells: [
+          {
+            dimension: 'ROLE_FAMILY',
+            key: 'SOFTWARE_ENGINEERING',
+            applications: 8,
+            rates: [
+              { kind: 'RESPONSE', numerator: 5, denominator: 8, rate: 0.625, rate_percent: 63, sample_size: 8 },
+            ],
+          },
+        ],
+      },
+    ],
+    computed_at: '2026-03-20T09:00:00Z',
+    ...overrides,
+  }
+}
+/** One cited metric. The default cites the response rate — the auditable number behind advice. */
+export function recommendationEvidence(
+  overrides: Partial<RecommendationEvidence> = {}): RecommendationEvidence {
+  return {
+    ordinal: 0,
+    dimension: 'ROLE_FAMILY',
+    dimension_key: 'SOFTWARE_ENGINEERING',
+    rate_kind: 'RESPONSE',
+    timing_kind: null,
+    numerator: 5,
+    denominator: 8,
+    median_days: null,
+    sample_size: 8,
+    detail: 'Software engineering roles responded at 63% (5/8).',
+    ...overrides,
+  }
+}
+
+/** One evidence-backed suggestion — advice, never a lever. The default is HIGH confidence. */
+export function careerRecommendation(
+  overrides: Partial<CareerRecommendation> = {}): CareerRecommendation {
+  return {
+    id: RECOMMENDATION_ID,
+    kind: 'PRIORITIZE_ROLE_FAMILY',
+    analytics_version: 'career-analytics/1.0',
+    summary: 'Lean into software engineering roles — they respond best.',
+    detail: 'These roles answer at more than double the rate of your other applications.',
+    evidence: [recommendationEvidence()],
+    confidence: 'HIGH',
+    min_evidence_sample_size: 8,
+    generator_key: 'deterministic-recommendations/1',
+    llm_run_id: null,
+    created_at: '2026-03-20T09:10:00Z',
+    ...overrides,
+  }
+}
+
+/** This account's recommendations, most recent first, wrapped. */
+export function careerRecommendationList(
+  recommendations: CareerRecommendation[] = [careerRecommendation()],
+): CareerRecommendationList {
+  return { recommendations }
+}
+/**
+ * One reviewable change. The default is a non-sensitive search edit — widening keywords — in the open
+ * `PROPOSED` state the queue acts on. The loosening case the gate treats specially is written with
+ * `is_sensitive: true` (e.g. a SET_MINIMUM_SCORE that lowers the floor); a terminal, settled card is
+ * written by overriding `status`/`is_open`.
+ */
+export function strategyProposal(
+  overrides: Partial<StrategyChangeProposal> = {}): StrategyChangeProposal {
+  return {
+    id: STRATEGY_PROPOSAL_ID,
+    target: 'SEARCH_PROFILE',
+    target_id: SEARCH_ID,
+    change_kind: 'SET_SEARCH_KEYWORDS',
+    summary: 'Add "platform engineer" to your backend search.',
+    status: 'PROPOSED',
+    is_open: true,
+    is_sensitive: false,
+    field_changes: [
+      { field: 'title_keywords', before: 'backend', after: 'backend, platform engineer' },
+    ],
+    target_version: '2026-03-01T09:25:00Z',
+    source_recommendation_id: RECOMMENDATION_ID,
+    generator_key: 'deterministic-strategy/1',
+    llm_run_id: null,
+    created_at: '2026-03-20T09:15:00Z',
+    updated_at: '2026-03-20T09:15:00Z',
+    expires_at: '2026-03-27T09:15:00Z',
+    ...overrides,
+  }
+}
+
+/** A set of proposals — the pending queue or the full history, wrapped. */
+export function strategyProposalList(
+  proposals: StrategyChangeProposal[] = [strategyProposal()],
+): StrategyChangeProposalList {
+  return { proposals }
+}
+
+/** The record of one approval attempt. The default SUCCEEDED; override `outcome`/`detail` otherwise. */
+export function strategyExecution(
+  overrides: Partial<StrategyChangeExecution> = {}): StrategyChangeExecution {
+  return {
+    id: STRATEGY_EXECUTION_ID,
+    proposal_id: STRATEGY_PROPOSAL_ID,
+    outcome: 'SUCCEEDED',
+    succeeded: true,
+    observed_target_version: '2026-03-01T09:25:00Z',
+    detail: null,
+    result_ref: null,
+    created_at: '2026-03-20T09:20:00Z',
+    ...overrides,
+  }
+}
+
+/** One proposal paired with its execution record, if it has been acted on. */
+export function strategyProposalDetail(
+  overrides: Partial<StrategyChangeProposalDetail> = {}): StrategyChangeProposalDetail {
+  return {
+    proposal: strategyProposal(),
+    execution: null,
     ...overrides,
   }
 }

@@ -32,5 +32,10 @@ The modules, in dependency order:
 - `execution_gate` — the deterministic gate that authorizes a submission;
 - `chat` — the career chat's typed action grammar and its persisted turns;
 - `interview` — the adaptive interview simulator: sessions, questions, answers,
-  evaluations and deterministic, app-derived readiness.
+  evaluations and deterministic, app-derived readiness;
+- `outcome` — real-world hiring-process milestones, kept apart from execution state;
+- `role` — the deterministic role-family classification and its provenance;
+- `analytics` — the deterministic funnel, conversion, timing and dimension metrics;
+- `recommendation` — evidence-backed, zero-authority suggestions drawn from the metrics;
+- `strategy_change` — the spine's only mutation: typed, approved edits to a search or policy.
 """

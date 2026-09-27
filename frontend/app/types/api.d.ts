@@ -607,6 +607,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/applications/{application_id}/outcomes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Outcomes
+         * @description One application's outcomes oldest-first — every status, so corrections stay in the record.
+         *
+         *     Ownership is checked first, so a foreign or missing application is a 404 rather than an empty
+         *     list a caller could not tell from "no outcomes yet". Superseded and retracted rows travel
+         *     alongside effective ones: the timeline keeps the whole history, and only analytics filters to
+         *     effective rows when it counts.
+         */
+        get: operations["list_outcomes_api_v2_applications__application_id__outcomes_get"];
+        put?: never;
+        /**
+         * Record Outcome
+         * @description Record one real-world milestone against an application (§46, §81).
+         *
+         *     201, because it records an outcome. Idempotent by the outcome's derived id: a double-clicked
+         *     "mark as interviewed" collapses onto one row, while two genuine rounds on different days stay
+         *     two. The application is loaded owner-first, so a foreign or missing one is a 404
+         *     (`application_not_found`) rather than a write. This can never move the application's execution
+         *     state — a `REJECTED` outcome leaves the Phase 12 lifecycle untouched.
+         */
+        post: operations["record_outcome_api_v2_applications__application_id__outcomes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/applications/{application_id}/prepare": {
         parameters: {
             query?: never;
@@ -744,6 +779,193 @@ export interface paths {
         get: operations["read_session_api_v2_auth_session_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/career/analytics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Career Analytics
+         * @description This account's whole funnel report as of now, under one maturity horizon (§13-25).
+         *
+         *     A point-in-time read: the funnel, the four named rates, the four timings and the
+         *     role/source/type breakdowns, each self-describing and all over one window. Conversion rates
+         *     read against *matured* applications, so a fresh send that has not heard back is censored, never
+         *     counted as a rejection. `horizon_days` overrides the default maturity window when given.
+         */
+        get: operations["career_analytics_api_v2_career_analytics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/career/recommendations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Recommendations
+         * @description This account's recommendations, most recently created first — a surface to review.
+         *
+         *     A read of the write-once store: past observations, each with the evidence and the
+         *     `analytics_version` that justified it, so a suggestion is never silently re-read against
+         *     metrics computed by a newer recipe.
+         */
+        get: operations["list_recommendations_api_v2_career_recommendations_get"];
+        put?: never;
+        /**
+         * Generate Recommendations
+         * @description Compute the report, derive evidence-backed suggestions from it, persist and return them.
+         *
+         *     201, because it adds fresh observations to the write-once store rather than mutating a prior
+         *     set — a re-run is a new snapshot, not an edit. Each suggestion cites the rates it compared,
+         *     every cited slice clears the minimum sample size, and none carries authority to change a search
+         *     or a policy: that is the strategy-proposal step the user approves explicitly (§26-33).
+         */
+        post: operations["generate_recommendations_api_v2_career_recommendations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/career/strategy-proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Pending Proposals
+         * @description This account's still-open proposals, most recently updated first — the review queue.
+         */
+        get: operations["list_pending_proposals_api_v2_career_strategy_proposals_get"];
+        put?: never;
+        /**
+         * Propose Strategy Change
+         * @description Draft a proposal for a typed change to a search or a policy — writing nothing yet (§37-39).
+         *
+         *     201, because it creates a proposal. The typed `change` is validated at the boundary, so a kind
+         *     the platform does not offer is a 422. The live target is read once to capture its version as
+         *     the approval precondition; a target that does not exist for this account is a 409
+         *     (`strategy_target_not_found`). The proposal is born open and touches nothing on the target.
+         */
+        post: operations["propose_strategy_change_api_v2_career_strategy_proposals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/career/strategy-proposals/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Proposal History
+         * @description This account's proposals in every status — a surface to review what was done.
+         *
+         *     Declared before `/{proposal_id}` so the literal `history` is never parsed as a proposal id.
+         */
+        get: operations["list_proposal_history_api_v2_career_strategy_proposals_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/career/strategy-proposals/{proposal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Proposal
+         * @description One proposal with its execution record, if it has been acted on (§44-45).
+         *
+         *     404 (`proposal_not_found`) for "no such proposal" and "not yours" alike, so an id cannot be
+         *     probed. A `PROPOSED`, `DISMISSED` or `EXPIRED` proposal carries a null `execution`; an
+         *     `EXECUTED`/`REJECTED`/`FAILED` one carries the audit of the attempt that closed it — pairing
+         *     the two here avoids a second round-trip and an "execution not found" code.
+         */
+        get: operations["read_proposal_api_v2_career_strategy_proposals__proposal_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/career/strategy-proposals/{proposal_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Proposal
+         * @description Apply one confirmed proposal through its owning service, returning the audited outcome.
+         *
+         *     Idempotent by the proposal-derived execution id: a double-confirm returns the recorded
+         *     execution rather than applying the change twice. A proposal no longer open is a 409
+         *     (`proposal_not_open`); one lapsed is a 409 (`proposal_expired`). A change that loosens a safety
+         *     brake is a 409 (`sensitive_confirmation_required`) unless `confirm_sensitive` is set, and the
+         *     proposal stays open so a second confirmed approval can proceed. The live target is reloaded: a
+         *     vanished one is a 409 (`strategy_target_not_found`) and a drifted version a 409
+         *     (`strategy_proposal_stale`), each recorded as a `REJECTED` audit, so a stale before/after never
+         *     clobbers newer state. Only then is the change applied through the service that owns the edit.
+         */
+        post: operations["approve_proposal_api_v2_career_strategy_proposals__proposal_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/career/strategy-proposals/{proposal_id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Proposal
+         * @description Decline an open proposal without running it — `PROPOSED` → `DISMISSED`.
+         *
+         *     Writes no execution because nothing was attempted; it only advances the status so the proposal
+         *     leaves the open set and cannot later be approved. A foreign or missing id is a 404
+         *     (`proposal_not_found`); one no longer open is a 409 (`proposal_not_open`).
+         */
+        post: operations["dismiss_proposal_api_v2_career_strategy_proposals__proposal_id__dismiss_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1727,6 +1949,119 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/opportunities/{opportunity_id}/role-classification": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Role Classification
+         * @description This account's classification of one opportunity, or 404 if it has never classified it.
+         *
+         *     The read is keyed by (this account, opportunity), so an empty result means only "not
+         *     classified yet" — there is no foreign row to probe. A 404 (`role_classification_not_found`)
+         *     is returned rather than calling `.of(None)`.
+         */
+        get: operations["read_role_classification_api_v2_opportunities__opportunity_id__role_classification_get"];
+        /**
+         * Set Role Classification
+         * @description Record a human's explicit role family, outranking the rule from here on (§18).
+         *
+         *     The body names a family — a manual classification cannot be unclassified — and the row is
+         *     stamped `MANUAL`, so a later deterministic backfill leaves it untouched. The first `created_at`
+         *     is preserved across the correction. A missing posting is a 404 (`opportunity_not_found`).
+         */
+        put: operations["set_role_classification_api_v2_opportunities__opportunity_id__role_classification_put"];
+        /**
+         * Classify Opportunity
+         * @description Record the deterministic family of an opportunity's title, sparing a manual one (§18).
+         *
+         *     Idempotent and safe to repeat: the pure title rule assigns a family (or the honest
+         *     unclassified `None`), preserving the first `created_at`. If this account already corrected the
+         *     role by hand, that manual classification is returned unchanged — the backfill never overwrites
+         *     a human's choice. A missing posting is a 404 (`opportunity_not_found`).
+         */
+        post: operations["classify_opportunity_api_v2_opportunities__opportunity_id__role_classification_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/outcomes/{outcome_id}/correct": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Correct Outcome
+         * @description Supersede a mistaken outcome with a corrected one (§9, §64).
+         *
+         *     201, because the correction is a new outcome pointing back at the predecessor; the predecessor
+         *     is flipped to `SUPERSEDED`, never deleted. The predecessor must still be effective — correcting
+         *     an already superseded or retracted outcome is a 409 (`outcome_not_effective`), which also makes
+         *     the operation single-shot. A foreign or missing outcome is a 404.
+         */
+        post: operations["correct_outcome_api_v2_outcomes__outcome_id__correct_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/outcomes/{outcome_id}/retract": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retract Outcome
+         * @description Take back an outcome recorded in error — a status flip to `RETRACTED` (§64).
+         *
+         *     The row survives so "we believed this, then took it back" stays auditable. The outcome must
+         *     still be effective (a 409 `outcome_not_effective` otherwise), and a foreign or missing one is a
+         *     404. No execution state is touched.
+         */
+        post: operations["retract_outcome_api_v2_outcomes__outcome_id__retract_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/role-classifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Role Classifications
+         * @description This account's classifications, most recently updated first — a surface to review.
+         *
+         *     Declared before the `/opportunities/{opportunity_id}/role-classification` routes so the
+         *     literal plural path is never confused with a per-opportunity one.
+         */
+        get: operations["list_role_classifications_api_v2_role_classifications_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/settings/llm/connections": {
         parameters: {
             query?: never;
@@ -2041,6 +2376,56 @@ export interface components {
             applications: components["schemas"]["ApplicationResponse"][];
         };
         /**
+         * ApplicationOutcomeListResponse
+         * @description One application's outcomes oldest-first — every status, so a timeline keeps corrections.
+         */
+        ApplicationOutcomeListResponse: {
+            /** Outcomes */
+            outcomes: components["schemas"]["ApplicationOutcomeResponse"][];
+        };
+        /**
+         * ApplicationOutcomeResponse
+         * @description One recorded milestone in an application's hiring process — never its execution state.
+         *
+         *     `is_effective`/`is_terminal`/`is_correction` are surfaced so a timeline need not re-derive
+         *     them. There is no `user_id`: the owner is always the caller.
+         */
+        ApplicationOutcomeResponse: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /** Detail */
+            detail: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Correction */
+            is_correction: boolean;
+            /** Is Effective */
+            is_effective: boolean;
+            /** Is Terminal */
+            is_terminal: boolean;
+            kind: components["schemas"]["OutcomeKind"];
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /**
+             * Recorded At
+             * Format: date-time
+             */
+            recorded_at: string;
+            source: components["schemas"]["OutcomeSource"];
+            status: components["schemas"]["OutcomeStatus"];
+            /** Supersedes Id */
+            supersedes_id: string | null;
+        };
+        /**
          * ApplicationResponse
          * @description One application's current state, target and pinned materials.
          *
@@ -2123,6 +2508,22 @@ export interface components {
              * @enum {string}
              */
             kind: "APPROVE_APPLICATION";
+        };
+        /**
+         * ApproveStrategyChangeRequest
+         * @description Confirm a proposal for execution, optionally clearing a sensitive-change second gate (§43).
+         *
+         *     `confirm_sensitive` defaults to `False`: a proposal that loosens a safety brake (widening what
+         *     the platform may apply to, raising a cap, lowering the score floor) is refused with
+         *     `SENSITIVE_CONFIRMATION_REQUIRED` unless the caller sets this, so a loosening edit always costs
+         *     a deliberate second acknowledgement. A non-sensitive proposal ignores it.
+         */
+        ApproveStrategyChangeRequest: {
+            /**
+             * Confirm Sensitive
+             * @default false
+             */
+            confirm_sensitive: boolean;
         };
         /**
          * AssessedOpportunityResponse
@@ -2427,6 +2828,88 @@ export interface components {
              * Format: uuid
              */
             user_id: string;
+        };
+        /**
+         * CareerAnalyticsResponse
+         * @description The whole self-describing report: funnel, rates, timings, breakdowns (§24, §49-52).
+         *
+         *     `analytics_version` pins which computation produced these figures, so a stored recommendation
+         *     can be read against the very report that justified it. There is no `user_id`: the report is
+         *     always the caller's. `computed_at` is when the snapshot was taken — the numbers are a
+         *     point-in-time read of an ever-moving process, not a durable record.
+         */
+        CareerAnalyticsResponse: {
+            /** Analytics Version */
+            analytics_version: string;
+            /** Breakdowns */
+            breakdowns: components["schemas"]["DimensionBreakdownResponse"][];
+            /**
+             * Computed At
+             * Format: date-time
+             */
+            computed_at: string;
+            funnel: components["schemas"]["CareerFunnelResponse"];
+            /** Rates */
+            rates: components["schemas"]["ConversionRateResponse"][];
+            /** Timings */
+            timings: components["schemas"]["TimingStatResponse"][];
+            window: components["schemas"]["ObservationWindowResponse"];
+        };
+        /**
+         * CareerFunnelResponse
+         * @description The submitted→accepted funnel with its window and maturity censoring (§25-27, §51).
+         */
+        CareerFunnelResponse: {
+            censoring: components["schemas"]["MaturityCensoringResponse"];
+            /** Stages */
+            stages: components["schemas"]["FunnelStageCountResponse"][];
+            window: components["schemas"]["ObservationWindowResponse"];
+        };
+        /**
+         * CareerRecommendationListResponse
+         * @description This account's recommendations, most recent first — the surface a user reviews.
+         */
+        CareerRecommendationListResponse: {
+            /** Recommendations */
+            recommendations: components["schemas"]["CareerRecommendationResponse"][];
+        };
+        /**
+         * CareerRecommendationResponse
+         * @description An evidence-backed suggestion — and nothing it can execute (§26-33).
+         *
+         *     `confidence` and `min_evidence_sample_size` are derived properties, never stored, surfaced
+         *     so a UI shows how much evidence stands behind the suggestion without recomputing it.
+         *     `analytics_version` pins the report it was drawn from. There is no `user_id`, and this object
+         *     carries no target profile, policy or execution: turning it into a change is a
+         *     `StrategyChangeProposal` the user approves explicitly.
+         */
+        CareerRecommendationResponse: {
+            /** Analytics Version */
+            analytics_version: string;
+            confidence: components["schemas"]["RecommendationConfidence"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Detail */
+            detail: string | null;
+            /** Evidence */
+            evidence: components["schemas"]["RecommendationEvidenceResponse"][];
+            /** Generator Key */
+            generator_key: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            kind: components["schemas"]["RecommendationKind"];
+            /** Llm Run Id */
+            llm_run_id: string | null;
+            /** Min Evidence Sample Size */
+            min_evidence_sample_size: number;
+            /** Summary */
+            summary: string;
         };
         /**
          * CareerSiteKind
@@ -3049,6 +3532,44 @@ export interface components {
          */
         ConversationScope: "GLOBAL" | "OPPORTUNITY" | "APPLICATION" | "COMPANY" | "SEARCH_PROFILE";
         /**
+         * ConversionRateResponse
+         * @description One conversion rate as a fraction of matured applications (§28-31).
+         *
+         *     `rate` is null when the denominator is zero — an undefined rate is not zero. `rate_percent`
+         *     is the same figure rounded for display, and `sample_size` is the denominator so a surface can
+         *     show how much evidence stands behind the number.
+         */
+        ConversionRateResponse: {
+            /** Denominator */
+            denominator: number;
+            kind: components["schemas"]["RateKind"];
+            /** Numerator */
+            numerator: number;
+            /** Rate */
+            rate: number | null;
+            /** Rate Percent */
+            rate_percent: number | null;
+            /** Sample Size */
+            sample_size: number;
+        };
+        /**
+         * CorrectOutcomeRequest
+         * @description Supersede a mistaken outcome with a corrected one (§9, §64).
+         *
+         *     Names the corrected `kind` and `occurred_at`; the predecessor is the path's outcome, and the
+         *     correction points back at it. `occurred_at` must be timezone-aware.
+         */
+        CorrectOutcomeRequest: {
+            /** Detail */
+            detail?: string | null;
+            kind: components["schemas"]["OutcomeKind"];
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+        };
+        /**
          * CountrySearchArea
          * @description An entire country.
          */
@@ -3239,6 +3760,32 @@ export interface components {
          */
         DeterminationSource: "DETERMINISTIC_RULE" | "COUNTRY_PACK_RULE" | "CANDIDATE_DECLARATION" | "HUMAN_REVIEW" | "LLM_EXTRACTION";
         /**
+         * DimensionBreakdownResponse
+         * @description Every slice of the funnel along one dimension — the raw material a recommendation cites.
+         */
+        DimensionBreakdownResponse: {
+            /** Cells */
+            cells: components["schemas"]["DimensionCellResponse"][];
+            dimension: components["schemas"]["DimensionKind"];
+        };
+        /**
+         * DimensionCellResponse
+         * @description One slice of a breakdown — e.g. one role family or one source — with its rates (§35-38).
+         *
+         *     `key` is null for the bucket of applications that have no value on the dimension (an
+         *     unclassified role, say); it is never an empty string. `rates` holds the same rate kinds the
+         *     top-level report does, recomputed within the slice.
+         */
+        DimensionCellResponse: {
+            /** Applications */
+            applications: number;
+            dimension: components["schemas"]["DimensionKind"];
+            /** Key */
+            key: string | null;
+            /** Rates */
+            rates: components["schemas"]["ConversionRateResponse"][];
+        };
+        /**
          * DimensionEvaluationResponse
          * @description One axis of one answer's grade, or an honest "not assessed".
          *
@@ -3253,6 +3800,21 @@ export interface components {
             score: number | null;
             status: components["schemas"]["EvaluationStatus"];
         };
+        /**
+         * DimensionKind
+         * @description The axes the funnel can be sliced along — the closed set of breakdown dimensions (§18-21).
+         *
+         *     Each answers "does my funnel differ *by* …": `ROLE_FAMILY` (§18, the deterministic
+         *     `RoleFamily` a posting title classifies to), `SOURCE` (§20, which board or channel the
+         *     opportunity came from), `OPPORTUNITY_TYPE` (§19, student job vs internship vs permanent),
+         *     and `DOCUMENT_STRATEGY` (§21, the pinned document version's provenance — its generator,
+         *     prompt version and language, grouped by exact version, never by parsing prose). A cell
+         *     whose dimension value is unknown keeps a `None` key rather than a catch-all bucket, the
+         *     same discipline `RoleFamily` keeps: an honest gap beats a lie that averages everything
+         *     that failed to classify.
+         * @enum {string}
+         */
+        DimensionKind: "ROLE_FAMILY" | "SOURCE" | "OPPORTUNITY_TYPE" | "DOCUMENT_STRATEGY";
         /**
          * DimensionScoreResponse
          * @description One axis of a match, on both scales, with the reasons behind it.
@@ -3396,9 +3958,16 @@ export interface components {
          *     be constructed without at least one evidence id (`Field(min_length=1)`). The
          *     guard's job is the harder question the type cannot answer — whether the cited
          *     evidence *exists* (`UNKNOWN_EVIDENCE`) and whether the *words* are supported.
+         *
+         *     `MISATTRIBUTED_TO_CANDIDATE` is the one code where the offending fact is real:
+         *     an interview question may name a skill or number the *posting* states, but must
+         *     not pin it on the candidate as their own experience unless the candidate's
+         *     evidence backs it too. It is raised by `InterviewCoachingGuard.review_question`
+         *     (§10-17), never on a résumé or cover letter, where every line is already
+         *     candidate-scoped by construction.
          * @enum {string}
          */
-        DocumentViolationCode: "UNKNOWN_EVIDENCE" | "INVENTED_NUMBER" | "UNSUPPORTED_SKILL" | "INVENTED_TERM" | "ALTERED_IDENTITY";
+        DocumentViolationCode: "UNKNOWN_EVIDENCE" | "INVENTED_NUMBER" | "UNSUPPORTED_SKILL" | "INVENTED_TERM" | "ALTERED_IDENTITY" | "MISATTRIBUTED_TO_CANDIDATE";
         /**
          * EligibilityCheckResponse
          * @description One gate, evaluated — with who decided it and on what authority.
@@ -3589,6 +4158,42 @@ export interface components {
             observed_at: string | null;
             /** Source Url */
             source_url: string | null;
+        };
+        /**
+         * FieldChangeResponse
+         * @description One field a proposal moves, rendered before → after for a human to read (§37).
+         */
+        FieldChangeResponse: {
+            /** After */
+            after: string;
+            /** Before */
+            before: string;
+            /** Field */
+            field: string;
+        };
+        /**
+         * FunnelStage
+         * @description The ordered milestones an application passes through, coarsened for counting (§13, §22).
+         *
+         *     A *cumulative* ladder, not the raw outcome vocabulary: an application is counted at a
+         *     stage when its furthest effective outcome reaches that stage or beyond, so reaching
+         *     `OFFER` implies it was counted at every shallower stage too. `SUBMITTED` is the base —
+         *     every application in the funnel has been submitted — and the stages climb from there.
+         *     The negative terminals (`REJECTED`, `WITHDRAWN`, a declined offer) are deliberately *not*
+         *     stages: they can strike at any depth and say nothing about how far the application got,
+         *     so they live in the maturity/censoring axis, not the progress axis. Order is authority
+         *     here, so it is pinned in `_STAGE_ORDER`, never inferred from the string values.
+         * @enum {string}
+         */
+        FunnelStage: "SUBMITTED" | "ACKNOWLEDGED" | "SCREEN" | "ASSESSMENT" | "INTERVIEW" | "OFFER" | "ACCEPTED";
+        /**
+         * FunnelStageCountResponse
+         * @description How many applications reached one funnel stage (each stage counts the furthest reached).
+         */
+        FunnelStageCountResponse: {
+            /** Applications */
+            applications: number;
+            stage: components["schemas"]["FunnelStage"];
         };
         /**
          * GenerateCoverLetterAction
@@ -4332,6 +4937,28 @@ export interface components {
             radius_index: number;
         };
         /**
+         * MaturityCensoringResponse
+         * @description How many applications are old enough to have plausibly resolved, and how many are not.
+         *
+         *     Conversion rates read against `mature_count`, not `total_count`: a week-old application that
+         *     has not heard back is censored, not a rejection, so a rate is not deflated by fresh sends.
+         */
+        MaturityCensoringResponse: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** Censored Count */
+            censored_count: number;
+            /** Mature Count */
+            mature_count: number;
+            /** Observation Horizon Days */
+            observation_horizon_days: number;
+            /** Total Count */
+            total_count: number;
+        };
+        /**
          * NavigateAction
          * @description Point the client at a screen — a hint that mutates nothing on the server.
          */
@@ -4360,6 +4987,21 @@ export interface components {
         NotesBody: {
             /** Notes Md */
             notes_md: string;
+        };
+        /**
+         * ObservationWindowResponse
+         * @description The span of application dates a report was computed over — both ends may be absent.
+         *
+         *     `is_empty` is surfaced so a surface can render "no applications yet" without inferring it
+         *     from two nulls.
+         */
+        ObservationWindowResponse: {
+            /** Earliest Applied At */
+            earliest_applied_at: string | null;
+            /** Is Empty */
+            is_empty: boolean;
+            /** Latest Applied At */
+            latest_applied_at: string | null;
         };
         /**
          * OnboardingStateResponse
@@ -4494,6 +5136,66 @@ export interface components {
          */
         OpportunityType: "FULL_TIME" | "PART_TIME" | "STUDENT_JOB" | "INTERNSHIP" | "APPRENTICESHIP" | "WORK_STUDY" | "GRADUATE" | "TEMPORARY" | "FREELANCE";
         /**
+         * OutcomeKind
+         * @description The closed vocabulary of real-world hiring-process milestones (§3-5).
+         *
+         *     These are the events that happen *after* the platform has done its job of applying —
+         *     the employer's and the candidate's moves through the funnel — and they are the axis
+         *     every Phase 15 metric is measured along. The vocabulary is deliberately closed and
+         *     country-neutral: a board that calls a screen an "entretien téléphonique" still records
+         *     a `SCREEN`, and a member a provider invents fails to parse rather than smuggling a new
+         *     stage into the funnel.
+         *
+         *     - `ACKNOWLEDGED` — the employer confirmed the application was received;
+         *     - `SCREEN` — a recruiter or phone screen took place (repeatable);
+         *     - `ASSESSMENT` — a take-home, online test or exercise (repeatable);
+         *     - `INTERVIEW` — an interview round took place (repeatable — a loop is several);
+         *     - `OFFER_RECEIVED` — an offer was extended;
+         *     - `OFFER_ACCEPTED` — the candidate accepted the offer (the one positive terminal);
+         *     - `OFFER_DECLINED` — the candidate declined the offer;
+         *     - `REJECTED` — the employer declined the candidate;
+         *     - `WITHDRAWN` — the candidate withdrew from the process.
+         *
+         *     There is no `GHOSTED`/`NO_RESPONSE` member, and that is a decision: silence is an
+         *     absence the analytics layer derives (§5), never a fact recorded here. `WITHDRAWN` is a
+         *     *process* outcome and is not the Phase 12 `ApplicationState.WITHDRAWN` execution state —
+         *     the names rhyme, the two lifecycles do not touch (§84).
+         * @enum {string}
+         */
+        OutcomeKind: "ACKNOWLEDGED" | "SCREEN" | "ASSESSMENT" | "INTERVIEW" | "OFFER_RECEIVED" | "OFFER_ACCEPTED" | "OFFER_DECLINED" | "REJECTED" | "WITHDRAWN";
+        /**
+         * OutcomeSource
+         * @description How the platform came to know an outcome — its provenance (§7-8).
+         *
+         *     Provenance is not decoration: an outcome the user typed in and one synced from an ATS
+         *     carry different trust, and a metric that could not say which is which could not be
+         *     audited. The set is closed and honest — every member is a way we *actually* learned a
+         *     fact, so there is no `INFERRED` member, because an inferred outcome is not a fact and
+         *     does not belong in this table at all (that is what the derived `NO_RESPONSE_AFTER_
+         *     THRESHOLD` observation is for, §5).
+         *
+         *     - `MANUAL_USER` — the candidate recorded it themselves (the default and the common case);
+         *     - `EMAIL` — parsed or forwarded from an email the candidate received;
+         *     - `ATS` — synced from an applicant-tracking system or employer portal;
+         *     - `IMPORTED` — migrated from a prior record (a V1 export, a spreadsheet).
+         * @enum {string}
+         */
+        OutcomeSource: "MANUAL_USER" | "EMAIL" | "ATS" | "IMPORTED";
+        /**
+         * OutcomeStatus
+         * @description Whether an outcome is currently believed, corrected, or taken back (§9, §64).
+         *
+         *     History is append-only — nothing here is ever hard-deleted — so an outcome that turns
+         *     out wrong changes *status* rather than vanishing, and the analytics layer counts only
+         *     `EFFECTIVE` rows. `SUPERSEDED` marks an outcome a later, corrected one replaced (the
+         *     replacement points back with `supersedes_id`); `RETRACTED` marks one the user took back
+         *     without a replacement ("that rejection was for a different application"). The distinction
+         *     matters to an audit: a superseded outcome was *wrong about the detail*, a retracted one
+         *     *should not have been recorded at all*.
+         * @enum {string}
+         */
+        OutcomeStatus: "EFFECTIVE" | "SUPERSEDED" | "RETRACTED";
+        /**
          * PinnedDocumentResponse
          * @description One exact document version an application will submit (§14-16).
          */
@@ -4527,6 +5229,25 @@ export interface components {
              * @enum {string}
              */
             kind: "PREPARE_APPLICATION";
+        };
+        /**
+         * ProposeStrategyChangeRequest
+         * @description Draft a proposal to change one search or policy — the spine's only mutation entry (§34-45).
+         *
+         *     The body carries the typed `change` (the discriminated union, validated at this boundary so a
+         *     `kind` the platform does not offer is a 422, never a silently widened match) and the human
+         *     `summary` a surface shows. The owner, the target, the target's version precondition and the
+         *     lifecycle are the service's to supply from the session and the live target — there is no
+         *     field here to set a `user_id`, a `target_version` or a `status`. `source_recommendation_id`
+         *     optionally links the draft back to the recommendation that motivated it.
+         */
+        ProposeStrategyChangeRequest: {
+            /** Change */
+            change: components["schemas"]["SetSearchRadiusChange"] | components["schemas"]["SetSearchKeywordsChange"] | components["schemas"]["SetSearchSourcesChange"] | components["schemas"]["SetSearchOpportunityTypesChange"] | components["schemas"]["SetPolicyOpportunityTypesChange"] | components["schemas"]["SetApplicationVolumeChange"] | components["schemas"]["SetMinimumScoreChange"];
+            /** Source Recommendation Id */
+            source_recommendation_id?: string | null;
+            /** Summary */
+            summary: string;
         };
         /**
          * ProviderHealthResponse
@@ -4589,6 +5310,20 @@ export interface components {
             radius_km: number;
         };
         /**
+         * RateKind
+         * @description The named conversion rates the funnel reports — the closed set from §23.
+         *
+         *     Each is a ratio of applications that reached one stage to those that reached an earlier
+         *     base stage, and the base is what makes them honest: `OFFER_CONVERSION` is offers per
+         *     *interview*, not per application, so a strong closer with few interviews is not punished
+         *     for a thin top of funnel. `RESPONSE` counts any employer signal (reaching `ACKNOWLEDGED`
+         *     or beyond) against mature submitted applications — its complement is the ghost rate the
+         *     platform never stores as a fact (§5). The base and target stages live in
+         *     `_RATE_STAGES`, so the definition of each rate is one table a reader can audit.
+         * @enum {string}
+         */
+        RateKind: "RESPONSE" | "INTERVIEW_CONVERSION" | "OFFER_CONVERSION" | "ACCEPTANCE";
+        /**
          * ReadinessBand
          * @description The coaching band a session's readiness falls in — named once, invented nowhere (§34).
          *
@@ -4640,6 +5375,80 @@ export interface components {
             /** Detail */
             detail: string | null;
             impact: components["schemas"]["ReasonImpact"];
+        };
+        /**
+         * RecommendationConfidence
+         * @description How much weight a recommendation's evidence can bear — a visible uncertainty (§24).
+         *
+         *     Never a probability of success, only a statement about *sample strength*: `LOW` is
+         *     "enough to notice", `MEDIUM` "enough to lean on", `HIGH` "well-established in your own
+         *     history". Derived from the weakest evidence a recommendation cites, so a comparison
+         *     resting on one thin slice is only as confident as that slice — the uncertainty stays
+         *     where a reader can see it rather than being averaged away.
+         * @enum {string}
+         */
+        RecommendationConfidence: "LOW" | "MEDIUM" | "HIGH";
+        /**
+         * RecommendationEvidenceResponse
+         * @description One metric a recommendation cites, with its own numbers — the auditable citation (§62).
+         *
+         *     Carries exactly one metric shape (a `rate_kind` or a `timing_kind`, never both, mirroring
+         *     the domain), the slice it was measured in, and the raw counts, so a reader can trace the
+         *     claim back to the analytics report. `dimension_key` is null for a dimension's unclassified
+         *     slice; a null `dimension` is an overall metric.
+         */
+        RecommendationEvidenceResponse: {
+            /** Denominator */
+            denominator: number | null;
+            /** Detail */
+            detail: string;
+            dimension: components["schemas"]["DimensionKind"] | null;
+            /** Dimension Key */
+            dimension_key: string | null;
+            /** Median Days */
+            median_days: number | null;
+            /** Numerator */
+            numerator: number | null;
+            /** Ordinal */
+            ordinal: number;
+            rate_kind: components["schemas"]["RateKind"] | null;
+            /** Sample Size */
+            sample_size: number;
+            timing_kind: components["schemas"]["TimingKind"] | null;
+        };
+        /**
+         * RecommendationKind
+         * @description The closed set of suggestions the engine can make — each grounded in a metric (§26-31).
+         *
+         *     Every member is a *focus* suggestion tied to a funnel dimension, phrased as observation
+         *     plus proposed emphasis, never as cause and effect. `PRIORITIZE_*`/`DEPRIORITIZE_*` follow
+         *     a slice that converts notably better or worse than the rest; `REVIEW_*` flag a pattern
+         *     worth the user's attention without prescribing a direction. A provider that invents a
+         *     kind fails to parse rather than smuggling a new recommendation the engine never reasoned
+         *     about, exactly as every other closed vocabulary in the domain.
+         * @enum {string}
+         */
+        RecommendationKind: "PRIORITIZE_ROLE_FAMILY" | "DEPRIORITIZE_ROLE_FAMILY" | "PRIORITIZE_SOURCE" | "DEPRIORITIZE_SOURCE" | "REVIEW_OPPORTUNITY_TYPE_MIX" | "REVIEW_DOCUMENT_STRATEGY" | "REVIEW_APPLICATION_VOLUME" | "REVIEW_INTERVIEW_PREPARATION";
+        /**
+         * RecordOutcomeRequest
+         * @description Record one real-world milestone against an application (§7-8, §46).
+         *
+         *     `occurred_at` is when the event happened in the world and must be timezone-aware — a naive
+         *     instant is a 422 here rather than a 500 in the domain. There is no `recorded_at`: the
+         *     platform stamps when it learned of the fact. `source` defaults to the common case, the
+         *     candidate recording it themselves.
+         */
+        RecordOutcomeRequest: {
+            /** Detail */
+            detail?: string | null;
+            kind: components["schemas"]["OutcomeKind"];
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** @default MANUAL_USER */
+            source: components["schemas"]["OutcomeSource"];
         };
         /** RegenBody */
         RegenBody: {
@@ -4802,6 +5611,72 @@ export interface components {
             /** Skills */
             skills: string[];
         };
+        /**
+         * RoleClassificationListResponse
+         * @description This account's classifications, most recently updated first — a surface to review.
+         */
+        RoleClassificationListResponse: {
+            /** Classifications */
+            classifications: components["schemas"]["RoleClassificationResponse"][];
+        };
+        /**
+         * RoleClassificationResponse
+         * @description One account's role-family verdict on one opportunity — deterministic or corrected (§18).
+         *
+         *     `role_family` is nullable: an unclassified role is a real, honest state, never a catch-all.
+         *     `is_manual` is surfaced so a UI can tell a human's correction from a machine guess without
+         *     re-deriving it from `provenance`.
+         */
+        RoleClassificationResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Manual */
+            is_manual: boolean;
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+            provenance: components["schemas"]["RoleFamilyProvenance"];
+            role_family: components["schemas"]["RoleFamily"] | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * RoleFamily
+         * @description A small, closed family of roles — the grouping axis for by-role analytics (§18-20).
+         *
+         *     Deliberately coarse. The point is not a taxonomy of every job title but a handful of
+         *     families broad enough that each accumulates a meaningful sample and narrow enough that
+         *     "your data applications convert differently from your engineering ones" is a real
+         *     statement. Country- and language-neutral: the words a board prints map onto these
+         *     members, they do not extend them. A title the keyword rule cannot place stays
+         *     *unclassified* (`None`), never a catch-all member.
+         * @enum {string}
+         */
+        RoleFamily: "SOFTWARE_ENGINEERING" | "DATA_AND_ANALYTICS" | "INFRASTRUCTURE_AND_DEVOPS" | "SECURITY" | "PRODUCT_MANAGEMENT" | "DESIGN" | "PROJECT_AND_PROGRAM" | "IT_SUPPORT" | "SALES" | "MARKETING" | "CUSTOMER_SUCCESS" | "OPERATIONS" | "FINANCE" | "HUMAN_RESOURCES";
+        /**
+         * RoleFamilyProvenance
+         * @description How a role classification was decided — machine rule or human choice (§18).
+         *
+         *     `DETERMINISTIC_TITLE` is the keyword rule's output; `MANUAL` is a user's explicit
+         *     correction. The distinction has teeth: the deterministic backfill refuses to overwrite a
+         *     `MANUAL` classification, so a human's judgement is never silently undone by the next
+         *     analytics run.
+         * @enum {string}
+         */
+        RoleFamilyProvenance: "DETERMINISTIC_TITLE" | "MANUAL";
         /**
          * RuleAuthority
          * @description How much a rule behind a check is entitled to close a gate.
@@ -5004,12 +5879,155 @@ export interface components {
          */
         SessionStyle: "COACHING" | "REALISTIC";
         /**
+         * SetApplicationVolumeChange
+         * @description Set an application policy's daily/weekly submission caps (`ApplicationPolicyService`).
+         *
+         *     A complete before/after of both caps, because they carry a coherence rule the policy
+         *     enforces — the daily cap may not exceed the weekly one — so the two move together and are
+         *     validated together here rather than drifting apart across two proposals. `None` is a real,
+         *     dangerous value: it means *unlimited*, which is why raising a cap or lifting one to
+         *     unlimited reads as sensitive (§42). Tightening either cap is safe.
+         */
+        SetApplicationVolumeChange: {
+            /**
+             * Application Policy Id
+             * Format: uuid
+             */
+            application_policy_id: string;
+            /** Before Max Applications Per Day */
+            before_max_applications_per_day?: number | null;
+            /** Before Max Applications Per Week */
+            before_max_applications_per_week?: number | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "SET_APPLICATION_VOLUME";
+            /** Max Applications Per Day */
+            max_applications_per_day?: number | null;
+            /** Max Applications Per Week */
+            max_applications_per_week?: number | null;
+        };
+        /**
          * SetLLMConnectionEnabledRequest
          * @description The on/off a settings page toggles, without deleting the row or its key.
          */
         SetLLMConnectionEnabledRequest: {
             /** Enabled */
             enabled: boolean;
+        };
+        /**
+         * SetMinimumScoreChange
+         * @description Set an application policy's overall score floor (routes to `ApplicationPolicyService`).
+         *
+         *     The coarse selectivity lever: `minimum_overall_score` is the floor a match must clear to be
+         *     applied to. `None` means *no floor*, the least selective setting — so lowering the floor, or
+         *     removing it entirely, lets the platform apply to weaker matches and reads as sensitive (§42).
+         *     Raising the floor is safe.
+         */
+        SetMinimumScoreChange: {
+            /**
+             * Application Policy Id
+             * Format: uuid
+             */
+            application_policy_id: string;
+            /** Before Minimum Overall Score */
+            before_minimum_overall_score?: number | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "SET_MINIMUM_SCORE";
+            /** Minimum Overall Score */
+            minimum_overall_score?: number | null;
+        };
+        /**
+         * SetPolicyOpportunityTypesChange
+         * @description Replace an application policy's allowed-type list (routes to `ApplicationPolicyService`).
+         *
+         *     This is application authority, not discovery scope: it governs which opportunity types the
+         *     platform may actually *apply* to. Widening it — adding a type, or clearing the list to "any
+         *     type" — lets the platform apply where it previously would not, so it reads as sensitive and
+         *     a surface should demand an explicit second confirmation (§42).
+         */
+        SetPolicyOpportunityTypesChange: {
+            /** Allowed Opportunity Types */
+            allowed_opportunity_types: components["schemas"]["OpportunityType"][];
+            /**
+             * Application Policy Id
+             * Format: uuid
+             */
+            application_policy_id: string;
+            /** Before Allowed Opportunity Types */
+            before_allowed_opportunity_types: components["schemas"]["OpportunityType"][];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "SET_POLICY_OPPORTUNITY_TYPES";
+        };
+        /**
+         * SetRoleClassificationRequest
+         * @description A human's explicit role family for one opportunity, outranking the rule (§18).
+         *
+         *     A manual classification must name a family — the domain refuses one that does not — so this
+         *     body has no nullable option: to leave a role unclassified is to not set it manually at all.
+         */
+        SetRoleClassificationRequest: {
+            role_family: components["schemas"]["RoleFamily"];
+        };
+        /**
+         * SetSearchKeywordsChange
+         * @description Replace a saved search's title and excluded keyword lists (routes to `OnboardingService`).
+         *
+         *     A complete before/after of both lists: `diff()` shows only the list that moved, so a
+         *     proposal that touches the title keywords does not read as if it also rewrote the exclusions.
+         *     An empty tuple is a real value that clears a list — the domain's "no restriction" — never a
+         *     missing one.
+         */
+        SetSearchKeywordsChange: {
+            /** Before Excluded Keywords */
+            before_excluded_keywords: string[];
+            /** Before Title Keywords */
+            before_title_keywords: string[];
+            /** Excluded Keywords */
+            excluded_keywords: string[];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "SET_SEARCH_KEYWORDS";
+            /**
+             * Search Profile Id
+             * Format: uuid
+             */
+            search_profile_id: string;
+            /** Title Keywords */
+            title_keywords: string[];
+        };
+        /**
+         * SetSearchOpportunityTypesChange
+         * @description Replace a saved search's opportunity-type allow-list (routes to `OnboardingService`).
+         *
+         *     Discovery filtering, not application authority: this bounds which types a search *surfaces*.
+         *     Widening it broadens what the user sees, which is safe — the `APPLICATION_POLICY` allow-list
+         *     (`SetPolicyOpportunityTypesChange`) is the one that governs what may be applied to.
+         */
+        SetSearchOpportunityTypesChange: {
+            /** Before Opportunity Types */
+            before_opportunity_types: components["schemas"]["OpportunityType"][];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "SET_SEARCH_OPPORTUNITY_TYPES";
+            /** Opportunity Types */
+            opportunity_types: components["schemas"]["OpportunityType"][];
+            /**
+             * Search Profile Id
+             * Format: uuid
+             */
+            search_profile_id: string;
         };
         /**
          * SetSearchRadiusAction
@@ -5028,6 +6046,50 @@ export interface components {
              * Format: uuid
              */
             search_profile_id: string;
+        };
+        /**
+         * SetSearchRadiusChange
+         * @description Set the radius of a saved search's radius area(s) (routes to `OnboardingService`).
+         */
+        SetSearchRadiusChange: {
+            /** Before Radius Km */
+            before_radius_km?: number | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "SET_SEARCH_RADIUS";
+            /** Radius Km */
+            radius_km: number;
+            /**
+             * Search Profile Id
+             * Format: uuid
+             */
+            search_profile_id: string;
+        };
+        /**
+         * SetSearchSourcesChange
+         * @description Replace a saved search's source allow-list (routes to `OnboardingService`).
+         *
+         *     The concrete edit behind a `PRIORITIZE_SOURCE`/`DEPRIORITIZE_SOURCE` recommendation: an
+         *     empty tuple restricts nothing (every source), a non-empty one limits discovery to the
+         *     listed plugin keys.
+         */
+        SetSearchSourcesChange: {
+            /** Before Source Keys */
+            before_source_keys: string[];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "SET_SEARCH_SOURCES";
+            /**
+             * Search Profile Id
+             * Format: uuid
+             */
+            search_profile_id: string;
+            /** Source Keys */
+            source_keys: string[];
         };
         /** SettingsBody */
         SettingsBody: {
@@ -5174,6 +6236,172 @@ export interface components {
             status: string;
         };
         /**
+         * StrategyChangeExecutionOutcome
+         * @description How one attempt to apply a confirmed proposal ended (§45).
+         *
+         *     Told apart from the proposal's status because an execution is the *event* and the status is
+         *     the proposal's resulting *state*: `REJECTED` is a proposal the executor would not permit (a
+         *     stale version, a target that vanished), `FAILED` is one it permitted but whose service call
+         *     raised, and `SUCCEEDED` is the change having been written to the live target.
+         * @enum {string}
+         */
+        StrategyChangeExecutionOutcome: "SUCCEEDED" | "REJECTED" | "FAILED";
+        /**
+         * StrategyChangeExecutionResponse
+         * @description The record of one attempt to apply a confirmed proposal — the executor's audit (§45).
+         *
+         *     `succeeded` is surfaced so a UI need not re-derive it from `outcome`; `observed_target_version`
+         *     is the version the executor checked the staleness precondition against. There is no `user_id`.
+         */
+        StrategyChangeExecutionResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Detail */
+            detail: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Observed Target Version */
+            observed_target_version: string | null;
+            outcome: components["schemas"]["StrategyChangeExecutionOutcome"];
+            /**
+             * Proposal Id
+             * Format: uuid
+             */
+            proposal_id: string;
+            /** Result Ref */
+            result_ref: string | null;
+            /** Succeeded */
+            succeeded: boolean;
+        };
+        /**
+         * StrategyChangeKind
+         * @description Every typed edit a proposal may carry — the closed grammar of strategy change (§36).
+         *
+         *     One member per operation, each mapping to exactly one method of an existing service the
+         *     executor calls after approval, so "what can a strategy change do?" is an answerable
+         *     question and adding a capability is adding a member plus its executor branch, never a free
+         *     field at a call site. The search family (`SET_SEARCH_*`) is bounded discovery tuning routed
+         *     to `OnboardingService`; the policy family (`SET_POLICY_*`, `SET_APPLICATION_VOLUME`,
+         *     `SET_MINIMUM_SCORE`) is the selectivity/volume levers a career loop legitimately touches,
+         *     routed to `ApplicationPolicyService`. There is deliberately no member that flips the
+         *     automation mode or the approval brake: the career loop never proposes weakening the
+         *     submission guard — that stays a human's manual, out-of-band choice.
+         * @enum {string}
+         */
+        StrategyChangeKind: "SET_SEARCH_RADIUS" | "SET_SEARCH_KEYWORDS" | "SET_SEARCH_SOURCES" | "SET_SEARCH_OPPORTUNITY_TYPES" | "SET_POLICY_OPPORTUNITY_TYPES" | "SET_APPLICATION_VOLUME" | "SET_MINIMUM_SCORE";
+        /**
+         * StrategyChangeProposalDetailResponse
+         * @description One proposal with its execution record, if it has been acted on (§44-45).
+         *
+         *     Pairing the two here avoids an "execution not found" code and a second round-trip: a
+         *     `PROPOSED`, `DISMISSED` or `EXPIRED` proposal simply carries a null `execution`, while an
+         *     `EXECUTED`/`REJECTED`/`FAILED` one carries the audit of the attempt that closed it.
+         */
+        StrategyChangeProposalDetailResponse: {
+            execution: components["schemas"]["StrategyChangeExecutionResponse"] | null;
+            proposal: components["schemas"]["StrategyChangeProposalResponse"];
+        };
+        /**
+         * StrategyChangeProposalListResponse
+         * @description A set of proposals — pending (most recent first) or the full history a surface reviews.
+         */
+        StrategyChangeProposalListResponse: {
+            /** Proposals */
+            proposals: components["schemas"]["StrategyChangeProposalResponse"][];
+        };
+        /**
+         * StrategyChangeProposalResponse
+         * @description One approved-or-not edit to a search or policy — its diff, sensitivity and lifecycle (§34).
+         *
+         *     Surfaces the queryable identity (`target`, `target_id`), the `change_kind` discriminator and
+         *     the human `summary`, plus the two things a surface must gate on: `is_sensitive` (whether it
+         *     loosens a safety brake) and `field_changes` (the before → after of exactly the fields that
+         *     move). The raw change payload is deliberately not echoed — a client renders the diff, not the
+         *     typed levers — and there is no `user_id`. `is_open` says whether it may still be acted on.
+         */
+        StrategyChangeProposalResponse: {
+            change_kind: components["schemas"]["StrategyChangeKind"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Field Changes */
+            field_changes: components["schemas"]["FieldChangeResponse"][];
+            /** Generator Key */
+            generator_key: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Open */
+            is_open: boolean;
+            /** Is Sensitive */
+            is_sensitive: boolean;
+            /** Llm Run Id */
+            llm_run_id: string | null;
+            /** Source Recommendation Id */
+            source_recommendation_id: string | null;
+            status: components["schemas"]["StrategyChangeProposalStatus"];
+            /** Summary */
+            summary: string;
+            target: components["schemas"]["StrategyChangeTarget"];
+            /**
+             * Target Id
+             * Format: uuid
+             */
+            target_id: string;
+            /**
+             * Target Version
+             * Format: date-time
+             */
+            target_version: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * StrategyChangeProposalStatus
+         * @description Where one proposal is in its life from "offered" to "done" (§44).
+         *
+         *     Born `PROPOSED`. A human confirming it that the executor applied moves it to `EXECUTED`;
+         *     one the executor refused at re-validation — stale precondition, lost ownership — moves it
+         *     to `REJECTED` (it was never permitted); one the executor permitted but whose service call
+         *     raised moves it to `FAILED` (permitted, did not complete). `DISMISSED` is the user
+         *     declining it; `EXPIRED` is the clock passing `expires_at` before anyone acted. Only a
+         *     `PROPOSED` proposal may leave that state — every other status is terminal, so a change is
+         *     applied at most once.
+         * @enum {string}
+         */
+        StrategyChangeProposalStatus: "PROPOSED" | "EXECUTED" | "REJECTED" | "FAILED" | "DISMISSED" | "EXPIRED";
+        /**
+         * StrategyChangeTarget
+         * @description The two — and only two — kinds of thing a strategy change may edit (§35).
+         *
+         *     A `SEARCH_PROFILE` change tunes *what the user looks for and where* and reaches the funnel
+         *     only by changing what discovery surfaces; an `APPLICATION_POLICY` change tunes *how
+         *     selectively and autonomously the platform applies*, which is the safety-critical axis. The
+         *     set is closed for the same reason every vocabulary in the domain is: a target the platform
+         *     does not offer is not a free string a generator can invent, and there is no member for an
+         *     application, an outcome or a score — the career loop never rewrites the record it observes.
+         * @enum {string}
+         */
+        StrategyChangeTarget: "SEARCH_PROFILE" | "APPLICATION_POLICY";
+        /**
          * SubmitApplicationAction
          * @description Submit an approved application — the irreversible boundary (§1, §5, §80-88).
          *
@@ -5201,6 +6429,38 @@ export interface components {
         SubmitTextAnswerRequest: {
             /** Content */
             content: string;
+        };
+        /**
+         * TimingKind
+         * @description The elapsed-time measurements the funnel reports, in real calendar days (§17).
+         *
+         *     Each is the gap between two real timestamps — never a status age, never an estimate —
+         *     so a duration exists only when both ends actually happened. `TIME_TO_FIRST_RESPONSE` is
+         *     from submission to the first employer signal; `TIME_TO_INTERVIEW` to the first interview;
+         *     `TIME_TO_OFFER` to the offer; `TIME_TO_DECISION` from submission to whichever terminal
+         *     outcome concluded the process. They are summarized by median with a p25/p75 spread rather
+         *     than a mean, because a handful of slow replies should not drag the typical wait, and the
+         *     spread is where the honesty about variance lives.
+         * @enum {string}
+         */
+        TimingKind: "TIME_TO_FIRST_RESPONSE" | "TIME_TO_INTERVIEW" | "TIME_TO_OFFER" | "TIME_TO_DECISION";
+        /**
+         * TimingStatResponse
+         * @description Median and quartile days-to-milestone over the applications that reached it (§32-34).
+         *
+         *     All three day figures are null until the sample exists; `sample_size` says how many
+         *     applications the medians rest on.
+         */
+        TimingStatResponse: {
+            kind: components["schemas"]["TimingKind"];
+            /** Median Days */
+            median_days: number | null;
+            /** P25 Days */
+            p25_days: number | null;
+            /** P75 Days */
+            p75_days: number | null;
+            /** Sample Size */
+            sample_size: number;
         };
         /**
          * UpdateLLMConnectionRequest
@@ -6445,6 +7705,72 @@ export interface operations {
             };
         };
     };
+    list_outcomes_api_v2_applications__application_id__outcomes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationOutcomeListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_outcome_api_v2_applications__application_id__outcomes_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordOutcomeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationOutcomeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     prepare_application_api_v2_applications__application_id__prepare_post: {
         parameters: {
             query?: never;
@@ -6607,6 +7933,247 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SignedInResponse"];
+                };
+            };
+        };
+    };
+    career_analytics_api_v2_career_analytics_get: {
+        parameters: {
+            query?: {
+                horizon_days?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CareerAnalyticsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_recommendations_api_v2_career_recommendations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CareerRecommendationListResponse"];
+                };
+            };
+        };
+    };
+    generate_recommendations_api_v2_career_recommendations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CareerRecommendationListResponse"];
+                };
+            };
+        };
+    };
+    list_pending_proposals_api_v2_career_strategy_proposals_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StrategyChangeProposalListResponse"];
+                };
+            };
+        };
+    };
+    propose_strategy_change_api_v2_career_strategy_proposals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProposeStrategyChangeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StrategyChangeProposalResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_proposal_history_api_v2_career_strategy_proposals_history_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StrategyChangeProposalListResponse"];
+                };
+            };
+        };
+    };
+    read_proposal_api_v2_career_strategy_proposals__proposal_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StrategyChangeProposalDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_proposal_api_v2_career_strategy_proposals__proposal_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveStrategyChangeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StrategyChangeExecutionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dismiss_proposal_api_v2_career_strategy_proposals__proposal_id__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StrategyChangeProposalResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -7969,6 +9536,189 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_role_classification_api_v2_opportunities__opportunity_id__role_classification_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleClassificationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_role_classification_api_v2_opportunities__opportunity_id__role_classification_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetRoleClassificationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleClassificationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    classify_opportunity_api_v2_opportunities__opportunity_id__role_classification_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleClassificationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    correct_outcome_api_v2_outcomes__outcome_id__correct_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                outcome_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectOutcomeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationOutcomeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retract_outcome_api_v2_outcomes__outcome_id__retract_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                outcome_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationOutcomeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_role_classifications_api_v2_role_classifications_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleClassificationListResponse"];
                 };
             };
         };

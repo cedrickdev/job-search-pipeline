@@ -94,6 +94,16 @@ export function job(template: JobTemplate, jobId: number): string {
 // voice-answers, complete and abandon sub-resources, and the strict per-question
 // re-grade (`/questions/{sequence}/evaluate`). The `satisfies` clause is the same
 // compile-time guard.
+//
+// Phase 15 adds the Career Intelligence Loop: the analytics report and the recommendations
+// (`/career/analytics` GET, `/career/recommendations` GET+POST), the strategy-proposal gate
+// (`/career/strategy-proposals` GET, its `/history` literal declared before `{proposal_id}`,
+// one proposal GET and its `/approve` and `/dismiss` verbs), and the outcome surface keyed off
+// an application (`/applications/{application_id}/outcomes` GET+POST, reusing `application()`)
+// with its `/outcomes/{outcome_id}/correct` and `/retract` verbs. The role-classification routes
+// have no UI of their own — the analytics breakdowns render role families read-only — so they
+// are absent, which the `satisfies` guard permits (it checks listed paths are real, not that
+// every backend path is listed).
 export const V2_ENDPOINTS = {
   login: '/api/v2/auth/login',
   logout: '/api/v2/auth/logout',
@@ -146,6 +156,16 @@ export const V2_ENDPOINTS = {
   interviewEvaluate: '/api/v2/interview-sessions/{session_id}/questions/{sequence}/evaluate',
   interviewComplete: '/api/v2/interview-sessions/{session_id}/complete',
   interviewAbandon: '/api/v2/interview-sessions/{session_id}/abandon',
+  careerAnalytics: '/api/v2/career/analytics',
+  careerRecommendations: '/api/v2/career/recommendations',
+  strategyProposals: '/api/v2/career/strategy-proposals',
+  strategyProposalsHistory: '/api/v2/career/strategy-proposals/history',
+  strategyProposal: '/api/v2/career/strategy-proposals/{proposal_id}',
+  strategyProposalApprove: '/api/v2/career/strategy-proposals/{proposal_id}/approve',
+  strategyProposalDismiss: '/api/v2/career/strategy-proposals/{proposal_id}/dismiss',
+  applicationOutcomes: '/api/v2/applications/{application_id}/outcomes',
+  outcomeCorrect: '/api/v2/outcomes/{outcome_id}/correct',
+  outcomeRetract: '/api/v2/outcomes/{outcome_id}/retract',
 } as const satisfies Record<string, keyof paths>
 
 /**
@@ -340,4 +360,37 @@ export function interviewEvaluate(sessionId: string, sequence: number): string {
   return V2_ENDPOINTS.interviewEvaluate
     .replace('{session_id}', sessionId)
     .replace('{sequence}', String(sequence))
+}
+
+/** Every V2 endpoint whose template contains `{outcome_id}`. */
+type OutcomeTemplate = Extract<
+  (typeof V2_ENDPOINTS)[keyof typeof V2_ENDPOINTS],
+  `${string}{outcome_id}${string}`
+>
+
+/**
+ * Resolve an `{outcome_id}` template — the correct or retract of one recorded outcome (Phase 15).
+ *
+ * An outcome id is a UUID string and the owner is not in the path: an outcome belongs to an
+ * application that belongs to the session's account, so correcting or retracting another
+ * account's outcome by id is a 404 (`outcome_not_found`), never a write — the load is the
+ * authorization check (docs/AUTHENTICATION.md §Authorization, docs/CAREER_INTELLIGENCE.md).
+ */
+export function outcome(template: OutcomeTemplate, outcomeId: string): string {
+  return template.replace('{outcome_id}', outcomeId)
+}
+
+/**
+ * Resolve a strategy-proposal `{proposal_id}` template — one proposal's read, approve or
+ * dismiss (Phase 15).
+ *
+ * A proposal id is a UUID string and the owner is not in the path: a strategy proposal belongs
+ * to the session's account, so acting on another account's proposal by id is a 404
+ * (`proposal_not_found`), never its execution. Approval re-runs every gate on its own route — a
+ * proposal is a request, not a permission — and a loosening change still costs an explicit second
+ * confirmation there (docs/CAREER_INTELLIGENCE.md §The approval gate). The `{proposal_id}`
+ * template marker is shared with the chat proposals of Phase 13; `chatProposal` resolves those.
+ */
+export function strategyProposal(template: ProposalTemplate, proposalId: string): string {
+  return template.replace('{proposal_id}', proposalId)
 }

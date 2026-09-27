@@ -36,11 +36,26 @@ from backend.app.domain.eligibility import (
 from backend.app.domain.matching import MatchDimension
 from backend.app.domain.opportunity import OpportunityType
 from backend.app.domain.search import SearchAreaKind
+from backend.app.domain.analytics import DimensionKind, RateKind, TimingKind
+from backend.app.domain.application import ApplicationState
+from backend.app.domain.application_channel import ApplicationChannel
+from backend.app.domain.outcome import OutcomeKind
+from backend.app.domain.recommendation import RecommendationKind
+from backend.app.domain.role import RoleFamily, RoleFamilyProvenance
+from backend.app.domain.strategy_change import (
+    StrategyChangeExecutionOutcome,
+    StrategyChangeKind,
+    StrategyChangeTarget,
+)
 from backend.app.infrastructure.database.models import (
+    ApplicationOutcomeRow,
+    ApplicationRow,
     CandidateAvailabilitySlotRow,
     CandidateLanguageRow,
     CandidateProfileRow,
     CandidateWorkAuthorizationRow,
+    CareerRecommendationEvidenceRow,
+    CareerRecommendationRow,
     ChatActionExecutionRow,
     ChatActionProposalRow,
     ChatMessageRow,
@@ -59,12 +74,17 @@ from backend.app.infrastructure.database.models import (
     MatchEvaluationRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
+    RoleClassificationRow,
     SearchAreaRow,
     SearchProfileRow,
+    StrategyChangeExecutionRow,
+    StrategyChangeProposalRow,
     UserRow,
     UserSessionRow,
 )
 from backend.app.infrastructure.database.mappers import (
+    application_decision_to_row,
+    application_policy_to_row,
     interview_answer_evaluation_to_row,
     interview_answer_to_row,
     interview_question_to_row,
@@ -73,17 +93,23 @@ from backend.app.infrastructure.database.mappers import (
     llm_run_to_row,
 )
 from tests.v2_builders import (
+    APPLICATION,
     COMPANY,
     COMPANY_LOCATION,
+    DECISION,
     EVALUATION,
+    LATER,
     LAUSANNE,
     NOW,
     OPPORTUNITY,
     OTHER_OPPORTUNITY,
     OTHER_USER,
+    POLICY,
     PROFILE,
     RUN,
     USER,
+    a_decision,
+    a_policy,
     an_answer_evaluation,
     an_interview_answer,
     an_interview_question,
@@ -115,6 +141,16 @@ CHAT_PROPOSAL = UUID("00000000-0000-4000-8000-0000000000e4")
 SECOND_CHAT_PROPOSAL = UUID("00000000-0000-4000-8000-0000000000e5")
 CHAT_EXECUTION = UUID("00000000-0000-4000-8000-0000000000e6")
 SECOND_CHAT_EXECUTION = UUID("00000000-0000-4000-8000-0000000000e7")
+OUTCOME = UUID("00000000-0000-4000-8000-0000000000f1")
+SECOND_OUTCOME = UUID("00000000-0000-4000-8000-0000000000f2")
+ROLE_CLASSIFICATION = UUID("00000000-0000-4000-8000-0000000000f3")
+SECOND_ROLE_CLASSIFICATION = UUID("00000000-0000-4000-8000-0000000000f4")
+RECOMMENDATION = UUID("00000000-0000-4000-8000-0000000000f5")
+EVIDENCE = UUID("00000000-0000-4000-8000-0000000000f6")
+SECOND_EVIDENCE = UUID("00000000-0000-4000-8000-0000000000f7")
+STRATEGY_PROPOSAL = UUID("00000000-0000-4000-8000-0000000000f8")
+STRATEGY_EXECUTION = UUID("00000000-0000-4000-8000-0000000000f9")
+SECOND_STRATEGY_EXECUTION = UUID("00000000-0000-4000-8000-0000000000fa")
 
 # Two distinct SHA-256 digests, written out rather than computed: what the CHECK
 # polices is the *shape* stored, so a literal that a reader can count is the point.
@@ -1147,6 +1183,331 @@ async def test_deleting_an_account_deletes_its_interview_history(db_session):
 
     for model in (InterviewSessionRow, InterviewQuestionRow, InterviewAnswerRow,
                   InterviewAnswerEvaluationRow, InterviewSessionSummaryRow, LLMRunRow):
+        assert await _count(db_session, model) == 0, model.__tablename__
+    # The posting is not the account's to delete.
+    assert await _count(db_session, OpportunityRow) == 1
+
+
+# --- Phase 15 career intelligence -------------------------------------------
+# The observe-measure-recommend loop's domain rules made physical: a milestone is
+# recorded once per application, a correction never supersedes itself, a manual
+# role verdict names a family, a cited metric clears the sample floor and carries
+# exactly one shape, a proposal's queryable target agrees with its change family,
+# and a confirmed proposal runs at most once. Every row here is built raw to reach
+# a state the domain would refuse. Nothing here touches the Phase 12 execution
+# lifecycle: an outcome has no `ApplicationState`, by construction (§2, §84).
+
+
+def an_outcome_row(**overrides) -> ApplicationOutcomeRow:
+    """One INTERVIEW milestone on the seeded application — `source`/`status` default.
+
+    `outcome_key` is supplied by hand because the raw row bypasses the derivation
+    that would otherwise compute it from the kind and `occurred_at`; the tests below
+    are about the constraints, not that derivation.
+    """
+    columns = {"id": OUTCOME, "user_id": USER, "application_id": APPLICATION,
+               "kind": OutcomeKind.INTERVIEW,
+               "outcome_key": "INTERVIEW:2026-03-01T09:30:00+00:00",
+               "occurred_at": NOW, "recorded_at": LATER}
+    columns.update(overrides)
+    return ApplicationOutcomeRow(**columns)
+
+
+def a_role_classification_row(**overrides) -> RoleClassificationRow:
+    """A deterministic verdict on the seeded posting — the shape both CHECKs permit.
+
+    `created_at`/`updated_at` are set to `NOW` rather than left to the server so a
+    test can move `updated_at` behind `created_at` and trip one named CHECK, the way
+    the domain's own `updated_at >= created_at` guard would refuse.
+    """
+    columns = {"id": ROLE_CLASSIFICATION, "user_id": USER,
+               "opportunity_id": OPPORTUNITY,
+               "role_family": RoleFamily.SOFTWARE_ENGINEERING,
+               "provenance": RoleFamilyProvenance.DETERMINISTIC_TITLE,
+               "created_at": NOW, "updated_at": NOW}
+    columns.update(overrides)
+    return RoleClassificationRow(**columns)
+
+
+def a_recommendation_row(**overrides) -> CareerRecommendationRow:
+    """One suggestion owned by `USER`, the parent the evidence tests hang off."""
+    columns = {"id": RECOMMENDATION, "user_id": USER,
+               "kind": RecommendationKind.PRIORITIZE_ROLE_FAMILY,
+               "analytics_version": "v1",
+               "summary": "Priorise l'ingenierie logicielle."}
+    columns.update(overrides)
+    return CareerRecommendationRow(**columns)
+
+
+def an_evidence_row(**overrides) -> CareerRecommendationEvidenceRow:
+    """A valid RESPONSE-rate citation: one metric shape, counts within the sample.
+
+    Each test overrides exactly the columns whose combination one CHECK is meant to
+    reject, so a failure names one rule rather than whichever of the metric-shape
+    family the database happened to evaluate first.
+    """
+    columns = {"id": EVIDENCE, "recommendation_id": RECOMMENDATION, "ordinal": 0,
+               "dimension": DimensionKind.ROLE_FAMILY,
+               "dimension_key": "SOFTWARE_ENGINEERING",
+               "rate_kind": RateKind.RESPONSE, "timing_kind": None,
+               "numerator": 6, "denominator": 20, "median_days": None,
+               "sample_size": 20, "detail": "6 reponses sur 20 candidatures."}
+    columns.update(overrides)
+    return CareerRecommendationEvidenceRow(**columns)
+
+
+def a_proposal_row(**overrides) -> StrategyChangeProposalRow:
+    """A PROPOSED SET_SEARCH_RADIUS edit whose target agrees with its kind.
+
+    `change` takes the empty-object default — no CHECK polices its JSON shape, which
+    is a Python validator — and the timestamps are set so a test can trip exactly the
+    `updated_at`/`expires_at` ordering CHECK it is exercising.
+    """
+    columns = {"id": STRATEGY_PROPOSAL, "user_id": USER,
+               "target": StrategyChangeTarget.SEARCH_PROFILE, "target_id": SEARCH,
+               "kind": StrategyChangeKind.SET_SEARCH_RADIUS,
+               "target_version": NOW, "summary": "Elargis le rayon de recherche.",
+               "created_at": NOW, "updated_at": NOW,
+               "expires_at": NOW + timedelta(days=7)}
+    columns.update(overrides)
+    return StrategyChangeProposalRow(**columns)
+
+
+def an_execution_row(**overrides) -> StrategyChangeExecutionRow:
+    """One SUCCEEDED execution of the seeded proposal — the executor's audit row."""
+    columns = {"id": STRATEGY_EXECUTION, "proposal_id": STRATEGY_PROPOSAL,
+               "user_id": USER, "outcome": StrategyChangeExecutionOutcome.SUCCEEDED}
+    columns.update(overrides)
+    return StrategyChangeExecutionRow(**columns)
+
+
+async def seed_account(session) -> None:
+    """One account: the single foreign key a recommendation or a proposal needs."""
+    session.add(a_user_row())
+    await session.flush()
+
+
+async def seed_application(session) -> None:
+    """The whole FK chain an outcome hangs off: account, profile, posting, policy,
+    decision and one application.
+
+    The policy and decision are built through their mappers from valid domain values;
+    the application itself is a raw row at `APPLICATION`, because its id derives from
+    an idempotency key and would not equal the fixture constant the outcome names.
+    """
+    await seed_owner_and_posting(session)
+    session.add(application_policy_to_row(a_policy()))
+    await session.flush()
+    session.add(application_decision_to_row(a_decision()))
+    await session.flush()
+    session.add(ApplicationRow(
+        id=APPLICATION, user_id=USER, candidate_profile_id=PROFILE,
+        decision_id=DECISION, channel=ApplicationChannel.BROWSER,
+        state=ApplicationState.PLANNED, idempotency_key="outcome-fixture-key",
+        opportunity_id=OPPORTUNITY, policy_id=POLICY))
+    await session.flush()
+
+
+async def seed_recommendation(session) -> None:
+    """An account and one recommendation: the parent its evidence rows need."""
+    await seed_account(session)
+    session.add(a_recommendation_row())
+    await session.flush()
+
+
+async def seed_proposal(session) -> None:
+    """An account and one PROPOSED proposal, for the test about its one execution."""
+    await seed_account(session)
+    session.add(a_proposal_row())
+    await session.flush()
+
+
+async def test_a_correction_may_not_supersede_itself(db_session):
+    """`no_self_supersede`: a correction points at the row it replaces, never itself.
+
+    The domain builds a correction with `supersedes_id` naming a *prior* outcome; a
+    row whose `supersedes_id` equals its own id is the cycle-of-one the CHECK refuses,
+    the state a hand-written UPDATE could otherwise reach.
+    """
+    await seed_application(db_session)
+    await refuses(db_session, an_outcome_row(supersedes_id=OUTCOME),
+                  "ck_application_outcomes_no_self_supersede")
+
+
+async def test_the_same_milestone_is_recorded_once(db_session):
+    """`UNIQUE (application_id, outcome_key)`: a double-report collapses onto one row.
+
+    The outcome id derives from `(application_id, outcome_key)`, so a retried request
+    for the same milestone writes the same row; a second row claiming a taken key is
+    the duplicated fact this constraint exists to prevent.
+    """
+    await seed_application(db_session)
+    db_session.add(an_outcome_row())
+    await db_session.flush()
+    await refuses(db_session, an_outcome_row(id=SECOND_OUTCOME),
+                  "uq_application_outcomes_application_id_outcome_key")
+
+
+async def test_a_manual_role_verdict_must_name_a_family(db_session):
+    """`manual_names_a_family`: a human correction cannot leave the role unclassified.
+
+    A deterministic rule may decline to name a family — an honest "unclassified" — but
+    a `MANUAL` verdict is a person's explicit choice, so the CHECK refuses one with a
+    NULL `role_family`. The deterministic default row proves the other side stands.
+    """
+    await seed_owner_and_posting(db_session)
+    await refuses(db_session,
+                  a_role_classification_row(provenance=RoleFamilyProvenance.MANUAL,
+                                            role_family=None),
+                  "ck_role_classifications_manual_names_a_family")
+
+
+async def test_a_classification_is_made_once_per_opportunity(db_session):
+    """`UNIQUE (user_id, opportunity_id)`: re-classifying updates the one row.
+
+    The id derives from `(user_id, opportunity_id)`, so a manual correction lands on
+    the same row the deterministic rule wrote; a second row for the same pair is the
+    divergent verdict this constraint keeps a user from holding two of.
+    """
+    await seed_owner_and_posting(db_session)
+    db_session.add(a_role_classification_row())
+    await db_session.flush()
+    await refuses(db_session,
+                  a_role_classification_row(id=SECOND_ROLE_CLASSIFICATION),
+                  "uq_role_classifications_user_id_opportunity_id")
+
+
+async def test_a_classification_updated_before_it_was_created_is_refused(db_session):
+    """`updated_at >= created_at`: a correction advances the clock, never rewinds it."""
+    await seed_owner_and_posting(db_session)
+    await refuses(db_session,
+                  a_role_classification_row(updated_at=NOW - timedelta(days=1)),
+                  "ck_role_classifications_updated_at_after_created_at")
+
+
+@pytest.mark.parametrize(("columns", "constraint"), [
+    # A sample below the floor: the "no claim from weak data" rule made physical.
+    ({"sample_size": 4},
+     "ck_career_recommendation_evidence_sample_size_meets_minimum"),
+    # The ordinal the evidence id derives from is a position, never negative.
+    ({"ordinal": -1},
+     "ck_career_recommendation_evidence_ordinal_non_negative"),
+    # Neither a rate nor a timing: a citation that cites no metric shape.
+    ({"rate_kind": None, "timing_kind": None, "numerator": None,
+      "denominator": None},
+     "ck_career_recommendation_evidence_cites_one_metric_shape"),
+    # A rate whose numerator exceeds its denominator — a proportion above one.
+    ({"numerator": 25, "denominator": 20},
+     "ck_career_recommendation_evidence_rate_shape_coherent"),
+    # A timing with no median: the one number a timing metric exists to carry.
+    ({"rate_kind": None, "timing_kind": TimingKind.TIME_TO_FIRST_RESPONSE,
+      "numerator": None, "denominator": None, "median_days": None},
+     "ck_career_recommendation_evidence_timing_shape_coherent"),
+    # An overall metric that still names a dimension key it has no dimension for.
+    ({"dimension": None, "dimension_key": "SOFTWARE_ENGINEERING"},
+     "ck_career_recommendation_evidence_overall_metric_has_no_key"),
+], ids=["sample_floor", "ordinal", "one_shape", "rate_shape", "timing_shape",
+        "overall_key"])
+async def test_evidence_the_domain_would_refuse_is_refused_by_the_table(
+        db_session, columns, constraint):
+    """`RecommendationEvidence`'s validators that a column group can express.
+
+    The parametrization is the list of shape rules that survive without Python: the
+    engine writes evidence through the domain, but nothing stops a backfill or an
+    operator with psql from writing a rate above one or a claim from four data points.
+    Each case violates exactly one CHECK so the database names the rule under test.
+    """
+    await seed_recommendation(db_session)
+    await refuses(db_session, an_evidence_row(**columns), constraint)
+
+
+async def test_a_recommendation_numbers_each_evidence_once(db_session):
+    """`UNIQUE (recommendation_id, ordinal)`: re-persisting reuses the evidence rows.
+
+    A recommendation cites several metrics, ordered; each id derives from
+    `(recommendation_id, ordinal)`, so re-persisting the aggregate lands on the same
+    rows rather than duplicating them, and a second row at a taken ordinal is refused.
+    """
+    await seed_recommendation(db_session)
+    db_session.add(an_evidence_row())
+    await db_session.flush()
+    await refuses(db_session, an_evidence_row(id=SECOND_EVIDENCE, ordinal=0),
+                  "uq_career_recommendation_evidence_recommendation_id_ordinal")
+
+
+async def test_a_proposals_target_must_match_its_change_family(db_session):
+    """`target_matches_kind`: the queryable target agrees with the change it wraps.
+
+    `target`/`kind` are denormalized columns an index answers "my open policy
+    proposals" from, so they must not drift from the `change` payload they summarize:
+    a SEARCH_PROFILE proposal carrying a policy-only `SET_MINIMUM_SCORE` kind is the
+    inconsistency the CHECK refuses. The target_id-vs-payload half stays in Python.
+    """
+    await seed_account(db_session)
+    await refuses(db_session,
+                  a_proposal_row(target=StrategyChangeTarget.SEARCH_PROFILE,
+                                 kind=StrategyChangeKind.SET_MINIMUM_SCORE),
+                  "ck_strategy_change_proposals_target_matches_kind")
+
+
+async def test_a_proposal_updated_before_it_was_created_is_refused(db_session):
+    """`updated_at >= created_at`: a status transition advances the clock, never back."""
+    await seed_account(db_session)
+    await refuses(db_session, a_proposal_row(updated_at=NOW - timedelta(days=1)),
+                  "ck_strategy_change_proposals_updated_at_after_created_at")
+
+
+async def test_a_proposal_expiring_when_it_was_created_is_refused(db_session):
+    """`expires_at > created_at`: a proposal a user can never act on is not written.
+
+    The window is strict: an `expires_at` equal to `created_at` leaves no instant in
+    which the proposal is open, so the CHECK demands the deadline strictly follow the
+    drafting — the physical half of "a proposal is confirmable for a bounded while".
+    """
+    await seed_account(db_session)
+    await refuses(db_session, a_proposal_row(expires_at=NOW),
+                  "ck_strategy_change_proposals_expires_at_after_created_at")
+
+
+async def test_a_confirmed_proposal_records_at_most_one_execution(db_session):
+    """`UNIQUE (proposal_id)`: a double-confirm collides rather than applying twice.
+
+    The execution id derives from the proposal alone, and the unique key is the guard
+    beneath it — so a second attempt to apply a confirmed proposal is refused by the
+    database, the idempotency the executor rests on, not just by the derived id.
+    """
+    await seed_proposal(db_session)
+    db_session.add(an_execution_row())
+    await db_session.flush()
+    await refuses(db_session,
+                  an_execution_row(id=SECOND_STRATEGY_EXECUTION,
+                                   outcome=StrategyChangeExecutionOutcome.FAILED),
+                  "uq_strategy_change_executions_proposal_id")
+
+
+async def test_deleting_an_account_deletes_its_career_intelligence(db_session):
+    """"Delete my account" reaches the intelligence loop, through one cascade from `users`.
+
+    An outcome, a role verdict, a recommendation with its evidence, and a proposal with
+    its execution are all the account's — so each carries `user_id` and cascades from
+    `users`, and deleting the account takes the whole loop without a script that has to
+    know the order. This is the loop's row in `test_deleting_an_account_deletes_everything`.
+    The shared posting is not the account's to delete and stays.
+    """
+    await seed_application(db_session)
+    db_session.add_all([an_outcome_row(), a_role_classification_row(),
+                        a_recommendation_row()])
+    await db_session.flush()
+    db_session.add_all([an_evidence_row(), a_proposal_row()])
+    await db_session.flush()
+    db_session.add(an_execution_row())
+    await db_session.flush()
+
+    await db_session.execute(delete(UserRow).where(UserRow.id == USER))
+    db_session.expunge_all()
+    for model in (ApplicationOutcomeRow, RoleClassificationRow,
+                  CareerRecommendationRow, CareerRecommendationEvidenceRow,
+                  StrategyChangeProposalRow, StrategyChangeExecutionRow):
         assert await _count(db_session, model) == 0, model.__tablename__
     # The posting is not the account's to delete.
     assert await _count(db_session, OpportunityRow) == 1

@@ -360,6 +360,110 @@
         "title": "ApplicationListResponse",
         "type": "object"
       },
+      "ApplicationOutcomeListResponse": {
+        "additionalProperties": false,
+        "description": "One application's outcomes oldest-first — every status, so a timeline keeps corrections.",
+        "properties": {
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/ApplicationOutcomeResponse"
+            },
+            "title": "Outcomes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "outcomes"
+        ],
+        "title": "ApplicationOutcomeListResponse",
+        "type": "object"
+      },
+      "ApplicationOutcomeResponse": {
+        "additionalProperties": false,
+        "description": "One recorded milestone in an application's hiring process — never its execution state.\n\n`is_effective`/`is_terminal`/`is_correction` are surfaced so a timeline need not re-derive\nthem. There is no `user_id`: the owner is always the caller.",
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_correction": {
+            "title": "Is Correction",
+            "type": "boolean"
+          },
+          "is_effective": {
+            "title": "Is Effective",
+            "type": "boolean"
+          },
+          "is_terminal": {
+            "title": "Is Terminal",
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OutcomeKind"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "title": "Recorded At",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/OutcomeSource"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OutcomeStatus"
+          },
+          "supersedes_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Id"
+          }
+        },
+        "required": [
+          "id",
+          "application_id",
+          "kind",
+          "source",
+          "status",
+          "occurred_at",
+          "recorded_at",
+          "supersedes_id",
+          "detail",
+          "is_effective",
+          "is_terminal",
+          "is_correction"
+        ],
+        "title": "ApplicationOutcomeResponse",
+        "type": "object"
+      },
       "ApplicationResponse": {
         "additionalProperties": false,
         "description": "One application's current state, target and pinned materials.\n\nThe lifecycle `state` is what a UI renders and acts on — READY_FOR_REVIEW shows\nan \"Approve & Submit\" control, REQUIRES_HUMAN a hand-off, SUBMITTED a receipt.\n`answers` and the correlation id are deliberately not exposed: the answers can\ncarry personal values a list view has no need for, and the trail is the audited\nplace to see what happened.",
@@ -484,6 +588,19 @@
           "application_id"
         ],
         "title": "ApproveApplicationAction",
+        "type": "object"
+      },
+      "ApproveStrategyChangeRequest": {
+        "additionalProperties": false,
+        "description": "Confirm a proposal for execution, optionally clearing a sensitive-change second gate (§43).\n\n`confirm_sensitive` defaults to `False`: a proposal that loosens a safety brake (widening what\nthe platform may apply to, raising a cap, lowering the score floor) is refused with\n`SENSITIVE_CONFIRMATION_REQUIRED` unless the caller sets this, so a loosening edit always costs\na deliberate second acknowledgement. A non-sensitive proposal ignores it.",
+        "properties": {
+          "confirm_sensitive": {
+            "default": false,
+            "title": "Confirm Sensitive",
+            "type": "boolean"
+          }
+        },
+        "title": "ApproveStrategyChangeRequest",
         "type": "object"
       },
       "AssessedOpportunityResponse": {
@@ -1108,6 +1225,193 @@
           "profile"
         ],
         "title": "CandidateProfileResponse",
+        "type": "object"
+      },
+      "CareerAnalyticsResponse": {
+        "additionalProperties": false,
+        "description": "The whole self-describing report: funnel, rates, timings, breakdowns (§24, §49-52).\n\n`analytics_version` pins which computation produced these figures, so a stored recommendation\ncan be read against the very report that justified it. There is no `user_id`: the report is\nalways the caller's. `computed_at` is when the snapshot was taken — the numbers are a\npoint-in-time read of an ever-moving process, not a durable record.",
+        "properties": {
+          "analytics_version": {
+            "title": "Analytics Version",
+            "type": "string"
+          },
+          "breakdowns": {
+            "items": {
+              "$ref": "#/components/schemas/DimensionBreakdownResponse"
+            },
+            "title": "Breakdowns",
+            "type": "array"
+          },
+          "computed_at": {
+            "format": "date-time",
+            "title": "Computed At",
+            "type": "string"
+          },
+          "funnel": {
+            "$ref": "#/components/schemas/CareerFunnelResponse"
+          },
+          "rates": {
+            "items": {
+              "$ref": "#/components/schemas/ConversionRateResponse"
+            },
+            "title": "Rates",
+            "type": "array"
+          },
+          "timings": {
+            "items": {
+              "$ref": "#/components/schemas/TimingStatResponse"
+            },
+            "title": "Timings",
+            "type": "array"
+          },
+          "window": {
+            "$ref": "#/components/schemas/ObservationWindowResponse"
+          }
+        },
+        "required": [
+          "analytics_version",
+          "window",
+          "funnel",
+          "rates",
+          "timings",
+          "breakdowns",
+          "computed_at"
+        ],
+        "title": "CareerAnalyticsResponse",
+        "type": "object"
+      },
+      "CareerFunnelResponse": {
+        "additionalProperties": false,
+        "description": "The submitted→accepted funnel with its window and maturity censoring (§25-27, §51).",
+        "properties": {
+          "censoring": {
+            "$ref": "#/components/schemas/MaturityCensoringResponse"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/FunnelStageCountResponse"
+            },
+            "title": "Stages",
+            "type": "array"
+          },
+          "window": {
+            "$ref": "#/components/schemas/ObservationWindowResponse"
+          }
+        },
+        "required": [
+          "stages",
+          "window",
+          "censoring"
+        ],
+        "title": "CareerFunnelResponse",
+        "type": "object"
+      },
+      "CareerRecommendationListResponse": {
+        "additionalProperties": false,
+        "description": "This account's recommendations, most recent first — the surface a user reviews.",
+        "properties": {
+          "recommendations": {
+            "items": {
+              "$ref": "#/components/schemas/CareerRecommendationResponse"
+            },
+            "title": "Recommendations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "recommendations"
+        ],
+        "title": "CareerRecommendationListResponse",
+        "type": "object"
+      },
+      "CareerRecommendationResponse": {
+        "additionalProperties": false,
+        "description": "An evidence-backed suggestion — and nothing it can execute (§26-33).\n\n`confidence` and `min_evidence_sample_size` are derived properties, never stored, surfaced\nso a UI shows how much evidence stands behind the suggestion without recomputing it.\n`analytics_version` pins the report it was drawn from. There is no `user_id`, and this object\ncarries no target profile, policy or execution: turning it into a change is a\n`StrategyChangeProposal` the user approves explicitly.",
+        "properties": {
+          "analytics_version": {
+            "title": "Analytics Version",
+            "type": "string"
+          },
+          "confidence": {
+            "$ref": "#/components/schemas/RecommendationConfidence"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/RecommendationEvidenceResponse"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "generator_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generator Key"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RecommendationKind"
+          },
+          "llm_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Run Id"
+          },
+          "min_evidence_sample_size": {
+            "title": "Min Evidence Sample Size",
+            "type": "integer"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "analytics_version",
+          "summary",
+          "detail",
+          "evidence",
+          "confidence",
+          "min_evidence_sample_size",
+          "generator_key",
+          "llm_run_id",
+          "created_at"
+        ],
+        "title": "CareerRecommendationResponse",
         "type": "object"
       },
       "CareerSiteKind": {
@@ -2342,6 +2646,91 @@
         "title": "ConversationScope",
         "type": "string"
       },
+      "ConversionRateResponse": {
+        "additionalProperties": false,
+        "description": "One conversion rate as a fraction of matured applications (§28-31).\n\n`rate` is null when the denominator is zero — an undefined rate is not zero. `rate_percent`\nis the same figure rounded for display, and `sample_size` is the denominator so a surface can\nshow how much evidence stands behind the number.",
+        "properties": {
+          "denominator": {
+            "title": "Denominator",
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RateKind"
+          },
+          "numerator": {
+            "title": "Numerator",
+            "type": "integer"
+          },
+          "rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate"
+          },
+          "rate_percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate Percent"
+          },
+          "sample_size": {
+            "title": "Sample Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "numerator",
+          "denominator",
+          "rate",
+          "rate_percent",
+          "sample_size"
+        ],
+        "title": "ConversionRateResponse",
+        "type": "object"
+      },
+      "CorrectOutcomeRequest": {
+        "additionalProperties": false,
+        "description": "Supersede a mistaken outcome with a corrected one (§9, §64).\n\nNames the corrected `kind` and `occurred_at`; the predecessor is the path's outcome, and the\ncorrection points back at it. `occurred_at` must be timezone-aware.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OutcomeKind"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "occurred_at"
+        ],
+        "title": "CorrectOutcomeRequest",
+        "type": "object"
+      },
       "CountrySearchArea": {
         "additionalProperties": false,
         "description": "An entire country.",
@@ -2693,6 +3082,67 @@
         "title": "DeterminationSource",
         "type": "string"
       },
+      "DimensionBreakdownResponse": {
+        "additionalProperties": false,
+        "description": "Every slice of the funnel along one dimension — the raw material a recommendation cites.",
+        "properties": {
+          "cells": {
+            "items": {
+              "$ref": "#/components/schemas/DimensionCellResponse"
+            },
+            "title": "Cells",
+            "type": "array"
+          },
+          "dimension": {
+            "$ref": "#/components/schemas/DimensionKind"
+          }
+        },
+        "required": [
+          "dimension",
+          "cells"
+        ],
+        "title": "DimensionBreakdownResponse",
+        "type": "object"
+      },
+      "DimensionCellResponse": {
+        "additionalProperties": false,
+        "description": "One slice of a breakdown — e.g. one role family or one source — with its rates (§35-38).\n\n`key` is null for the bucket of applications that have no value on the dimension (an\nunclassified role, say); it is never an empty string. `rates` holds the same rate kinds the\ntop-level report does, recomputed within the slice.",
+        "properties": {
+          "applications": {
+            "title": "Applications",
+            "type": "integer"
+          },
+          "dimension": {
+            "$ref": "#/components/schemas/DimensionKind"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "rates": {
+            "items": {
+              "$ref": "#/components/schemas/ConversionRateResponse"
+            },
+            "title": "Rates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "dimension",
+          "key",
+          "applications",
+          "rates"
+        ],
+        "title": "DimensionCellResponse",
+        "type": "object"
+      },
       "DimensionEvaluationResponse": {
         "additionalProperties": false,
         "description": "One axis of one answer's grade, or an honest \"not assessed\".\n\n`score is null` is never a zero: when `status` is `NOT_EVALUATED` the provider could not\njudge this axis, and the client renders \"not assessed\" rather than a low bar.",
@@ -2730,6 +3180,17 @@
         ],
         "title": "DimensionEvaluationResponse",
         "type": "object"
+      },
+      "DimensionKind": {
+        "description": "The axes the funnel can be sliced along — the closed set of breakdown dimensions (§18-21).\n\nEach answers \"does my funnel differ *by* …\": `ROLE_FAMILY` (§18, the deterministic\n`RoleFamily` a posting title classifies to), `SOURCE` (§20, which board or channel the\nopportunity came from), `OPPORTUNITY_TYPE` (§19, student job vs internship vs permanent),\nand `DOCUMENT_STRATEGY` (§21, the pinned document version's provenance — its generator,\nprompt version and language, grouped by exact version, never by parsing prose). A cell\nwhose dimension value is unknown keeps a `None` key rather than a catch-all bucket, the\nsame discipline `RoleFamily` keeps: an honest gap beats a lie that averages everything\nthat failed to classify.",
+        "enum": [
+          "ROLE_FAMILY",
+          "SOURCE",
+          "OPPORTUNITY_TYPE",
+          "DOCUMENT_STRATEGY"
+        ],
+        "title": "DimensionKind",
+        "type": "string"
       },
       "DimensionScoreResponse": {
         "additionalProperties": false,
@@ -2971,13 +3432,14 @@
         "type": "object"
       },
       "DocumentViolationCode": {
-        "description": "Why the guard refused a version (§12-16).\n\nThese are the V2 form of V1's `truth_violations` categories\n(`pipeline/tailor_io.py`), named so a surface and an analytics query group on a\ncode rather than parse prose. Every one describes a way generated content\nwould state something the candidate's evidence does not support.\n\nThere is deliberately no `MISSING_CITATION`: an uncited line is not something\nthe guard has to *catch*, because `EvidenceBackedText` and `ResumeEntry` cannot\nbe constructed without at least one evidence id (`Field(min_length=1)`). The\nguard's job is the harder question the type cannot answer — whether the cited\nevidence *exists* (`UNKNOWN_EVIDENCE`) and whether the *words* are supported.",
+        "description": "Why the guard refused a version (§12-16).\n\nThese are the V2 form of V1's `truth_violations` categories\n(`pipeline/tailor_io.py`), named so a surface and an analytics query group on a\ncode rather than parse prose. Every one describes a way generated content\nwould state something the candidate's evidence does not support.\n\nThere is deliberately no `MISSING_CITATION`: an uncited line is not something\nthe guard has to *catch*, because `EvidenceBackedText` and `ResumeEntry` cannot\nbe constructed without at least one evidence id (`Field(min_length=1)`). The\nguard's job is the harder question the type cannot answer — whether the cited\nevidence *exists* (`UNKNOWN_EVIDENCE`) and whether the *words* are supported.\n\n`MISATTRIBUTED_TO_CANDIDATE` is the one code where the offending fact is real:\nan interview question may name a skill or number the *posting* states, but must\nnot pin it on the candidate as their own experience unless the candidate's\nevidence backs it too. It is raised by `InterviewCoachingGuard.review_question`\n(§10-17), never on a résumé or cover letter, where every line is already\ncandidate-scoped by construction.",
         "enum": [
           "UNKNOWN_EVIDENCE",
           "INVENTED_NUMBER",
           "UNSUPPORTED_SKILL",
           "INVENTED_TERM",
-          "ALTERED_IDENTITY"
+          "ALTERED_IDENTITY",
+          "MISATTRIBUTED_TO_CANDIDATE"
         ],
         "title": "DocumentViolationCode",
         "type": "string"
@@ -3237,6 +3699,64 @@
           "observed_at"
         ],
         "title": "EvidenceResponse",
+        "type": "object"
+      },
+      "FieldChangeResponse": {
+        "additionalProperties": false,
+        "description": "One field a proposal moves, rendered before → after for a human to read (§37).",
+        "properties": {
+          "after": {
+            "title": "After",
+            "type": "string"
+          },
+          "before": {
+            "title": "Before",
+            "type": "string"
+          },
+          "field": {
+            "title": "Field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "before",
+          "after"
+        ],
+        "title": "FieldChangeResponse",
+        "type": "object"
+      },
+      "FunnelStage": {
+        "description": "The ordered milestones an application passes through, coarsened for counting (§13, §22).\n\nA *cumulative* ladder, not the raw outcome vocabulary: an application is counted at a\nstage when its furthest effective outcome reaches that stage or beyond, so reaching\n`OFFER` implies it was counted at every shallower stage too. `SUBMITTED` is the base —\nevery application in the funnel has been submitted — and the stages climb from there.\nThe negative terminals (`REJECTED`, `WITHDRAWN`, a declined offer) are deliberately *not*\nstages: they can strike at any depth and say nothing about how far the application got,\nso they live in the maturity/censoring axis, not the progress axis. Order is authority\nhere, so it is pinned in `_STAGE_ORDER`, never inferred from the string values.",
+        "enum": [
+          "SUBMITTED",
+          "ACKNOWLEDGED",
+          "SCREEN",
+          "ASSESSMENT",
+          "INTERVIEW",
+          "OFFER",
+          "ACCEPTED"
+        ],
+        "title": "FunnelStage",
+        "type": "string"
+      },
+      "FunnelStageCountResponse": {
+        "additionalProperties": false,
+        "description": "How many applications reached one funnel stage (each stage counts the furthest reached).",
+        "properties": {
+          "applications": {
+            "title": "Applications",
+            "type": "integer"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/FunnelStage"
+          }
+        },
+        "required": [
+          "stage",
+          "applications"
+        ],
+        "title": "FunnelStageCountResponse",
         "type": "object"
       },
       "GenerateCoverLetterAction": {
@@ -4735,6 +5255,42 @@
         "title": "MatchedRadiusResponse",
         "type": "object"
       },
+      "MaturityCensoringResponse": {
+        "additionalProperties": false,
+        "description": "How many applications are old enough to have plausibly resolved, and how many are not.\n\nConversion rates read against `mature_count`, not `total_count`: a week-old application that\nhas not heard back is censored, not a rejection, so a rate is not deflated by fresh sends.",
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "censored_count": {
+            "title": "Censored Count",
+            "type": "integer"
+          },
+          "mature_count": {
+            "title": "Mature Count",
+            "type": "integer"
+          },
+          "observation_horizon_days": {
+            "title": "Observation Horizon Days",
+            "type": "integer"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "observation_horizon_days",
+          "as_of",
+          "mature_count",
+          "censored_count",
+          "total_count"
+        ],
+        "title": "MaturityCensoringResponse",
+        "type": "object"
+      },
       "NavigateAction": {
         "additionalProperties": false,
         "description": "Point the client at a screen — a hint that mutates nothing on the server.",
@@ -4792,6 +5348,47 @@
           "notes_md"
         ],
         "title": "NotesBody",
+        "type": "object"
+      },
+      "ObservationWindowResponse": {
+        "additionalProperties": false,
+        "description": "The span of application dates a report was computed over — both ends may be absent.\n\n`is_empty` is surfaced so a surface can render \"no applications yet\" without inferring it\nfrom two nulls.",
+        "properties": {
+          "earliest_applied_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Earliest Applied At"
+          },
+          "is_empty": {
+            "title": "Is Empty",
+            "type": "boolean"
+          },
+          "latest_applied_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Applied At"
+          }
+        },
+        "required": [
+          "earliest_applied_at",
+          "latest_applied_at",
+          "is_empty"
+        ],
+        "title": "ObservationWindowResponse",
         "type": "object"
       },
       "OnboardingStateResponse": {
@@ -5100,6 +5697,43 @@
         "title": "OpportunityType",
         "type": "string"
       },
+      "OutcomeKind": {
+        "description": "The closed vocabulary of real-world hiring-process milestones (§3-5).\n\nThese are the events that happen *after* the platform has done its job of applying —\nthe employer's and the candidate's moves through the funnel — and they are the axis\nevery Phase 15 metric is measured along. The vocabulary is deliberately closed and\ncountry-neutral: a board that calls a screen an \"entretien téléphonique\" still records\na `SCREEN`, and a member a provider invents fails to parse rather than smuggling a new\nstage into the funnel.\n\n- `ACKNOWLEDGED` — the employer confirmed the application was received;\n- `SCREEN` — a recruiter or phone screen took place (repeatable);\n- `ASSESSMENT` — a take-home, online test or exercise (repeatable);\n- `INTERVIEW` — an interview round took place (repeatable — a loop is several);\n- `OFFER_RECEIVED` — an offer was extended;\n- `OFFER_ACCEPTED` — the candidate accepted the offer (the one positive terminal);\n- `OFFER_DECLINED` — the candidate declined the offer;\n- `REJECTED` — the employer declined the candidate;\n- `WITHDRAWN` — the candidate withdrew from the process.\n\nThere is no `GHOSTED`/`NO_RESPONSE` member, and that is a decision: silence is an\nabsence the analytics layer derives (§5), never a fact recorded here. `WITHDRAWN` is a\n*process* outcome and is not the Phase 12 `ApplicationState.WITHDRAWN` execution state —\nthe names rhyme, the two lifecycles do not touch (§84).",
+        "enum": [
+          "ACKNOWLEDGED",
+          "SCREEN",
+          "ASSESSMENT",
+          "INTERVIEW",
+          "OFFER_RECEIVED",
+          "OFFER_ACCEPTED",
+          "OFFER_DECLINED",
+          "REJECTED",
+          "WITHDRAWN"
+        ],
+        "title": "OutcomeKind",
+        "type": "string"
+      },
+      "OutcomeSource": {
+        "description": "How the platform came to know an outcome — its provenance (§7-8).\n\nProvenance is not decoration: an outcome the user typed in and one synced from an ATS\ncarry different trust, and a metric that could not say which is which could not be\naudited. The set is closed and honest — every member is a way we *actually* learned a\nfact, so there is no `INFERRED` member, because an inferred outcome is not a fact and\ndoes not belong in this table at all (that is what the derived `NO_RESPONSE_AFTER_\nTHRESHOLD` observation is for, §5).\n\n- `MANUAL_USER` — the candidate recorded it themselves (the default and the common case);\n- `EMAIL` — parsed or forwarded from an email the candidate received;\n- `ATS` — synced from an applicant-tracking system or employer portal;\n- `IMPORTED` — migrated from a prior record (a V1 export, a spreadsheet).",
+        "enum": [
+          "MANUAL_USER",
+          "EMAIL",
+          "ATS",
+          "IMPORTED"
+        ],
+        "title": "OutcomeSource",
+        "type": "string"
+      },
+      "OutcomeStatus": {
+        "description": "Whether an outcome is currently believed, corrected, or taken back (§9, §64).\n\nHistory is append-only — nothing here is ever hard-deleted — so an outcome that turns\nout wrong changes *status* rather than vanishing, and the analytics layer counts only\n`EFFECTIVE` rows. `SUPERSEDED` marks an outcome a later, corrected one replaced (the\nreplacement points back with `supersedes_id`); `RETRACTED` marks one the user took back\nwithout a replacement (\"that rejection was for a different application\"). The distinction\nmatters to an audit: a superseded outcome was *wrong about the detail*, a retracted one\n*should not have been recorded at all*.",
+        "enum": [
+          "EFFECTIVE",
+          "SUPERSEDED",
+          "RETRACTED"
+        ],
+        "title": "OutcomeStatus",
+        "type": "string"
+      },
       "PinnedDocumentResponse": {
         "additionalProperties": false,
         "description": "One exact document version an application will submit (§14-16).",
@@ -5151,6 +5785,73 @@
           "application_id"
         ],
         "title": "PrepareApplicationAction",
+        "type": "object"
+      },
+      "ProposeStrategyChangeRequest": {
+        "additionalProperties": false,
+        "description": "Draft a proposal to change one search or policy — the spine's only mutation entry (§34-45).\n\nThe body carries the typed `change` (the discriminated union, validated at this boundary so a\n`kind` the platform does not offer is a 422, never a silently widened match) and the human\n`summary` a surface shows. The owner, the target, the target's version precondition and the\nlifecycle are the service's to supply from the session and the live target — there is no\nfield here to set a `user_id`, a `target_version` or a `status`. `source_recommendation_id`\noptionally links the draft back to the recommendation that motivated it.",
+        "properties": {
+          "change": {
+            "discriminator": {
+              "mapping": {
+                "SET_APPLICATION_VOLUME": "#/components/schemas/SetApplicationVolumeChange",
+                "SET_MINIMUM_SCORE": "#/components/schemas/SetMinimumScoreChange",
+                "SET_POLICY_OPPORTUNITY_TYPES": "#/components/schemas/SetPolicyOpportunityTypesChange",
+                "SET_SEARCH_KEYWORDS": "#/components/schemas/SetSearchKeywordsChange",
+                "SET_SEARCH_OPPORTUNITY_TYPES": "#/components/schemas/SetSearchOpportunityTypesChange",
+                "SET_SEARCH_RADIUS": "#/components/schemas/SetSearchRadiusChange",
+                "SET_SEARCH_SOURCES": "#/components/schemas/SetSearchSourcesChange"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SetSearchRadiusChange"
+              },
+              {
+                "$ref": "#/components/schemas/SetSearchKeywordsChange"
+              },
+              {
+                "$ref": "#/components/schemas/SetSearchSourcesChange"
+              },
+              {
+                "$ref": "#/components/schemas/SetSearchOpportunityTypesChange"
+              },
+              {
+                "$ref": "#/components/schemas/SetPolicyOpportunityTypesChange"
+              },
+              {
+                "$ref": "#/components/schemas/SetApplicationVolumeChange"
+              },
+              {
+                "$ref": "#/components/schemas/SetMinimumScoreChange"
+              }
+            ],
+            "title": "Change"
+          },
+          "source_recommendation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Recommendation Id"
+          },
+          "summary": {
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "change",
+          "summary"
+        ],
+        "title": "ProposeStrategyChangeRequest",
         "type": "object"
       },
       "ProviderHealthResponse": {
@@ -5264,6 +5965,17 @@
         "title": "RadiusSearchArea",
         "type": "object"
       },
+      "RateKind": {
+        "description": "The named conversion rates the funnel reports — the closed set from §23.\n\nEach is a ratio of applications that reached one stage to those that reached an earlier\nbase stage, and the base is what makes them honest: `OFFER_CONVERSION` is offers per\n*interview*, not per application, so a strong closer with few interviews is not punished\nfor a thin top of funnel. `RESPONSE` counts any employer signal (reaching `ACKNOWLEDGED`\nor beyond) against mature submitted applications — its complement is the ghost rate the\nplatform never stores as a fact (§5). The base and target stages live in\n`_RATE_STAGES`, so the definition of each rate is one table a reader can audit.",
+        "enum": [
+          "RESPONSE",
+          "INTERVIEW_CONVERSION",
+          "OFFER_CONVERSION",
+          "ACCEPTANCE"
+        ],
+        "title": "RateKind",
+        "type": "string"
+      },
       "ReadinessBand": {
         "description": "The coaching band a session's readiness falls in — named once, invented nowhere (§34).\n\nA practice trajectory, never a hiring probability (§123). The names describe how far\n*rehearsal* has come — `EARLY` through `POLISHED` — and deliberately avoid any word that\nreads as \"will get the offer\". `UNKNOWN` is the honest answer when no answer in the\nsession could be evaluated at all; like its match-domain twin it must never be rendered as\na low band, because \"we could not assess this practice\" and \"this practice went badly\" are\ndifferent facts. The thresholds live on `ReadinessProfile`, so no surface hard-codes a\n`if score > 0.8`.",
         "enum": [
@@ -5351,6 +6063,173 @@
           "impact"
         ],
         "title": "ReasonResponse",
+        "type": "object"
+      },
+      "RecommendationConfidence": {
+        "description": "How much weight a recommendation's evidence can bear — a visible uncertainty (§24).\n\nNever a probability of success, only a statement about *sample strength*: `LOW` is\n\"enough to notice\", `MEDIUM` \"enough to lean on\", `HIGH` \"well-established in your own\nhistory\". Derived from the weakest evidence a recommendation cites, so a comparison\nresting on one thin slice is only as confident as that slice — the uncertainty stays\nwhere a reader can see it rather than being averaged away.",
+        "enum": [
+          "LOW",
+          "MEDIUM",
+          "HIGH"
+        ],
+        "title": "RecommendationConfidence",
+        "type": "string"
+      },
+      "RecommendationEvidenceResponse": {
+        "additionalProperties": false,
+        "description": "One metric a recommendation cites, with its own numbers — the auditable citation (§62).\n\nCarries exactly one metric shape (a `rate_kind` or a `timing_kind`, never both, mirroring\nthe domain), the slice it was measured in, and the raw counts, so a reader can trace the\nclaim back to the analytics report. `dimension_key` is null for a dimension's unclassified\nslice; a null `dimension` is an overall metric.",
+        "properties": {
+          "denominator": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "dimension": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DimensionKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dimension_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimension Key"
+          },
+          "median_days": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Days"
+          },
+          "numerator": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "rate_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RateKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sample_size": {
+            "title": "Sample Size",
+            "type": "integer"
+          },
+          "timing_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimingKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ordinal",
+          "dimension",
+          "dimension_key",
+          "rate_kind",
+          "timing_kind",
+          "numerator",
+          "denominator",
+          "median_days",
+          "sample_size",
+          "detail"
+        ],
+        "title": "RecommendationEvidenceResponse",
+        "type": "object"
+      },
+      "RecommendationKind": {
+        "description": "The closed set of suggestions the engine can make — each grounded in a metric (§26-31).\n\nEvery member is a *focus* suggestion tied to a funnel dimension, phrased as observation\nplus proposed emphasis, never as cause and effect. `PRIORITIZE_*`/`DEPRIORITIZE_*` follow\na slice that converts notably better or worse than the rest; `REVIEW_*` flag a pattern\nworth the user's attention without prescribing a direction. A provider that invents a\nkind fails to parse rather than smuggling a new recommendation the engine never reasoned\nabout, exactly as every other closed vocabulary in the domain.",
+        "enum": [
+          "PRIORITIZE_ROLE_FAMILY",
+          "DEPRIORITIZE_ROLE_FAMILY",
+          "PRIORITIZE_SOURCE",
+          "DEPRIORITIZE_SOURCE",
+          "REVIEW_OPPORTUNITY_TYPE_MIX",
+          "REVIEW_DOCUMENT_STRATEGY",
+          "REVIEW_APPLICATION_VOLUME",
+          "REVIEW_INTERVIEW_PREPARATION"
+        ],
+        "title": "RecommendationKind",
+        "type": "string"
+      },
+      "RecordOutcomeRequest": {
+        "additionalProperties": false,
+        "description": "Record one real-world milestone against an application (§7-8, §46).\n\n`occurred_at` is when the event happened in the world and must be timezone-aware — a naive\ninstant is a 422 here rather than a 500 in the domain. There is no `recorded_at`: the\nplatform stamps when it learned of the fact. `source` defaults to the common case, the\ncandidate recording it themselves.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OutcomeKind"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/OutcomeSource",
+            "default": "MANUAL_USER"
+          }
+        },
+        "required": [
+          "kind",
+          "occurred_at"
+        ],
+        "title": "RecordOutcomeRequest",
         "type": "object"
       },
       "RegenBody": {
@@ -5613,6 +6492,108 @@
         ],
         "title": "ResumeSkillGroup",
         "type": "object"
+      },
+      "RoleClassificationListResponse": {
+        "additionalProperties": false,
+        "description": "This account's classifications, most recently updated first — a surface to review.",
+        "properties": {
+          "classifications": {
+            "items": {
+              "$ref": "#/components/schemas/RoleClassificationResponse"
+            },
+            "title": "Classifications",
+            "type": "array"
+          }
+        },
+        "required": [
+          "classifications"
+        ],
+        "title": "RoleClassificationListResponse",
+        "type": "object"
+      },
+      "RoleClassificationResponse": {
+        "additionalProperties": false,
+        "description": "One account's role-family verdict on one opportunity — deterministic or corrected (§18).\n\n`role_family` is nullable: an unclassified role is a real, honest state, never a catch-all.\n`is_manual` is surfaced so a UI can tell a human's correction from a machine guess without\nre-deriving it from `provenance`.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_manual": {
+            "title": "Is Manual",
+            "type": "boolean"
+          },
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/RoleFamilyProvenance"
+          },
+          "role_family": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoleFamily"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "opportunity_id",
+          "role_family",
+          "provenance",
+          "is_manual",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "RoleClassificationResponse",
+        "type": "object"
+      },
+      "RoleFamily": {
+        "description": "A small, closed family of roles — the grouping axis for by-role analytics (§18-20).\n\nDeliberately coarse. The point is not a taxonomy of every job title but a handful of\nfamilies broad enough that each accumulates a meaningful sample and narrow enough that\n\"your data applications convert differently from your engineering ones\" is a real\nstatement. Country- and language-neutral: the words a board prints map onto these\nmembers, they do not extend them. A title the keyword rule cannot place stays\n*unclassified* (`None`), never a catch-all member.",
+        "enum": [
+          "SOFTWARE_ENGINEERING",
+          "DATA_AND_ANALYTICS",
+          "INFRASTRUCTURE_AND_DEVOPS",
+          "SECURITY",
+          "PRODUCT_MANAGEMENT",
+          "DESIGN",
+          "PROJECT_AND_PROGRAM",
+          "IT_SUPPORT",
+          "SALES",
+          "MARKETING",
+          "CUSTOMER_SUCCESS",
+          "OPERATIONS",
+          "FINANCE",
+          "HUMAN_RESOURCES"
+        ],
+        "title": "RoleFamily",
+        "type": "string"
+      },
+      "RoleFamilyProvenance": {
+        "description": "How a role classification was decided — machine rule or human choice (§18).\n\n`DETERMINISTIC_TITLE` is the keyword rule's output; `MANUAL` is a user's explicit\ncorrection. The distinction has teeth: the deterministic backfill refuses to overwrite a\n`MANUAL` classification, so a human's judgement is never silently undone by the next\nanalytics run.",
+        "enum": [
+          "DETERMINISTIC_TITLE",
+          "MANUAL"
+        ],
+        "title": "RoleFamilyProvenance",
+        "type": "string"
       },
       "RuleAuthority": {
         "description": "How much a rule behind a check is entitled to close a gate.\n\nThe distinction has legal teeth. A Country Pack's permit table, its minimum\nworking age and its language thresholds are *operator-maintained\nconfiguration*, not law this repository asserts — docs/COUNTRY_PACKS.md\n§Eligibility and the `PermitRule` docstring say so in the same words. A wrong\nnumber in a YAML file must never become an automatic \"you may not apply\".\n\nSo authority is carried on the check and enforced by the domain: only a\n`VERIFIED` rule may produce `INELIGIBLE`. Anything less can inform, can lower\na match score elsewhere, and can raise `REVIEW_REQUIRED` so a human looks —\nbut it cannot refuse on its own. The four levels, weakest last:\n\n- `VERIFIED` — reviewed against the actual legal source and signed off; the\n  only authority permitted to block.\n- `SOURCE_DECLARED` — the opportunity or employer stated the requirement\n  itself (e.g. a posting that says \"EU work permit required\"). Strong, but a\n  posting is not the law and can be wrong, so it informs and reviews.\n- `OPERATOR_CONFIG` — a value an operator maintains in a Country Pack. The\n  default for pack-supplied rules, and deliberately not blocking.\n- `UNKNOWN` — no provenance stated; treated as the weakest.",
@@ -5927,6 +6908,76 @@
         "title": "SessionStyle",
         "type": "string"
       },
+      "SetApplicationVolumeChange": {
+        "additionalProperties": false,
+        "description": "Set an application policy's daily/weekly submission caps (`ApplicationPolicyService`).\n\nA complete before/after of both caps, because they carry a coherence rule the policy\nenforces — the daily cap may not exceed the weekly one — so the two move together and are\nvalidated together here rather than drifting apart across two proposals. `None` is a real,\ndangerous value: it means *unlimited*, which is why raising a cap or lifting one to\nunlimited reads as sensitive (§42). Tightening either cap is safe.",
+        "properties": {
+          "application_policy_id": {
+            "format": "uuid",
+            "title": "Application Policy Id",
+            "type": "string"
+          },
+          "before_max_applications_per_day": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Max Applications Per Day"
+          },
+          "before_max_applications_per_week": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Max Applications Per Week"
+          },
+          "kind": {
+            "const": "SET_APPLICATION_VOLUME",
+            "default": "SET_APPLICATION_VOLUME",
+            "title": "Kind",
+            "type": "string"
+          },
+          "max_applications_per_day": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Applications Per Day"
+          },
+          "max_applications_per_week": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Applications Per Week"
+          }
+        },
+        "required": [
+          "application_policy_id"
+        ],
+        "title": "SetApplicationVolumeChange",
+        "type": "object"
+      },
       "SetLLMConnectionEnabledRequest": {
         "additionalProperties": false,
         "description": "The on/off a settings page toggles, without deleting the row or its key.",
@@ -5940,6 +6991,198 @@
           "enabled"
         ],
         "title": "SetLLMConnectionEnabledRequest",
+        "type": "object"
+      },
+      "SetMinimumScoreChange": {
+        "additionalProperties": false,
+        "description": "Set an application policy's overall score floor (routes to `ApplicationPolicyService`).\n\nThe coarse selectivity lever: `minimum_overall_score` is the floor a match must clear to be\napplied to. `None` means *no floor*, the least selective setting — so lowering the floor, or\nremoving it entirely, lets the platform apply to weaker matches and reads as sensitive (§42).\nRaising the floor is safe.",
+        "properties": {
+          "application_policy_id": {
+            "format": "uuid",
+            "title": "Application Policy Id",
+            "type": "string"
+          },
+          "before_minimum_overall_score": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Minimum Overall Score"
+          },
+          "kind": {
+            "const": "SET_MINIMUM_SCORE",
+            "default": "SET_MINIMUM_SCORE",
+            "title": "Kind",
+            "type": "string"
+          },
+          "minimum_overall_score": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum Overall Score"
+          }
+        },
+        "required": [
+          "application_policy_id"
+        ],
+        "title": "SetMinimumScoreChange",
+        "type": "object"
+      },
+      "SetPolicyOpportunityTypesChange": {
+        "additionalProperties": false,
+        "description": "Replace an application policy's allowed-type list (routes to `ApplicationPolicyService`).\n\nThis is application authority, not discovery scope: it governs which opportunity types the\nplatform may actually *apply* to. Widening it — adding a type, or clearing the list to \"any\ntype\" — lets the platform apply where it previously would not, so it reads as sensitive and\na surface should demand an explicit second confirmation (§42).",
+        "properties": {
+          "allowed_opportunity_types": {
+            "items": {
+              "$ref": "#/components/schemas/OpportunityType"
+            },
+            "title": "Allowed Opportunity Types",
+            "type": "array"
+          },
+          "application_policy_id": {
+            "format": "uuid",
+            "title": "Application Policy Id",
+            "type": "string"
+          },
+          "before_allowed_opportunity_types": {
+            "items": {
+              "$ref": "#/components/schemas/OpportunityType"
+            },
+            "title": "Before Allowed Opportunity Types",
+            "type": "array"
+          },
+          "kind": {
+            "const": "SET_POLICY_OPPORTUNITY_TYPES",
+            "default": "SET_POLICY_OPPORTUNITY_TYPES",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_policy_id",
+          "allowed_opportunity_types",
+          "before_allowed_opportunity_types"
+        ],
+        "title": "SetPolicyOpportunityTypesChange",
+        "type": "object"
+      },
+      "SetRoleClassificationRequest": {
+        "additionalProperties": false,
+        "description": "A human's explicit role family for one opportunity, outranking the rule (§18).\n\nA manual classification must name a family — the domain refuses one that does not — so this\nbody has no nullable option: to leave a role unclassified is to not set it manually at all.",
+        "properties": {
+          "role_family": {
+            "$ref": "#/components/schemas/RoleFamily"
+          }
+        },
+        "required": [
+          "role_family"
+        ],
+        "title": "SetRoleClassificationRequest",
+        "type": "object"
+      },
+      "SetSearchKeywordsChange": {
+        "additionalProperties": false,
+        "description": "Replace a saved search's title and excluded keyword lists (routes to `OnboardingService`).\n\nA complete before/after of both lists: `diff()` shows only the list that moved, so a\nproposal that touches the title keywords does not read as if it also rewrote the exclusions.\nAn empty tuple is a real value that clears a list — the domain's \"no restriction\" — never a\nmissing one.",
+        "properties": {
+          "before_excluded_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Before Excluded Keywords",
+            "type": "array"
+          },
+          "before_title_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Before Title Keywords",
+            "type": "array"
+          },
+          "excluded_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Excluded Keywords",
+            "type": "array"
+          },
+          "kind": {
+            "const": "SET_SEARCH_KEYWORDS",
+            "default": "SET_SEARCH_KEYWORDS",
+            "title": "Kind",
+            "type": "string"
+          },
+          "search_profile_id": {
+            "format": "uuid",
+            "title": "Search Profile Id",
+            "type": "string"
+          },
+          "title_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Title Keywords",
+            "type": "array"
+          }
+        },
+        "required": [
+          "search_profile_id",
+          "title_keywords",
+          "before_title_keywords",
+          "excluded_keywords",
+          "before_excluded_keywords"
+        ],
+        "title": "SetSearchKeywordsChange",
+        "type": "object"
+      },
+      "SetSearchOpportunityTypesChange": {
+        "additionalProperties": false,
+        "description": "Replace a saved search's opportunity-type allow-list (routes to `OnboardingService`).\n\nDiscovery filtering, not application authority: this bounds which types a search *surfaces*.\nWidening it broadens what the user sees, which is safe — the `APPLICATION_POLICY` allow-list\n(`SetPolicyOpportunityTypesChange`) is the one that governs what may be applied to.",
+        "properties": {
+          "before_opportunity_types": {
+            "items": {
+              "$ref": "#/components/schemas/OpportunityType"
+            },
+            "title": "Before Opportunity Types",
+            "type": "array"
+          },
+          "kind": {
+            "const": "SET_SEARCH_OPPORTUNITY_TYPES",
+            "default": "SET_SEARCH_OPPORTUNITY_TYPES",
+            "title": "Kind",
+            "type": "string"
+          },
+          "opportunity_types": {
+            "items": {
+              "$ref": "#/components/schemas/OpportunityType"
+            },
+            "title": "Opportunity Types",
+            "type": "array"
+          },
+          "search_profile_id": {
+            "format": "uuid",
+            "title": "Search Profile Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "search_profile_id",
+          "opportunity_types",
+          "before_opportunity_types"
+        ],
+        "title": "SetSearchOpportunityTypesChange",
         "type": "object"
       },
       "SetSearchRadiusAction": {
@@ -5969,6 +7212,86 @@
           "radius_km"
         ],
         "title": "SetSearchRadiusAction",
+        "type": "object"
+      },
+      "SetSearchRadiusChange": {
+        "additionalProperties": false,
+        "description": "Set the radius of a saved search's radius area(s) (routes to `OnboardingService`).",
+        "properties": {
+          "before_radius_km": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 500.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Radius Km"
+          },
+          "kind": {
+            "const": "SET_SEARCH_RADIUS",
+            "default": "SET_SEARCH_RADIUS",
+            "title": "Kind",
+            "type": "string"
+          },
+          "radius_km": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 500.0,
+            "title": "Radius Km",
+            "type": "number"
+          },
+          "search_profile_id": {
+            "format": "uuid",
+            "title": "Search Profile Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "search_profile_id",
+          "radius_km"
+        ],
+        "title": "SetSearchRadiusChange",
+        "type": "object"
+      },
+      "SetSearchSourcesChange": {
+        "additionalProperties": false,
+        "description": "Replace a saved search's source allow-list (routes to `OnboardingService`).\n\nThe concrete edit behind a `PRIORITIZE_SOURCE`/`DEPRIORITIZE_SOURCE` recommendation: an\nempty tuple restricts nothing (every source), a non-empty one limits discovery to the\nlisted plugin keys.",
+        "properties": {
+          "before_source_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Before Source Keys",
+            "type": "array"
+          },
+          "kind": {
+            "const": "SET_SEARCH_SOURCES",
+            "default": "SET_SEARCH_SOURCES",
+            "title": "Kind",
+            "type": "string"
+          },
+          "search_profile_id": {
+            "format": "uuid",
+            "title": "Search Profile Id",
+            "type": "string"
+          },
+          "source_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Keys",
+            "type": "array"
+          }
+        },
+        "required": [
+          "search_profile_id",
+          "source_keys",
+          "before_source_keys"
+        ],
+        "title": "SetSearchSourcesChange",
         "type": "object"
       },
       "SettingsBody": {
@@ -6200,6 +7523,288 @@
         "title": "StatusBody",
         "type": "object"
       },
+      "StrategyChangeExecutionOutcome": {
+        "description": "How one attempt to apply a confirmed proposal ended (§45).\n\nTold apart from the proposal's status because an execution is the *event* and the status is\nthe proposal's resulting *state*: `REJECTED` is a proposal the executor would not permit (a\nstale version, a target that vanished), `FAILED` is one it permitted but whose service call\nraised, and `SUCCEEDED` is the change having been written to the live target.",
+        "enum": [
+          "SUCCEEDED",
+          "REJECTED",
+          "FAILED"
+        ],
+        "title": "StrategyChangeExecutionOutcome",
+        "type": "string"
+      },
+      "StrategyChangeExecutionResponse": {
+        "additionalProperties": false,
+        "description": "The record of one attempt to apply a confirmed proposal — the executor's audit (§45).\n\n`succeeded` is surfaced so a UI need not re-derive it from `outcome`; `observed_target_version`\nis the version the executor checked the staleness precondition against. There is no `user_id`.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "observed_target_version": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed Target Version"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/StrategyChangeExecutionOutcome"
+          },
+          "proposal_id": {
+            "format": "uuid",
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Ref"
+          },
+          "succeeded": {
+            "title": "Succeeded",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "proposal_id",
+          "outcome",
+          "succeeded",
+          "observed_target_version",
+          "detail",
+          "result_ref",
+          "created_at"
+        ],
+        "title": "StrategyChangeExecutionResponse",
+        "type": "object"
+      },
+      "StrategyChangeKind": {
+        "description": "Every typed edit a proposal may carry — the closed grammar of strategy change (§36).\n\nOne member per operation, each mapping to exactly one method of an existing service the\nexecutor calls after approval, so \"what can a strategy change do?\" is an answerable\nquestion and adding a capability is adding a member plus its executor branch, never a free\nfield at a call site. The search family (`SET_SEARCH_*`) is bounded discovery tuning routed\nto `OnboardingService`; the policy family (`SET_POLICY_*`, `SET_APPLICATION_VOLUME`,\n`SET_MINIMUM_SCORE`) is the selectivity/volume levers a career loop legitimately touches,\nrouted to `ApplicationPolicyService`. There is deliberately no member that flips the\nautomation mode or the approval brake: the career loop never proposes weakening the\nsubmission guard — that stays a human's manual, out-of-band choice.",
+        "enum": [
+          "SET_SEARCH_RADIUS",
+          "SET_SEARCH_KEYWORDS",
+          "SET_SEARCH_SOURCES",
+          "SET_SEARCH_OPPORTUNITY_TYPES",
+          "SET_POLICY_OPPORTUNITY_TYPES",
+          "SET_APPLICATION_VOLUME",
+          "SET_MINIMUM_SCORE"
+        ],
+        "title": "StrategyChangeKind",
+        "type": "string"
+      },
+      "StrategyChangeProposalDetailResponse": {
+        "additionalProperties": false,
+        "description": "One proposal with its execution record, if it has been acted on (§44-45).\n\nPairing the two here avoids an \"execution not found\" code and a second round-trip: a\n`PROPOSED`, `DISMISSED` or `EXPIRED` proposal simply carries a null `execution`, while an\n`EXECUTED`/`REJECTED`/`FAILED` one carries the audit of the attempt that closed it.",
+        "properties": {
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StrategyChangeExecutionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proposal": {
+            "$ref": "#/components/schemas/StrategyChangeProposalResponse"
+          }
+        },
+        "required": [
+          "proposal",
+          "execution"
+        ],
+        "title": "StrategyChangeProposalDetailResponse",
+        "type": "object"
+      },
+      "StrategyChangeProposalListResponse": {
+        "additionalProperties": false,
+        "description": "A set of proposals — pending (most recent first) or the full history a surface reviews.",
+        "properties": {
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/StrategyChangeProposalResponse"
+            },
+            "title": "Proposals",
+            "type": "array"
+          }
+        },
+        "required": [
+          "proposals"
+        ],
+        "title": "StrategyChangeProposalListResponse",
+        "type": "object"
+      },
+      "StrategyChangeProposalResponse": {
+        "additionalProperties": false,
+        "description": "One approved-or-not edit to a search or policy — its diff, sensitivity and lifecycle (§34).\n\nSurfaces the queryable identity (`target`, `target_id`), the `change_kind` discriminator and\nthe human `summary`, plus the two things a surface must gate on: `is_sensitive` (whether it\nloosens a safety brake) and `field_changes` (the before → after of exactly the fields that\nmove). The raw change payload is deliberately not echoed — a client renders the diff, not the\ntyped levers — and there is no `user_id`. `is_open` says whether it may still be acted on.",
+        "properties": {
+          "change_kind": {
+            "$ref": "#/components/schemas/StrategyChangeKind"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "field_changes": {
+            "items": {
+              "$ref": "#/components/schemas/FieldChangeResponse"
+            },
+            "title": "Field Changes",
+            "type": "array"
+          },
+          "generator_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generator Key"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_open": {
+            "title": "Is Open",
+            "type": "boolean"
+          },
+          "is_sensitive": {
+            "title": "Is Sensitive",
+            "type": "boolean"
+          },
+          "llm_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Run Id"
+          },
+          "source_recommendation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Recommendation Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/StrategyChangeProposalStatus"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/StrategyChangeTarget"
+          },
+          "target_id": {
+            "format": "uuid",
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_version": {
+            "format": "date-time",
+            "title": "Target Version",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "target",
+          "target_id",
+          "change_kind",
+          "summary",
+          "status",
+          "is_open",
+          "is_sensitive",
+          "field_changes",
+          "target_version",
+          "source_recommendation_id",
+          "generator_key",
+          "llm_run_id",
+          "created_at",
+          "updated_at",
+          "expires_at"
+        ],
+        "title": "StrategyChangeProposalResponse",
+        "type": "object"
+      },
+      "StrategyChangeProposalStatus": {
+        "description": "Where one proposal is in its life from \"offered\" to \"done\" (§44).\n\nBorn `PROPOSED`. A human confirming it that the executor applied moves it to `EXECUTED`;\none the executor refused at re-validation — stale precondition, lost ownership — moves it\nto `REJECTED` (it was never permitted); one the executor permitted but whose service call\nraised moves it to `FAILED` (permitted, did not complete). `DISMISSED` is the user\ndeclining it; `EXPIRED` is the clock passing `expires_at` before anyone acted. Only a\n`PROPOSED` proposal may leave that state — every other status is terminal, so a change is\napplied at most once.",
+        "enum": [
+          "PROPOSED",
+          "EXECUTED",
+          "REJECTED",
+          "FAILED",
+          "DISMISSED",
+          "EXPIRED"
+        ],
+        "title": "StrategyChangeProposalStatus",
+        "type": "string"
+      },
+      "StrategyChangeTarget": {
+        "description": "The two — and only two — kinds of thing a strategy change may edit (§35).\n\nA `SEARCH_PROFILE` change tunes *what the user looks for and where* and reaches the funnel\nonly by changing what discovery surfaces; an `APPLICATION_POLICY` change tunes *how\nselectively and autonomously the platform applies*, which is the safety-critical axis. The\nset is closed for the same reason every vocabulary in the domain is: a target the platform\ndoes not offer is not a free string a generator can invent, and there is no member for an\napplication, an outcome or a score — the career loop never rewrites the record it observes.",
+        "enum": [
+          "SEARCH_PROFILE",
+          "APPLICATION_POLICY"
+        ],
+        "title": "StrategyChangeTarget",
+        "type": "string"
+      },
       "SubmitApplicationAction": {
         "additionalProperties": false,
         "description": "Submit an approved application — the irreversible boundary (§1, §5, §80-88).\n\nCarries no override of any kind: the executor hands this to `ApplicationService.submit`,\nwhich re-evaluates the Phase 12 gate (policy, eligibility, rate budget, the\nconcurrency-safe reservation) exactly as the HTTP route does. The chat is one more\ncaller of that boundary, never a way around it.",
@@ -6235,6 +7840,72 @@
           "content"
         ],
         "title": "SubmitTextAnswerRequest",
+        "type": "object"
+      },
+      "TimingKind": {
+        "description": "The elapsed-time measurements the funnel reports, in real calendar days (§17).\n\nEach is the gap between two real timestamps — never a status age, never an estimate —\nso a duration exists only when both ends actually happened. `TIME_TO_FIRST_RESPONSE` is\nfrom submission to the first employer signal; `TIME_TO_INTERVIEW` to the first interview;\n`TIME_TO_OFFER` to the offer; `TIME_TO_DECISION` from submission to whichever terminal\noutcome concluded the process. They are summarized by median with a p25/p75 spread rather\nthan a mean, because a handful of slow replies should not drag the typical wait, and the\nspread is where the honesty about variance lives.",
+        "enum": [
+          "TIME_TO_FIRST_RESPONSE",
+          "TIME_TO_INTERVIEW",
+          "TIME_TO_OFFER",
+          "TIME_TO_DECISION"
+        ],
+        "title": "TimingKind",
+        "type": "string"
+      },
+      "TimingStatResponse": {
+        "additionalProperties": false,
+        "description": "Median and quartile days-to-milestone over the applications that reached it (§32-34).\n\nAll three day figures are null until the sample exists; `sample_size` says how many\napplications the medians rest on.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/TimingKind"
+          },
+          "median_days": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Days"
+          },
+          "p25_days": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P25 Days"
+          },
+          "p75_days": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P75 Days"
+          },
+          "sample_size": {
+            "title": "Sample Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "sample_size",
+          "median_days",
+          "p25_days",
+          "p75_days"
+        ],
+        "title": "TimingStatResponse",
         "type": "object"
       },
       "UpdateLLMConnectionRequest": {
@@ -8088,6 +9759,102 @@
         ]
       }
     },
+    "/api/v2/applications/{application_id}/outcomes": {
+      "get": {
+        "description": "One application's outcomes oldest-first — every status, so corrections stay in the record.\n\nOwnership is checked first, so a foreign or missing application is a 404 rather than an empty\nlist a caller could not tell from \"no outcomes yet\". Superseded and retracted rows travel\nalongside effective ones: the timeline keeps the whole history, and only analytics filters to\neffective rows when it counts.",
+        "operationId": "list_outcomes_api_v2_applications__application_id__outcomes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationOutcomeListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Outcomes",
+        "tags": [
+          "v2-outcomes"
+        ]
+      },
+      "post": {
+        "description": "Record one real-world milestone against an application (§46, §81).\n\n201, because it records an outcome. Idempotent by the outcome's derived id: a double-clicked\n\"mark as interviewed\" collapses onto one row, while two genuine rounds on different days stay\ntwo. The application is loaded owner-first, so a foreign or missing one is a 404\n(`application_not_found`) rather than a write. This can never move the application's execution\nstate — a `REJECTED` outcome leaves the Phase 12 lifecycle untouched.",
+        "operationId": "record_outcome_api_v2_applications__application_id__outcomes_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordOutcomeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationOutcomeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record Outcome",
+        "tags": [
+          "v2-outcomes"
+        ]
+      }
+    },
     "/api/v2/applications/{application_id}/prepare": {
       "post": {
         "description": "Prepare materials and route by the gate (auto-approve, review, human, block).\n\nReversible and safe to retry (§33) — it never submits. The returned state says\nwhat happens next.",
@@ -8294,6 +10061,326 @@
         "summary": "Read Session",
         "tags": [
           "v2-auth"
+        ]
+      }
+    },
+    "/api/v2/career/analytics": {
+      "get": {
+        "description": "This account's whole funnel report as of now, under one maturity horizon (§13-25).\n\nA point-in-time read: the funnel, the four named rates, the four timings and the\nrole/source/type breakdowns, each self-describing and all over one window. Conversion rates\nread against *matured* applications, so a fresh send that has not heard back is censored, never\ncounted as a rejection. `horizon_days` overrides the default maturity window when given.",
+        "operationId": "career_analytics_api_v2_career_analytics_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "horizon_days",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 365,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Horizon Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CareerAnalyticsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Career Analytics",
+        "tags": [
+          "v2-career"
+        ]
+      }
+    },
+    "/api/v2/career/recommendations": {
+      "get": {
+        "description": "This account's recommendations, most recently created first — a surface to review.\n\nA read of the write-once store: past observations, each with the evidence and the\n`analytics_version` that justified it, so a suggestion is never silently re-read against\nmetrics computed by a newer recipe.",
+        "operationId": "list_recommendations_api_v2_career_recommendations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CareerRecommendationListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Recommendations",
+        "tags": [
+          "v2-career"
+        ]
+      },
+      "post": {
+        "description": "Compute the report, derive evidence-backed suggestions from it, persist and return them.\n\n201, because it adds fresh observations to the write-once store rather than mutating a prior\nset — a re-run is a new snapshot, not an edit. Each suggestion cites the rates it compared,\nevery cited slice clears the minimum sample size, and none carries authority to change a search\nor a policy: that is the strategy-proposal step the user approves explicitly (§26-33).",
+        "operationId": "generate_recommendations_api_v2_career_recommendations_post",
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CareerRecommendationListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Generate Recommendations",
+        "tags": [
+          "v2-career"
+        ]
+      }
+    },
+    "/api/v2/career/strategy-proposals": {
+      "get": {
+        "description": "This account's still-open proposals, most recently updated first — the review queue.",
+        "operationId": "list_pending_proposals_api_v2_career_strategy_proposals_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StrategyChangeProposalListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Pending Proposals",
+        "tags": [
+          "v2-strategy-proposals"
+        ]
+      },
+      "post": {
+        "description": "Draft a proposal for a typed change to a search or a policy — writing nothing yet (§37-39).\n\n201, because it creates a proposal. The typed `change` is validated at the boundary, so a kind\nthe platform does not offer is a 422. The live target is read once to capture its version as\nthe approval precondition; a target that does not exist for this account is a 409\n(`strategy_target_not_found`). The proposal is born open and touches nothing on the target.",
+        "operationId": "propose_strategy_change_api_v2_career_strategy_proposals_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProposeStrategyChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StrategyChangeProposalResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Propose Strategy Change",
+        "tags": [
+          "v2-strategy-proposals"
+        ]
+      }
+    },
+    "/api/v2/career/strategy-proposals/history": {
+      "get": {
+        "description": "This account's proposals in every status — a surface to review what was done.\n\nDeclared before `/{proposal_id}` so the literal `history` is never parsed as a proposal id.",
+        "operationId": "list_proposal_history_api_v2_career_strategy_proposals_history_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StrategyChangeProposalListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Proposal History",
+        "tags": [
+          "v2-strategy-proposals"
+        ]
+      }
+    },
+    "/api/v2/career/strategy-proposals/{proposal_id}": {
+      "get": {
+        "description": "One proposal with its execution record, if it has been acted on (§44-45).\n\n404 (`proposal_not_found`) for \"no such proposal\" and \"not yours\" alike, so an id cannot be\nprobed. A `PROPOSED`, `DISMISSED` or `EXPIRED` proposal carries a null `execution`; an\n`EXECUTED`/`REJECTED`/`FAILED` one carries the audit of the attempt that closed it — pairing\nthe two here avoids a second round-trip and an \"execution not found\" code.",
+        "operationId": "read_proposal_api_v2_career_strategy_proposals__proposal_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StrategyChangeProposalDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Proposal",
+        "tags": [
+          "v2-strategy-proposals"
+        ]
+      }
+    },
+    "/api/v2/career/strategy-proposals/{proposal_id}/approve": {
+      "post": {
+        "description": "Apply one confirmed proposal through its owning service, returning the audited outcome.\n\nIdempotent by the proposal-derived execution id: a double-confirm returns the recorded\nexecution rather than applying the change twice. A proposal no longer open is a 409\n(`proposal_not_open`); one lapsed is a 409 (`proposal_expired`). A change that loosens a safety\nbrake is a 409 (`sensitive_confirmation_required`) unless `confirm_sensitive` is set, and the\nproposal stays open so a second confirmed approval can proceed. The live target is reloaded: a\nvanished one is a 409 (`strategy_target_not_found`) and a drifted version a 409\n(`strategy_proposal_stale`), each recorded as a `REJECTED` audit, so a stale before/after never\nclobbers newer state. Only then is the change applied through the service that owns the edit.",
+        "operationId": "approve_proposal_api_v2_career_strategy_proposals__proposal_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveStrategyChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StrategyChangeExecutionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Proposal",
+        "tags": [
+          "v2-strategy-proposals"
+        ]
+      }
+    },
+    "/api/v2/career/strategy-proposals/{proposal_id}/dismiss": {
+      "post": {
+        "description": "Decline an open proposal without running it — `PROPOSED` → `DISMISSED`.\n\nWrites no execution because nothing was attempted; it only advances the status so the proposal\nleaves the open set and cannot later be approved. A foreign or missing id is a 404\n(`proposal_not_found`); one no longer open is a 409 (`proposal_not_open`).",
+        "operationId": "dismiss_proposal_api_v2_career_strategy_proposals__proposal_id__dismiss_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StrategyChangeProposalResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dismiss Proposal",
+        "tags": [
+          "v2-strategy-proposals"
         ]
       }
     },
@@ -10458,6 +12545,264 @@
         "summary": "Generate Resume",
         "tags": [
           "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/opportunities/{opportunity_id}/role-classification": {
+      "get": {
+        "description": "This account's classification of one opportunity, or 404 if it has never classified it.\n\nThe read is keyed by (this account, opportunity), so an empty result means only \"not\nclassified yet\" — there is no foreign row to probe. A 404 (`role_classification_not_found`)\nis returned rather than calling `.of(None)`.",
+        "operationId": "read_role_classification_api_v2_opportunities__opportunity_id__role_classification_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleClassificationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Role Classification",
+        "tags": [
+          "v2-role-classifications"
+        ]
+      },
+      "post": {
+        "description": "Record the deterministic family of an opportunity's title, sparing a manual one (§18).\n\nIdempotent and safe to repeat: the pure title rule assigns a family (or the honest\nunclassified `None`), preserving the first `created_at`. If this account already corrected the\nrole by hand, that manual classification is returned unchanged — the backfill never overwrites\na human's choice. A missing posting is a 404 (`opportunity_not_found`).",
+        "operationId": "classify_opportunity_api_v2_opportunities__opportunity_id__role_classification_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleClassificationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Classify Opportunity",
+        "tags": [
+          "v2-role-classifications"
+        ]
+      },
+      "put": {
+        "description": "Record a human's explicit role family, outranking the rule from here on (§18).\n\nThe body names a family — a manual classification cannot be unclassified — and the row is\nstamped `MANUAL`, so a later deterministic backfill leaves it untouched. The first `created_at`\nis preserved across the correction. A missing posting is a 404 (`opportunity_not_found`).",
+        "operationId": "set_role_classification_api_v2_opportunities__opportunity_id__role_classification_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetRoleClassificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleClassificationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Role Classification",
+        "tags": [
+          "v2-role-classifications"
+        ]
+      }
+    },
+    "/api/v2/outcomes/{outcome_id}/correct": {
+      "post": {
+        "description": "Supersede a mistaken outcome with a corrected one (§9, §64).\n\n201, because the correction is a new outcome pointing back at the predecessor; the predecessor\nis flipped to `SUPERSEDED`, never deleted. The predecessor must still be effective — correcting\nan already superseded or retracted outcome is a 409 (`outcome_not_effective`), which also makes\nthe operation single-shot. A foreign or missing outcome is a 404.",
+        "operationId": "correct_outcome_api_v2_outcomes__outcome_id__correct_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "outcome_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Outcome Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectOutcomeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationOutcomeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Correct Outcome",
+        "tags": [
+          "v2-outcomes"
+        ]
+      }
+    },
+    "/api/v2/outcomes/{outcome_id}/retract": {
+      "post": {
+        "description": "Take back an outcome recorded in error — a status flip to `RETRACTED` (§64).\n\nThe row survives so \"we believed this, then took it back\" stays auditable. The outcome must\nstill be effective (a 409 `outcome_not_effective` otherwise), and a foreign or missing one is a\n404. No execution state is touched.",
+        "operationId": "retract_outcome_api_v2_outcomes__outcome_id__retract_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "outcome_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Outcome Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationOutcomeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retract Outcome",
+        "tags": [
+          "v2-outcomes"
+        ]
+      }
+    },
+    "/api/v2/role-classifications": {
+      "get": {
+        "description": "This account's classifications, most recently updated first — a surface to review.\n\nDeclared before the `/opportunities/{opportunity_id}/role-classification` routes so the\nliteral plural path is never confused with a per-opportunity one.",
+        "operationId": "list_role_classifications_api_v2_role_classifications_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleClassificationListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Role Classifications",
+        "tags": [
+          "v2-role-classifications"
         ]
       }
     },

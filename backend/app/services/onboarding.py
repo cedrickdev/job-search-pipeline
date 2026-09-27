@@ -191,6 +191,16 @@ class OnboardingService:
                        active_only: bool = False) -> tuple[SearchProfile, ...]:
         return await self._searches.list_for_user(user_id, active_only=active_only)
 
+    async def search(self, user_id: UserId,
+                     search_profile_id: SearchProfileId) -> SearchProfile | None:
+        """One of this account's searches by id, or `None` (including when it is not theirs).
+
+        The single-search read the strategy executor's version precondition needs: it loads the
+        target owner-scoped to read its `updated_at` before applying an approved change, so a
+        foreign or missing id reads as absent exactly as everywhere else here.
+        """
+        return await self._searches.get(user_id, search_profile_id)
+
     async def create_search(self, user_id: UserId, draft: SearchProfileDraft, *,
                             now: datetime) -> SearchProfile:
         """Save a new search under a fresh id."""
@@ -272,6 +282,44 @@ class OnboardingService:
             return existing
         updates["updated_at"] = now
         return await self._searches.upsert(existing.model_copy(update=updates))
+
+    async def set_search_sources(
+            self, user_id: UserId, search_profile_id: SearchProfileId, *,
+            source_keys: tuple[str, ...], now: datetime) -> SearchProfile:
+        """Replace a saved search's source (plugin-key) allow-list.
+
+        The concrete edit behind a `PRIORITIZE_SOURCE`/`DEPRIORITIZE_SOURCE` strategy
+        change: an empty tuple restricts nothing (every board), a non-empty one limits
+        discovery to the listed keys — the domain's allow-list convention, re-validated by
+        `SearchProfile`. The load is the ownership check, as everywhere else here; a call that
+        leaves the list unchanged is a no-op that does not bump `updated_at`.
+        """
+        existing = await self._searches.get(user_id, search_profile_id)
+        if existing is None:
+            raise SearchProfileNotFound(str(search_profile_id))
+        if tuple(existing.source_keys) == tuple(source_keys):
+            return existing
+        return await self._searches.upsert(existing.model_copy(update={
+            "source_keys": source_keys, "updated_at": now}))
+
+    async def set_search_opportunity_types(
+            self, user_id: UserId, search_profile_id: SearchProfileId, *,
+            opportunity_types: tuple[OpportunityType, ...], now: datetime) -> SearchProfile:
+        """Replace a saved search's opportunity-type allow-list.
+
+        Discovery filtering, not application authority: this bounds which types a search
+        *surfaces*, so widening it is safe (the policy allow-list governs what may be applied
+        to). An empty tuple restricts nothing; the aggregate re-validates the new list. The
+        load is the ownership check; an unchanged list is a no-op that does not bump
+        `updated_at`.
+        """
+        existing = await self._searches.get(user_id, search_profile_id)
+        if existing is None:
+            raise SearchProfileNotFound(str(search_profile_id))
+        if tuple(existing.opportunity_types) == tuple(opportunity_types):
+            return existing
+        return await self._searches.upsert(existing.model_copy(update={
+            "opportunity_types": opportunity_types, "updated_at": now}))
 
     async def state(self, user: User) -> OnboardingState:
         """What has been done so far, for the screen that decides the next step.

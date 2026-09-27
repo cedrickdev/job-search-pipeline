@@ -90,6 +90,7 @@ from backend.app.domain.identifiers import (
     ApplicationPolicyId,
     CandidateDocumentId,
     CandidateProfileId,
+    CareerRecommendationId,
     CompanyId,
     CompanyLocationId,
     ConversationId,
@@ -101,8 +102,11 @@ from backend.app.domain.identifiers import (
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
+    StrategyChangeProposalId,
     UserId,
+    application_outcome_id,
     candidate_document_id,
+    career_recommendation_evidence_id,
     chat_action_execution_id,
     chat_action_proposal_id,
     chat_message_id,
@@ -112,6 +116,8 @@ from backend.app.domain.identifiers import (
     interview_question_id,
     interview_session_summary_id,
     provider_session_id,
+    role_classification_id,
+    strategy_change_execution_id,
 )
 from backend.app.domain.decision import (
     ApplicationDecision,
@@ -127,6 +133,36 @@ from backend.app.domain.opportunity import (
     WorkplaceMode,
 )
 from backend.app.domain.search import CountrySearchArea, SearchProfile
+from backend.app.domain.analytics import (
+    CAREER_ANALYTICS_VERSION,
+    DimensionKind,
+    RateKind,
+    TimingKind,
+)
+from backend.app.domain.outcome import (
+    ApplicationOutcome,
+    OutcomeKind,
+    OutcomeSource,
+    OutcomeStatus,
+    build_outcome_key,
+)
+from backend.app.domain.recommendation import (
+    CareerRecommendation,
+    RecommendationEvidence,
+    RecommendationKind,
+)
+from backend.app.domain.role import (
+    RoleClassification,
+    RoleFamily,
+    RoleFamilyProvenance,
+)
+from backend.app.domain.strategy_change import (
+    SetSearchRadiusChange,
+    StrategyChangeExecution,
+    StrategyChangeExecutionOutcome,
+    StrategyChangeProposal,
+    StrategyChangeProposalStatus,
+)
 from backend.app.llm.connection import LLMConnection, LLMProviderType
 from backend.app.llm.contracts import TaskPurpose
 from backend.app.llm.sessions import ProviderSession
@@ -164,6 +200,15 @@ OTHER_APPLICATION = ApplicationId(UUID("00000000-0000-4000-8000-0000000000d2"))
 # and summary ids all derive from it, so a whole session's rows stay reproducible.
 SESSION = InterviewSessionId(UUID("00000000-0000-4000-8000-0000000000e1"))
 OTHER_SESSION = InterviewSessionId(UUID("00000000-0000-4000-8000-0000000000e2"))
+# A recommendation's id is random in production (`new_career_recommendation_id`) and a
+# proposal's likewise (`new_strategy_change_proposal_id`), so the builders pin a constant
+# for each — the evidence ids derive from the recommendation and the execution id from the
+# proposal, so a whole recommendation's or proposal's rows stay reproducible across a run.
+RECOMMENDATION = CareerRecommendationId(UUID("00000000-0000-4000-8000-0000000000f1"))
+OTHER_RECOMMENDATION = CareerRecommendationId(UUID("00000000-0000-4000-8000-0000000000f2"))
+STRATEGY_PROPOSAL = StrategyChangeProposalId(UUID("00000000-0000-4000-8000-000000000101"))
+OTHER_STRATEGY_PROPOSAL = StrategyChangeProposalId(
+    UUID("00000000-0000-4000-8000-000000000102"))
 
 # Somewhere real, so a distance a test asserts on can be checked against a map.
 LAUSANNE = GeoPoint(latitude=46.5197, longitude=6.6323)
@@ -834,6 +879,171 @@ def an_interview_session_summary(*, session_id=SESSION, readiness=None, **overri
     }
     fields.update(overrides)
     return InterviewSessionSummary(**fields)
+
+
+# --- Phase 15: outcomes, classifications, recommendations and strategy changes ---------
+
+
+def an_application_outcome(*, application_id=APPLICATION, kind=OutcomeKind.INTERVIEW,
+                           occurred_at=NOW, supersedes_id=None, **overrides):
+    """One recorded real-world hiring milestone of an application, owned by `USER`.
+
+    The `outcome_key` and the id both derive from `(kind, occurred_at, supersedes_id)` via
+    `build_outcome_key`, exactly as the service composes them, so recording the same milestone
+    twice collapses onto the one row. Defaults to an effective, manually-recorded `INTERVIEW`
+    — a repeatable milestone whose key folds in `occurred_at` — with `recorded_at` kept
+    strictly apart from `occurred_at` (§8). A correction passes `supersedes_id=` (its key then
+    keys on the predecessor); a retraction or supersede passes `status=`. Nothing here touches
+    a Phase 12 `ApplicationState` (§2, §84).
+    """
+    outcome_key = build_outcome_key(kind=kind, occurred_at=occurred_at,
+                                    supersedes_id=supersedes_id)
+    fields = {
+        "id": application_outcome_id(application_id, outcome_key),
+        "user_id": USER,
+        "application_id": application_id,
+        "kind": kind,
+        "source": OutcomeSource.MANUAL_USER,
+        "status": OutcomeStatus.EFFECTIVE,
+        "outcome_key": outcome_key,
+        "occurred_at": occurred_at,
+        "recorded_at": LATER,
+        "supersedes_id": supersedes_id,
+        "detail": "Premier entretien avec l'équipe.",
+    }
+    fields.update(overrides)
+    return ApplicationOutcome(**fields)
+
+
+def a_role_classification(*, user_id=USER, opportunity_id=OPPORTUNITY, **overrides):
+    """One user's role-family verdict on an opportunity, keyed on `(user_id, opportunity_id)`.
+
+    The id derives from that pair, so re-classifying updates the one row. Defaults to a
+    deterministic `SOFTWARE_ENGINEERING` classification. A manual correction passes
+    `provenance=RoleFamilyProvenance.MANUAL` with a named `role_family`; the honest
+    unclassified gap passes `role_family=None` (only a deterministic classification may leave
+    it unset). A different owner passes `user_id=OTHER_USER`, which the id follows.
+    """
+    fields = {
+        "id": role_classification_id(user_id, opportunity_id),
+        "user_id": user_id,
+        "opportunity_id": opportunity_id,
+        "role_family": RoleFamily.SOFTWARE_ENGINEERING,
+        "provenance": RoleFamilyProvenance.DETERMINISTIC_TITLE,
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    fields.update(overrides)
+    return RoleClassification(**fields)
+
+
+def a_recommendation_evidence(*, recommendation_id=RECOMMENDATION, ordinal=0, **overrides):
+    """One computed metric backing a recommendation, its id derived from `(recommendation_id,
+    ordinal)`.
+
+    Defaults to a rate citation — a `RESPONSE` rate of 6/20 in the `DATA_AND_ANALYTICS` role
+    family, a sample of 20 comfortably above `MIN_RECOMMENDATION_SAMPLE_SIZE`. The one-metric
+    rule means a timing citation passes `rate_kind=None, timing_kind=..., numerator=None,
+    denominator=None, median_days=...`; an overall (whole-funnel) metric passes
+    `dimension=None, dimension_key=None`.
+    """
+    fields = {
+        "id": career_recommendation_evidence_id(recommendation_id, ordinal),
+        "recommendation_id": recommendation_id,
+        "ordinal": ordinal,
+        "dimension": DimensionKind.ROLE_FAMILY,
+        "dimension_key": RoleFamily.DATA_AND_ANALYTICS.value,
+        "rate_kind": RateKind.RESPONSE,
+        "timing_kind": None,
+        "numerator": 6,
+        "denominator": 20,
+        "median_days": None,
+        "sample_size": 20,
+        "detail": "Data & Analytics : 6 réponses sur 20 candidatures.",
+    }
+    fields.update(overrides)
+    return RecommendationEvidence(**fields)
+
+
+def a_career_recommendation(*, id=RECOMMENDATION, evidence=None, **overrides):
+    """An evidence-backed suggestion owned by `USER`, with one strong citation.
+
+    Each evidence item's `recommendation_id` must equal the recommendation's id — the model
+    enforces it — so `evidence` defaults to a single `a_recommendation_evidence` bound to `id`.
+    Defaults to a `PRIORITIZE_ROLE_FAMILY` suggestion drawn under the current analytics
+    version and written deterministically (no `generator_key`, no `llm_run_id`); a
+    model-worded one passes `generator_key=` and `llm_run_id=RUN`.
+    """
+    resolved_evidence = (evidence if evidence is not None
+                         else (a_recommendation_evidence(recommendation_id=id),))
+    fields = {
+        "id": id,
+        "user_id": USER,
+        "kind": RecommendationKind.PRIORITIZE_ROLE_FAMILY,
+        "analytics_version": CAREER_ANALYTICS_VERSION,
+        "summary": "Vos candidatures Data & Analytics obtiennent plus de réponses.",
+        "detail": None,
+        "evidence": resolved_evidence,
+        "generator_key": None,
+        "llm_run_id": None,
+        "created_at": NOW,
+    }
+    fields.update(overrides)
+    return CareerRecommendation(**fields)
+
+
+def a_strategy_change_proposal(*, id=STRATEGY_PROPOSAL, change=None, **overrides):
+    """A proposed edit to one search or policy, `PROPOSED` and awaiting confirmation.
+
+    Defaults to a `SetSearchRadiusChange` — a non-sensitive discovery-scope edit — and derives
+    `target`/`target_id` from it, so the queryable columns agree with the payload (the model
+    refuses a disagreement). `target_version` is the target's `updated_at` the executor
+    revalidates against on approval, and `expires_at` follows `created_at`. A sensitive policy
+    edit passes its own `change=` (e.g. a `SetMinimumScoreChange` that lowers the floor); the
+    linked recommendation passes `source_recommendation_id=RECOMMENDATION`.
+    """
+    resolved_change = (change if change is not None else SetSearchRadiusChange(
+        search_profile_id=SEARCH_PROFILE, radius_km=40.0, before_radius_km=25.0))
+    fields = {
+        "id": id,
+        "user_id": USER,
+        "target": resolved_change.target,
+        "target_id": resolved_change.target_ref,
+        "change": resolved_change,
+        "target_version": NOW,
+        "summary": "Élargir le rayon de recherche à 40 km.",
+        "source_recommendation_id": None,
+        "generator_key": None,
+        "llm_run_id": None,
+        "status": StrategyChangeProposalStatus.PROPOSED,
+        "created_at": NOW,
+        "updated_at": NOW,
+        "expires_at": datetime(2026, 3, 8, 9, 30, tzinfo=UTC),
+    }
+    fields.update(overrides)
+    return StrategyChangeProposal(**fields)
+
+
+def a_strategy_change_execution(*, proposal_id=STRATEGY_PROPOSAL, **overrides):
+    """The audit of one attempt to apply a confirmed proposal, `SUCCEEDED` by default.
+
+    The id derives from the proposal alone, so a double-confirm collapses onto the one row
+    rather than applying the change twice. A refused-at-revalidation attempt passes
+    `outcome=StrategyChangeExecutionOutcome.REJECTED` (a stale version, a vanished target); a
+    permitted-but-failed service call passes `FAILED`.
+    """
+    fields = {
+        "id": strategy_change_execution_id(proposal_id),
+        "proposal_id": proposal_id,
+        "user_id": USER,
+        "outcome": StrategyChangeExecutionOutcome.SUCCEEDED,
+        "observed_target_version": NOW,
+        "detail": "Rayon de recherche porté à 40 km.",
+        "result_ref": "SEARCH_PROFILE_UPDATED",
+        "created_at": LATER,
+    }
+    fields.update(overrides)
+    return StrategyChangeExecution(**fields)
 
 
 

@@ -57,9 +57,11 @@ from backend.app.domain.geo import GeoSearchQuery, GeoStatus, RemoteScope
 from backend.app.domain.identifiers import (
     ApplicationDecisionId,
     ApplicationId,
+    ApplicationOutcomeId,
     ApplicationPolicyId,
     CandidateDocumentId,
     CandidateProfileId,
+    CareerRecommendationId,
     ChatActionProposalId,
     CompanyId,
     ConversationId,
@@ -71,6 +73,7 @@ from backend.app.domain.identifiers import (
     MatchEvaluationId,
     OpportunityId,
     SearchProfileId,
+    StrategyChangeProposalId,
     UserId,
     UserSessionId,
 )
@@ -83,8 +86,15 @@ from backend.app.domain.interview import (
 )
 from backend.app.domain.matching import MatchEvaluation
 from backend.app.domain.opportunity import Opportunity
+from backend.app.domain.outcome import ApplicationOutcome
 from backend.app.domain.policy import ApplicationPolicy
+from backend.app.domain.recommendation import CareerRecommendation
+from backend.app.domain.role import RoleClassification
 from backend.app.domain.search import SearchProfile
+from backend.app.domain.strategy_change import (
+    StrategyChangeExecution,
+    StrategyChangeProposal,
+)
 from backend.app.domain.user import User, UserSession
 from backend.app.llm.connection import LLMConnection
 from backend.app.llm.sessions import ProviderSession
@@ -1247,6 +1257,182 @@ class InterviewSessionSummaryRepository(Protocol):
             self, user_id: UserId, *,
             limit: int = DEFAULT_LIMIT) -> tuple[InterviewSessionSummary, ...]:
         """This account's session summaries, most recent first — the readiness history."""
+        ...
+
+
+# Phase 15. The five contracts below are what the outcome-tracking and career-intelligence
+# loop persists. An outcome, a role classification, a recommendation, a proposal and an
+# execution are all user-owned, so `user_id` comes first on every read, exactly like the
+# Phase 4/10/12/13/14 tables. An outcome is an upsert on its derived id — recording the same
+# milestone twice collapses, a retract/supersede flips status on the same row — and a role
+# classification is an upsert on the `(user_id, opportunity_id)` pair. A recommendation is a
+# fresh snapshot with a random id, so it is added and never rewritten. A proposal only leaves
+# `PROPOSED` through an explicit transition, so it is an upsert on its own id; an execution is
+# written once per proposal, the executor's audit. Nothing here writes a `SearchProfile` or an
+# `ApplicationPolicy`: applying an approved change is the service's job, through the existing
+# repository that owns that edit (§34, §45).
+
+
+@runtime_checkable
+class ApplicationOutcomeRepository(Protocol):
+    """Real-world hiring-process facts — user-owned, kept apart from execution (§2, §84).
+
+    An outcome is a fact about hiring, never a Phase 12 `ApplicationState`, so this contract
+    shares no method and no column with `ApplicationRepository`: a `REJECTED` outcome recorded
+    here can never drive an application to `FAILED`. Writes are upserts on the outcome's derived
+    id — from `(application_id, outcome_key)` — so recording the same milestone twice collapses
+    onto one row and a retraction or supersede is a status flip on that same row, never a delete
+    (§9, §64). Reads are user-scoped so one account cannot read another's outcomes by id.
+    """
+
+    async def get(self, user_id: UserId,
+                  outcome_id: ApplicationOutcomeId) -> ApplicationOutcome | None:
+        """The outcome, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def upsert(self, outcome: ApplicationOutcome) -> ApplicationOutcome:
+        """Record, correct or retract an outcome; keyed on its own derived id.
+
+        The owner comes from `outcome.user_id`, so there is no signature in which the row's
+        owner and the caller's intent can disagree. A correction is a *new* outcome that
+        supersedes an earlier one (a distinct id); marking the predecessor `SUPERSEDED` and a
+        mistake `RETRACTED` are upserts of the same row with a flipped status.
+        """
+        ...
+
+    async def list_for_application(
+            self, user_id: UserId, application_id: ApplicationId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ApplicationOutcome, ...]:
+        """One application's outcomes oldest-first, or empty if it is not this user's.
+
+        Every recorded status is returned, `EFFECTIVE` and superseded alike: the timeline a
+        surface shows keeps the correction history, and the analytics layer is what filters to
+        effective rows when it counts.
+        """
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[ApplicationOutcome, ...]:
+        """This user's outcomes, most recently occurred first — the analytics input.
+
+        What the deterministic funnel aggregation reads before grouping by application and
+        collapsing to the furthest stage (§48); scoped by owner so the report can never fold in
+        another account's history.
+        """
+        ...
+
+
+@runtime_checkable
+class RoleClassificationRepository(Protocol):
+    """Per-opportunity role-family verdicts — user-owned, the by-role grouping axis (§18).
+
+    Keyed on the `(user_id, opportunity_id)` pair the id derives from, so re-classifying is
+    idempotent and a manual correction updates the one row. A `MANUAL` classification is what
+    the deterministic backfill must not overwrite, which is why the row records its provenance
+    rather than only its family.
+    """
+
+    async def get(self, user_id: UserId,
+                  opportunity_id: OpportunityId) -> RoleClassification | None:
+        """This user's classification of one opportunity, or `None` if unclassified."""
+        ...
+
+    async def upsert(self, classification: RoleClassification) -> RoleClassification:
+        """Write the classification; the owner comes from `classification.user_id`."""
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[RoleClassification, ...]:
+        """This user's classifications, most recently updated first."""
+        ...
+
+
+@runtime_checkable
+class CareerRecommendationRepository(Protocol):
+    """Evidence-backed suggestions — user-owned, immutable snapshots (§26-33).
+
+    A recommendation is a fresh observation about the funnel with a random id, not an
+    idempotent fact, so it is *added* and never rewritten: there is no `upsert`, because a
+    re-run produces a new recommendation rather than mutating a prior one. Its evidence is
+    written with it in the one call, so the "evidence or nothing" guarantee survives the round
+    trip. Reads are user-scoped so one account cannot read another's recommendations by id.
+    """
+
+    async def add(self, recommendation: CareerRecommendation) -> CareerRecommendation:
+        """Insert the recommendation and its evidence; keyed on its own random id.
+
+        The owner comes from `recommendation.user_id`. Write-once by construction — a
+        recommendation carries no lifecycle to advance — so this only ever inserts.
+        """
+        ...
+
+    async def get(self, user_id: UserId,
+                  recommendation_id: CareerRecommendationId) -> CareerRecommendation | None:
+        """The recommendation and its evidence, or `None` if not this user's."""
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[CareerRecommendation, ...]:
+        """This user's recommendations, most recently created first."""
+        ...
+
+
+@runtime_checkable
+class StrategyChangeProposalRepository(Protocol):
+    """Approved-or-not strategy edits — user-owned, the spine's only mutation (§34-45).
+
+    A proposal changes nothing until a human confirms it, and this contract holds it as a
+    request: an upsert on its own id, moving off `PROPOSED` only through an explicit transition
+    so a change is applied at most once. The `get` the executor calls before acting is
+    user-scoped, so a confirmation naming another account's proposal reads as absent and is
+    refused rather than trusted because a request carried the id.
+    """
+
+    async def get(self, user_id: UserId,
+                  proposal_id: StrategyChangeProposalId) -> StrategyChangeProposal | None:
+        """The proposal, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def upsert(self, proposal: StrategyChangeProposal) -> StrategyChangeProposal:
+        """Write the proposal, or move it off `PROPOSED`; keyed on its own id.
+
+        The owner comes from `proposal.user_id`. The queryable `target`/`kind` columns are
+        written from the validated change, so they can never contradict the payload.
+        """
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *, open_only: bool = False,
+            limit: int = DEFAULT_LIMIT) -> tuple[StrategyChangeProposal, ...]:
+        """This user's proposals, most recently updated first.
+
+        `open_only` restricts to `PROPOSED` proposals — what a surface listing pending
+        suggestions reads and what an expiry sweep scans; it is a parameter rather than a
+        separate method so the `(user_id, status)` index serves one query shape.
+        """
+        ...
+
+
+@runtime_checkable
+class StrategyChangeExecutionRepository(Protocol):
+    """Execution audits — written once per proposal, the executor's own record (§45).
+
+    Keyed on the proposal's id (the execution id derives from it alone), so a double-confirmed
+    proposal upserts the one row rather than recording two attempts — the idempotency the
+    executor rests on. Reads are user-scoped so one account cannot read another's execution by
+    proposal id.
+    """
+
+    async def get(self, user_id: UserId,
+                  proposal_id: StrategyChangeProposalId) -> StrategyChangeExecution | None:
+        """The execution recorded for this proposal, or `None` if it never ran."""
+        ...
+
+    async def upsert(self, execution: StrategyChangeExecution) -> StrategyChangeExecution:
+        """Write the audit, keyed on its own id derived from the proposal."""
         ...
 
 

@@ -33,6 +33,7 @@ from backend.app.domain.identifiers import (
     new_search_profile_id,
     new_user_id,
 )
+from backend.app.domain.opportunity import OpportunityType
 from backend.app.domain.search import CountrySearchArea, RadiusSearchArea
 from backend.app.domain.user import User
 from backend.app.services.onboarding import (
@@ -254,6 +255,88 @@ async def test_searches_can_be_narrowed_to_the_active_ones() -> None:
     assert len(await service.searches(user.id)) == 2
     active = await service.searches(user.id, active_only=True)
     assert [search.name for search in active] == ["Backend in Romandie"]
+
+
+# --- the Phase 15 focused search edits a strategy change routes to ----------------------
+
+
+@pytest.mark.asyncio
+async def test_set_search_sources_replaces_the_allow_list_and_stamps_updated_at() -> None:
+    """The `PRIORITIZE_SOURCE`/`DEPRIORITIZE_SOURCE` edit: the source allow-list, owner-scoped."""
+    service, _, _, _ = build_service()
+    user = account()
+    created = await service.create_search(
+        user.id, search_draft(source_keys=("linkedin",)), now=NOW)
+
+    edited = await service.set_search_sources(
+        user.id, created.id, source_keys=("linkedin", "indeed"), now=LATER)
+
+    assert edited.source_keys == ("linkedin", "indeed")
+    assert edited.created_at == NOW and edited.updated_at == LATER
+
+
+@pytest.mark.asyncio
+async def test_set_search_sources_empty_tuple_restricts_nothing() -> None:
+    """An empty allow-list is the domain's "every board", a real value the edit can write."""
+    service, _, _, _ = build_service()
+    user = account()
+    created = await service.create_search(
+        user.id, search_draft(source_keys=("linkedin",)), now=NOW)
+
+    edited = await service.set_search_sources(user.id, created.id, source_keys=(), now=LATER)
+
+    assert edited.source_keys == ()
+    assert edited.updated_at == LATER
+
+
+@pytest.mark.asyncio
+async def test_set_search_sources_is_a_no_op_when_the_list_is_unchanged() -> None:
+    """An unchanged list does not even bump `updated_at`, so a no-op proposal writes nothing."""
+    service, _, _, _ = build_service()
+    user = account()
+    created = await service.create_search(
+        user.id, search_draft(source_keys=("linkedin",)), now=NOW)
+
+    unchanged = await service.set_search_sources(
+        user.id, created.id, source_keys=("linkedin",), now=LATER)
+
+    assert unchanged.updated_at == NOW
+
+
+@pytest.mark.asyncio
+async def test_set_search_opportunity_types_replaces_the_discovery_filter() -> None:
+    """Widening what a search *surfaces* is safe: discovery filtering, not application authority."""
+    service, _, _, _ = build_service()
+    user = account()
+    created = await service.create_search(
+        user.id, search_draft(opportunity_types=(OpportunityType.INTERNSHIP,)), now=NOW)
+
+    edited = await service.set_search_opportunity_types(
+        user.id, created.id,
+        opportunity_types=(OpportunityType.FULL_TIME, OpportunityType.INTERNSHIP), now=LATER)
+
+    assert edited.opportunity_types == (OpportunityType.FULL_TIME, OpportunityType.INTERNSHIP)
+    assert edited.updated_at == LATER
+
+
+@pytest.mark.asyncio
+async def test_the_phase_15_search_edits_refuse_a_foreign_or_absent_search() -> None:
+    """The load is the authorization check: another account's id — or none — refuses, never writes."""
+    service, _, _, _ = build_service()
+    owner = account()
+    stranger = account(email="stranger@example.com")
+    created = await service.create_search(
+        owner.id, search_draft(source_keys=("linkedin",)), now=NOW)
+
+    with pytest.raises(SearchProfileNotFound):
+        await service.set_search_sources(
+            stranger.id, created.id, source_keys=("indeed",), now=LATER)
+    with pytest.raises(SearchProfileNotFound):
+        await service.set_search_opportunity_types(
+            stranger.id, created.id, opportunity_types=(OpportunityType.FULL_TIME,), now=LATER)
+    with pytest.raises(SearchProfileNotFound):
+        await service.set_search_sources(
+            owner.id, new_search_profile_id(), source_keys=(), now=LATER)
 
 
 @pytest.mark.asyncio

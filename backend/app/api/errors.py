@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 
 from backend.app.api import API_V2_PREFIX
+from backend.app.career.errors import CareerError, CareerErrorCode
 from backend.app.chat.conversation import (
     ConversationNotFound,
     ConversationScopeNotFound,
@@ -147,6 +148,30 @@ _INTERVIEW_STATUS: Final[dict[InterviewErrorCode, int]] = {
     InterviewErrorCode.TRANSCRIPTION_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
+# Which HTTP status each career-loop refusal becomes (Phase 15, §54, §90). A user-owned
+# resource that is absent or foreign reads as a 404 — `APPLICATION_NOT_FOUND`,
+# `OUTCOME_NOT_FOUND`, `PROPOSAL_NOT_FOUND`, and `OPPORTUNITY_NOT_FOUND` (a posting is a shared
+# fact, so there is no "not yours" to fold in) — so a caller cannot enumerate another account's
+# ids by probing. Everything else is a 409, a well-formed request the loop refused on a state
+# the caller must resolve: an outcome already superseded, a proposal no longer open or lapsed, a
+# stale version precondition, a target that vanished, or a sensitive expansion awaiting its
+# explicit second confirmation. `SENSITIVE_CONFIRMATION_REQUIRED` is the acceptance rule "never
+# silently expands the user's application policy" turned into a status a surface must handle. An
+# unmapped code defaults to 409 in the handler; the body's `error` is the code lowercased, the
+# same closed vocabulary the services raise.
+_CAREER_STATUS: Final[dict[CareerErrorCode, int]] = {
+    CareerErrorCode.APPLICATION_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    CareerErrorCode.OUTCOME_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    CareerErrorCode.OPPORTUNITY_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    CareerErrorCode.PROPOSAL_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    CareerErrorCode.OUTCOME_NOT_EFFECTIVE: status.HTTP_409_CONFLICT,
+    CareerErrorCode.PROPOSAL_NOT_OPEN: status.HTTP_409_CONFLICT,
+    CareerErrorCode.PROPOSAL_EXPIRED: status.HTTP_409_CONFLICT,
+    CareerErrorCode.STRATEGY_PROPOSAL_STALE: status.HTTP_409_CONFLICT,
+    CareerErrorCode.STRATEGY_TARGET_NOT_FOUND: status.HTTP_409_CONFLICT,
+    CareerErrorCode.SENSITIVE_CONFIRMATION_REQUIRED: status.HTTP_409_CONFLICT,
+}
+
 
 class ApiError(Exception):
     """A refusal the API layer itself decides, with its status code attached.
@@ -191,6 +216,20 @@ def company_not_found() -> ApiError:
     """
     return ApiError(status.HTTP_404_NOT_FOUND, "company_not_found",
                     "no company is stored under that id")
+
+
+def role_classification_not_found() -> ApiError:
+    """404 for an opportunity this account has never classified (Phase 15).
+
+    An `ApiError` rather than a career exception, and for the same reason as
+    `company_not_found`: the read is keyed by (this account, opportunity), so the only
+    way it comes back empty is that no classification has been stored — there is no
+    "not yours" to keep indistinguishable, and no id to enumerate (the opportunity is a
+    shared fact named in the path). A GET that finds nothing is a plain 404, never a 500
+    from calling `.of(None)`.
+    """
+    return ApiError(status.HTTP_404_NOT_FOUND, "role_classification_not_found",
+                    "no role classification is stored for that opportunity")
 
 
 def _json(status_code: int, error: str, detail: str,
@@ -451,6 +490,16 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         # returning it echoes nothing sensitive. The status comes from the code; the body's
         # `error` is the code lowercased, the same closed vocabulary the engine raises.
         status_code = _INTERVIEW_STATUS.get(exc.code, status.HTTP_409_CONFLICT)
+        return _json(status_code, exc.code.value.lower(), exc.detail)
+
+    @app.exception_handler(CareerError)
+    async def _career_error(request: Request, exc: CareerError) -> JSONResponse:
+        # A typed, secret-free career-loop refusal (Phase 15). `detail` is composed by the
+        # service from the domain's own vocabulary — ids, states and fixed sentences, never a
+        # provider message, a candidate's words or a payload (§54, §90) — so returning it echoes
+        # nothing sensitive. The status comes from the code; the body's `error` is the code
+        # lowercased, the same closed vocabulary the services raise.
+        status_code = _CAREER_STATUS.get(exc.code, status.HTTP_409_CONFLICT)
         return _json(status_code, exc.code.value.lower(), exc.detail)
 
     @app.exception_handler(InterviewGroundingNotFound)

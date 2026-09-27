@@ -40,6 +40,16 @@ simulator's one rule — practice, never prediction — is a surface fact here t
 response schema carries a hiring probability, a recruiter verdict or a provider-authored
 readiness, so the credential walk that already forbids secrets forbids these by the same
 absence, and readiness is published only on its own read.
+
+Phase 15 adds seventeen for the outcome-tracking and career-intelligence loop: eight
+reads (one application's outcome timeline, the funnel analytics, the recommendation list,
+the pending strategy-proposal queue, its history, one proposal, one opportunity's
+role-classification, and the account's classification list) and nine writes (record an
+outcome, correct or retract one, generate recommendations, propose a strategy change,
+approve or dismiss one, and classify an opportunity by `POST` or `PUT`). The loop's
+load-bearing rule — an outcome is a real-world fact that never moves the Phase 12
+execution lifecycle — is not a surface fact and is proven elsewhere; here these operations
+answer the same four rules the Phase 4 twelve do, and no response schema echoes a secret.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -59,6 +69,7 @@ from backend.app.domain.identifiers import (
     LLMConnectionId,
     OpportunityId,
     SearchProfileId,
+    StrategyChangeProposalId,
     default_candidate_profile_id,
     document_version_id,
     eligibility_result_id,
@@ -76,14 +87,16 @@ from tests.v2_builders import (
     a_conversation,
     a_decision,
     a_rendered_document,
+    a_role_classification,
     a_search_profile,
+    a_strategy_change_proposal,
     an_eligibility_result,
     an_interview_session,
     an_llm_connection,
     an_opportunity,
 )
 
-# The whole V2 surface as of Phase 13, spelled out. Written as a literal on purpose:
+# The whole V2 surface as of Phase 15, spelled out. Written as a literal on purpose:
 # a test that derived it from the application would agree with any change.
 V2_OPERATIONS = (
     ("DELETE", "/api/v2/me/search-profiles/{search_profile_id}"),
@@ -91,7 +104,13 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/applications"),
     ("GET", "/api/v2/applications/{application_id}"),
     ("GET", "/api/v2/applications/{application_id}/events"),
+    ("GET", "/api/v2/applications/{application_id}/outcomes"),
     ("GET", "/api/v2/auth/session"),
+    ("GET", "/api/v2/career/analytics"),
+    ("GET", "/api/v2/career/recommendations"),
+    ("GET", "/api/v2/career/strategy-proposals"),
+    ("GET", "/api/v2/career/strategy-proposals/history"),
+    ("GET", "/api/v2/career/strategy-proposals/{proposal_id}"),
     ("GET", "/api/v2/chat/conversations"),
     ("GET", "/api/v2/chat/conversations/{conversation_id}"),
     ("GET", "/api/v2/chat/conversations/{conversation_id}/messages"),
@@ -115,17 +134,24 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/me/search-profiles/{search_profile_id}/opportunities"),
     ("GET", "/api/v2/onboarding"),
     ("GET", "/api/v2/opportunities/{opportunity_id}/match"),
+    ("GET", "/api/v2/opportunities/{opportunity_id}/role-classification"),
+    ("GET", "/api/v2/role-classifications"),
     ("GET", "/api/v2/settings/llm/connections"),
     ("GET", "/api/v2/settings/llm/connections/{connection_id}"),
     ("PATCH", "/api/v2/settings/llm/connections/{connection_id}"),
     ("POST", "/api/v2/applications"),
     ("POST", "/api/v2/applications/{application_id}/approve"),
     ("POST", "/api/v2/applications/{application_id}/cancel"),
+    ("POST", "/api/v2/applications/{application_id}/outcomes"),
     ("POST", "/api/v2/applications/{application_id}/prepare"),
     ("POST", "/api/v2/applications/{application_id}/submit"),
     ("POST", "/api/v2/auth/login"),
     ("POST", "/api/v2/auth/logout"),
     ("POST", "/api/v2/auth/register"),
+    ("POST", "/api/v2/career/recommendations"),
+    ("POST", "/api/v2/career/strategy-proposals"),
+    ("POST", "/api/v2/career/strategy-proposals/{proposal_id}/approve"),
+    ("POST", "/api/v2/career/strategy-proposals/{proposal_id}/dismiss"),
     ("POST", "/api/v2/chat/conversations"),
     ("POST", "/api/v2/chat/conversations/{conversation_id}/messages"),
     ("POST", "/api/v2/chat/proposals/{proposal_id}/confirm"),
@@ -145,10 +171,14 @@ V2_OPERATIONS = (
     ("POST", "/api/v2/onboarding/complete"),
     ("POST", "/api/v2/opportunities/{opportunity_id}/cover-letter"),
     ("POST", "/api/v2/opportunities/{opportunity_id}/resume"),
+    ("POST", "/api/v2/opportunities/{opportunity_id}/role-classification"),
+    ("POST", "/api/v2/outcomes/{outcome_id}/correct"),
+    ("POST", "/api/v2/outcomes/{outcome_id}/retract"),
     ("POST", "/api/v2/settings/llm/connections"),
     ("POST", "/api/v2/settings/llm/connections/{connection_id}/healthcheck"),
     ("PUT", "/api/v2/me/profile"),
     ("PUT", "/api/v2/me/search-profiles/{search_profile_id}"),
+    ("PUT", "/api/v2/opportunities/{opportunity_id}/role-classification"),
     ("PUT", "/api/v2/settings/llm/connections/{connection_id}/default"),
     ("PUT", "/api/v2/settings/llm/connections/{connection_id}/enabled"),
 )
@@ -200,14 +230,14 @@ async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_de
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 54
+        assert len({path for _, path in published}) == 66
 
 
 @pytest.mark.asyncio
 async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path):
     """The inventory half of "no GET mutates state".
 
-    Twenty-nine `GET`s, all of them reports. `POST /onboarding/complete` exists precisely
+    Thirty-seven `GET`s, all of them reports. `POST /onboarding/complete` exists precisely
     so that the screen displaying progress does not have to be the thing that records
     it, and `POST /company-discovery/run` is the same split for the directory: reading
     it is safe, filling it is a write an operator triggers. The three Phase 7 reads
@@ -221,7 +251,12 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
     streaming turn (`POST .../messages`) and the confirm/dismiss are its writes. Phase 14
     adds five interview reads — the session list, the readiness history, one session, its
     detail transcript and its live readiness — all views; asking, answering, grading,
-    completing and abandoning are its writes.
+    completing and abandoning are its writes. Phase 15 adds eight more reads — one
+    application's outcome timeline, the funnel analytics, the recommendation list, the
+    pending strategy-proposal queue, its history, one proposal, one opportunity's
+    role-classification and the classification list — all views; recording, correcting and
+    retracting an outcome, generating recommendations, proposing, approving and dismissing a
+    strategy change, and classifying an opportunity are its writes.
     """
     async with api_harness(tmp_path) as api:
         published = operations(api.app, under=API_V2_PREFIX)
@@ -230,7 +265,13 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/applications",
             "/api/v2/applications/{application_id}",
             "/api/v2/applications/{application_id}/events",
+            "/api/v2/applications/{application_id}/outcomes",
             "/api/v2/auth/session",
+            "/api/v2/career/analytics",
+            "/api/v2/career/recommendations",
+            "/api/v2/career/strategy-proposals",
+            "/api/v2/career/strategy-proposals/history",
+            "/api/v2/career/strategy-proposals/{proposal_id}",
             "/api/v2/chat/conversations",
             "/api/v2/chat/conversations/{conversation_id}",
             "/api/v2/chat/conversations/{conversation_id}/messages",
@@ -254,6 +295,8 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/me/search-profiles/{search_profile_id}/opportunities",
             "/api/v2/onboarding",
             "/api/v2/opportunities/{opportunity_id}/match",
+            "/api/v2/opportunities/{opportunity_id}/role-classification",
+            "/api/v2/role-classifications",
             "/api/v2/settings/llm/connections",
             "/api/v2/settings/llm/connections/{connection_id}"}
         # `HEAD`/`OPTIONS`/`TRACE` are never published. `PATCH` now is — the one
@@ -347,6 +390,19 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
         # and the readiness *history* need no seed; an empty list is a 200.
         await api.interview_sessions.upsert(an_interview_session(
             id=InterviewSessionId(PLACEHOLDER_ID), user_id=user_id))
+        # The two Phase 15 reads keyed by id — one strategy proposal and one
+        # opportunity's role-classification — 404 before the service unless the row
+        # exists for this account, so both are seeded. The proposal is read by
+        # `(user_id, id)` and the classification by `(user_id, opportunity_id)`, so each
+        # is stamped with this account and the placeholder id it is fetched under. The
+        # remaining Phase 15 reads — the outcome timeline on the already-seeded
+        # application, the analytics report, the recommendation list, the pending
+        # proposal queue, its history and the classification list — are 200 on an empty
+        # result and need no seed.
+        await api.strategy_proposals.upsert(a_strategy_change_proposal(
+            id=StrategyChangeProposalId(PLACEHOLDER_ID), user_id=user_id))
+        await api.role_classifications.upsert(a_role_classification(
+            user_id=user_id, opportunity_id=posting_id))
         reads = [_get_with_scope(concrete(path)) for method, path in operations(
             api.app, under=API_V2_PREFIX) if method == "GET"]
         before = deepcopy((api.users.users, api.sessions.sessions,
@@ -361,7 +417,12 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                            api.interview_questions.questions,
                            api.interview_answers.answers,
                            api.interview_evaluations.evaluations,
-                           api.interview_summaries.summaries))
+                           api.interview_summaries.summaries,
+                           api.career_outcomes.outcomes,
+                           api.role_classifications.classifications,
+                           api.career_recommendations.recommendations,
+                           api.strategy_proposals.proposals,
+                           api.strategy_executions.executions))
 
         for path in reads:
             for _ in range(2):
@@ -377,7 +438,11 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                 api.chat_messages.messages, api.chat_proposals.proposals,
                 api.interview_sessions.sessions, api.interview_questions.questions,
                 api.interview_answers.answers, api.interview_evaluations.evaluations,
-                api.interview_summaries.summaries) == before
+                api.interview_summaries.summaries, api.career_outcomes.outcomes,
+                api.role_classifications.classifications,
+                api.career_recommendations.recommendations,
+                api.strategy_proposals.proposals,
+                api.strategy_executions.executions) == before
 
 
 @pytest.mark.asyncio
@@ -409,7 +474,7 @@ async def test_the_one_write_a_get_performs_is_last_seen_at_and_it_cannot_extend
 @pytest.mark.asyncio
 async def test_every_operation_but_register_and_login_refuses_an_anonymous_caller(
         tmp_path):
-    """401 from all sixty-three, with no body sent and nothing created.
+    """401 from all eighty, with no body sent and nothing created.
 
     No payload is needed because FastAPI resolves the session dependency before it
     validates a body, so the refusal happens before the request is read — which is
@@ -426,7 +491,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
         protected = [(method, path) for method, path in operations(
             api.app, under=API_V2_PREFIX) if (method, path) not in PUBLIC_OPERATIONS]
 
-        assert len(protected) == 63
+        assert len(protected) == 80
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

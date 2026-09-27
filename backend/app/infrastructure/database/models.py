@@ -51,6 +51,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql.elements import TextClause
 
+from backend.app.domain.analytics import DimensionKind, RateKind, TimingKind
 from backend.app.domain.application import ApplicationState, SubmissionOutcome
 from backend.app.domain.application_channel import (
     ApplicationChannel,
@@ -113,8 +114,20 @@ from backend.app.domain.interview import (
 )
 from backend.app.domain.matching import MatchDimension
 from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
+from backend.app.domain.outcome import OutcomeKind, OutcomeSource, OutcomeStatus
 from backend.app.domain.policy import AutomationMode
+from backend.app.domain.recommendation import (
+    MIN_RECOMMENDATION_SAMPLE_SIZE,
+    RecommendationKind,
+)
+from backend.app.domain.role import RoleFamily, RoleFamilyProvenance
 from backend.app.domain.search import SearchAreaKind
+from backend.app.domain.strategy_change import (
+    StrategyChangeExecutionOutcome,
+    StrategyChangeKind,
+    StrategyChangeProposalStatus,
+    StrategyChangeTarget,
+)
 from backend.app.domain.user import UserStatus
 from backend.app.infrastructure.database.base import Base, TimestampedMixin
 from backend.app.llm.connection import LLMProviderType
@@ -2688,6 +2701,308 @@ class InterviewSessionSummaryRow(TimestampedMixin, Base):
         ForeignKey("llm_runs.id", ondelete="SET NULL"))
 
 
+# ---------------------------------------------------------------------------
+# Phase 15 — outcome tracking and the career-intelligence loop. The observed
+# hiring-process facts (`application_outcomes`), the by-role grouping the funnel is
+# sliced on (`role_classifications`), the evidence-backed suggestions the engine
+# draws (`career_recommendations` + `career_recommendation_evidence`), and the one
+# link allowed to touch the platform's state after a human approves it
+# (`strategy_change_proposals` + `strategy_change_executions`). Every CHECK is a
+# domain validator made physical, so a row written outside the mapper is refused
+# exactly as a `model_validator` would refuse it. The outcome lifecycle is
+# deliberately kept apart from the Phase 12 `ApplicationState` execution lifecycle
+# (§2, §84): different tables, different enums, and no shared column — a recruiter's
+# REJECTED here can never drive an `Application` to FAILED.
+# ---------------------------------------------------------------------------
 
+# `RoleClassification._manual_names_a_family...`, as a CHECK: the deterministic rule
+# may leave a role unclassified, but a human's MANUAL verdict must name a family.
+_ROLE_CLASSIFICATION_MANUAL_NAMES_A_FAMILY: Final[str] = (
+    "provenance <> 'MANUAL' OR role_family IS NOT NULL")
+
+# `RecommendationEvidence._cites_exactly_one_metric_shape`, as CHECKs. One shape per
+# item (a rate XOR a timing); a rate carries its counts and no median with the
+# numerator within the denominator; a timing carries a median and no counts; and an
+# overall metric (no dimension) names no dimension key.
+_RECOMMENDATION_EVIDENCE_ONE_METRIC_SHAPE: Final[str] = (
+    "(rate_kind IS NULL) <> (timing_kind IS NULL)")
+_RECOMMENDATION_EVIDENCE_RATE_SHAPE: Final[str] = (
+    "rate_kind IS NULL"
+    " OR (numerator IS NOT NULL AND denominator IS NOT NULL"
+    "     AND median_days IS NULL AND numerator <= denominator)")
+_RECOMMENDATION_EVIDENCE_TIMING_SHAPE: Final[str] = (
+    "timing_kind IS NULL"
+    " OR (median_days IS NOT NULL AND numerator IS NULL AND denominator IS NULL)")
+_RECOMMENDATION_EVIDENCE_OVERALL_HAS_NO_KEY: Final[str] = (
+    "dimension IS NOT NULL OR dimension_key IS NULL")
+
+# `StrategyChangeProposal._target_agrees...`, the half a CHECK can express: the
+# queryable `target` column must agree with the `kind` of the change it wraps — the
+# search family routes to a SEARCH_PROFILE, the policy family to an APPLICATION_POLICY.
+# The target_id-vs-payload half stays a Python validator (a CHECK cannot read the JSONB).
+_STRATEGY_PROPOSAL_TARGET_MATCHES_KIND: Final[str] = (
+    "(target = 'SEARCH_PROFILE' AND kind IN"
+    " ('SET_SEARCH_RADIUS', 'SET_SEARCH_KEYWORDS', 'SET_SEARCH_SOURCES',"
+    "  'SET_SEARCH_OPPORTUNITY_TYPES'))"
+    " OR (target = 'APPLICATION_POLICY' AND kind IN"
+    " ('SET_POLICY_OPPORTUNITY_TYPES', 'SET_APPLICATION_VOLUME', 'SET_MINIMUM_SCORE'))")
+
+
+class ApplicationOutcomeRow(TimestampedMixin, Base):
+    """One recorded real-world hiring-process milestone in one application (§3-9).
+
+    User-owned like every Phase 4+ entity: `user_id` cascades from `users`, and
+    `application_id` from `applications`. `UNIQUE (application_id, outcome_key)` is the
+    natural key `application_outcome_id` derives the primary key from, so recording the
+    same milestone twice — a double-click, a retried request — collapses onto one row,
+    while two genuinely distinct rounds (a different `occurred_at`) stay two rows. The
+    key-matches-the-fact invariant folds in `occurred_at.isoformat()`, which a CHECK
+    cannot recompute, so it stays a Python validator; the CHECK enforced here is the
+    self-supersede guard. `supersedes_id` is a self-referential FK that cascades, so a
+    correction never outlives the predecessor whose id its `outcome_key` names.
+    `occurred_at`/`recorded_at` are the domain facts (kept strictly apart, §8); the mixin
+    timestamps are row bookkeeping and `updated_at` follows a status flip via the server.
+
+    Nothing here is the Phase 12 execution lifecycle: there is no `ApplicationState`
+    column, and a `REJECTED` outcome is a fact about hiring, never an execution failure
+    (§2, §84).
+    """
+
+    __tablename__ = "application_outcomes"
+    __table_args__ = (
+        UniqueConstraint("application_id", "outcome_key"),
+        CheckConstraint("supersedes_id IS NULL OR supersedes_id <> id",
+                        name="no_self_supersede"),
+        Index("ix_application_outcomes_user_id", "user_id"),
+        Index("ix_application_outcomes_application_id_occurred_at",
+              "application_id", "occurred_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    application_id: Mapped[UUID] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"))
+    kind: Mapped[OutcomeKind] = mapped_column(
+        enum_column(OutcomeKind, "application_outcome_kind"))
+    source: Mapped[OutcomeSource] = mapped_column(
+        enum_column(OutcomeSource, "application_outcome_source"),
+        server_default=text(f"'{OutcomeSource.MANUAL_USER.value}'"))
+    status: Mapped[OutcomeStatus] = mapped_column(
+        enum_column(OutcomeStatus, "application_outcome_status"),
+        server_default=text(f"'{OutcomeStatus.EFFECTIVE.value}'"))
+    outcome_key: Mapped[str]
+    occurred_at: Mapped[datetime]
+    recorded_at: Mapped[datetime]
+    supersedes_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("application_outcomes.id", ondelete="CASCADE"))
+    detail: Mapped[str | None]
+
+
+class RoleClassificationRow(TimestampedMixin, Base):
+    """One user's role-family verdict on one opportunity — deterministic or corrected (§18).
+
+    User-owned and keyed on `(user_id, opportunity_id)`, the pair `role_classification_id`
+    derives from, so re-classifying is idempotent and a manual correction updates the one
+    row. `role_family` is nullable because an unclassified role is a real, honest state; the
+    CHECK restates the domain rule that a `MANUAL` provenance must name a family while the
+    deterministic rule may leave one unset. `created_at`/`updated_at` are domain facts (a
+    correction advances `updated_at`), so the mapper forces `updated_at` into every UPDATE.
+    """
+
+    __tablename__ = "role_classifications"
+    __table_args__ = (
+        UniqueConstraint("user_id", "opportunity_id"),
+        CheckConstraint(_ROLE_CLASSIFICATION_MANUAL_NAMES_A_FAMILY,
+                        name="manual_names_a_family"),
+        CheckConstraint("updated_at >= created_at", name="updated_at_after_created_at"),
+        Index("ix_role_classifications_user_id_role_family", "user_id", "role_family"),
+        Index("ix_role_classifications_opportunity_id", "opportunity_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    opportunity_id: Mapped[UUID] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"))
+    role_family: Mapped[RoleFamily | None] = mapped_column(
+        enum_column(RoleFamily, "role_family"))
+    provenance: Mapped[RoleFamilyProvenance] = mapped_column(
+        enum_column(RoleFamilyProvenance, "role_family_provenance"),
+        server_default=text(f"'{RoleFamilyProvenance.DETERMINISTIC_TITLE.value}'"))
+
+
+class CareerRecommendationRow(TimestampedMixin, Base):
+    """One evidence-backed suggestion from a funnel report — and nothing it can execute (§26-33).
+
+    User-owned, read `WHERE user_id = ?`. The id is random (a recommendation is a fresh
+    suggestion, not an idempotent fact), so this is written once and never mutated: `created_at`
+    is the domain fact and the mixin `updated_at` is left to the server default. `analytics_version`
+    pins the report recipe it was drawn from; `evidence` is the child collection that justifies it,
+    cascaded and ordered by `ordinal`, at least one row of which the aggregate validator requires.
+    `generator_key`/`llm_run_id` record whether a provider polished the prose behind the router.
+    The model holds no target profile, policy or execution — turning this into a change is
+    `strategy_change_proposals`' job, which a human approves explicitly.
+    """
+
+    __tablename__ = "career_recommendations"
+    __table_args__ = (
+        Index("ix_career_recommendations_user_id_created_at", "user_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    kind: Mapped[RecommendationKind] = mapped_column(
+        enum_column(RecommendationKind, "career_recommendation_kind"))
+    analytics_version: Mapped[str]
+    summary: Mapped[str]
+    detail: Mapped[str | None]
+    generator_key: Mapped[str | None]
+    llm_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("llm_runs.id", ondelete="SET NULL"))
+
+    evidence: Mapped[list["CareerRecommendationEvidenceRow"]] = relationship(
+        back_populates="recommendation", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="raise",
+        order_by="CareerRecommendationEvidenceRow.ordinal")
+
+
+class CareerRecommendationEvidenceRow(TimestampedMixin, Base):
+    """One computed metric a recommendation cites, with its own numbers (§28, §62).
+
+    `UNIQUE (recommendation_id, ordinal)` is the natural key `career_recommendation_evidence_id`
+    derives from, so re-persisting a recommendation lands on the same evidence rows. The CHECKs
+    restate `RecommendationEvidence._cites_exactly_one_metric_shape` in full — one metric shape
+    (a rate XOR a timing), a rate's counts with no median and numerator within denominator, a
+    timing's median with no counts, and no dimension key on an overall metric — and the sample
+    floor restates the aggregate's "no claim from weak data" rule. Written once with its parent
+    and never mutated, so the mixin timestamps are row bookkeeping. The FK name is set explicitly
+    because the convention-generated one exceeds PostgreSQL's 63-character identifier limit.
+    """
+
+    __tablename__ = "career_recommendation_evidence"
+    __table_args__ = (
+        UniqueConstraint("recommendation_id", "ordinal"),
+        CheckConstraint("ordinal >= 0", name="ordinal_non_negative"),
+        CheckConstraint(f"sample_size >= {MIN_RECOMMENDATION_SAMPLE_SIZE}",
+                        name="sample_size_meets_minimum"),
+        CheckConstraint("numerator IS NULL OR numerator >= 0",
+                        name="numerator_non_negative"),
+        CheckConstraint("denominator IS NULL OR denominator >= 0",
+                        name="denominator_non_negative"),
+        CheckConstraint("median_days IS NULL OR median_days >= 0.0",
+                        name="median_days_non_negative"),
+        CheckConstraint(_RECOMMENDATION_EVIDENCE_ONE_METRIC_SHAPE,
+                        name="cites_one_metric_shape"),
+        CheckConstraint(_RECOMMENDATION_EVIDENCE_RATE_SHAPE, name="rate_shape_coherent"),
+        CheckConstraint(_RECOMMENDATION_EVIDENCE_TIMING_SHAPE, name="timing_shape_coherent"),
+        CheckConstraint(_RECOMMENDATION_EVIDENCE_OVERALL_HAS_NO_KEY,
+                        name="overall_metric_has_no_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    recommendation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("career_recommendations.id", ondelete="CASCADE",
+                   name="fk_recommendation_evidence_recommendation_id"))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    dimension: Mapped[DimensionKind | None] = mapped_column(
+        enum_column(DimensionKind, "evidence_dimension"))
+    dimension_key: Mapped[str | None]
+    rate_kind: Mapped[RateKind | None] = mapped_column(
+        enum_column(RateKind, "evidence_rate_kind"))
+    timing_kind: Mapped[TimingKind | None] = mapped_column(
+        enum_column(TimingKind, "evidence_timing_kind"))
+    numerator: Mapped[int | None] = mapped_column(Integer)
+    denominator: Mapped[int | None] = mapped_column(Integer)
+    median_days: Mapped[float | None]
+    sample_size: Mapped[int] = mapped_column(Integer)
+    detail: Mapped[str]
+
+    recommendation: Mapped["CareerRecommendationRow"] = relationship(
+        back_populates="evidence", lazy="raise")
+
+
+class StrategyChangeProposalRow(TimestampedMixin, Base):
+    """One approved-or-not edit to one search or policy — the spine's only mutation (§34-45).
+
+    User-owned, read `WHERE user_id = ?`. `target`/`target_id` name the resource the way a
+    query needs; `kind` is stored as its own column so "my open SET_MINIMUM_SCORE proposals" is
+    one indexed lookup, while `change` holds the whole validated `StrategyChange` union as JSONB,
+    read back through `STRATEGY_CHANGE_ADAPTER` and never trusted raw. The CHECK restates the
+    queryable half of the target-agrees invariant (target must match the change's kind family);
+    the target_id-vs-payload half stays a Python validator. `target_id` carries no cross-table
+    FK — it addresses a `search_profiles` or an `application_policies` row depending on `target`,
+    and ownership is re-checked through a `user_id`-scoped repository at approval, not a
+    constraint. `target_version` is the target's `updated_at` at drafting, the precondition the
+    executor revalidates. `created_at`/`updated_at` are domain facts (a status transition advances
+    `updated_at`), so the mapper forces `updated_at` into every UPDATE. The FK to
+    `career_recommendations` is named explicitly to stay within the 63-character identifier limit.
+    """
+
+    __tablename__ = "strategy_change_proposals"
+    __table_args__ = (
+        CheckConstraint(_STRATEGY_PROPOSAL_TARGET_MATCHES_KIND, name="target_matches_kind"),
+        CheckConstraint("updated_at >= created_at", name="updated_at_after_created_at"),
+        CheckConstraint("expires_at > created_at", name="expires_at_after_created_at"),
+        Index("ix_strategy_change_proposals_user_id_status", "user_id", "status"),
+        Index("ix_strategy_change_proposals_target_id", "target_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    target: Mapped[StrategyChangeTarget] = mapped_column(
+        enum_column(StrategyChangeTarget, "strategy_change_target"))
+    target_id: Mapped[UUID]
+    kind: Mapped[StrategyChangeKind] = mapped_column(
+        enum_column(StrategyChangeKind, "strategy_change_kind"))
+    change: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
+    target_version: Mapped[datetime]
+    summary: Mapped[str]
+    source_recommendation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("career_recommendations.id", ondelete="SET NULL",
+                   name="fk_strategy_proposals_source_recommendation_id"))
+    generator_key: Mapped[str | None]
+    llm_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("llm_runs.id", ondelete="SET NULL"))
+    status: Mapped[StrategyChangeProposalStatus] = mapped_column(
+        enum_column(StrategyChangeProposalStatus, "strategy_change_proposal_status"),
+        server_default=text(f"'{StrategyChangeProposalStatus.PROPOSED.value}'"))
+    expires_at: Mapped[datetime]
+
+
+class StrategyChangeExecutionRow(TimestampedMixin, Base):
+    """The record of one attempt to apply a confirmed proposal — the executor's audit (§45).
+
+    `UNIQUE (proposal_id)` matches `strategy_change_execution_id`'s derivation from the proposal
+    alone, so a double-confirm collides on this row rather than applying the change twice — the
+    idempotency the executor rests on. `outcome` says whether the change was refused at
+    re-validation (`REJECTED` — a stale version, a vanished target), permitted but failed
+    (`FAILED`), or written (`SUCCEEDED`). `observed_target_version` is the `updated_at` read from
+    the live target so an audit can see what precondition was checked; `result_ref`/`detail` are
+    secret-free handles. Written once per proposal, so `created_at` is the domain fact and the
+    mixin `updated_at` is left to the server default. The FK to `strategy_change_proposals` is
+    named explicitly to stay within the 63-character identifier limit.
+    """
+
+    __tablename__ = "strategy_change_executions"
+    __table_args__ = (
+        UniqueConstraint("proposal_id"),
+        Index("ix_strategy_change_executions_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    proposal_id: Mapped[UUID] = mapped_column(
+        ForeignKey("strategy_change_proposals.id", ondelete="CASCADE",
+                   name="fk_strategy_executions_proposal_id"))
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    outcome: Mapped[StrategyChangeExecutionOutcome] = mapped_column(
+        enum_column(StrategyChangeExecutionOutcome, "strategy_change_execution_outcome"))
+    observed_target_version: Mapped[datetime | None]
+    detail: Mapped[str | None]
+    result_ref: Mapped[str | None]
 
 

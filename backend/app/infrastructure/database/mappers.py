@@ -30,6 +30,7 @@ from uuid import UUID, uuid5
 from pydantic import SecretStr, TypeAdapter
 from sqlalchemy.orm.attributes import flag_modified
 
+from backend.app.domain.analytics import DimensionKind, RateKind, TimingKind
 from backend.app.domain.application import (
     Application,
     PinnedDocument,
@@ -107,9 +108,12 @@ from backend.app.domain.identifiers import (
     ApplicationDecisionId,
     ApplicationEventId,
     ApplicationId,
+    ApplicationOutcomeId,
     ApplicationPolicyId,
     CandidateDocumentId,
     CandidateProfileId,
+    CareerRecommendationEvidenceId,
+    CareerRecommendationId,
     CareerSiteId,
     ChatActionExecutionId,
     ChatActionProposalId,
@@ -133,7 +137,10 @@ from backend.app.domain.identifiers import (
     MatchEvaluationId,
     OpportunityId,
     ProviderSessionId,
+    RoleClassificationId,
     SearchProfileId,
+    StrategyChangeExecutionId,
+    StrategyChangeProposalId,
     SubmissionAttemptId,
     UserId,
     UserSessionId,
@@ -162,7 +169,23 @@ from backend.app.domain.opportunity import (
     OpportunityType,
     WorkplaceMode,
 )
+from backend.app.domain.outcome import (
+    ApplicationOutcome,
+    OutcomeKind,
+    OutcomeSource,
+    OutcomeStatus,
+)
 from backend.app.domain.policy import ApplicationPolicy, DimensionThreshold
+from backend.app.domain.recommendation import (
+    CareerRecommendation,
+    RecommendationEvidence,
+    RecommendationKind,
+)
+from backend.app.domain.role import (
+    RoleClassification,
+    RoleFamily,
+    RoleFamilyProvenance,
+)
 from backend.app.domain.search import (
     CountrySearchArea,
     RadiusSearchArea,
@@ -171,10 +194,19 @@ from backend.app.domain.search import (
     SearchAreaKind,
     SearchProfile,
 )
+from backend.app.domain.strategy_change import (
+    STRATEGY_CHANGE_ADAPTER,
+    StrategyChangeExecution,
+    StrategyChangeExecutionOutcome,
+    StrategyChangeProposal,
+    StrategyChangeProposalStatus,
+    StrategyChangeTarget,
+)
 from backend.app.domain.user import User, UserSession, UserStatus
 from backend.app.infrastructure.database.models import (
     ApplicationDecisionRow,
     ApplicationEventRow,
+    ApplicationOutcomeRow,
     ApplicationPolicyRow,
     ApplicationRow,
     CandidateAvailabilitySlotRow,
@@ -184,6 +216,8 @@ from backend.app.infrastructure.database.models import (
     CandidateLanguageRow,
     CandidateProfileRow,
     CandidateWorkAuthorizationRow,
+    CareerRecommendationEvidenceRow,
+    CareerRecommendationRow,
     ChatActionExecutionRow,
     ChatActionProposalRow,
     ChatMessageRow,
@@ -209,8 +243,11 @@ from backend.app.infrastructure.database.models import (
     OpportunityRow,
     OpportunitySourceRecordRow,
     ProviderSessionRow,
+    RoleClassificationRow,
     SearchAreaRow,
     SearchProfileRow,
+    StrategyChangeExecutionRow,
+    StrategyChangeProposalRow,
     SubmissionAttemptRow,
     UserRow,
     UserSessionRow,
@@ -2284,5 +2321,260 @@ def interview_session_summary_to_domain(
         generator_key=row.generator_key,
         llm_run_id=(None if row.llm_run_id is None else LLMRunId(row.llm_run_id)),
         created_at=row.created_at)
+
+
+# ---------------------------------------------------------------------------
+# Phase 15 — outcome tracking and the career-intelligence loop. Observed hiring-process
+# facts, the by-role grouping the funnel is sliced on, the evidence-backed suggestions the
+# engine draws, and the one link allowed to touch platform state after a human approves.
+# An outcome is mutated only by a status flip (retract/supersede) at the same id, so its
+# domain facts (`occurred_at`/`recorded_at`) are separate columns and the mixin timestamps
+# stay row bookkeeping. A role classification and a strategy proposal advance `updated_at`,
+# so it is forced into every UPDATE; recommendations, their evidence and executions are
+# write-once. `CareerAnalytics` has no mapper — it is a computed service output, never a row.
+# ---------------------------------------------------------------------------
+
+
+def application_outcome_to_row(outcome: ApplicationOutcome,
+                              row: ApplicationOutcomeRow | None = None
+                              ) -> ApplicationOutcomeRow:
+    """An `ApplicationOutcome` onto its row. `occurred_at`/`recorded_at` are the domain
+    facts — kept strictly apart (§8) and never confused with the mixin's row-write
+    timestamps, which are left to the server. A retraction or supersede is a status flip at
+    the same id, so it lands on the loaded row; nothing here touches an `ApplicationState`."""
+    target = ApplicationOutcomeRow(id=outcome.id) if row is None else row
+    target.user_id = outcome.user_id
+    target.application_id = outcome.application_id
+    target.kind = outcome.kind
+    target.source = outcome.source
+    target.status = outcome.status
+    target.outcome_key = outcome.outcome_key
+    target.occurred_at = outcome.occurred_at
+    target.recorded_at = outcome.recorded_at
+    target.supersedes_id = outcome.supersedes_id
+    target.detail = outcome.detail
+    return target
+
+
+def application_outcome_to_domain(row: ApplicationOutcomeRow) -> ApplicationOutcome:
+    """A row as an `ApplicationOutcome`, its key-matches-the-fact invariant re-checked.
+
+    Reconstructing runs `_key_matches_the_fact` again, so a stored row whose `outcome_key`
+    no longer matches its kind/occurred_at/supersedes_id fails here rather than skewing a
+    funnel computed from it.
+    """
+    return ApplicationOutcome(
+        id=ApplicationOutcomeId(row.id),
+        user_id=UserId(row.user_id),
+        application_id=ApplicationId(row.application_id),
+        kind=OutcomeKind(row.kind),
+        source=OutcomeSource(row.source),
+        status=OutcomeStatus(row.status),
+        outcome_key=row.outcome_key,
+        occurred_at=row.occurred_at,
+        recorded_at=row.recorded_at,
+        supersedes_id=(None if row.supersedes_id is None
+                       else ApplicationOutcomeId(row.supersedes_id)),
+        detail=row.detail)
+
+
+def role_classification_to_row(classification: RoleClassification,
+                               row: RoleClassificationRow | None = None
+                               ) -> RoleClassificationRow:
+    """A `RoleClassification` onto its row. `created_at`/`updated_at` are domain facts (a
+    manual correction advances `updated_at`), so `updated_at` is forced into every UPDATE
+    for the reason `application_to_row` documents."""
+    target = RoleClassificationRow(id=classification.id) if row is None else row
+    target.user_id = classification.user_id
+    target.opportunity_id = classification.opportunity_id
+    target.role_family = classification.role_family
+    target.provenance = classification.provenance
+    target.created_at = classification.created_at
+    target.updated_at = classification.updated_at
+    if row is not None:
+        flag_modified(target, "updated_at")
+    return target
+
+
+def role_classification_to_domain(row: RoleClassificationRow) -> RoleClassification:
+    return RoleClassification(
+        id=RoleClassificationId(row.id),
+        user_id=UserId(row.user_id),
+        opportunity_id=OpportunityId(row.opportunity_id),
+        role_family=None if row.role_family is None else RoleFamily(row.role_family),
+        provenance=RoleFamilyProvenance(row.provenance),
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def career_recommendation_evidence_to_row(evidence: RecommendationEvidence,
+                                          row: CareerRecommendationEvidenceRow | None = None
+                                          ) -> CareerRecommendationEvidenceRow:
+    """One `RecommendationEvidence` onto its row. The id is derived from
+    `(recommendation_id, ordinal)` and carried on the domain value, so it keys the row
+    directly; the CHECKs restate the one-metric-shape rule this value already passed."""
+    target = (CareerRecommendationEvidenceRow(id=evidence.id) if row is None else row)
+    target.recommendation_id = evidence.recommendation_id
+    target.ordinal = evidence.ordinal
+    target.dimension = evidence.dimension
+    target.dimension_key = evidence.dimension_key
+    target.rate_kind = evidence.rate_kind
+    target.timing_kind = evidence.timing_kind
+    target.numerator = evidence.numerator
+    target.denominator = evidence.denominator
+    target.median_days = evidence.median_days
+    target.sample_size = evidence.sample_size
+    target.detail = evidence.detail
+    return target
+
+
+def career_recommendation_evidence_to_domain(
+        row: CareerRecommendationEvidenceRow) -> RecommendationEvidence:
+    return RecommendationEvidence(
+        id=CareerRecommendationEvidenceId(row.id),
+        recommendation_id=CareerRecommendationId(row.recommendation_id),
+        ordinal=row.ordinal,
+        dimension=None if row.dimension is None else DimensionKind(row.dimension),
+        dimension_key=row.dimension_key,
+        rate_kind=None if row.rate_kind is None else RateKind(row.rate_kind),
+        timing_kind=None if row.timing_kind is None else TimingKind(row.timing_kind),
+        numerator=row.numerator,
+        denominator=row.denominator,
+        median_days=row.median_days,
+        sample_size=row.sample_size,
+        detail=row.detail)
+
+
+def career_recommendation_to_row(recommendation: CareerRecommendation,
+                                 row: CareerRecommendationRow | None = None
+                                 ) -> CareerRecommendationRow:
+    """A `CareerRecommendation` and its evidence onto rows. Written once (the id is random,
+    a fresh suggestion, not an idempotent fact), so `created_at` is the domain fact and the
+    mixin `updated_at` is left to the server default. Existing children are matched by
+    `ordinal` — the natural key the derived id and the unique constraint both rest on — so a
+    re-persist updates the rows already there and any dropped evidence is deleted by the
+    cascade."""
+    target = CareerRecommendationRow(id=recommendation.id) if row is None else row
+    target.user_id = recommendation.user_id
+    target.kind = recommendation.kind
+    target.analytics_version = recommendation.analytics_version
+    target.summary = recommendation.summary
+    target.detail = recommendation.detail
+    target.generator_key = recommendation.generator_key
+    target.llm_run_id = recommendation.llm_run_id
+    target.created_at = recommendation.created_at
+    existing = ({} if row is None
+                else {child.ordinal: child for child in row.evidence})
+    target.evidence = [
+        career_recommendation_evidence_to_row(item, existing.get(item.ordinal))
+        for item in recommendation.evidence]
+    return target
+
+
+def career_recommendation_to_domain(row: CareerRecommendationRow) -> CareerRecommendation:
+    return CareerRecommendation(
+        id=CareerRecommendationId(row.id),
+        user_id=UserId(row.user_id),
+        kind=RecommendationKind(row.kind),
+        analytics_version=row.analytics_version,
+        summary=row.summary,
+        detail=row.detail,
+        evidence=tuple(career_recommendation_evidence_to_domain(child)
+                       for child in row.evidence),
+        generator_key=row.generator_key,
+        llm_run_id=None if row.llm_run_id is None else LLMRunId(row.llm_run_id),
+        created_at=row.created_at)
+
+
+def strategy_change_proposal_to_row(proposal: StrategyChangeProposal,
+                                    row: StrategyChangeProposalRow | None = None
+                                    ) -> StrategyChangeProposalRow:
+    """A `StrategyChangeProposal` onto its row.
+
+    `target`/`target_id` and `kind` are the queryable columns; `kind` is written from
+    `change.kind` and `change` from the whole validated union, dumped through the shared
+    adapter so the JSONB is exactly what re-validation will accept. `updated_at` is forced
+    into every UPDATE (a status transition moves it) for the reason `application_to_row`
+    states, and the CHECK guarantees the stored `target`/`kind` pair can never contradict the
+    payload.
+    """
+    target = StrategyChangeProposalRow(id=proposal.id) if row is None else row
+    target.user_id = proposal.user_id
+    target.target = proposal.target
+    target.target_id = proposal.target_id
+    target.kind = proposal.change.kind
+    target.change = STRATEGY_CHANGE_ADAPTER.dump_python(proposal.change, mode="json")
+    target.target_version = proposal.target_version
+    target.summary = proposal.summary
+    target.source_recommendation_id = proposal.source_recommendation_id
+    target.generator_key = proposal.generator_key
+    target.llm_run_id = proposal.llm_run_id
+    target.status = proposal.status
+    target.created_at = proposal.created_at
+    target.updated_at = proposal.updated_at
+    target.expires_at = proposal.expires_at
+    if row is not None:
+        flag_modified(target, "updated_at")
+    return target
+
+
+def strategy_change_proposal_to_domain(
+        row: StrategyChangeProposalRow) -> StrategyChangeProposal:
+    """A row as a domain proposal, its `change` re-validated through the closed union.
+
+    `STRATEGY_CHANGE_ADAPTER.validate_python` runs the discriminated union again, so a stored
+    payload that no longer parses — a change kind retired from the grammar, a field the model
+    since forbade — fails here rather than reaching the executor. `target`/`target_id` are not
+    trusted raw either: reconstruction re-applies `_target_agrees...`, so a row whose queryable
+    columns drifted from the payload is refused.
+    """
+    return StrategyChangeProposal(
+        id=StrategyChangeProposalId(row.id),
+        user_id=UserId(row.user_id),
+        target=StrategyChangeTarget(row.target),
+        target_id=row.target_id,
+        change=STRATEGY_CHANGE_ADAPTER.validate_python(row.change),
+        target_version=row.target_version,
+        summary=row.summary,
+        source_recommendation_id=(
+            None if row.source_recommendation_id is None
+            else CareerRecommendationId(row.source_recommendation_id)),
+        generator_key=row.generator_key,
+        llm_run_id=None if row.llm_run_id is None else LLMRunId(row.llm_run_id),
+        status=StrategyChangeProposalStatus(row.status),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        expires_at=row.expires_at)
+
+
+def strategy_change_execution_to_row(execution: StrategyChangeExecution,
+                                     row: StrategyChangeExecutionRow | None = None
+                                     ) -> StrategyChangeExecutionRow:
+    """A `StrategyChangeExecution` onto its row. Written once per proposal — the id is derived
+    from it, so a double-confirm collides here rather than applying the change twice — so
+    `created_at` is the domain fact and the mixin `updated_at` is left to the server default."""
+    target = StrategyChangeExecutionRow(id=execution.id) if row is None else row
+    target.proposal_id = execution.proposal_id
+    target.user_id = execution.user_id
+    target.outcome = execution.outcome
+    target.observed_target_version = execution.observed_target_version
+    target.detail = execution.detail
+    target.result_ref = execution.result_ref
+    target.created_at = execution.created_at
+    return target
+
+
+def strategy_change_execution_to_domain(
+        row: StrategyChangeExecutionRow) -> StrategyChangeExecution:
+    return StrategyChangeExecution(
+        id=StrategyChangeExecutionId(row.id),
+        proposal_id=StrategyChangeProposalId(row.proposal_id),
+        user_id=UserId(row.user_id),
+        outcome=StrategyChangeExecutionOutcome(row.outcome),
+        observed_target_version=row.observed_target_version,
+        detail=row.detail,
+        result_ref=row.result_ref,
+        created_at=row.created_at)
+
 
 

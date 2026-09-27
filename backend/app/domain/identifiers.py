@@ -61,6 +61,12 @@ InterviewQuestionId = NewType("InterviewQuestionId", UUID)
 InterviewAnswerId = NewType("InterviewAnswerId", UUID)
 InterviewAnswerEvaluationId = NewType("InterviewAnswerEvaluationId", UUID)
 InterviewSessionSummaryId = NewType("InterviewSessionSummaryId", UUID)
+ApplicationOutcomeId = NewType("ApplicationOutcomeId", UUID)
+RoleClassificationId = NewType("RoleClassificationId", UUID)
+CareerRecommendationId = NewType("CareerRecommendationId", UUID)
+CareerRecommendationEvidenceId = NewType("CareerRecommendationEvidenceId", UUID)
+StrategyChangeProposalId = NewType("StrategyChangeProposalId", UUID)
+StrategyChangeExecutionId = NewType("StrategyChangeExecutionId", UUID)
 
 
 def new_user_id() -> UserId:
@@ -499,3 +505,102 @@ def interview_session_summary_id(
     """
     return InterviewSessionSummaryId(
         uuid5(SURROGATE_KEY_NAMESPACE, f"interview_session_summary:{session_id}"))
+
+
+def application_outcome_id(application_id: ApplicationId,
+                           outcome_key: str) -> ApplicationOutcomeId:
+    """The id of one recorded real-world outcome of one application (Phase 15 §46, §81).
+
+    Derived rather than random, and this is the load-bearing half of the outcome
+    idempotency story. `outcome_key` is the caller's stable handle for "the same
+    fact about this application": for a once-only milestone it is just the outcome
+    kind, so a double-clicked "Mark as rejected" — or a retried request — computes
+    the same id and collapses onto one row instead of recording the rejection twice.
+    For a genuinely repeatable milestone (a second interview round on a different
+    day) the caller folds the distinguishing instant into the key, so two real
+    rounds are two rows while one round submitted twice is one (§46). The application
+    scopes it, so the same milestone on two applications never collides.
+
+    `outcome_key` is composed by `ApplicationOutcome.build_outcome_key`; it is passed
+    in rather than recomputed here for the reason every derivation in this module
+    keeps its key-shaping rules out of the id factory — this module knows about
+    UUIDs and must not grow a dependency on the vocabulary that shapes the key.
+    """
+    return ApplicationOutcomeId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"application_outcome:{application_id}:{outcome_key}"))
+
+
+def role_classification_id(user_id: UserId,
+                           opportunity_id: OpportunityId) -> RoleClassificationId:
+    """The id of one user's role-family classification of one opportunity (Phase 15 §18).
+
+    Derived from `(user_id, opportunity_id)` — the pair the unique constraint covers — so
+    classifying the same role twice reuses the one row rather than accumulating a
+    classification per analytics run. A deterministic backfill and a later manual correction
+    of the same opportunity therefore land on the same key: the correction *updates* the
+    classification's provenance to `MANUAL` in place rather than leaving two disagreeing
+    rows. Scoped by user because a manual correction is a user's own judgement about a role
+    and must not leak across accounts, exactly as every other user-owned entity is.
+    """
+    return RoleClassificationId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"role_classification:{user_id}:{opportunity_id}"))
+
+
+def new_career_recommendation_id() -> CareerRecommendationId:
+    """The id of one generated career recommendation (Phase 15 §26-33).
+
+    Random: a recommendation is an observation produced at an instant from the
+    metrics as they stood then, not an entity a retry should collapse onto. Two
+    runs of the engine over a changed funnel are two recommendations a user can
+    compare over time, so each stands on its own — the engine never mutates a
+    prior recommendation, it supersedes it by producing a newer one.
+    """
+    return CareerRecommendationId(uuid4())
+
+
+def career_recommendation_evidence_id(recommendation_id: CareerRecommendationId,
+                                      ordinal: int) -> CareerRecommendationEvidenceId:
+    """The id of the nth piece of evidence backing one recommendation (§28, §62).
+
+    Derived from `(recommendation_id, ordinal)` — the pair the unique constraint
+    covers — so re-persisting a recommendation's evidence after a failed flush lands
+    on the same rows rather than duplicating the citation. `ordinal` is the evidence
+    item's position in the recommendation's immutable evidence tuple (0-based); the
+    recommendation scopes it, exactly as `chat_action_proposal_id` scopes a proposal
+    to its message.
+    """
+    return CareerRecommendationEvidenceId(
+        uuid5(SURROGATE_KEY_NAMESPACE,
+              f"career_recommendation_evidence:{recommendation_id}:{ordinal}"))
+
+
+def new_strategy_change_proposal_id() -> StrategyChangeProposalId:
+    """The id of one proposed change to a user's strategy (Phase 15 §35-37).
+
+    Random: a proposal is an entity a user reviews and then approves or lets expire,
+    not something recomputable from what it holds. Two proposals to raise the same
+    score floor — one this week, one next — are two distinct offers with their own
+    before/after snapshots and their own expiry, and the executor keys idempotent
+    execution off the *execution* id derived from the proposal, not the other way
+    round.
+    """
+    return StrategyChangeProposalId(uuid4())
+
+
+def strategy_change_execution_id(
+        proposal_id: StrategyChangeProposalId) -> StrategyChangeExecutionId:
+    """The id of the record of executing one strategy-change proposal (§38, §56).
+
+    Derived from the proposal, and this is the load-bearing half of the execution
+    idempotency story, exactly as `chat_action_execution_id` is for a chat proposal:
+    a proposal approved twice — a double-clicked "Apply change", a retried request —
+    computes the same execution id and collides on the primary key instead of running
+    the underlying strategy service a second time. The executor still guards on the
+    proposal's status and revalidates the precondition (`STALE_STRATEGY_PROPOSAL`),
+    but the derived id is what makes the common path idempotent by construction
+    rather than by a caught race.
+    """
+    return StrategyChangeExecutionId(
+        uuid5(SURROGATE_KEY_NAMESPACE, f"strategy_change_execution:{proposal_id}"))

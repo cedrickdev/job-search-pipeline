@@ -83,8 +83,25 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   llm_secret_key_unavailable: 'This deployment is not configured to store an API key. Ask an administrator to enable it.',
   not_authenticated: 'Your session has ended. Sign in again to continue.',
   onboarding_incomplete: 'Save a profile and at least one active search first.',
+  // The Career Intelligence Loop refusals (Phase 15). The "observe" side: an outcome names an
+  // application or an outcome id that is not this account's (absent, never "not yours", so ids
+  // cannot be probed), an opportunity that does not exist, or an outcome already superseded or
+  // retracted that cannot be corrected or retracted again. None of these touches the Phase 12
+  // execution lifecycle — a recruiter's "no" is a recorded outcome, not a failed application.
+  opportunity_not_found: 'That opportunity is not in the directory.',
+  outcome_not_effective: 'That outcome was already corrected or retracted. Reload the timeline to see where it stands.',
+  outcome_not_found: 'That outcome no longer exists.',
   // The provider's answer exceeded the adapter's hard cap and was cut off.
   output_limit_exceeded: 'This provider returned more than could be handled. Try again.',
+  // The "approve" side of the loop — the strategy-proposal gate. A proposal that is not this
+  // account's reads as absent; one no longer open, one lapsed past its deadline, or one whose
+  // target moved on or vanished since it was drafted cannot be applied, and each is resolved by
+  // reloading the queue. `sensitive_confirmation_required` is the acceptance rule made visible:
+  // a change that loosens a safety brake (lowering the score floor, raising a cap, widening what
+  // the platform may apply to) never runs on a plain approval — it costs a deliberate second yes.
+  proposal_expired: 'This proposal lapsed before it was approved. Generate a fresh recommendation if it still applies.',
+  proposal_not_found: 'That proposal no longer exists.',
+  proposal_not_open: 'This proposal was already handled. Reload the queue to see where it stands.',
   // A hosted API refused for want of a valid credential (a 401/403). The fix is the
   // key on this connection, not a retry.
   provider_auth_required: 'This provider rejected its credentials. Check the API key on this connection.',
@@ -100,6 +117,15 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   provider_timeout: 'This provider did not answer in time. Try again.',
   provider_unavailable: 'This provider could not be reached. Check that it is running.',
   search_profile_not_found: 'That saved search no longer exists.',
+  // The proposal edited a target whose current version differs from the one it was drafted
+  // against, or that no longer exists — applying its before/after would clobber newer state.
+  strategy_proposal_stale: 'This search or policy changed since the proposal was drafted. Generate a fresh one.',
+  strategy_target_not_found: 'The search or policy this proposal edits no longer exists.',
+  // A role has never been classified for this account — a real, honest empty state.
+  role_classification_not_found: 'This opportunity has not been classified yet.',
+  // The second gate on a loosening change (§41-43): the platform never widens the application
+  // policy silently, so this is a prompt for a deliberate confirmation, not a failure.
+  sensitive_confirmation_required: 'This change loosens a safety limit. Confirm again to apply it.',
   // A resume was asked for a session the provider no longer holds; and — the same slug —
   // a practice session that is not this account's reads as absent (§90). One neutral
   // sentence serves both: the id is gone, and retrying from a fresh list is the fix.

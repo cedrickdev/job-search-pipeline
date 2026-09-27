@@ -41,13 +41,21 @@ from backend.app.domain.identifiers import (
     UserId,
 )
 from backend.app.domain.opportunity import Opportunity
+from backend.app.domain.recommendation import (
+    CareerRecommendation,
+    RecommendationConfidence,
+    RecommendationKind,
+)
 from backend.app.domain.search import SearchAreaKind, SearchProfile
+from backend.app.domain.strategy_change import StrategyChangeKind, StrategyChangeProposal
 from backend.app.repositories.contracts import (
     ApplicationRepository,
     CandidateProfileRepository,
+    CareerRecommendationRepository,
     CompanyRepository,
     OpportunityRepository,
     SearchProfileRepository,
+    StrategyChangeProposalRepository,
 )
 
 # How many rows each section of the snapshot may carry. Small on purpose: the context is
@@ -56,6 +64,14 @@ from backend.app.repositories.contracts import (
 _MAX_APPLICATIONS: Final[int] = 20
 _MAX_SEARCH_PROFILES: Final[int] = 10
 _MAX_OPPORTUNITIES: Final[int] = 15
+# The career-intelligence section is capped tighter still: it is a read-only orientation, not
+# a full report (the analytics and recommendations surfaces are where a user reads the whole
+# thing), so the model is shown only the few most recent suggestions and open changes.
+_MAX_RECOMMENDATIONS: Final[int] = 5
+_MAX_OPEN_PROPOSALS: Final[int] = 5
+# How many of a recommendation's evidence sentences to carry — one or two is enough to ground
+# the model's wording without pasting the whole funnel report into every turn.
+_MAX_EVIDENCE_LINES: Final[int] = 2
 
 
 class _ChatContextValue(BaseModel):
@@ -109,6 +125,50 @@ class ChatOpportunitySummary(_ChatContextValue):
     location_label: str | None = None
 
 
+class ChatRecommendationSummary(_ChatContextValue):
+    """One evidence-backed suggestion, reduced to what the model may cite — never a lever.
+
+    Carries the `kind`, the human `summary`, the sample-strength `confidence`, and a couple of
+    factual evidence sentences. It holds no id and nothing executable: turning a recommendation
+    into a change is the explicit strategy-proposal flow the user approves, never something the
+    chat can do off this summary, so the model can *discuss* the funnel but not *act* on it.
+    """
+
+    kind: RecommendationKind
+    summary: str
+    confidence: RecommendationConfidence
+    evidence: tuple[str, ...] = ()
+
+
+class ChatStrategyProposalSummary(_ChatContextValue):
+    """One open strategy change already awaiting the user's approval — read-only awareness.
+
+    So the model knows what is *already* queued for the user to confirm (and can point them at
+    it rather than re-suggesting it) without any power to approve it: there is no chat action
+    that consumes a proposal id, so this deliberately carries none — approval is the dedicated,
+    sensitive-confirmation HTTP flow, never a chat turn. `is_sensitive` flags a change that
+    loosens a safety brake, which the user must confirm a second time.
+    """
+
+    change_kind: StrategyChangeKind
+    summary: str
+    is_sensitive: bool
+
+
+class ChatCareerSummary(_ChatContextValue):
+    """The account's measured career intelligence — read-only, evidence-backed, no authority.
+
+    The "measure" and "recommend" steps of the phase's spine, surfaced to the chat so its
+    advice is grounded in the user's own funnel rather than invented: the most recent
+    evidence-backed `recommendations`, and the `open_proposals` already awaiting approval.
+    Nothing here is actionable from chat — no ids, no levers — which keeps the chat's authority
+    over the career loop at exactly zero, the same discipline the whole snapshot keeps.
+    """
+
+    recommendations: tuple[ChatRecommendationSummary, ...] = ()
+    open_proposals: tuple[ChatStrategyProposalSummary, ...] = ()
+
+
 class ChatContext(_ChatContextValue):
     """The whole per-turn snapshot: profile, searches, applications, postings.
 
@@ -121,6 +181,7 @@ class ChatContext(_ChatContextValue):
     search_profiles: tuple[ChatSearchSummary, ...] = ()
     applications: tuple[ChatApplicationSummary, ...] = ()
     opportunities: tuple[ChatOpportunitySummary, ...] = ()
+    career: ChatCareerSummary | None = None
 
     def render(self) -> str:
         """The snapshot as the labelled block the model is given.
@@ -143,6 +204,9 @@ class ChatContext(_ChatContextValue):
         lines += self._render_applications()
         lines += [""]
         lines += self._render_opportunities()
+        if self.career is not None:
+            lines += [""]
+            lines += self._render_career()
         return "\n".join(lines)
 
     def _render_profile(self) -> list[str]:
@@ -192,6 +256,35 @@ class ChatContext(_ChatContextValue):
             out.append(label)
         return out
 
+    def _render_career(self) -> list[str]:
+        """The career-intelligence block: the platform's own measurement, not board text.
+
+        Framed apart from the untrusted labels above because these lines are computed facts the
+        platform stands behind — but still carry no bracketed id, because none of them is
+        actionable from chat: a recommendation becomes a change only through the explicit
+        strategy-proposal approval the user confirms, which no chat turn can stand in for.
+        """
+        career = self.career
+        assert career is not None  # only rendered when set (the GLOBAL snapshot)
+        out = ["--- Career intelligence (read-only; act on these in the analytics and "
+               "strategy surfaces, not from chat) ---"]
+        if career.recommendations:
+            out.append(f"Recommendations ({len(career.recommendations)}), "
+                       "each backed by your own funnel:")
+            for rec in career.recommendations:
+                out.append(f"- {rec.kind.value} ({rec.confidence.value} confidence): "
+                           f"{rec.summary}")
+                out += [f"    · {line}" for line in rec.evidence]
+        else:
+            out.append("Recommendations: none yet (too little matured outcome data to "
+                       "draw one honestly).")
+        if career.open_proposals:
+            out.append(f"Strategy changes awaiting your approval ({len(career.open_proposals)}):")
+            for proposal in career.open_proposals:
+                flag = " [sensitive — needs a second confirmation]" if proposal.is_sensitive else ""
+                out.append(f"- {proposal.change_kind.value}: {proposal.summary}{flag}")
+        return out
+
 
 class ChatContextBuilder:
     """Assembles a `ChatContext` for one account from user-scoped repository reads.
@@ -221,12 +314,16 @@ class ChatContextBuilder:
                  searches: SearchProfileRepository,
                  applications: ApplicationRepository,
                  opportunities: OpportunityRepository,
-                 companies: CompanyRepository | None = None) -> None:
+                 companies: CompanyRepository | None = None,
+                 recommendations: CareerRecommendationRepository | None = None,
+                 strategy_proposals: StrategyChangeProposalRepository | None = None) -> None:
         self._profiles = profiles
         self._searches = searches
         self._applications = applications
         self._opportunities = opportunities
         self._companies = companies
+        self._recommendations = recommendations
+        self._strategy_proposals = strategy_proposals
 
     async def build(self, user_id: UserId) -> ChatContext:
         """The bounded snapshot for `user_id` — every section scoped to this account."""
@@ -243,7 +340,8 @@ class ChatContextBuilder:
             search_profiles=tuple(self._search_summary(s) for s in searches),
             applications=tuple(self._application_summary(a, by_id)
                                for a in applications),
-            opportunities=tuple(self._opportunity_summary(o) for o in recent))
+            opportunities=tuple(self._opportunity_summary(o) for o in recent),
+            career=await self._career_summary(user_id))
 
     async def build_for_conversation(self, user_id: UserId,
                                      conversation: Conversation) -> ChatContext:
@@ -384,6 +482,49 @@ class ChatContextBuilder:
                 if found is not None:
                     by_id[found.id] = found
         return by_id
+
+    async def _career_summary(self, user_id: UserId) -> ChatCareerSummary | None:
+        """The account's read-only career intelligence, or `None` when the deps are not wired.
+
+        A pure read of two user-scoped stores: the most recent evidence-backed recommendations
+        (never *generated* here — generation is a write the analytics surface owns), and the
+        still-open strategy proposals awaiting approval. A builder without these repositories
+        (a test that only needs the situation snapshot) simply omits the section, exactly as a
+        `companies`-less builder degrades a `COMPANY` scope — the type is what guarantees the
+        chat gains no new authority, since neither store is writable from here.
+        """
+        if self._recommendations is None and self._strategy_proposals is None:
+            return None
+        recommendations: tuple[ChatRecommendationSummary, ...] = ()
+        if self._recommendations is not None:
+            recent = await self._recommendations.list_for_user(
+                user_id, limit=_MAX_RECOMMENDATIONS)
+            recommendations = tuple(self._recommendation_summary(r) for r in recent)
+        open_proposals: tuple[ChatStrategyProposalSummary, ...] = ()
+        if self._strategy_proposals is not None:
+            pending = await self._strategy_proposals.list_for_user(
+                user_id, open_only=True, limit=_MAX_OPEN_PROPOSALS)
+            open_proposals = tuple(self._proposal_summary(p) for p in pending)
+        return ChatCareerSummary(
+            recommendations=recommendations, open_proposals=open_proposals)
+
+    @staticmethod
+    def _recommendation_summary(
+            recommendation: CareerRecommendation) -> ChatRecommendationSummary:
+        evidence = tuple(item.detail
+                         for item in recommendation.evidence[:_MAX_EVIDENCE_LINES])
+        return ChatRecommendationSummary(
+            kind=recommendation.kind,
+            summary=recommendation.summary,
+            confidence=recommendation.confidence,
+            evidence=evidence)
+
+    @staticmethod
+    def _proposal_summary(proposal: StrategyChangeProposal) -> ChatStrategyProposalSummary:
+        return ChatStrategyProposalSummary(
+            change_kind=proposal.change.kind,
+            summary=proposal.summary,
+            is_sensitive=proposal.is_sensitive)
 
     @staticmethod
     def _profile_summary(profile: CandidateProfile | None) -> ChatProfileSummary | None:

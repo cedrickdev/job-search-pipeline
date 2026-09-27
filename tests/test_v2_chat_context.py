@@ -19,11 +19,14 @@ from backend.app.chat.context import (
     _MAX_OPPORTUNITIES,
     _MAX_SEARCH_PROFILES,
     ChatApplicationSummary,
+    ChatCareerSummary,
     ChatContext,
     ChatContextBuilder,
     ChatOpportunitySummary,
     ChatProfileSummary,
+    ChatRecommendationSummary,
     ChatSearchSummary,
+    ChatStrategyProposalSummary,
 )
 from backend.app.domain.application import (
     Application,
@@ -45,22 +48,32 @@ from backend.app.domain.identifiers import (
     new_company_id,
 )
 from backend.app.domain.search import RadiusSearchArea
+from backend.app.domain.recommendation import (
+    RecommendationConfidence,
+    RecommendationKind,
+)
+from backend.app.domain.strategy_change import SetMinimumScoreChange
 from tests.v2_builders import (
     COMPANY,
     OTHER_USER,
+    POLICY,
     USER,
     a_candidate_profile,
+    a_career_recommendation,
     a_company,
     a_conversation,
     a_search_profile,
+    a_strategy_change_proposal,
     an_opportunity,
 )
 from tests.v2_fakes import (
     FakeApplicationRepository,
     FakeCandidateProfileRepository,
+    FakeCareerRecommendationRepository,
     FakeCompanyRepository,
     FakeOpportunityRepository,
     FakeSearchProfileRepository,
+    FakeStrategyChangeProposalRepository,
 )
 
 NOW = datetime(2026, 9, 20, tzinfo=UTC)
@@ -68,13 +81,15 @@ LONG_AGO = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _builder(profiles=None, searches=None, applications=None, opportunities=None,
-             companies=None):
+             companies=None, recommendations=None, strategy_proposals=None):
     return ChatContextBuilder(
         profiles=profiles or FakeCandidateProfileRepository(),
         searches=searches or FakeSearchProfileRepository(),
         applications=applications or FakeApplicationRepository(),
         opportunities=opportunities or FakeOpportunityRepository(),
-        companies=companies)
+        companies=companies,
+        recommendations=recommendations,
+        strategy_proposals=strategy_proposals)
 
 
 def _an_application(*, user_id: UserId, profile_id: CandidateProfileId,
@@ -274,7 +289,7 @@ async def test_a_search_reports_its_largest_radius_and_none_when_it_has_none():
 def test_the_snapshot_shape_carries_no_credential_field():
     """The type is the guarantee: a future edit that added a secret field breaks this."""
     assert set(ChatContext.model_fields) == {
-        "profile", "search_profiles", "applications", "opportunities"}
+        "profile", "search_profiles", "applications", "opportunities", "career"}
     assert set(ChatProfileSummary.model_fields) == {
         "display_name", "headline", "languages"}
     assert set(ChatSearchSummary.model_fields) == {
@@ -283,6 +298,13 @@ def test_the_snapshot_shape_carries_no_credential_field():
         "id", "state", "target_label", "opportunity_id"}
     assert set(ChatOpportunitySummary.model_fields) == {
         "id", "title", "company_name", "location_label"}
+    # The career-intelligence section is read-only and evidence-shaped: suggestions and the
+    # changes awaiting approval, and deliberately no id or lever the chat could act on.
+    assert set(ChatCareerSummary.model_fields) == {"recommendations", "open_proposals"}
+    assert set(ChatRecommendationSummary.model_fields) == {
+        "kind", "summary", "confidence", "evidence"}
+    assert set(ChatStrategyProposalSummary.model_fields) == {
+        "change_kind", "summary", "is_sensitive"}
 
 
 def test_the_snapshot_parts_are_frozen():
@@ -463,3 +485,120 @@ async def test_a_company_thread_degrades_to_profile_only_without_a_company_repo(
     assert context.profile is not None
     assert context.opportunities == ()
     assert context.applications == ()
+
+
+# --- the read-only career-intelligence section -----------------------------
+
+@pytest.mark.asyncio
+async def test_the_global_snapshot_carries_recommendations_and_open_proposals():
+    # The "measure" and "recommend" steps of the spine, surfaced read-only: the model sees the
+    # evidence-backed suggestion and the change already awaiting approval, grounded in numbers.
+    profiles = FakeCandidateProfileRepository()
+    recommendations = FakeCareerRecommendationRepository()
+    proposals = FakeStrategyChangeProposalRepository()
+    await profiles.upsert(a_candidate_profile())
+    await recommendations.add(a_career_recommendation(user_id=USER))
+    await proposals.upsert(a_strategy_change_proposal(user_id=USER))
+
+    context = await _builder(
+        profiles, recommendations=recommendations, strategy_proposals=proposals).build(USER)
+
+    assert context.career is not None
+    assert len(context.career.recommendations) == 1
+    rec = context.career.recommendations[0]
+    assert rec.kind is RecommendationKind.PRIORITIZE_ROLE_FAMILY
+    assert rec.confidence is RecommendationConfidence.MEDIUM  # a sample of 20 earns MEDIUM
+    assert rec.evidence  # the factual, non-causal detail sentence rode along
+    assert len(context.career.open_proposals) == 1
+    assert context.career.open_proposals[0].is_sensitive is False
+
+
+@pytest.mark.asyncio
+async def test_the_career_section_is_owner_scoped():
+    # Another account's recommendations and proposals never reach this account's snapshot.
+    recommendations = FakeCareerRecommendationRepository()
+    proposals = FakeStrategyChangeProposalRepository()
+    await recommendations.add(a_career_recommendation(user_id=OTHER_USER))
+    await proposals.upsert(a_strategy_change_proposal(user_id=OTHER_USER))
+
+    context = await _builder(
+        recommendations=recommendations, strategy_proposals=proposals).build(USER)
+
+    assert context.career is not None
+    assert context.career.recommendations == ()
+    assert context.career.open_proposals == ()
+
+
+@pytest.mark.asyncio
+async def test_a_sensitive_proposal_is_flagged_for_a_second_confirmation():
+    # A change that lowers the score floor loosens a safety brake: the model is shown it needs
+    # a deliberate second confirmation, never that the chat could apply it.
+    proposals = FakeStrategyChangeProposalRepository()
+    lowering = SetMinimumScoreChange(
+        application_policy_id=POLICY, minimum_overall_score=0.5,
+        before_minimum_overall_score=0.8)
+    await proposals.upsert(a_strategy_change_proposal(user_id=USER, change=lowering))
+
+    context = await _builder(strategy_proposals=proposals).build(USER)
+
+    assert context.career is not None
+    assert context.career.open_proposals[0].is_sensitive is True
+
+
+@pytest.mark.asyncio
+async def test_the_career_section_is_absent_without_the_repositories():
+    # A builder wired without the career repositories omits the section entirely, exactly as a
+    # companies-less builder degrades a company scope — the type is what bounds authority.
+    profiles = FakeCandidateProfileRepository()
+    await profiles.upsert(a_candidate_profile())
+
+    context = await _builder(profiles).build(USER)
+
+    assert context.career is None
+    assert "Career intelligence" not in context.render()
+
+
+@pytest.mark.asyncio
+async def test_an_anchored_thread_carries_no_career_section():
+    # The career summary is account-wide, so it belongs only to the GLOBAL snapshot; an anchored
+    # thread stays narrowed to the one resource its scope names.
+    profiles = FakeCandidateProfileRepository()
+    searches = FakeSearchProfileRepository()
+    recommendations = FakeCareerRecommendationRepository()
+    await profiles.upsert(a_candidate_profile())
+    search = a_search_profile(id=SearchProfileId(UUID(int=0x5EA)), name="S")
+    await searches.upsert(search)
+    await recommendations.add(a_career_recommendation(user_id=USER))
+    conversation = a_conversation(
+        scope=ConversationScope.SEARCH_PROFILE, scope_id=search.id)
+
+    context = await _builder(
+        profiles, searches, recommendations=recommendations
+    ).build_for_conversation(USER, conversation)
+
+    assert context.career is None
+
+
+@pytest.mark.asyncio
+async def test_the_render_shows_the_career_block_as_read_only():
+    profiles = FakeCandidateProfileRepository()
+    recommendations = FakeCareerRecommendationRepository()
+    proposals = FakeStrategyChangeProposalRepository()
+    await profiles.upsert(a_candidate_profile())
+    await recommendations.add(a_career_recommendation(user_id=USER))
+    await proposals.upsert(a_strategy_change_proposal(
+        user_id=USER,
+        change=SetMinimumScoreChange(
+            application_policy_id=POLICY, minimum_overall_score=0.5,
+            before_minimum_overall_score=0.8)))
+
+    rendered = await _builder(
+        profiles, recommendations=recommendations,
+        strategy_proposals=proposals).build(USER)
+    text = rendered.render()
+
+    assert "Career intelligence" in text
+    assert "read-only" in text  # the header names the section unactionable from chat
+    assert "PRIORITIZE_ROLE_FAMILY" in text
+    assert "sensitive" in text  # the loosening change is flagged for a second confirmation
+

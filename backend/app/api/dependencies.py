@@ -42,6 +42,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.api.errors import csrf_failed, not_authenticated
 from backend.app.application_engine.bootstrap import build_application_registry
+from backend.app.career.analytics import CareerAnalyticsService
+from backend.app.career.outcomes import OutcomeService
+from backend.app.career.recommendations import CareerRecommendationEngine
+from backend.app.career.roles import RoleClassificationService
+from backend.app.career.strategy import StrategyProposalService
 from backend.app.chat.context import ChatContextBuilder
 from backend.app.chat.conversation import ChatConversationService
 from backend.app.chat.executor import ChatActionExecutor
@@ -78,10 +83,12 @@ from backend.app.llm.secrets import FernetSecretCipher, SecretCipher
 from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyApplicationDecisionRepository,
     SqlAlchemyApplicationEventRepository,
+    SqlAlchemyApplicationOutcomeRepository,
     SqlAlchemyApplicationPolicyRepository,
     SqlAlchemyApplicationRepository,
     SqlAlchemyCandidateDocumentRepository,
     SqlAlchemyCandidateProfileRepository,
+    SqlAlchemyCareerRecommendationRepository,
     SqlAlchemyCareerSiteRepository,
     SqlAlchemyChatActionExecutionRepository,
     SqlAlchemyChatActionProposalRepository,
@@ -99,11 +106,15 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyLLMRunRepository,
     SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
+    SqlAlchemyRoleClassificationRepository,
     SqlAlchemySearchProfileRepository,
     SqlAlchemySessionRepository,
+    SqlAlchemyStrategyChangeExecutionRepository,
+    SqlAlchemyStrategyChangeProposalRepository,
     SqlAlchemySubmissionAttemptRepository,
     SqlAlchemyUserRepository,
 )
+from backend.app.services.application_policy import ApplicationPolicyService
 from backend.app.services.applications import ApplicationService
 from backend.app.services.assessment import AssessmentService
 from backend.app.services.authentication import (
@@ -548,7 +559,9 @@ async def chat_conversation_service(
             searches=SqlAlchemySearchProfileRepository(session),
             applications=SqlAlchemyApplicationRepository(session),
             opportunities=SqlAlchemyOpportunityRepository(session),
-            companies=SqlAlchemyCompanyRepository(session)),
+            companies=SqlAlchemyCompanyRepository(session),
+            recommendations=SqlAlchemyCareerRecommendationRepository(session),
+            strategy_proposals=SqlAlchemyStrategyChangeProposalRepository(session)),
         router=LLMRouter(registry),
         recorder=LLMTelemetryRecorder(
             runs=SqlAlchemyLLMRunRepository(session), connections=connections),
@@ -626,6 +639,107 @@ async def interview_service(
         transcriber=WhisperCppTranscriber())
 
 
+def outcome_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> OutcomeService:
+    """The real-world outcome recorder, composed for this request.
+
+    Two repositories: the outcome store it writes to and the application store it
+    reads to check ownership before recording. Deliberately *not* handed any Phase 12
+    execution repository — an outcome is the hiring process, never the platform's
+    execution lifecycle, and the two must not be able to write each other (§8, §46).
+    No clock in the constructor; the route hands `now` to each write, so a single
+    request's `recorded_at` stamps agree.
+    """
+    return OutcomeService(
+        SqlAlchemyApplicationOutcomeRepository(session),
+        SqlAlchemyApplicationRepository(session))
+
+
+def role_classification_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> RoleClassificationService:
+    """The role-family classifier, composed for this request.
+
+    Two repositories: the classification store it writes and the opportunity store it
+    reads the title from. The rule itself is pure; the service only decides whether to
+    write, and it never overwrites a manual correction. No clock in the constructor.
+    """
+    return RoleClassificationService(
+        SqlAlchemyRoleClassificationRepository(session),
+        SqlAlchemyOpportunityRepository(session))
+
+
+def career_analytics_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> CareerAnalyticsService:
+    """The funnel/rate/timing report, composed for this request.
+
+    Four read repositories — outcomes, applications, role classifications and the
+    postings the breakdowns dimension on. It writes nothing: analytics reads the
+    execution state but is forbidden to mutate it, which is what keeps a rejection
+    from ever touching an `Application.state` (§13-25). The clock is handed to
+    `report`, so the maturity censoring is computed as of this request's instant.
+    """
+    return CareerAnalyticsService(
+        SqlAlchemyApplicationOutcomeRepository(session),
+        SqlAlchemyApplicationRepository(session),
+        SqlAlchemyRoleClassificationRepository(session),
+        SqlAlchemyOpportunityRepository(session))
+
+
+def career_recommendation_engine(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        analytics: Annotated[CareerAnalyticsService, Depends(career_analytics_service)],
+) -> CareerRecommendationEngine:
+    """The suggestion generator, composed over the same analytics service the report uses.
+
+    It reasons only over the typed `CareerAnalytics` the analytics service produces —
+    never raw rows — so every recommendation cites a metric stamped with the version
+    that produced it. It has zero mutation authority over search or policy: it only
+    *adds* observations to the write-once recommendation store, and a strategy change
+    is a separate, human-approved step (§26-33). No narrator is wired by default; the
+    deterministic wording is the reference behaviour.
+    """
+    return CareerRecommendationEngine(
+        analytics=analytics,
+        recommendations=SqlAlchemyCareerRecommendationRepository(session))
+
+
+def application_policy_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> ApplicationPolicyService:
+    """The application-policy read/write service, composed for this request.
+
+    One repository. It is the only sanctioned path by which a policy's allowed
+    opportunity types, volume cap or minimum score may change — the strategy executor
+    calls it rather than writing a policy row itself, so a change stays subject to the
+    service's own validation. No clock in the constructor; each write takes `now`.
+    """
+    return ApplicationPolicyService(SqlAlchemyApplicationPolicyRepository(session))
+
+
+def strategy_proposal_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        onboarding: Annotated[OnboardingService, Depends(onboarding_service)],
+        policies: Annotated[ApplicationPolicyService, Depends(application_policy_service)],
+) -> StrategyProposalService:
+    """The propose/approve/reject engine for strategy changes, composed for this request.
+
+    Two of its own repositories — the proposal store and the execution audit — plus the
+    *same* `OnboardingService` and `ApplicationPolicyService` the HTTP routes use. This
+    is the spine invariant made concrete (docs/IMPLEMENTATION_PLAN.md §Phase 15): a
+    proposal carries no authority of its own; approving one re-runs the existing domain
+    service that owns the field, so the chat and the analytics loop can never expand a
+    user's application policy without an explicit human approval flowing through here.
+    No clock in the constructor; each transition takes `now`.
+    """
+    return StrategyProposalService(
+        SqlAlchemyStrategyChangeProposalRepository(session),
+        SqlAlchemyStrategyChangeExecutionRepository(session),
+        onboarding, policies)
+
+
 CurrentSession = Annotated[AuthenticatedSession, Depends(current_session)]
 Now = Annotated[datetime, Depends(now)]
 Auth = Annotated[AuthSettings, Depends(auth_settings)]
@@ -644,3 +758,13 @@ ChatConversations = Annotated[ChatConversationService,
                               Depends(chat_conversation_service)]
 ChatActions = Annotated[ChatActionExecutor, Depends(chat_action_executor)]
 Interviews = Annotated[InterviewService, Depends(interview_service)]
+Outcomes = Annotated[OutcomeService, Depends(outcome_service)]
+RoleClassifications = Annotated[RoleClassificationService,
+                                Depends(role_classification_service)]
+CareerAnalytics = Annotated[CareerAnalyticsService, Depends(career_analytics_service)]
+CareerRecommendations = Annotated[CareerRecommendationEngine,
+                                  Depends(career_recommendation_engine)]
+ApplicationPolicies = Annotated[ApplicationPolicyService,
+                                Depends(application_policy_service)]
+StrategyProposals = Annotated[StrategyProposalService,
+                              Depends(strategy_proposal_service)]

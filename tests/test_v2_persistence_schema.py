@@ -83,14 +83,28 @@ SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
 # time" are `WHERE user_id = :current_user` reads indexed on the row itself, and the
 # cascade from `users` keeps account deletion one statement even though the cascade
 # through `interview_sessions` would already reach the children.
-USER_OWNED_TABLES = ("application_decisions", "application_policies", "applications",
+#
+# The Phase 15 career-intelligence tables are here for the same reason. `application_outcomes`
+# (the observed hiring facts), `role_classifications` (the by-role grouping axis),
+# `career_recommendations` (the evidence-backed suggestions), `strategy_change_proposals`
+# (the one approved-or-not edit) and `strategy_change_executions` (its write-once audit) each
+# names its owner directly and cascades from `users` — so the funnel report, the pending-
+# suggestions list and account deletion are each a `WHERE user_id = :current_user` read or a
+# single cascade. `career_recommendation_evidence` is the exception, owned through its parent
+# recommendation (below). None of these is the Phase 12 execution lifecycle: an outcome is a
+# fact about hiring, kept in its own table with its own enums (§2, §84).
+USER_OWNED_TABLES = ("application_decisions", "application_outcomes",
+                     "application_policies", "applications",
                      "candidate_documents", "candidate_profiles",
+                     "career_recommendations",
                      "chat_action_executions", "chat_action_proposals",
                      "chat_messages", "conversations", "eligibility_results",
                      "interview_answer_evaluations", "interview_answers",
                      "interview_questions", "interview_session_summaries",
                      "interview_sessions", "llm_connections", "match_evaluations",
-                     "provider_sessions", "search_profiles", "user_sessions")
+                     "provider_sessions", "role_classifications", "search_profiles",
+                     "strategy_change_executions", "strategy_change_proposals",
+                     "user_sessions")
 
 # Telemetry rows: user-attributable, but not user-owned. `llm_runs` (Phase 11)
 # carries a `user_id` so a user can list their own calls, but it is *nullable* — a
@@ -110,6 +124,11 @@ TELEMETRY_TABLES = ("llm_runs",)
 # another user's records, so the owner is the profile's owner and a `user_id`
 # column would be that second, forgettable copy. `document_versions` reaches its
 # owner through the `candidate_documents` row, which carries the `user_id`.
+#
+# `career_recommendation_evidence` (Phase 15) is the candidate's own too, reached only
+# through the `career_recommendations` row that cites it: the evidence exists to justify one
+# recommendation and cascades with it, so a `user_id` column would be the forgettable second
+# copy the other parent-owned tables avoid.
 PARENT_OWNED_TABLES = {
     "application_events": "applications",
     "submission_attempts": "applications",
@@ -118,6 +137,7 @@ PARENT_OWNED_TABLES = {
     "candidate_evidence": "candidate_profiles",
     "candidate_languages": "candidate_profiles",
     "candidate_work_authorizations": "candidate_profiles",
+    "career_recommendation_evidence": "career_recommendations",
     "company_aliases": "companies",
     "company_career_sites": "companies",
     "document_versions": "candidate_documents",
@@ -150,7 +170,7 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_forty_one_v2_tables():
+def test_the_metadata_holds_exactly_the_forty_seven_v2_tables():
     """A tripwire on the shape of the schema itself.
 
     `models.py` is the only place a V2 table may be declared, so the four ownership
@@ -160,7 +180,7 @@ def test_the_metadata_holds_exactly_the_forty_one_v2_tables():
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
         PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | {"users"}
-    assert len(TABLES) == 41
+    assert len(TABLES) == 47
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))

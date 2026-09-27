@@ -675,17 +675,21 @@ def career_analytics_service(
 ) -> CareerAnalyticsService:
     """The funnel/rate/timing report, composed for this request.
 
-    Four read repositories — outcomes, applications, role classifications and the
-    postings the breakdowns dimension on. It writes nothing: analytics reads the
-    execution state but is forbidden to mutate it, which is what keeps a rejection
-    from ever touching an `Application.state` (§13-25). The clock is handed to
-    `report`, so the maturity censoring is computed as of this request's instant.
+    Six read repositories — outcomes, applications, the application-event trail (the real
+    submission instant the funnel and timings anchor on, never `created_at`), role
+    classifications, the postings the breakdowns dimension on, and the candidate documents the
+    document-strategy axis reads the exact pinned versions from. It writes nothing: analytics
+    reads the execution state but is forbidden to mutate it, which is what keeps a rejection
+    from ever touching an `Application.state` (§13-25). The clock is handed to `report`, so the
+    maturity censoring is computed as of this request's instant.
     """
     return CareerAnalyticsService(
         SqlAlchemyApplicationOutcomeRepository(session),
         SqlAlchemyApplicationRepository(session),
+        SqlAlchemyApplicationEventRepository(session),
         SqlAlchemyRoleClassificationRepository(session),
-        SqlAlchemyOpportunityRepository(session))
+        SqlAlchemyOpportunityRepository(session),
+        SqlAlchemyCandidateDocumentRepository(session))
 
 
 def career_recommendation_engine(

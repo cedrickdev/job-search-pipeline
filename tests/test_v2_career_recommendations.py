@@ -38,10 +38,15 @@ from backend.app.domain.application import (
     build_idempotency_key,
 )
 from backend.app.domain.application_channel import ApplicationChannel
+from backend.app.domain.application_event import (
+    ApplicationEvent,
+    ApplicationEventType,
+)
 from backend.app.domain.identifiers import (
     application_id,
     discovered_opportunity_id,
     new_application_decision_id,
+    new_application_event_id,
 )
 from backend.app.domain.opportunity import OpportunityType
 from backend.app.domain.outcome import OutcomeKind
@@ -60,8 +65,10 @@ from tests.v2_builders import (
     an_opportunity,
 )
 from tests.v2_fakes import (
+    FakeApplicationEventRepository,
     FakeApplicationOutcomeRepository,
     FakeApplicationRepository,
+    FakeCandidateDocumentRepository,
     FakeCareerRecommendationRepository,
     FakeOpportunityRepository,
     FakeRoleClassificationRepository,
@@ -73,14 +80,32 @@ NOW = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
 DAY = timedelta(days=1)
 OLD = NOW - timedelta(days=60)      # mature by the 30-day horizon → counts in the base
 
+# Mirror the analytics service's submitted-state set — the states for which a real SUBMITTED
+# event, and thus a submission anchor, exists. Kept local so the fixture states its own assumption.
+_SUBMITTED_STATES = frozenset({
+    ApplicationState.SUBMITTED,
+    ApplicationState.SUBMISSION_STATE_UNKNOWN,
+    ApplicationState.WITHDRAWN,
+})
+
+# The analytics the engine reads now anchors on the real SUBMITTED event, never `created_at`, so
+# the fixtures must seed that event. This module-level handle is (re)assigned by every
+# `build_engine()` — one engine is built and driven per test, sequentially — so `_seed_slice` can
+# append the event to the same store the freshly built analytics service reads.
+_events: FakeApplicationEventRepository
+
 
 def build_engine(*, narrator: RecommendationNarrator | None = None):
+    global _events
     outcomes = FakeApplicationOutcomeRepository()
     applications = FakeApplicationRepository()
+    _events = FakeApplicationEventRepository(applications)
     roles = FakeRoleClassificationRepository()
     opportunities = FakeOpportunityRepository()
+    documents = FakeCandidateDocumentRepository()
     recommendations = FakeCareerRecommendationRepository()
-    analytics = CareerAnalyticsService(outcomes, applications, roles, opportunities)
+    analytics = CareerAnalyticsService(
+        outcomes, applications, _events, roles, opportunities, documents)
     engine = CareerRecommendationEngine(analytics, recommendations, narrator=narrator)
     return engine, outcomes, applications, opportunities, recommendations
 
@@ -115,6 +140,11 @@ async def _seed_slice(applications, outcomes, opportunities, *, prefix: str, tit
             source=a_source_record(source_key=source_key, external_id=external_id)))
         app = await applications.upsert(
             _application(opportunity_id=oid, user_id=user_id))
+        await _events.append(ApplicationEvent(
+            id=new_application_event_id(), application_id=app.id,
+            event_type=ApplicationEventType.SUBMITTED,
+            from_state=ApplicationState.SUBMITTING, to_state=ApplicationState.SUBMITTED,
+            occurred_at=app.created_at))
         if index < responses:
             await outcomes.upsert(an_application_outcome(
                 application_id=app.id, kind=OutcomeKind.ACKNOWLEDGED,
@@ -320,3 +350,73 @@ async def test_a_narrator_that_raises_falls_back_to_the_deterministic_prose() ->
 
     assert top.generator_key is None and top.llm_run_id is None
     assert top.summary.startswith("À privilégier")
+
+
+# --- the snapshot pinned behind a recommendation, and the dedup that snapshot keys -------
+
+
+async def test_a_recommendation_pins_the_exact_analytics_window_and_horizon() -> None:
+    """A recommendation stores the snapshot it was drawn from — window, horizon, computed-at (§14).
+
+    Not merely the `analytics_version` recipe: the observation window (every application here was
+    submitted at OLD, so the window is that instant on both ends), the `observation_horizon_days`
+    actually in force for this report, and the `computed_at` instant. A non-default horizon is used
+    on purpose, so the assertion proves the value was copied from the report, not defaulted.
+    """
+    engine, outcomes, applications, opportunities, _ = build_engine()
+    await _seed_role_gap(applications, outcomes, opportunities)
+
+    top = (await engine.recommend(USER, now=NOW, horizon_days=45))[0]
+
+    assert top.observation_horizon_days == 45
+    assert top.analytics_computed_at == NOW
+    assert top.window_start == OLD
+    assert top.window_end == OLD
+
+
+async def test_regenerating_over_unchanged_analytics_adds_no_duplicate() -> None:
+    """Re-running over the same funnel reuses each recommendation rather than flooding duplicates.
+
+    The engine gates on a fingerprint of the logical content — account, kind, analytics version,
+    window, horizon and evidence, never the wording or the clock — so a second run over an
+    unchanged funnel recognises each suggestion and returns the one already stored. The second run
+    even advances `now` by a day: because the fingerprint excludes the computed-at instant, the
+    identity is unchanged and no new row is written.
+    """
+    engine, outcomes, applications, opportunities, _ = build_engine()
+    await _seed_role_gap(applications, outcomes, opportunities)
+
+    first = await engine.recommend(USER, now=NOW)
+    second = await engine.recommend(USER, now=NOW + DAY)
+
+    assert len(first) == 2
+    # Same logical content → the very same stored recommendations, returned by identity.
+    assert [r.id for r in second] == [r.id for r in first]
+    # And the write-once store holds exactly the first run's rows, not a duplicate flood.
+    assert len(await engine.latest(USER)) == len(first)
+
+
+async def test_changed_evidence_forks_a_new_recommendation() -> None:
+    """Genuinely new evidence is a new observation: a changed funnel yields a fresh recommendation.
+
+    The dedup gate is content-addressed, not a blanket "once per account": when a later response
+    moves a slice's rate, the fingerprint changes and the regeneration is free to add a new
+    recommendation beside the old one, so the store keeps the history rather than overwriting it.
+    """
+    engine, outcomes, applications, opportunities, _ = build_engine()
+    await _seed_role_gap(applications, outcomes, opportunities)
+    first = await engine.recommend(USER, now=NOW)
+
+    # A sixth Data application, acknowledged, moves that slice from 4/5 to 5/6 — new evidence.
+    await _seed_slice(applications, outcomes, opportunities,
+                      prefix="data-more", title="Data Scientist", count=1, responses=1)
+    second = await engine.recommend(USER, now=NOW)
+
+    prioritized = [r for r in await engine.latest(USER)
+                   if r.kind is RecommendationKind.PRIORITIZE_ROLE_FAMILY]
+    # The first run's prioritize recommendation and the second's are distinct rows.
+    assert len(prioritized) == 2
+    first_ids = {r.id for r in first}
+    second_ids = {r.id for r in second}
+    assert first_ids != second_ids
+    assert first_ids & second_ids != second_ids

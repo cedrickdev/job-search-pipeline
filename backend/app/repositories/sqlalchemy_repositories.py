@@ -2290,6 +2290,18 @@ class SqlAlchemyCareerRecommendationRepository:
         row = result.scalar_one_or_none()
         return None if row is None else career_recommendation_to_domain(row)
 
+    async def find_by_fingerprint(
+            self, user_id: UserId, fingerprint: str) -> CareerRecommendation | None:
+        result = await self._session.execute(
+            self._base_select()
+            .where(CareerRecommendationRow.user_id == user_id,
+                   CareerRecommendationRow.fingerprint == fingerprint)
+            .order_by(CareerRecommendationRow.created_at.desc(),
+                      CareerRecommendationRow.id)
+            .limit(1))
+        row = result.scalar_one_or_none()
+        return None if row is None else career_recommendation_to_domain(row)
+
     async def list_for_user(
             self, user_id: UserId, *,
             limit: int = DEFAULT_LIMIT) -> tuple[CareerRecommendation, ...]:

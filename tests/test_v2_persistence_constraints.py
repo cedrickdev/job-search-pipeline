@@ -36,7 +36,12 @@ from backend.app.domain.eligibility import (
 from backend.app.domain.matching import MatchDimension
 from backend.app.domain.opportunity import OpportunityType
 from backend.app.domain.search import SearchAreaKind
-from backend.app.domain.analytics import DimensionKind, RateKind, TimingKind
+from backend.app.domain.analytics import (
+    DEFAULT_OBSERVATION_HORIZON_DAYS,
+    DimensionKind,
+    RateKind,
+    TimingKind,
+)
 from backend.app.domain.application import ApplicationState
 from backend.app.domain.application_channel import ApplicationChannel
 from backend.app.domain.outcome import OutcomeKind
@@ -1234,7 +1239,10 @@ def a_recommendation_row(**overrides) -> CareerRecommendationRow:
     columns = {"id": RECOMMENDATION, "user_id": USER,
                "kind": RecommendationKind.PRIORITIZE_ROLE_FAMILY,
                "analytics_version": "v1",
-               "summary": "Priorise l'ingenierie logicielle."}
+               "summary": "Priorise l'ingenierie logicielle.",
+               "fingerprint": "fp-test",
+               "analytics_computed_at": NOW,
+               "observation_horizon_days": DEFAULT_OBSERVATION_HORIZON_DAYS}
     columns.update(overrides)
     return CareerRecommendationRow(**columns)
 

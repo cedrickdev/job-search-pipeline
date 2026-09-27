@@ -1731,6 +1731,18 @@ class FakeCareerRecommendationRepository:
             return None
         return found.model_copy(deep=True)
 
+    async def find_by_fingerprint(
+            self, user_id: UserId, fingerprint: str) -> CareerRecommendation | None:
+        # The real `WHERE user_id = ? AND fingerprint = ? ORDER BY created_at DESC, id LIMIT 1`:
+        # the most recent identical logical recommendation this account already holds, or None.
+        mine = [r for r in self.recommendations.values()
+                if r.user_id == user_id and r.fingerprint == fingerprint]
+        if not mine:
+            return None
+        mine.sort(key=lambda r: str(r.id))
+        mine.sort(key=lambda r: r.created_at, reverse=True)
+        return mine[0].model_copy(deep=True)
+
     async def list_for_user(
             self, user_id: UserId, *,
             limit: int = DEFAULT_LIMIT) -> tuple[CareerRecommendation, ...]:

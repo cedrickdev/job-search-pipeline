@@ -32,13 +32,28 @@ from backend.app.domain.analytics import (
 from backend.app.domain.application import (
     Application,
     ApplicationState,
+    PinnedDocument,
     build_idempotency_key,
 )
 from backend.app.domain.application_channel import ApplicationChannel
+from backend.app.domain.application_event import (
+    ApplicationEvent,
+    ApplicationEventType,
+)
+from backend.app.domain.documents import (
+    CandidateDocument,
+    CandidateDocumentType,
+    DocumentGuardReport,
+    DocumentStatus,
+    DocumentVersion,
+)
 from backend.app.domain.identifiers import (
     application_id,
+    candidate_document_id,
     discovered_opportunity_id,
+    document_version_id,
     new_application_decision_id,
+    new_application_event_id,
     new_company_id,
 )
 from backend.app.domain.opportunity import OpportunityType
@@ -49,14 +64,17 @@ from tests.v2_builders import (
     OTHER_USER,
     PROFILE,
     USER,
+    a_resume_content,
     a_role_classification,
     a_source_record,
     an_application_outcome,
     an_opportunity,
 )
 from tests.v2_fakes import (
+    FakeApplicationEventRepository,
     FakeApplicationOutcomeRepository,
     FakeApplicationRepository,
+    FakeCandidateDocumentRepository,
     FakeOpportunityRepository,
     FakeRoleClassificationRepository,
 )
@@ -76,26 +94,54 @@ def _oid(n: int):
     return discovered_opportunity_id("test_board", f"posting-{n}")
 
 
+# Mirror the analytics service's submitted-state set — the states for which a real SUBMITTED
+# event, and thus a submission anchor, exists. Kept local so the fixture states its own
+# assumption rather than reaching into a private module constant.
+_SUBMITTED_STATES = frozenset({
+    ApplicationState.SUBMITTED,
+    ApplicationState.SUBMISSION_STATE_UNKNOWN,
+    ApplicationState.WITHDRAWN,
+})
+
+# The analytics service now reads the real submission instant from the SUBMITTED event trail,
+# never `application.created_at`, so the fixtures must seed that event. This module-level handle
+# is (re)assigned by every `build_service()` — one report is built and read per test, sequentially
+# — so `_seed_application` can append the event to the same store the freshly built service reads.
+_events: FakeApplicationEventRepository
+
+# The document-strategy axis (§21) reads the exact pinned candidate-document versions. This handle
+# is (re)assigned by every `build_service()` for the same reason `_events` is — so a test can seed
+# the documents an application pins into the very store the freshly built service reads.
+_documents: FakeCandidateDocumentRepository
+
+
 def build_service() -> tuple[CareerAnalyticsService, FakeApplicationOutcomeRepository,
                              FakeApplicationRepository, FakeRoleClassificationRepository,
                              FakeOpportunityRepository]:
+    global _events, _documents
     outcomes = FakeApplicationOutcomeRepository()
     applications = FakeApplicationRepository()
+    _events = FakeApplicationEventRepository(applications)
     roles = FakeRoleClassificationRepository()
     opportunities = FakeOpportunityRepository()
-    service = CareerAnalyticsService(outcomes, applications, roles, opportunities)
+    _documents = FakeCandidateDocumentRepository()
+    service = CareerAnalyticsService(
+        outcomes, applications, _events, roles, opportunities, _documents)
     return service, outcomes, applications, roles, opportunities
 
 
 def an_application(*, opportunity_id=OPPORTUNITY, company_id=None, user_id=USER,
                    state: ApplicationState = ApplicationState.SUBMITTED,
-                   created_at: datetime = OLD) -> Application:
+                   created_at: datetime = OLD,
+                   pinned_documents: tuple[PinnedDocument, ...] = ()) -> Application:
     """A Phase 12 application keyed the way the engine keys it, in `state`, applied at `created_at`.
 
     No dedicated builder exists, so — like the outcomes test — one is composed here. The id is
     derived from the idempotency key exactly as production does, so the id the outcome fixtures
-    reference is the one this seeds; `created_at` is the applied-at anchor the funnel measures from.
-    A spontaneous application passes `company_id=` and `opportunity_id=None`.
+    reference is the one this seeds; `created_at` is the row's creation, distinct from the real
+    submission instant the analytics anchor now reads from the SUBMITTED event trail.
+    A spontaneous application passes `company_id=` and `opportunity_id=None`. `pinned_documents`
+    records the exact document versions a submission fixed, the input to the document-strategy axis.
     """
     key = build_idempotency_key(
         candidate_profile_id=PROFILE, channel=ApplicationChannel.BROWSER,
@@ -104,11 +150,29 @@ def an_application(*, opportunity_id=OPPORTUNITY, company_id=None, user_id=USER,
         id=application_id(key), user_id=user_id, candidate_profile_id=PROFILE,
         decision_id=new_application_decision_id(), channel=ApplicationChannel.BROWSER,
         state=state, idempotency_key=key, opportunity_id=opportunity_id,
-        company_id=company_id, created_at=created_at, updated_at=created_at)
+        company_id=company_id, pinned_documents=pinned_documents,
+        created_at=created_at, updated_at=created_at)
 
 
-async def _seed_application(applications: FakeApplicationRepository, **kwargs) -> Application:
-    return await applications.upsert(an_application(**kwargs))
+async def _seed_application(applications: FakeApplicationRepository, *,
+                            submitted_at: datetime | None = None, **kwargs) -> Application:
+    """Seed an application and, for a submitted state, its authoritative SUBMITTED event.
+
+    The event's `occurred_at` is `submitted_at` when given, otherwise the application's
+    `created_at` — so a test that says nothing about submission timing measures from creation
+    exactly as before, while a test probing the `created_at` vs `submitted_at` split passes an
+    explicit `submitted_at`. No event is seeded for a non-submitted state (a `FAILED` execution
+    never reached the employer), matching what the service will and will not find on the trail.
+    """
+    app = await applications.upsert(an_application(**kwargs))
+    if app.state in _SUBMITTED_STATES:
+        occurred_at = submitted_at if submitted_at is not None else app.created_at
+        await _events.append(ApplicationEvent(
+            id=new_application_event_id(), application_id=app.id,
+            event_type=ApplicationEventType.SUBMITTED,
+            from_state=ApplicationState.SUBMITTING, to_state=ApplicationState.SUBMITTED,
+            occurred_at=occurred_at))
+    return app
 
 
 async def _seed_outcome(outcomes: FakeApplicationOutcomeRepository, app: Application,
@@ -125,6 +189,37 @@ async def _seed_opportunity(opportunities: FakeOpportunityRepository, *, id, tit
     return await opportunities.upsert(an_opportunity(
         id=id, title=title, opportunity_type=opportunity_type,
         source=a_source_record(source_key=source_key, external_id=external_id)))
+
+
+def _a_resume_with_versions(*, opportunity_id,
+                            strategies: tuple[tuple[str, str], ...]) -> CandidateDocument:
+    """A résumé document whose versions carry the given `(generator_key, language)` strategies.
+
+    Each entry becomes one VALIDATED version, numbered from 1, so a test can pin a *specific*
+    version and prove the document-strategy signature reads that version's provenance rather than
+    the latest. The id and each version id are derived exactly as production derives them, so a
+    `PinnedDocument` built with `_pin` resolves against the seeded document.
+    """
+    document_id = candidate_document_id(
+        PROFILE, opportunity_id, CandidateDocumentType.RESUME.value)
+    versions = tuple(
+        DocumentVersion(
+            id=document_version_id(document_id, number), version=number,
+            status=DocumentStatus.VALIDATED, language=language,
+            content=a_resume_content(), guard_report=DocumentGuardReport(ok=True),
+            generator_key=generator, created_at=OLD)
+        for number, (generator, language) in enumerate(strategies, start=1))
+    return CandidateDocument(
+        id=document_id, user_id=USER, candidate_profile_id=PROFILE,
+        opportunity_id=opportunity_id, document_type=CandidateDocumentType.RESUME,
+        versions=versions, created_at=OLD, updated_at=OLD)
+
+
+def _pin(document: CandidateDocument, version: int) -> PinnedDocument:
+    """Pin the exact `version` of `document` to an application, the way a submission does."""
+    return PinnedDocument(
+        document_id=document.id, version_id=document_version_id(document.id, version),
+        version=version, document_type=document.document_type)
 
 
 # --- the funnel: applications, not events -----------------------------------------------
@@ -283,6 +378,28 @@ async def test_a_response_predating_the_application_is_dropped_not_trusted() -> 
     assert timing.median_days == 4.0
 
 
+async def test_timing_measures_from_the_real_submission_not_the_creation_instant() -> None:
+    """A candidature created ten days before it was submitted times from submission, not creation (§17).
+
+    `created_at` is when the row was drafted; the real submission came ten days later, on the
+    authoritative Phase-12 SUBMITTED event. Time-to-first-response is a hiring duration, so it runs
+    from that submission instant: a response four days after submission is four days — never the
+    fourteen `created_at` would fabricate — and the observed window is anchored there too.
+    """
+    service, outcomes, applications, _, _ = build_service()
+    submitted_at = OLD + 10 * DAY
+    app = await _seed_application(applications, created_at=OLD, submitted_at=submitted_at)
+    await _seed_outcome(outcomes, app, OutcomeKind.ACKNOWLEDGED, submitted_at + 4 * DAY)
+
+    report = await service.report(USER, now=NOW)
+    timing = report.timing_for(TimingKind.TIME_TO_FIRST_RESPONSE)
+
+    assert timing is not None
+    assert timing.sample_size == 1
+    assert timing.median_days == 4.0                    # from submitted_at, not the 14 from created_at
+    assert report.window.earliest_applied_at == submitted_at
+
+
 # --- breakdowns: the funnel sliced, with an honest None cell ----------------------------
 
 
@@ -332,6 +449,43 @@ async def test_a_manual_role_classification_outranks_the_title_rule_in_the_break
     assert role.cell_for("DATA_AND_ANALYTICS") is None      # the title rule is overruled
 
 
+async def test_document_strategy_cohorts_key_on_the_exact_pinned_version_not_the_latest() -> None:
+    """Two document strategies form two cohorts, and a pinned v1 stays in v1's cohort (§21).
+
+    THE acceptance test for the document-strategy axis: an application that pinned — and submitted —
+    version 1 of a document later revised to a different strategy belongs with what it *sent*, not
+    what the document became. Here two applications carry the reference strategy (one from a
+    single-version document, one from a document since revised to the tailored strategy but pinned
+    at v1) and one carries the tailored strategy. Were the signature read from `.latest`, the
+    revised document's application would defect to the tailored cohort; keying on the exact pinned
+    version keeps the split at two-and-one.
+    """
+    service, outcomes, applications, _, _ = build_service()
+    reference = await _documents.upsert(_a_resume_with_versions(
+        opportunity_id=_oid(1), strategies=(("reference-cv/1", "fr"),)))
+    tailored = await _documents.upsert(_a_resume_with_versions(
+        opportunity_id=_oid(2), strategies=(("tailored-cv/2", "en"),)))
+    # Drafted from the reference strategy, later revised to the tailored one — but the application
+    # pinned and submitted v1, so it is a reference-strategy submission whatever the document became.
+    revised = await _documents.upsert(_a_resume_with_versions(
+        opportunity_id=_oid(3), strategies=(("reference-cv/1", "fr"), ("tailored-cv/2", "en"))))
+
+    await _seed_application(applications, opportunity_id=_oid(1), created_at=OLD,
+                            pinned_documents=(_pin(reference, 1),))
+    await _seed_application(applications, opportunity_id=_oid(2), created_at=OLD,
+                            pinned_documents=(_pin(tailored, 1),))
+    await _seed_application(applications, opportunity_id=_oid(3), created_at=OLD,
+                            pinned_documents=(_pin(revised, 1),))
+
+    strategy = (await service.report(USER, now=NOW)).breakdown_for(DimensionKind.DOCUMENT_STRATEGY)
+
+    assert strategy is not None
+    cohorts = {cell.key: cell.applications for cell in strategy.cells}
+    # The revised document's application sits with the reference cohort (pinned v1), never the
+    # tailored one (v2) — the exact-version guarantee, not `.latest`.
+    assert cohorts == {"RESUME=reference-cv/1/fr": 2, "RESUME=tailored-cv/2/en": 1}
+
+
 # --- the honest empty account and the ownership boundary --------------------------------
 
 
@@ -351,7 +505,8 @@ async def test_the_empty_account_reports_an_honest_zero_not_a_gap() -> None:
     assert {rate.kind for rate in report.rates} == set(RateKind)
     assert {timing.kind for timing in report.timings} == set(TimingKind)
     assert {b.dimension for b in report.breakdowns} == {
-        DimensionKind.ROLE_FAMILY, DimensionKind.SOURCE, DimensionKind.OPPORTUNITY_TYPE}
+        DimensionKind.ROLE_FAMILY, DimensionKind.SOURCE,
+        DimensionKind.OPPORTUNITY_TYPE, DimensionKind.DOCUMENT_STRATEGY}
     assert report.breakdown_for(DimensionKind.ROLE_FAMILY).cells == ()
 
 

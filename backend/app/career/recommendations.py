@@ -143,9 +143,11 @@ class CareerRecommendationEngine:
 
         The report is the typed `CareerAnalytics` the engine reasons over — never raw rows — so
         every recommendation cites a metric stamped with the `analytics_version` that produced
-        it. Each draft is materialized into a `CareerRecommendation` (its wording optionally
-        polished by the narrator, its evidence never) and *added* to the write-once store, so a
-        re-run is a fresh set of observations rather than a mutation of a prior one.
+        it and pins the window/horizon snapshot it was drawn against. Each draft is materialized
+        into a `CareerRecommendation` and persisted through a fingerprint gate: a suggestion
+        whose logical content already exists for this account is returned unchanged rather than
+        added again, so re-running over unchanged analytics is idempotent instead of a flood of
+        duplicate rows. A draft resting on genuinely new evidence is a fresh observation, added.
         """
         report = (await self._analytics.report(user_id, now=now)
                   if horizon_days is None
@@ -153,8 +155,7 @@ class CareerRecommendationEngine:
                                                     horizon_days=horizon_days))
         stored: list[CareerRecommendation] = []
         for draft in self._derive(report):
-            recommendation = await self._materialize(user_id, draft, report, now=now)
-            stored.append(await self._recommendations.add(recommendation))
+            stored.append(await self._persist(user_id, draft, report, now=now))
         return tuple(stored)
 
     async def latest(self, user_id: UserId, *,
@@ -231,15 +232,36 @@ class CareerRecommendationEngine:
 
     # --- materialization and the guarded narrator seam ---------------------
 
-    async def _materialize(self, user_id: UserId, draft: RecommendationDraft,
-                           report: CareerAnalytics, *,
-                           now: datetime) -> CareerRecommendation:
-        """Build the persistable recommendation from a draft, polishing wording if a narrator kept.
+    async def _persist(self, user_id: UserId, draft: RecommendationDraft,
+                       report: CareerAnalytics, *, now: datetime) -> CareerRecommendation:
+        """Materialize the deterministic recommendation, gate on its fingerprint, add it once.
 
-        The id is minted here (random — a recommendation is a fresh observation), the evidence
-        is bound to it by the derived `(id, ordinal)` key, and the prose is the deterministic
-        draft's unless a narrator returned guard-clean wording. `analytics_version` is copied
-        from the report, so the recommendation is pinned to the exact recipe it was drawn from.
+        Builds the recommendation with its deterministic prose first — enough to compute the
+        fingerprint, which is a pure function of the logical evidence and the snapshot window, not
+        of the random id or the wording — then asks the store whether an identical logical
+        recommendation already exists for this account. If one does, it is returned unchanged and
+        nothing is written: regeneration over unchanged analytics is idempotent, and the narrator
+        is never even called. Otherwise the wording is optionally polished and the fresh
+        recommendation is added.
+        """
+        deterministic = self._build(user_id, draft, report, now=now)
+        existing = await self._recommendations.find_by_fingerprint(
+            user_id, deterministic.fingerprint)
+        if existing is not None:
+            return existing
+        recommendation = await self._apply_prose(user_id, draft, deterministic)
+        return await self._recommendations.add(recommendation)
+
+    def _build(self, user_id: UserId, draft: RecommendationDraft,
+               report: CareerAnalytics, *, now: datetime) -> CareerRecommendation:
+        """The persistable recommendation with deterministic prose and the analytics snapshot.
+
+        The id is minted here (random — a recommendation is a fresh observation), the evidence is
+        bound to it by the derived `(id, ordinal)` key, and the prose is the deterministic
+        draft's. `analytics_version`, `analytics_computed_at`, the `observation_horizon_days` in
+        force and the observation `window_start`/`window_end` are copied from the report, so the
+        recommendation is pinned to the exact snapshot it was drawn from — not merely the recipe
+        version — and its `fingerprint` is stable across runs over that same snapshot.
         """
         recommendation_id = new_career_recommendation_id()
         evidence = tuple(
@@ -251,12 +273,31 @@ class CareerRecommendationEngine:
                 denominator=spec.denominator, sample_size=spec.denominator,
                 detail=spec.detail)
             for ordinal, spec in enumerate(draft.evidence))
-        summary, detail, generator_key, llm_run_id = await self._prose(user_id, draft)
         return CareerRecommendation(
             id=recommendation_id, user_id=user_id, kind=draft.kind,
             analytics_version=report.analytics_version,
-            summary=summary, detail=detail, evidence=evidence,
-            generator_key=generator_key, llm_run_id=llm_run_id, created_at=now)
+            analytics_computed_at=report.computed_at,
+            observation_horizon_days=report.funnel.censoring.observation_horizon_days,
+            window_start=report.window.earliest_applied_at,
+            window_end=report.window.latest_applied_at,
+            summary=draft.summary, detail=draft.detail, evidence=evidence,
+            generator_key=None, llm_run_id=None, created_at=now)
+
+    async def _apply_prose(self, user_id: UserId, draft: RecommendationDraft,
+                           deterministic: CareerRecommendation) -> CareerRecommendation:
+        """The recommendation to persist — the deterministic one, or a narrated copy if kept.
+
+        Runs the guarded narrator over the draft; when it returns nothing trustworthy the
+        deterministic recommendation stands unchanged (`generator_key is None`). When a narrator's
+        wording clears the guard, only `summary`/`detail` and the provenance are copied over — the
+        id, evidence and analytics snapshot are the engine's own and are never touched.
+        """
+        summary, detail, generator_key, llm_run_id = await self._prose(user_id, draft)
+        if generator_key is None:
+            return deterministic
+        return deterministic.model_copy(update={
+            "summary": summary, "detail": detail,
+            "generator_key": generator_key, "llm_run_id": llm_run_id})
 
     async def _prose(self, user_id: UserId, draft: RecommendationDraft
                      ) -> tuple[str, str | None, str | None, LLMRunId | None]:

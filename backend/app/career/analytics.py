@@ -1,11 +1,12 @@
 """`CareerAnalyticsService` — the deterministic funnel the recommendation engine reads (§13-25).
 
-The "measure" link. It reads one account's applications (for the population and the applied-at
-anchor), its effective outcomes (the hiring facts), its role classifications and the postings they
-name (for the by-role/source/type slices), and folds them into a single self-describing
-`CareerAnalytics` report. No provider is anywhere near the math (§24-25, §47): this is arithmetic
-over rows, and the same inputs always yield the same report, stamped with the
-`CAREER_ANALYTICS_VERSION`.
+The "measure" link. It reads one account's applications (for the population and, from the
+authoritative Phase-12 event trail, the real submitted-at anchor), its effective outcomes (the
+hiring facts), its role classifications and the postings they name, and the exact candidate-
+document versions the applications pinned (for the by-role/source/type/document-strategy slices),
+and folds them into a single self-describing `CareerAnalytics` report. No provider is anywhere
+near the math (§24-25, §47): this is arithmetic over rows, and the same inputs always yield the
+same report, stamped with the `CAREER_ANALYTICS_VERSION`.
 
 Four disciplines the spec makes acceptance-critical, each enforced here rather than hoped for:
 
@@ -19,9 +20,11 @@ Four disciplines the spec makes acceptance-critical, each enforced here rather t
   it simply is not a funnel rung. Maturity is decided from the *outcomes* (a terminal hiring fact),
   not from a Phase-12 terminal state, keeping the two axes cleanly apart.
 - **Silence is censored, never failure (§15-16).** Every denominator asks `is_application_mature`
-  with the right reference instant — applied-at for submission-anchored rates, the base step's own
-  instant for later transitions — so a fresh application is withheld, not scored as a rejection, and
-  the split is reported in `MaturityCensoring`.
+  with the right reference instant — the real submitted-at for submission-anchored rates, the base
+  step's own instant for later transitions — so a fresh application is withheld, not scored as a
+  rejection, and the split is reported in `MaturityCensoring`. An application whose real submission
+  instant is unknown is excluded from a submission-anchored metric outright, never anchored to a
+  creation time that would fabricate a duration.
 - **Self-describing, versioned (§14, §24-25).** Every rate carries numerator/denominator/window;
   every timing its sample and window; the report its version. An unclassified role, source or type
   is a `None`-keyed cell, never a catch-all bucket.
@@ -53,6 +56,8 @@ from backend.app.domain.analytics import (
     stage_rank,
 )
 from backend.app.domain.application import Application, ApplicationState
+from backend.app.domain.application_event import ApplicationEventType
+from backend.app.domain.documents import CandidateDocument
 from backend.app.domain.identifiers import UserId
 from backend.app.domain.opportunity import Opportunity
 from backend.app.domain.outcome import (
@@ -62,8 +67,10 @@ from backend.app.domain.outcome import (
 )
 from backend.app.domain.role import classify_role_family
 from backend.app.repositories.contracts import (
+    ApplicationEventRepository,
     ApplicationOutcomeRepository,
     ApplicationRepository,
+    CandidateDocumentRepository,
     OpportunityRepository,
     RoleClassificationRepository,
 )
@@ -141,31 +148,62 @@ def _percentile(sorted_values: list[float], quantile: float) -> float:
     return sorted_values[lower] * (1.0 - fraction) + sorted_values[upper] * fraction
 
 
-def _window(instants: Iterable[datetime]) -> ObservationWindow:
-    """The applied-at span of a population, or the empty window when it is empty (§14)."""
-    ordered = sorted(instants)
+def _window(instants: Iterable[datetime | None]) -> ObservationWindow:
+    """The submitted-at span of a population, or the empty window when it is empty (§14).
+
+    `None` anchors — applications whose real submission instant is unavailable — carry no span
+    and are filtered out, so the window is the true range of the submissions it could observe,
+    never widened by an application it cannot place in time.
+    """
+    ordered = sorted(instant for instant in instants if instant is not None)
     if not ordered:
         return ObservationWindow()
     return ObservationWindow(earliest_applied_at=ordered[0], latest_applied_at=ordered[-1])
+
+
+def _document_strategy_signature(application: Application,
+                                 documents: dict[str, CandidateDocument]) -> str | None:
+    """The stable document-strategy key an application's pinned documents form, or `None` (§21).
+
+    Built from the *exact* pinned versions (`document.version(pinned.version)`, never `.latest`),
+    so two applications sent with genuinely different document strategies land in different
+    cohorts and one whose author later revised a document is not retroactively moved. Each
+    resolved version contributes `type=generator_key/language`, with `unknown` standing in for a
+    version minted before its generator was recorded; the components are sorted and joined so the
+    signature is order-independent. `None` when the application pinned nothing or none of its
+    pinned versions still resolve — an honest unclassified cell, never a fabricated cohort.
+    """
+    components: list[str] = []
+    for pinned in application.pinned_documents:
+        document = documents.get(str(pinned.document_id))
+        if document is None:
+            continue
+        version = document.version(pinned.version)
+        if version is None:
+            continue
+        generator = version.generator_key or "unknown"
+        components.append(f"{pinned.document_type.value}={generator}/{version.language}")
+    if not components:
+        return None
+    return "|".join(sorted(components))
 
 
 @dataclass(frozen=True)
 class _ApplicationFacts:
     """Everything one funnel application contributes, gathered once so the math reads plainly.
 
-    Pairs an `Application` (the anchor and the execution state the funnel base reads) with its
-    *effective* outcomes only — superseded and retracted rows never reach the count (§48). The
-    derived views are the vocabulary the funnel, the rates and the timings share, computed from
-    the same rows so no two of them can disagree about how far this application got.
+    Pairs an `Application` (the execution state the funnel base reads) with its *effective*
+    outcomes only — superseded and retracted rows never reach the count (§48) — and with the
+    application's real `submitted_at` instant, the earliest Phase-12 `SUBMITTED` event's time or
+    `None` when no submission is on the authoritative trail. The anchor is that submission fact,
+    never `application.created_at`, which precedes any submission. The derived views are the
+    vocabulary the funnel, the rates and the timings share, computed from the same rows so no two
+    of them can disagree about how far this application got.
     """
 
     application: Application
     outcomes: tuple[ApplicationOutcome, ...]
-
-    @property
-    def applied_at(self) -> datetime:
-        """The applied-at anchor — the application's creation, the instant it entered the funnel."""
-        return self.application.created_at
+    submitted_at: datetime | None
 
     @property
     def kinds(self) -> frozenset[OutcomeKind]:
@@ -181,6 +219,23 @@ class _ApplicationFacts:
     def has_terminal_outcome(self) -> bool:
         """Whether a terminal hiring fact has concluded this application — the maturity input."""
         return any(outcome.kind in TERMINAL_OUTCOME_KINDS for outcome in self.outcomes)
+
+    def submission_maturity(self, *, as_of: datetime, horizon_days: int) -> bool | None:
+        """Whether this submission is mature enough to score, or `None` when it cannot be judged.
+
+        A terminal hiring fact concludes the process, so a concluded application is mature
+        whatever its submission instant. Absent a terminal fact, maturity is a real elapsed span
+        and so needs the real `submitted_at`: without one the application is neither mature nor
+        censored — it is simply excluded from submission-anchored metrics rather than invented
+        into one bucket or the other.
+        """
+        if self.has_terminal_outcome:
+            return True
+        if self.submitted_at is None:
+            return None
+        return is_application_mature(
+            reference=self.submitted_at, as_of=as_of,
+            has_terminal_outcome=False, horizon_days=horizon_days)
 
     def reached_stage_at(self, stage: FunnelStage) -> datetime | None:
         """When this application first reached `stage` or beyond, or `None` if it never did.
@@ -203,23 +258,29 @@ class _ApplicationFacts:
 class CareerAnalyticsService:
     """Fold one account's applications and outcomes into a deterministic, versioned report.
 
-    Holds the four stores it *reads* and writes to none of them: the outcome store (the hiring
-    facts), the application store (the population and the applied-at anchor, and the execution
-    state that says who reached the employer), the role-classification store and the opportunity
-    store (the by-role/source/type axes). No clock in the constructor — `report` takes `now` — the
-    convention every V2 service keeps, so a single report's censoring `as_of` and `computed_at`
-    agree. Nothing here can move an `ApplicationState`: this is the "measure" link, never the
-    "drive" one (§2, §84).
+    Holds the stores it *reads* and writes to none of them: the outcome store (the hiring facts),
+    the application store (the population and the execution state that says who reached the
+    employer), the application-event store (the authoritative Phase-12 trail the real submission
+    instant is read from), the role-classification store, the opportunity store (the
+    by-role/source/type axes) and the candidate-document store (the exact pinned versions the
+    document-strategy axis is built from). No clock in the constructor — `report` takes `now` —
+    the convention every V2 service keeps, so a single report's censoring `as_of` and
+    `computed_at` agree. Nothing here can move an `ApplicationState`: this is the "measure" link,
+    never the "drive" one (§2, §84).
     """
 
     def __init__(self, outcomes: ApplicationOutcomeRepository,
                  applications: ApplicationRepository,
+                 events: ApplicationEventRepository,
                  roles: RoleClassificationRepository,
-                 opportunities: OpportunityRepository) -> None:
+                 opportunities: OpportunityRepository,
+                 documents: CandidateDocumentRepository) -> None:
         self._outcomes = outcomes
         self._applications = applications
+        self._events = events
         self._roles = roles
         self._opportunities = opportunities
+        self._documents = documents
 
     async def report(self, user_id: UserId, *, now: datetime,
                      horizon_days: int = DEFAULT_OBSERVATION_HORIZON_DAYS) -> CareerAnalytics:
@@ -232,7 +293,7 @@ class CareerAnalyticsService:
         counted as a rejection.
         """
         facts = await self._gather(user_id)
-        window = _window(fact.applied_at for fact in facts)
+        window = _window(fact.submitted_at for fact in facts)
         funnel = self._funnel(facts, window, now=now, horizon_days=horizon_days)
         rates = tuple(self._rate(kind, facts, window, now=now, horizon_days=horizon_days)
                       for kind in RateKind)
@@ -269,13 +330,40 @@ class CareerAnalyticsService:
         for application in applications:
             app_outcomes = tuple(effective.get(str(application.id), ()))
             if application.state in _SUBMITTED_STATES or app_outcomes:
+                submitted_at = await self._submitted_at(user_id, application)
                 facts.append(_ApplicationFacts(
-                    application=application, outcomes=app_outcomes))
+                    application=application, outcomes=app_outcomes,
+                    submitted_at=submitted_at))
         return tuple(facts)
+
+    async def _submitted_at(self, user_id: UserId,
+                            application: Application) -> datetime | None:
+        """The real instant this application reached the employer, from its Phase-12 trail (§17).
+
+        The earliest `SUBMITTED` event's `occurred_at` — the authoritative submission fact —
+        never `application.created_at`, which precedes any submission and can miss it by days.
+        The trail is read only for an application in a submitted execution state; anything else
+        has no submission to anchor to, so its instant is honestly `None` (excluded from
+        submission-anchored metrics rather than fabricated from a creation time).
+        """
+        if application.state not in _SUBMITTED_STATES:
+            return None
+        events = await self._events.list_for_application(
+            user_id, application.id, limit=_ANALYTICS_SCAN_LIMIT)
+        instants = [event.occurred_at for event in events
+                    if event.event_type is ApplicationEventType.SUBMITTED]
+        return min(instants) if instants else None
 
     def _funnel(self, facts: tuple[_ApplicationFacts, ...], window: ObservationWindow, *,
                 now: datetime, horizon_days: int) -> CareerFunnel:
-        """The cumulative per-stage count and the maturity split of the submitted base (§13-16)."""
+        """The cumulative per-stage count and the maturity split of the submitted base (§13-16).
+
+        Maturity is three-valued per application: mature (concluded or past the horizon since its
+        real submission), censored (submitted but still within the horizon), or unjudgeable (no
+        submission instant on the trail). Only the first two are reported; an application whose
+        submission cannot be placed in time is excluded from both counts rather than mislabelled
+        as either observed or too-recent.
+        """
         stages = tuple(
             FunnelStageCount(
                 stage=stage,
@@ -283,14 +371,12 @@ class CareerAnalyticsService:
                     1 for fact in facts
                     if stage_rank(fact.furthest_stage) >= stage_rank(stage)))
             for stage in _LADDER)
-        mature = sum(
-            1 for fact in facts
-            if is_application_mature(
-                reference=fact.applied_at, as_of=now,
-                has_terminal_outcome=fact.has_terminal_outcome, horizon_days=horizon_days))
+        maturities = [fact.submission_maturity(as_of=now, horizon_days=horizon_days)
+                      for fact in facts]
         censoring = MaturityCensoring(
             observation_horizon_days=horizon_days, as_of=now,
-            mature_count=mature, censored_count=len(facts) - mature)
+            mature_count=sum(1 for maturity in maturities if maturity is True),
+            censored_count=sum(1 for maturity in maturities if maturity is False))
         return CareerFunnel(stages=stages, window=window, censoring=censoring)
 
 
@@ -299,11 +385,13 @@ class CareerAnalyticsService:
         """One named rate over `facts`: successes at the target over the mature base (§15-16, §23).
 
         An application that reached the *target* counts in numerator and denominator both — its
-        progress is itself the observation. One that reached the *base* but not the target counts
-        in the denominator only once it is mature, measured from when it reached the base
-        (applied-at for the submitted base, the base step's own instant for a later transition);
-        a fresh one is censored out, never scored as a failure. So the numerator can never exceed
-        the denominator, and a too-thin base yields a `denominator` of zero and a `None` rate.
+        progress is itself the observation, needing no submission instant. One that reached the
+        *base* but not the target counts in the denominator only once it is mature: for the
+        submitted base that is `submission_maturity` (which excludes an application whose real
+        submission instant is unknown, never scoring it from a creation time), for a later
+        transition it is maturity measured from when that base step was reached. A fresh one is
+        censored out, never scored as a failure. So the numerator can never exceed the
+        denominator, and a too-thin base yields a `denominator` of zero and a `None` rate.
         """
         base, target = rate_stages(kind)
         base_rank, target_rank = stage_rank(base), stage_rank(target)
@@ -316,8 +404,11 @@ class CareerAnalyticsService:
                 numerator += 1
                 denominator += 1
                 continue
-            reference = (fact.applied_at if base is FunnelStage.SUBMITTED
-                         else fact.reached_stage_at(base))
+            if base is FunnelStage.SUBMITTED:
+                if fact.submission_maturity(as_of=now, horizon_days=horizon_days) is True:
+                    denominator += 1
+                continue
+            reference = fact.reached_stage_at(base)
             if reference is None:
                 continue
             if is_application_mature(
@@ -331,15 +422,17 @@ class CareerAnalyticsService:
                 window: ObservationWindow) -> TimingStat:
         """One elapsed-time measurement, in real days, as a median with a p25/p75 spread (§17).
 
-        A duration exists only when both ends really happened, measured from the applied-at anchor
-        to the earliest outcome that closes this timing; a negative span (an outcome predating the
-        anchor, a data anomaly) is dropped rather than trusted. With no completed durations the
+        A duration exists only when both ends really happened, measured from the real submission
+        instant to the earliest outcome that closes this timing; an application with no submission
+        instant on the trail is skipped, and a negative span (an outcome predating the submission,
+        an impossible chronology) is dropped rather than trusted. With no completed durations the
         stat is an honest absence — sample zero, no quartiles — never a fabricated zero.
         """
         durations = sorted(
             days for fact in facts
-            if (end := fact.first_time_of(_TIMING_END_KINDS[kind])) is not None
-            and (days := (end - fact.applied_at).total_seconds() / 86400.0) >= 0.0)
+            if fact.submitted_at is not None
+            and (end := fact.first_time_of(_TIMING_END_KINDS[kind])) is not None
+            and (days := (end - fact.submitted_at).total_seconds() / 86400.0) >= 0.0)
         if not durations:
             return TimingStat(kind=kind, sample_size=0, window=window)
         return TimingStat(
@@ -353,13 +446,15 @@ class CareerAnalyticsService:
     async def _breakdowns(self, user_id: UserId, facts: tuple[_ApplicationFacts, ...], *,
                           now: datetime,
                           horizon_days: int) -> tuple[DimensionBreakdown, ...]:
-        """The funnel sliced by role family, source and opportunity type (§18-21).
+        """The funnel sliced by role family, source, opportunity type and document strategy.
 
-        Loads the postings the applications name (a shared fact, read by id) and this account's
-        role classifications once, then keys each application onto each axis. An application whose
-        axis value is unknown — a spontaneous target with no posting, an unclassified title, a
-        posting without a type — falls into the honest `None` cell, never a catch-all bucket.
-        `DOCUMENT_STRATEGY` (§21) is deferred: it is not yet computed here.
+        The four §18-21 axes. Loads the postings the applications name (a shared fact, read by id),
+        this account's role
+        classifications, and the exact candidate-document versions the applications pinned, then
+        keys each application onto each axis. An application whose axis value is unknown — a
+        spontaneous target with no posting, an unclassified title, a posting without a type, an
+        application that pinned no document or whose pinned versions no longer resolve — falls
+        into the honest `None` cell, never a catch-all bucket.
         """
         opportunities: dict[str, Opportunity] = {}
         for opportunity_id in {fact.application.opportunity_id for fact in facts
@@ -370,6 +465,12 @@ class CareerAnalyticsService:
         classifications = await self._roles.list_for_user(
             user_id, limit=_ANALYTICS_SCAN_LIMIT)
         by_opportunity = {str(item.opportunity_id): item for item in classifications}
+        documents: dict[str, CandidateDocument] = {}
+        for document_id in {pinned.document_id for fact in facts
+                            for pinned in fact.application.pinned_documents}:
+            document = await self._documents.get(user_id, document_id)
+            if document is not None:
+                documents[str(document_id)] = document
 
         def role_key(fact: _ApplicationFacts) -> str | None:
             opportunity = self._opportunity_of(fact, opportunities)
@@ -391,10 +492,14 @@ class CareerAnalyticsService:
                 return None
             return opportunity.opportunity_type.value
 
+        def document_key(fact: _ApplicationFacts) -> str | None:
+            return _document_strategy_signature(fact.application, documents)
+
         keyers: dict[DimensionKind, Callable[[_ApplicationFacts], str | None]] = {
             DimensionKind.ROLE_FAMILY: role_key,
             DimensionKind.SOURCE: source_key,
             DimensionKind.OPPORTUNITY_TYPE: type_key,
+            DimensionKind.DOCUMENT_STRATEGY: document_key,
         }
         return tuple(
             self._breakdown(dimension, keyer, facts, now=now, horizon_days=horizon_days)
@@ -424,7 +529,7 @@ class CareerAnalyticsService:
         cells: list[DimensionCell] = []
         for key in sorted(grouped, key=lambda value: (value is None, value or "")):
             cell_facts = tuple(grouped[key])
-            cell_window = _window(fact.applied_at for fact in cell_facts)
+            cell_window = _window(fact.submitted_at for fact in cell_facts)
             rates = tuple(
                 rate for kind in RateKind
                 if (rate := self._rate(
@@ -435,7 +540,7 @@ class CareerAnalyticsService:
                 applications=len(cell_facts), rates=rates))
         return DimensionBreakdown(
             dimension=dimension, cells=tuple(cells),
-            window=_window(fact.applied_at for fact in facts))
+            window=_window(fact.submitted_at for fact in facts))
 
 
 

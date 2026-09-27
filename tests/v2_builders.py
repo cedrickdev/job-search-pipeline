@@ -135,6 +135,7 @@ from backend.app.domain.opportunity import (
 from backend.app.domain.search import CountrySearchArea, SearchProfile
 from backend.app.domain.analytics import (
     CAREER_ANALYTICS_VERSION,
+    DEFAULT_OBSERVATION_HORIZON_DAYS,
     DimensionKind,
     RateKind,
     TimingKind,
@@ -972,7 +973,9 @@ def a_career_recommendation(*, id=RECOMMENDATION, evidence=None, **overrides):
     enforces it — so `evidence` defaults to a single `a_recommendation_evidence` bound to `id`.
     Defaults to a `PRIORITIZE_ROLE_FAMILY` suggestion drawn under the current analytics
     version and written deterministically (no `generator_key`, no `llm_run_id`); a
-    model-worded one passes `generator_key=` and `llm_run_id=RUN`.
+    model-worded one passes `generator_key=` and `llm_run_id=RUN`. The analytics snapshot it
+    pins defaults to `NOW`, the default horizon and an unset (both-`None`) window; a test probing
+    the window passes `window_start=`/`window_end=`.
     """
     resolved_evidence = (evidence if evidence is not None
                          else (a_recommendation_evidence(recommendation_id=id),))
@@ -981,6 +984,10 @@ def a_career_recommendation(*, id=RECOMMENDATION, evidence=None, **overrides):
         "user_id": USER,
         "kind": RecommendationKind.PRIORITIZE_ROLE_FAMILY,
         "analytics_version": CAREER_ANALYTICS_VERSION,
+        "analytics_computed_at": NOW,
+        "observation_horizon_days": DEFAULT_OBSERVATION_HORIZON_DAYS,
+        "window_start": None,
+        "window_end": None,
         "summary": "Vos candidatures Data & Analytics obtiennent plus de réponses.",
         "detail": None,
         "evidence": resolved_evidence,

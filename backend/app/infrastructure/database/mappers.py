@@ -2450,14 +2450,20 @@ def career_recommendation_to_row(recommendation: CareerRecommendation,
                                  ) -> CareerRecommendationRow:
     """A `CareerRecommendation` and its evidence onto rows. Written once (the id is random,
     a fresh suggestion, not an idempotent fact), so `created_at` is the domain fact and the
-    mixin `updated_at` is left to the server default. Existing children are matched by
-    `ordinal` — the natural key the derived id and the unique constraint both rest on — so a
-    re-persist updates the rows already there and any dropped evidence is deleted by the
-    cascade."""
+    mixin `updated_at` is left to the server default. `fingerprint` is read from the domain
+    property (the deterministic identity the store dedups on) and the analytics snapshot columns
+    from the recommendation's pinned window/horizon. Existing children are matched by `ordinal` —
+    the natural key the derived id and the unique constraint both rest on — so a re-persist
+    updates the rows already there and any dropped evidence is deleted by the cascade."""
     target = CareerRecommendationRow(id=recommendation.id) if row is None else row
     target.user_id = recommendation.user_id
     target.kind = recommendation.kind
     target.analytics_version = recommendation.analytics_version
+    target.fingerprint = recommendation.fingerprint
+    target.analytics_computed_at = recommendation.analytics_computed_at
+    target.observation_horizon_days = recommendation.observation_horizon_days
+    target.window_start = recommendation.window_start
+    target.window_end = recommendation.window_end
     target.summary = recommendation.summary
     target.detail = recommendation.detail
     target.generator_key = recommendation.generator_key
@@ -2477,6 +2483,10 @@ def career_recommendation_to_domain(row: CareerRecommendationRow) -> CareerRecom
         user_id=UserId(row.user_id),
         kind=RecommendationKind(row.kind),
         analytics_version=row.analytics_version,
+        analytics_computed_at=row.analytics_computed_at,
+        observation_horizon_days=row.observation_horizon_days,
+        window_start=row.window_start,
+        window_end=row.window_end,
         summary=row.summary,
         detail=row.detail,
         evidence=tuple(career_recommendation_evidence_to_domain(child)

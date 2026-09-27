@@ -24,11 +24,16 @@ from backend.app.domain.application import (
     build_idempotency_key,
 )
 from backend.app.domain.application_channel import ApplicationChannel
+from backend.app.domain.application_event import (
+    ApplicationEvent,
+    ApplicationEventType,
+)
 from backend.app.domain.identifiers import (
     application_id,
     default_candidate_profile_id,
     discovered_opportunity_id,
     new_application_decision_id,
+    new_application_event_id,
 )
 from backend.app.domain.opportunity import OpportunityType
 from backend.app.domain.outcome import OutcomeKind
@@ -67,6 +72,14 @@ async def _seed_slice(api, *, user_id, prefix, title, count, responses,
             decision_id=new_application_decision_id(), channel=ApplicationChannel.BROWSER,
             state=ApplicationState.SUBMITTED, idempotency_key=key, opportunity_id=oid,
             company_id=None, created_at=OLD, updated_at=OLD))
+        # The analytics anchor is the real Phase-12 submission instant, read from the SUBMITTED
+        # event trail — not `created_at` — so a seeded funnel must carry that event or its window
+        # is empty and its submission-anchored rates have nothing mature to score.
+        await api.application_events.append(ApplicationEvent(
+            id=new_application_event_id(), application_id=app.id,
+            event_type=ApplicationEventType.SUBMITTED,
+            from_state=ApplicationState.SUBMITTING, to_state=ApplicationState.SUBMITTED,
+            occurred_at=OLD))
         if index < responses:
             await api.career_outcomes.upsert(an_application_outcome(
                 application_id=app.id, kind=OutcomeKind.ACKNOWLEDGED,

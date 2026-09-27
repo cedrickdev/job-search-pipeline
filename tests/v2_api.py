@@ -610,8 +610,9 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     # The five career services over the fakes, composed exactly as the dependencies do.
     # `OutcomeService` reads `applications` only to check ownership before recording a hiring
     # fact — it is handed no execution repository, so it cannot write an `ApplicationState`.
-    # `CareerAnalyticsService` reads outcomes, applications, role classifications and postings
-    # and writes nothing. `CareerRecommendationEngine` reasons only over that analytics report
+    # `CareerAnalyticsService` reads outcomes, applications, the application-event trail (for the
+    # real submission instant), role classifications, postings and candidate documents and writes
+    # nothing. `CareerRecommendationEngine` reasons only over that analytics report
     # and merely *adds* to the write-once recommendation store. `StrategyProposalService` is
     # the human-gated spine: approving a proposal re-runs the *same* `OnboardingService` and
     # `ApplicationPolicyService` the routes use, so the loop can never expand a policy on its
@@ -619,7 +620,8 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     outcome_workflow = OutcomeService(career_outcomes, applications)
     role_workflow = RoleClassificationService(role_classifications, postings)
     analytics = CareerAnalyticsService(
-        career_outcomes, applications, role_classifications, postings)
+        career_outcomes, applications, application_events, role_classifications,
+        postings, documents)
     recommendation_engine = CareerRecommendationEngine(
         analytics=analytics, recommendations=career_recommendations)
     policy_workflow = ApplicationPolicyService(application_policies)

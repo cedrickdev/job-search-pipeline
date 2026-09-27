@@ -11,7 +11,12 @@ prose the observational funnel cannot support.
 import pytest
 from pydantic import ValidationError
 
-from backend.app.domain.analytics import DimensionKind, RateKind, TimingKind
+from backend.app.domain.analytics import (
+    DEFAULT_OBSERVATION_HORIZON_DAYS,
+    DimensionKind,
+    RateKind,
+    TimingKind,
+)
 from backend.app.domain.identifiers import (
     career_recommendation_evidence_id,
     new_career_recommendation_id,
@@ -62,6 +67,8 @@ def a_recommendation(evidence=_UNSET, **overrides):
         "analytics_version": "career-analytics/1.0",
         "summary": "Your Data & Analytics applications reach interviews more often.",
         "evidence": evidence,
+        "analytics_computed_at": NOW,
+        "observation_horizon_days": DEFAULT_OBSERVATION_HORIZON_DAYS,
         "created_at": NOW,
     }
     fields.update(overrides)

@@ -2837,8 +2837,14 @@ class CareerRecommendationRow(TimestampedMixin, Base):
 
     User-owned, read `WHERE user_id = ?`. The id is random (a recommendation is a fresh
     suggestion, not an idempotent fact), so this is written once and never mutated: `created_at`
-    is the domain fact and the mixin `updated_at` is left to the server default. `analytics_version`
-    pins the report recipe it was drawn from; `evidence` is the child collection that justifies it,
+    is the domain fact and the mixin `updated_at` is left to the server default.
+    `analytics_version` pins the report recipe it was drawn from, and `analytics_computed_at`,
+    `observation_horizon_days` and `window_start`/`window_end` pin the exact analytics snapshot
+    behind it — the window and horizon, not merely the recipe version — so a stored recommendation
+    can be read back against the precise report that produced it. `fingerprint` is the
+    deterministic identity of that logical content (evidence + snapshot window, never the wording);
+    the engine gates on it before adding, so regenerating over unchanged analytics is idempotent
+    rather than a flood of duplicates. `evidence` is the child collection that justifies it,
     cascaded and ordered by `ordinal`, at least one row of which the aggregate validator requires.
     `generator_key`/`llm_run_id` record whether a provider polished the prose behind the router.
     The model holds no target profile, policy or execution — turning this into a change is
@@ -2847,7 +2853,10 @@ class CareerRecommendationRow(TimestampedMixin, Base):
 
     __tablename__ = "career_recommendations"
     __table_args__ = (
+        CheckConstraint("observation_horizon_days >= 1",
+                        name="observation_horizon_days_positive"),
         Index("ix_career_recommendations_user_id_created_at", "user_id", "created_at"),
+        Index("ix_career_recommendations_user_id_fingerprint", "user_id", "fingerprint"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -2856,6 +2865,11 @@ class CareerRecommendationRow(TimestampedMixin, Base):
     kind: Mapped[RecommendationKind] = mapped_column(
         enum_column(RecommendationKind, "career_recommendation_kind"))
     analytics_version: Mapped[str]
+    fingerprint: Mapped[str]
+    analytics_computed_at: Mapped[datetime]
+    observation_horizon_days: Mapped[int] = mapped_column(SmallInteger)
+    window_start: Mapped[datetime | None]
+    window_end: Mapped[datetime | None]
     summary: Mapped[str]
     detail: Mapped[str | None]
     generator_key: Mapped[str | None]

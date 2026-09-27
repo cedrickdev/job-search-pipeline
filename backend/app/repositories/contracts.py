@@ -1358,6 +1358,11 @@ class CareerRecommendationRepository(Protocol):
     re-run produces a new recommendation rather than mutating a prior one. Its evidence is
     written with it in the one call, so the "evidence or nothing" guarantee survives the round
     trip. Reads are user-scoped so one account cannot read another's recommendations by id.
+
+    Adding is still write-once, but the engine gates on `find_by_fingerprint` before it adds, so
+    regenerating over unchanged analytics is idempotent: an identical logical recommendation is
+    recognised and reused rather than duplicated, while genuinely new evidence still yields a new
+    row.
     """
 
     async def add(self, recommendation: CareerRecommendation) -> CareerRecommendation:
@@ -1371,6 +1376,17 @@ class CareerRecommendationRepository(Protocol):
     async def get(self, user_id: UserId,
                   recommendation_id: CareerRecommendationId) -> CareerRecommendation | None:
         """The recommendation and its evidence, or `None` if not this user's."""
+        ...
+
+    async def find_by_fingerprint(
+            self, user_id: UserId, fingerprint: str) -> CareerRecommendation | None:
+        """This user's most recent recommendation with `fingerprint`, or `None` if none.
+
+        The dedup lookup the engine calls before adding: a match means an identical logical
+        recommendation — same account, kind, analytics version, window, horizon and evidence —
+        already exists, so a regeneration reuses it instead of writing a duplicate. User-scoped,
+        so one account's fingerprint can never collide with another's stored recommendation.
+        """
         ...
 
     async def list_for_user(

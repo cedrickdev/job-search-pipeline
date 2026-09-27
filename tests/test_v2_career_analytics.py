@@ -400,6 +400,66 @@ async def test_timing_measures_from_the_real_submission_not_the_creation_instant
     assert report.window.earliest_applied_at == submitted_at
 
 
+# --- pre-submission outcomes: an impossible chronology, filtered from the measure -------
+
+
+async def test_an_outcome_before_the_real_submission_is_not_a_response() -> None:
+    """A signal dated before the submission cannot be a reply to it, so the measure drops it (§17).
+
+    The application is submitted on day 10 (its real Phase-12 instant); an `ACKNOWLEDGED` on day 5,
+    five days *before* it, is an impossible hiring chronology — an earlier history, a mistaken entry
+    or a clock skew, never this submission's response. It advances no funnel rung past `SUBMITTED`,
+    fills no response numerator and enters no timing sample. The row itself stays on record: the
+    audit history is untouched, only the Career-Intelligence measurement excludes it.
+    """
+    service, outcomes, applications, _, _ = build_service()
+    submitted_at = OLD + 10 * DAY
+    predates_submission = OLD + 5 * DAY
+    app = await _seed_application(applications, created_at=OLD, submitted_at=submitted_at)
+    await _seed_outcome(outcomes, app, OutcomeKind.ACKNOWLEDGED, predates_submission)
+
+    report = await service.report(USER, now=NOW)
+    response = report.rate_for(RateKind.RESPONSE)
+    timing = report.timing_for(TimingKind.TIME_TO_FIRST_RESPONSE)
+
+    # A submitted, mature application with no *real* reply — never a RESPONDED success.
+    assert report.funnel.count_at(FunnelStage.SUBMITTED) == 1
+    assert report.funnel.count_at(FunnelStage.ACKNOWLEDGED) == 0
+    assert response is not None
+    assert response.numerator == 0            # the pre-submission signal is not a response
+    assert response.denominator == 1          # a mature submitted application, silent for real
+    assert timing is not None
+    assert timing.sample_size == 0            # nothing to time from an impossible chronology
+    # The audit row is untouched — filtered from the measure, never deleted from history.
+    assert len(outcomes.outcomes) == 1
+
+
+async def test_an_outcome_at_or_after_the_real_submission_still_counts_normally() -> None:
+    """The guard is a floor, not a wall: a genuine reply after submission converts and times as usual.
+
+    The same submission instant, but the acknowledgement lands three days *after* it — a real
+    employer response. It advances the funnel to `ACKNOWLEDGED`, fills the response numerator, and
+    contributes its three-day span to the timing sample, exactly as it did before the pre-submission
+    guard existed.
+    """
+    service, outcomes, applications, _, _ = build_service()
+    submitted_at = OLD + 10 * DAY
+    app = await _seed_application(applications, created_at=OLD, submitted_at=submitted_at)
+    await _seed_outcome(outcomes, app, OutcomeKind.ACKNOWLEDGED, submitted_at + 3 * DAY)
+
+    report = await service.report(USER, now=NOW)
+    response = report.rate_for(RateKind.RESPONSE)
+    timing = report.timing_for(TimingKind.TIME_TO_FIRST_RESPONSE)
+
+    assert report.funnel.count_at(FunnelStage.ACKNOWLEDGED) == 1
+    assert response is not None
+    assert response.numerator == 1
+    assert response.denominator == 1
+    assert timing is not None
+    assert timing.sample_size == 1
+    assert timing.median_days == 3.0
+
+
 # --- breakdowns: the funnel sliced, with an honest None cell ----------------------------
 
 

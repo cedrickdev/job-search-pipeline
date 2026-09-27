@@ -1012,11 +1012,21 @@ async def test_a_recommendation_and_its_evidence_round_trip_scoped_to_owner(
 
 async def test_the_recommendation_list_is_most_recently_created_first(
         career_prerequisites, recommendations):
-    """Two snapshots coexist — a recommendation is added, never taken over — newest first."""
+    """Two *logically distinct* snapshots coexist — a recommendation is added, never taken over.
+
+    They must be distinct: `(user_id, fingerprint)` is unique, so two recommendations resting on
+    the same account, kind, window and cited evidence are one row, not two — the dedup the engine
+    relies on, now enforced by the database. Here the second cites a different slice, so it is its
+    own logical recommendation and both persist, newest first.
+    """
     await recommendations.add(a_career_recommendation(created_at=NOW))
     await recommendations.add(a_career_recommendation(
         id=OTHER_RECOMMENDATION,
-        evidence=(a_recommendation_evidence(recommendation_id=OTHER_RECOMMENDATION),),
+        evidence=(a_recommendation_evidence(
+            recommendation_id=OTHER_RECOMMENDATION,
+            dimension_key=RoleFamily.SOFTWARE_ENGINEERING.value,
+            numerator=3, denominator=40, sample_size=40,
+            detail="Software Engineering : 3 réponses sur 40 candidatures."),),
         created_at=LATER))
     listed = await recommendations.list_for_user(USER)
     assert [r.id for r in listed] == [OTHER_RECOMMENDATION, RECOMMENDATION]

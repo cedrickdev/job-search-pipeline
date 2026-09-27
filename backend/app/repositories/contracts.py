@@ -1359,17 +1359,23 @@ class CareerRecommendationRepository(Protocol):
     written with it in the one call, so the "evidence or nothing" guarantee survives the round
     trip. Reads are user-scoped so one account cannot read another's recommendations by id.
 
-    Adding is still write-once, but the engine gates on `find_by_fingerprint` before it adds, so
-    regenerating over unchanged analytics is idempotent: an identical logical recommendation is
-    recognised and reused rather than duplicated, while genuinely new evidence still yields a new
-    row.
+    Adding is write-once by fingerprint, and the engine gates on `find_by_fingerprint` before it
+    adds, so regenerating over unchanged analytics is idempotent: an identical logical
+    recommendation is recognised and reused rather than duplicated, while genuinely new evidence
+    still yields a new row. `(user_id, fingerprint)` is unique in the store, so that gate stays
+    correct even under concurrency — two units of work adding the same suggestion at once converge
+    on one row rather than both slipping past the check.
     """
 
     async def add(self, recommendation: CareerRecommendation) -> CareerRecommendation:
-        """Insert the recommendation and its evidence; keyed on its own random id.
+        """Insert the recommendation and its evidence, or return the logical row a race wrote first.
 
-        The owner comes from `recommendation.user_id`. Write-once by construction — a
-        recommendation carries no lifecycle to advance — so this only ever inserts.
+        The owner comes from `recommendation.user_id`. Write-once by fingerprint: a recommendation
+        carries no lifecycle to advance, so this inserts a genuinely new suggestion — but a
+        recommendation's `(user_id, fingerprint)` identity is unique, so when a concurrent unit of
+        work has already committed the same logical recommendation, this returns *that* row instead
+        of raising. Two concurrent generations therefore converge on one row and both callers
+        receive one logical recommendation, with no raw integrity error surfacing to either.
         """
         ...
 

@@ -2843,8 +2843,10 @@ class CareerRecommendationRow(TimestampedMixin, Base):
     behind it — the window and horizon, not merely the recipe version — so a stored recommendation
     can be read back against the precise report that produced it. `fingerprint` is the
     deterministic identity of that logical content (evidence + snapshot window, never the wording);
-    the engine gates on it before adding, so regenerating over unchanged analytics is idempotent
-    rather than a flood of duplicates. `evidence` is the child collection that justifies it,
+    a UNIQUE index on `(user_id, fingerprint)` makes that identity a database-enforced fact, so the
+    engine's `find_by_fingerprint`-then-add gate stays correct under concurrency — two units of work
+    generating the same suggestion at once converge on one row rather than racing past the check —
+    and the same index is the dedup lookup. `evidence` is the child collection that justifies it,
     cascaded and ordered by `ordinal`, at least one row of which the aggregate validator requires.
     `generator_key`/`llm_run_id` record whether a provider polished the prose behind the router.
     The model holds no target profile, policy or execution — turning this into a change is
@@ -2856,7 +2858,8 @@ class CareerRecommendationRow(TimestampedMixin, Base):
         CheckConstraint("observation_horizon_days >= 1",
                         name="observation_horizon_days_positive"),
         Index("ix_career_recommendations_user_id_created_at", "user_id", "created_at"),
-        Index("ix_career_recommendations_user_id_fingerprint", "user_id", "fingerprint"),
+        Index("ix_career_recommendations_user_id_fingerprint", "user_id", "fingerprint",
+              unique=True),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)

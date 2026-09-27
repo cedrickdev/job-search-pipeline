@@ -33,6 +33,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -2276,9 +2277,31 @@ class SqlAlchemyCareerRecommendationRepository:
             selectinload(CareerRecommendationRow.evidence))
 
     async def add(self, recommendation: CareerRecommendation) -> CareerRecommendation:
+        """Insert the recommendation and its evidence, or return the logical row a race wrote first.
+
+        Write-once by fingerprint: a recommendation's identity is its `(user_id, fingerprint)`, a
+        unique index the database enforces, so the engine's `find_by_fingerprint`-then-`add` gate
+        is safe even when two units of work generate the same suggestion at once. The insert runs
+        inside a SAVEPOINT: on the common path it succeeds and the fresh row is returned. When a
+        concurrent unit of work committed the same logical recommendation between this caller's
+        fingerprint check and its insert, the insert trips the unique index and raises; that
+        SAVEPOINT is rolled back — leaving the *outer* unit of work intact to commit, not aborting
+        the whole transaction — and the recommendation that won the race is read back and returned.
+        So two concurrent generations converge on one row, both callers receive one logical
+        recommendation, and no raw `IntegrityError` escapes. A violation with no such row on re-read
+        is a genuine integrity error, not the dedup race, and is re-raised untouched.
+        """
         row = career_recommendation_to_row(recommendation)
-        self._session.add(row)
-        await self._session.flush()
+        try:
+            async with self._session.begin_nested():
+                self._session.add(row)
+                await self._session.flush()
+        except IntegrityError:
+            existing = await self.find_by_fingerprint(
+                recommendation.user_id, recommendation.fingerprint)
+            if existing is None:
+                raise
+            return existing
         return career_recommendation_to_domain(row)
 
     async def get(self, user_id: UserId,

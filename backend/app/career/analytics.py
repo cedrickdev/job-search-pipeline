@@ -161,6 +161,29 @@ def _window(instants: Iterable[datetime | None]) -> ObservationWindow:
     return ObservationWindow(earliest_applied_at=ordered[0], latest_applied_at=ordered[-1])
 
 
+def _outcomes_after_submission(
+        outcomes: tuple[ApplicationOutcome, ...],
+        submitted_at: datetime | None) -> tuple[ApplicationOutcome, ...]:
+    """Drop the outcomes that predate the real submission — an impossible hiring chronology (§17).
+
+    An employer signal recorded *before* the application reached the employer cannot be a reply to
+    it: it belongs to some earlier history, a mistaken entry, or a clock skew, but never to this
+    submission's funnel. When the real submission instant is known, such an outcome is filtered out
+    of every Career-Intelligence calculation — the funnel stage it would advance, the response /
+    interview / offer rates, the timings, and so the recommendations that read them — rather than
+    silently trusted as progress it never was. The row itself is untouched: this filters the
+    *measurement*, never the audit history, so the outcome stays on record exactly as recorded.
+
+    Same-instant is kept (`>=`): an acknowledgement stamped at the submission second is a boundary
+    coincidence, not a paradox. When `submitted_at` is `None` the chronology cannot be judged, so
+    the outcomes pass through unchanged — the honest "unknown" this module keeps everywhere a
+    submission instant is missing, never a fabricated exclusion.
+    """
+    if submitted_at is None:
+        return outcomes
+    return tuple(outcome for outcome in outcomes if outcome.occurred_at >= submitted_at)
+
+
 def _document_strategy_signature(application: Application,
                                  documents: dict[str, CandidateDocument]) -> str | None:
     """The stable document-strategy key an application's pinned documents form, or `None` (§21).
@@ -318,6 +341,12 @@ class CareerAnalyticsService:
         execution state, or (independently) one carrying any effective outcome, since an employer
         signal implies a submission. A `FAILED` execution that never reached the employer and has
         no outcome is left out — an execution failure is not a hiring fact (§2).
+
+        Base membership is decided on the *unfiltered* outcomes, while the facts carry only the
+        outcomes at or after the real submission instant (`_outcomes_after_submission`). The two
+        never disagree: a pre-submission outcome is dropped only when `submitted_at` is known, which
+        happens only for an application already in the base via its submitted state — so filtering
+        the measurement can never quietly evict an application the base admitted.
         """
         applications = await self._applications.list_for_user(
             user_id, limit=_ANALYTICS_SCAN_LIMIT)
@@ -332,7 +361,8 @@ class CareerAnalyticsService:
             if application.state in _SUBMITTED_STATES or app_outcomes:
                 submitted_at = await self._submitted_at(user_id, application)
                 facts.append(_ApplicationFacts(
-                    application=application, outcomes=app_outcomes,
+                    application=application,
+                    outcomes=_outcomes_after_submission(app_outcomes, submitted_at),
                     submitted_at=submitted_at))
         return tuple(facts)
 

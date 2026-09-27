@@ -1712,14 +1712,21 @@ class FakeCareerRecommendationRepository:
     Write-once by construction: a recommendation is a fresh observation with a random id, so
     there is only `add` and no `upsert` — a re-run produces a new recommendation rather than
     mutating a prior one. Its evidence rides in the one call, so the "evidence or nothing"
-    guarantee survives the round trip (the deep copy carries the whole aggregate). `list_for_
-    user` is most-recently-created first.
+    guarantee survives the round trip (the deep copy carries the whole aggregate). `(user_id,
+    fingerprint)` is unique in the database, so `add` honours that identity too: adding a
+    recommendation whose fingerprint an existing one already carries returns that row rather than
+    duplicating it — the same convergence the real `add` reaches when a concurrent insert loses the
+    race. `list_for_user` is most-recently-created first.
     """
 
     def __init__(self) -> None:
         self.recommendations: dict[CareerRecommendationId, CareerRecommendation] = {}
 
     async def add(self, recommendation: CareerRecommendation) -> CareerRecommendation:
+        existing = await self.find_by_fingerprint(
+            recommendation.user_id, recommendation.fingerprint)
+        if existing is not None:
+            return existing
         stored = recommendation.model_copy(deep=True)
         self.recommendations[stored.id] = stored
         return stored

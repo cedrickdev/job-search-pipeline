@@ -42,6 +42,12 @@ from pydantic import (
     model_validator,
 )
 
+from backend.app.billing.provider import CheckoutSession, PortalSession
+from backend.app.billing.service import (
+    SubscriptionOverview,
+    UsageLine,
+    UsageSnapshot,
+)
 from backend.app.chat.conversation import ChatStreamEvent, ChatStreamEventType
 from backend.app.companies.contracts import (
     MAX_COMPANIES_PER_PROVIDER,
@@ -82,7 +88,12 @@ from backend.app.domain.application_event import (
     ApplicationEventActor,
     ApplicationEventType,
 )
-from backend.app.domain.base import CountryCode, LanguageCode, UtcDatetime
+from backend.app.domain.base import (
+    CountryCode,
+    CurrencyCode,
+    LanguageCode,
+    UtcDatetime,
+)
 from backend.app.domain.candidate import (
     CandidateClaim,
     CandidateEvidence,
@@ -146,6 +157,13 @@ from backend.app.domain.eligibility import (
     EligibilityStatus,
     RuleAuthority,
 )
+from backend.app.domain.entitlement import (
+    BillingInterval,
+    Entitlement,
+    EntitlementKey,
+    EntitlementMeasure,
+    Plan,
+)
 from backend.app.domain.geo import (
     DEFAULT_GEO_LIMIT,
     MAX_GEO_LIMIT,
@@ -177,6 +195,7 @@ from backend.app.domain.identifiers import (
     LLMConnectionId,
     LLMRunId,
     OpportunityId,
+    PlanId,
     RoleClassificationId,
     SearchProfileId,
     StrategyChangeExecutionId,
@@ -246,6 +265,12 @@ from backend.app.domain.strategy_change import (
     StrategyChangeProposalStatus,
     StrategyChangeTarget,
 )
+from backend.app.domain.subscription import SubscriptionStatus
+from backend.app.domain.subscription_event import (
+    SubscriptionEvent,
+    SubscriptionEventOutcome,
+)
+from backend.app.domain.usage import UsagePeriod
 from backend.app.domain.user import User, UserStatus
 from backend.app.interview.service import AnswerOutcome, InterviewTurn, SessionDetail
 from backend.app.llm.connection import (
@@ -2901,3 +2926,195 @@ class StrategyChangeProposalListResponse(ApiModel):
     @classmethod
     def of(cls, items: tuple[StrategyChangeProposal, ...]) -> "StrategyChangeProposalListResponse":
         return cls(proposals=tuple(StrategyChangeProposalResponse.of(p) for p in items))
+
+
+class EntitlementResponse(ApiModel):
+    """One capability a plan grants and its ceiling — a read-only row of the catalogue (§17, §61).
+
+    `is_unlimited` is surfaced so a surface need not infer "unlimited" from a null `limit`, and
+    `measure` tells it whether the row is a live gauge or a per-period meter. The frontend defines
+    none of this; it renders what the catalogue serves.
+    """
+
+    key: EntitlementKey
+    measure: EntitlementMeasure
+    limit: int | None
+    is_unlimited: bool
+
+    @classmethod
+    def of(cls, entitlement: Entitlement) -> "EntitlementResponse":
+        return cls(key=entitlement.key, measure=entitlement.measure,
+                   limit=entitlement.limit, is_unlimited=entitlement.is_unlimited)
+
+
+class PlanResponse(ApiModel):
+    """A plan as the pricing and billing surfaces read it — everything but the provider handle.
+
+    `external_price_id` is deliberately absent: it is the opaque provider token a checkout needs
+    server-side, never something a client acts on, so there is no field for it to leak through.
+    `is_free` is surfaced so a surface need not re-derive it from the price. Prices, quotas and
+    entitlements are server truth; a client only reads them (§17, §61).
+    """
+
+    id: PlanId
+    slug: str
+    name: str
+    description: str | None
+    price_amount_cents: int | None
+    currency: CurrencyCode | None
+    billing_interval: BillingInterval | None
+    entitlements: tuple[EntitlementResponse, ...]
+    is_free: bool
+    is_public: bool
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, plan: Plan) -> "PlanResponse":
+        return cls(
+            id=plan.id, slug=plan.slug, name=plan.name, description=plan.description,
+            price_amount_cents=plan.price_amount_cents, currency=plan.currency,
+            billing_interval=plan.billing_interval,
+            entitlements=tuple(EntitlementResponse.of(e) for e in plan.entitlements),
+            is_free=plan.is_free, is_public=plan.is_public, is_active=plan.is_active,
+            created_at=plan.created_at, updated_at=plan.updated_at)
+
+
+class PlanListResponse(ApiModel):
+    """The public pricing catalogue — active, public plans, cheapest first (§17, §61)."""
+
+    plans: tuple[PlanResponse, ...]
+
+    @classmethod
+    def of(cls, items: tuple[Plan, ...]) -> "PlanListResponse":
+        return cls(plans=tuple(PlanResponse.of(p) for p in items))
+
+
+class UsagePeriodResponse(ApiModel):
+    """The billing window a per-period meter currently sums against — start, end and its label."""
+
+    start: datetime
+    end: datetime
+    label: str
+
+    @classmethod
+    def of(cls, period: UsagePeriod) -> "UsagePeriodResponse":
+        return cls(start=period.start, end=period.end, label=period.label)
+
+
+class SubscriptionOverviewResponse(ApiModel):
+    """One account's commercial standing — the `/billing` header, straight from the resolver (§17).
+
+    `plan` is the effective plan (the paid one while it grants, the free tier otherwise) and
+    `is_paid` whether a provider-backed subscription is currently granting. The `status`, window
+    and `cancel_at_period_end` describe the live subscription row when there is one — a lapsed
+    payer still sees why they fell back to free — and are null/false for an account that never
+    subscribed. `can_manage_billing` is whether there is a provider customer a portal can manage.
+    No subscription id or customer handle leaves: the client acts on none of them.
+    """
+
+    plan: PlanResponse
+    is_paid: bool
+    period: UsagePeriodResponse
+    status: SubscriptionStatus | None
+    current_period_start: datetime | None
+    current_period_end: datetime | None
+    cancel_at_period_end: bool
+    can_manage_billing: bool
+
+    @classmethod
+    def of(cls, overview: SubscriptionOverview) -> "SubscriptionOverviewResponse":
+        return cls(
+            plan=PlanResponse.of(overview.plan), is_paid=overview.is_paid,
+            period=UsagePeriodResponse.of(overview.period), status=overview.status,
+            current_period_start=overview.current_period_start,
+            current_period_end=overview.current_period_end,
+            cancel_at_period_end=overview.cancel_at_period_end,
+            can_manage_billing=overview.can_manage_billing)
+
+
+class UsageLineResponse(ApiModel):
+    """One entitlement's consumption against its ceiling — a single row of the usage panel (§6).
+
+    `limit` and `remaining` are null when the plan grants the capability without a ceiling, which
+    a surface renders as "unlimited" rather than a number. `used` is a real count either way — a
+    period sum for a per-period meter, a live count of active resources for the concurrent gauge —
+    so a client never has to know which shape a key is to render the row.
+    """
+
+    key: EntitlementKey
+    measure: EntitlementMeasure
+    limit: int | None
+    used: int
+    remaining: int | None
+
+    @classmethod
+    def of(cls, line: UsageLine) -> "UsageLineResponse":
+        return cls(key=line.key, measure=line.measure, limit=line.limit,
+                   used=line.used, remaining=line.remaining)
+
+
+class UsageSnapshotResponse(ApiModel):
+    """The whole usage panel: the billing window, the effective plan, and a line per entitlement."""
+
+    period: UsagePeriodResponse
+    plan: PlanResponse
+    is_paid: bool
+    lines: tuple[UsageLineResponse, ...]
+
+    @classmethod
+    def of(cls, snapshot: UsageSnapshot) -> "UsageSnapshotResponse":
+        return cls(
+            period=UsagePeriodResponse.of(snapshot.period), plan=PlanResponse.of(snapshot.plan),
+            is_paid=snapshot.is_paid,
+            lines=tuple(UsageLineResponse.of(line) for line in snapshot.lines))
+
+
+class CheckoutRequest(ApiModel):
+    """The one thing a checkout request carries — the slug of the plan to buy (§18).
+
+    A slug and nothing else: the account is the session's, and the success and cancel URLs are the
+    server's, built from `SiteSettings`, so a request can never smuggle an attacker's origin into a
+    provider redirect. The service refuses a slug that names no plan, or a plan that cannot be
+    bought, before the provider is ever called.
+    """
+
+    plan_slug: str = Field(min_length=1, max_length=200)
+
+
+class CheckoutResponse(ApiModel):
+    """Where to send the browser to pay — the provider-hosted checkout's redirect URL."""
+
+    redirect_url: str
+
+    @classmethod
+    def of(cls, session: CheckoutSession) -> "CheckoutResponse":
+        return cls(redirect_url=session.redirect_url)
+
+
+class PortalResponse(ApiModel):
+    """Where to send the browser to manage billing — the provider portal's redirect URL."""
+
+    redirect_url: str
+
+    @classmethod
+    def of(cls, session: PortalSession) -> "PortalResponse":
+        return cls(redirect_url=session.redirect_url)
+
+
+class WebhookAckResponse(ApiModel):
+    """The minimal, secret-free acknowledgement a billing provider gets back from a webhook (§64).
+
+    A provider needs to know the event was received and how it was resolved — applied, superseded
+    by a newer one, or ignored — and nothing about the account behind it. No `user_id` or
+    subscription handle leaves here: the caller is the provider, not the account, and the ack is
+    for its retry logic, not for reconciling our records.
+    """
+
+    outcome: SubscriptionEventOutcome
+    event_type: str
+
+    @classmethod
+    def of(cls, event: SubscriptionEvent) -> "WebhookAckResponse":
+        return cls(outcome=event.outcome, event_type=event.event_type)

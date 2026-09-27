@@ -41,6 +41,7 @@ import type {
   ConversationList,
   DocumentArtifact,
   DocumentVersion,
+  Entitlement,
   GeoLocation,
   InterviewAnswer,
   InterviewAnswerEvaluation,
@@ -59,6 +60,8 @@ import type {
   OnboardingState,
   OpportunityGeoItem,
   OpportunityGeoResponse,
+  Plan,
+  PlanList,
   RecommendationEvidence,
   SearchProfile,
   SearchProfileDraft,
@@ -69,6 +72,10 @@ import type {
   StrategyChangeProposal,
   StrategyChangeProposalDetail,
   StrategyChangeProposalList,
+  SubscriptionOverview,
+  UsageLine,
+  UsagePeriod,
+  UsageSnapshot,
 } from '~/types/v2'
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
@@ -1083,4 +1090,142 @@ export function strategyProposalDetail(
     ...overrides,
   }
 }
+
+// --- Phase 16: SaaS subscriptions & billing ---------------------------------------------
+//
+// The catalogue is server truth the client only renders (§17, §61), so these fixtures spell
+// out the same three-tier shape the backend seeds — free, pro, scale — including the one
+// unlimited meter that proves `is_unlimited` is a real granted value, not inferred from a null
+// limit. No `external_price_id` field exists on the type, so a fixture cannot carry the provider
+// handle a checkout needs server-side.
+
+const PLAN_ID = 'a1a1a1a1-b2b2-4c3c-8d4d-e5e5e5e5e5e5'
+
+/** One entitlement row: a capability, its measure and its ceiling. `limit` null means unlimited. */
+export function entitlement(overrides: Partial<Entitlement> = {}): Entitlement {
+  return {
+    key: 'ACTIVE_SEARCH_PROFILES',
+    measure: 'CONCURRENT',
+    limit: 1,
+    is_unlimited: false,
+    ...overrides,
+  }
+}
+
+/** One plan as the catalogue serves it. Defaults to the free tier; override for a paid one. */
+export function plan(overrides: Partial<Plan> = {}): Plan {
+  return {
+    id: PLAN_ID,
+    slug: 'free',
+    name: 'Free',
+    description: 'Get started at no cost.',
+    is_free: true,
+    is_active: true,
+    is_public: true,
+    price_amount_cents: null,
+    currency: null,
+    billing_interval: null,
+    entitlements: [
+      entitlement({ key: 'ACTIVE_SEARCH_PROFILES', measure: 'CONCURRENT', limit: 1 }),
+      entitlement({ key: 'APPLICATION_SUBMISSIONS', measure: 'PER_PERIOD', limit: 5 }),
+    ],
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
+/**
+ * The public catalogue cheapest-first — free, pro, scale — mirroring the backend seed.
+ *
+ * `scale` leaves its token meter unlimited (a null limit with `is_unlimited` true), so a surface
+ * that reads `is_unlimited` rather than inferring from the null is exercised.
+ */
+export function planList(overrides: Partial<PlanList> = {}): PlanList {
+  return {
+    plans: [
+      plan(),
+      plan({
+        slug: 'pro',
+        name: 'Pro',
+        description: 'For an active search.',
+        is_free: false,
+        price_amount_cents: 1900,
+        currency: 'usd',
+        billing_interval: 'MONTHLY',
+        entitlements: [
+          entitlement({ key: 'ACTIVE_SEARCH_PROFILES', measure: 'CONCURRENT', limit: 5 }),
+          entitlement({ key: 'APPLICATION_SUBMISSIONS', measure: 'PER_PERIOD', limit: 100 }),
+        ],
+      }),
+      plan({
+        slug: 'scale',
+        name: 'Scale',
+        description: 'For a high-volume search.',
+        is_free: false,
+        price_amount_cents: 4900,
+        currency: 'usd',
+        billing_interval: 'MONTHLY',
+        entitlements: [
+          entitlement({ key: 'ACTIVE_SEARCH_PROFILES', measure: 'CONCURRENT', limit: 25 }),
+          entitlement({ key: 'LLM_TOKENS', measure: 'PER_PERIOD', limit: null, is_unlimited: true }),
+        ],
+      }),
+    ],
+    ...overrides,
+  }
+}
+
+/** The billing window a snapshot sums against — its label and both ends. */
+export function usagePeriod(overrides: Partial<UsagePeriod> = {}): UsagePeriod {
+  return {
+    label: '2026-04',
+    start: '2026-04-01T00:00:00Z',
+    end: '2026-05-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
+/** This account's plan and live subscription. Defaults to the free tier with no subscription. */
+export function subscriptionOverview(
+  overrides: Partial<SubscriptionOverview> = {}): SubscriptionOverview {
+  return {
+    plan: plan(),
+    is_paid: false,
+    status: null,
+    current_period_start: null,
+    current_period_end: null,
+    cancel_at_period_end: false,
+    can_manage_billing: false,
+    period: usagePeriod(),
+    ...overrides,
+  }
+}
+
+/** One metered capability's consumption: used, its ceiling and what is left. */
+export function usageLine(overrides: Partial<UsageLine> = {}): UsageLine {
+  return {
+    key: 'APPLICATION_SUBMISSIONS',
+    measure: 'PER_PERIOD',
+    used: 2,
+    limit: 5,
+    remaining: 3,
+    ...overrides,
+  }
+}
+
+/** This account's usage against its plan — one line per metered capability. */
+export function usageSnapshot(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot {
+  return {
+    plan: plan(),
+    is_paid: false,
+    period: usagePeriod(),
+    lines: [
+      usageLine({ key: 'ACTIVE_SEARCH_PROFILES', measure: 'CONCURRENT', used: 1, limit: 1, remaining: 0 }),
+      usageLine({ key: 'APPLICATION_SUBMISSIONS', measure: 'PER_PERIOD', used: 2, limit: 5, remaining: 3 }),
+    ],
+    ...overrides,
+  }
+}
+
 

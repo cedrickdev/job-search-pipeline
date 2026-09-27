@@ -36,12 +36,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Final
 
+import httpx
 from fastapi import Depends, Request
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.api.errors import csrf_failed, not_authenticated
 from backend.app.application_engine.bootstrap import build_application_registry
+from backend.app.billing.entitlements import EntitlementResolver
+from backend.app.billing.provider import BillingProvider
+from backend.app.billing.service import BillingService
+from backend.app.billing.stripe_provider import StripeBillingProvider
+from backend.app.billing.webhooks import BillingWebhookService
 from backend.app.career.analytics import CareerAnalyticsService
 from backend.app.career.outcomes import OutcomeService
 from backend.app.career.recommendations import CareerRecommendationEngine
@@ -60,6 +66,8 @@ from backend.app.core.settings import (
     DatabaseSettings,
     DocumentSettings,
     LLMSecretSettings,
+    SiteSettings,
+    StripeSettings,
 )
 from backend.app.discovery.bootstrap import build_country_packs
 from backend.app.documents import (
@@ -106,12 +114,16 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyLLMRunRepository,
     SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
+    SqlAlchemyPlanRepository,
     SqlAlchemyRoleClassificationRepository,
     SqlAlchemySearchProfileRepository,
     SqlAlchemySessionRepository,
     SqlAlchemyStrategyChangeExecutionRepository,
     SqlAlchemyStrategyChangeProposalRepository,
     SqlAlchemySubmissionAttemptRepository,
+    SqlAlchemySubscriptionEventRepository,
+    SqlAlchemySubscriptionRepository,
+    SqlAlchemyUsageEventRepository,
     SqlAlchemyUserRepository,
 )
 from backend.app.services.application_policy import ApplicationPolicyService
@@ -153,6 +165,8 @@ LLM_CIPHER_ATTRIBUTE: Final[str] = "v2_llm_cipher"
 SESSION_FACTORY_ATTRIBUTE: Final[str] = "v2_session_factory"
 ENGINE_ATTRIBUTE: Final[str] = "v2_engine"
 COUNTRY_PACKS_ATTRIBUTE: Final[str] = "v2_country_packs"
+STRIPE_SETTINGS_ATTRIBUTE: Final[str] = "v2_stripe_settings"
+SITE_SETTINGS_ATTRIBUTE: Final[str] = "v2_site_settings"
 
 # The sentinel a cached `None` cipher is stored as, so "resolved to no cipher" is told
 # apart from "not resolved yet" — a deployment with no master key must not re-read the
@@ -744,6 +758,96 @@ def strategy_proposal_service(
         onboarding, policies)
 
 
+def stripe_settings(request: Request) -> StripeSettings:
+    """The billing provider's credentials and tolerances, resolved once and cached.
+
+    Cached on `app.state` like every other settings model, and for the same reason: re-reading
+    `JOBSEARCH_STRIPE_*` per request would let a key rotate under a running process and split one
+    deployment's calls-out and webhook verification across two secrets. A deployment that sells
+    nothing leaves them unset — `can_call`/`can_verify_webhooks` are then false and the provider
+    refuses only the operation that would actually need the missing secret, never at boot.
+    """
+    settings = getattr(request.app.state, STRIPE_SETTINGS_ATTRIBUTE, None)
+    if isinstance(settings, StripeSettings):
+        return settings
+    resolved = StripeSettings.from_env()
+    setattr(request.app.state, STRIPE_SETTINGS_ATTRIBUTE, resolved)
+    return resolved
+
+
+def site_settings(request: Request) -> SiteSettings:
+    """The public base URL the provider redirect URLs are built from, resolved once and cached.
+
+    Cached like the rest. The redirect URLs a checkout and a portal return to are the server's,
+    derived here from `public_base_url`, never taken from a request — a request names only a plan
+    slug and can never smuggle an attacker's origin into a provider redirect (§18).
+    """
+    settings = getattr(request.app.state, SITE_SETTINGS_ATTRIBUTE, None)
+    if isinstance(settings, SiteSettings):
+        return settings
+    resolved = SiteSettings.from_env()
+    setattr(request.app.state, SITE_SETTINGS_ATTRIBUTE, resolved)
+    return resolved
+
+
+async def billing_provider(
+        settings: Annotated[StripeSettings, Depends(stripe_settings)],
+) -> AsyncIterator[BillingProvider]:
+    """The billing provider adapter, over an HTTP client scoped to this request (§11).
+
+    An async-generator dependency so the `httpx.AsyncClient` is opened and closed around the
+    request rather than leaked or shared across the process. The Stripe adapter is the one
+    provider today; the port is what the two billing services depend on, so a second provider is
+    a swap here and nowhere else. A test overrides this dependency with a fake provider and never
+    opens a socket.
+    """
+    async with httpx.AsyncClient() as client:
+        yield StripeBillingProvider(settings, client)
+
+
+def billing_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        provider: Annotated[BillingProvider, Depends(billing_provider)],
+        site: Annotated[SiteSettings, Depends(site_settings)],
+) -> BillingService:
+    """The read/checkout surface over the catalogue, the resolver and the metering ledger (§16).
+
+    Four repositories (plans, subscriptions, the usage ledger, and the search profiles the
+    concurrent gauge counts), the entitlement resolver built over the same plan and subscription
+    stores, the provider adapter that opens hosted sessions, and the site settings the redirect
+    URLs come from. It never writes a subscription or a usage event — it is one more reader of the
+    resolver and the ledger, never a second authority over them. No clock in the constructor; each
+    read takes `as_of`.
+    """
+    plans = SqlAlchemyPlanRepository(session)
+    subscriptions = SqlAlchemySubscriptionRepository(session)
+    return BillingService(
+        plans=plans, subscriptions=subscriptions,
+        usage=SqlAlchemyUsageEventRepository(session),
+        searches=SqlAlchemySearchProfileRepository(session),
+        resolver=EntitlementResolver(plans, subscriptions),
+        provider=provider, site=site)
+
+
+def billing_webhook_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        provider: Annotated[BillingProvider, Depends(billing_provider)],
+) -> BillingWebhookService:
+    """The webhook applier — the *only* thing that changes what an account is subscribed to (§12).
+
+    Verifies a provider signature before it trusts a byte of the payload, then records exactly one
+    `SubscriptionEvent` and reconciles the subscription row idempotently and monotonically. It
+    holds the provider adapter (to verify), the subscription and plan stores (to reconcile), and
+    the event ledger (to record). No session flows into it — a webhook is authenticated by the
+    provider's signature, never a browser cookie (§64).
+    """
+    return BillingWebhookService(
+        provider,
+        SqlAlchemySubscriptionRepository(session),
+        SqlAlchemyPlanRepository(session),
+        SqlAlchemySubscriptionEventRepository(session))
+
+
 CurrentSession = Annotated[AuthenticatedSession, Depends(current_session)]
 Now = Annotated[datetime, Depends(now)]
 Auth = Annotated[AuthSettings, Depends(auth_settings)]
@@ -772,3 +876,5 @@ ApplicationPolicies = Annotated[ApplicationPolicyService,
                                 Depends(application_policy_service)]
 StrategyProposals = Annotated[StrategyProposalService,
                               Depends(strategy_proposal_service)]
+Billing = Annotated[BillingService, Depends(billing_service)]
+BillingWebhooks = Annotated[BillingWebhookService, Depends(billing_webhook_service)]

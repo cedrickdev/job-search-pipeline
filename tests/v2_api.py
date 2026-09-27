@@ -62,6 +62,8 @@ from backend.app.api.dependencies import (
     assessment_service,
     auth_settings,
     authentication_service,
+    billing_service,
+    billing_webhook_service,
     career_analytics_service,
     career_recommendation_engine,
     chat_action_executor,
@@ -82,6 +84,10 @@ from backend.app.api.dependencies import (
 )
 from backend.app.companies.orchestrator import CompanyDiscoveryOrchestrator
 from backend.app.companies.registry import CompanyProviderRegistry
+from backend.app.billing.catalogue import seed_plan_catalogue
+from backend.app.billing.entitlements import EntitlementResolver
+from backend.app.billing.service import BillingService
+from backend.app.billing.webhooks import BillingWebhookService
 from backend.app.career.analytics import CareerAnalyticsService
 from backend.app.career.outcomes import OutcomeService
 from backend.app.career.recommendations import CareerRecommendationEngine
@@ -91,7 +97,7 @@ from backend.app.chat.context import ChatContextBuilder
 from backend.app.chat.conversation import ChatConversationService
 from backend.app.chat.executor import ChatActionExecutor
 from backend.app.chat.validators import ProposalValidator
-from backend.app.core.settings import AuthSettings
+from backend.app.core.settings import AuthSettings, SiteSettings
 from backend.app.documents import (
     DeterministicDocumentGenerator,
     LocalDocumentArtifactStore,
@@ -131,6 +137,7 @@ from tests.v2_fakes import (
     FakeApplicationOutcomeRepository,
     FakeApplicationPolicyRepository,
     FakeApplicationRepository,
+    FakeBillingProvider,
     FakeCandidateDocumentRepository,
     FakeCandidateProfileRepository,
     FakeCareerRecommendationRepository,
@@ -151,12 +158,16 @@ from tests.v2_fakes import (
     FakeLLMRunRepository,
     FakeMatchEvaluationRepository,
     FakeOpportunityRepository,
+    FakePlanRepository,
     FakeRoleClassificationRepository,
     FakeSearchProfileRepository,
     FakeSessionRepository,
     FakeStrategyChangeExecutionRepository,
     FakeStrategyChangeProposalRepository,
     FakeSubmissionAttemptRepository,
+    FakeSubscriptionEventRepository,
+    FakeSubscriptionRepository,
+    FakeUsageEventRepository,
     FakeUserRepository,
 )
 from tests.v2_llm import FakeHostResolver, FakeProvider
@@ -327,6 +338,18 @@ class Harness:
     career_recommendations: FakeCareerRecommendationRepository
     strategy_proposals: FakeStrategyChangeProposalRepository
     strategy_executions: FakeStrategyChangeExecutionRepository
+    # The Phase 16 billing stores, plus the stub provider the checkout, portal and webhook flows run
+    # through. `billing_provider` is the one a test writes *to* before the request — its queued
+    # `NormalizedWebhookEvent` (or a `BillingError`) is what a `POST /billing/webhook` verifies, and
+    # its canned checkout/portal sessions are what the two 201 routes return — the same
+    # before-the-request role `chat_provider` plays for a chat turn. The plan catalogue is seeded
+    # into `plans` at build time, so `GET /billing/subscription` resolves to the free tier for a
+    # fresh account rather than raising `PLAN_CATALOGUE_MISSING`.
+    plans: FakePlanRepository
+    subscriptions: FakeSubscriptionRepository
+    usage_events: FakeUsageEventRepository
+    subscription_events: FakeSubscriptionEventRepository
+    billing_provider: FakeBillingProvider
 
     def url(self, path: str) -> str:
         """A V2 path, prefixed once so no test spells `/api/v2` itself."""
@@ -481,6 +504,20 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     career_recommendations = FakeCareerRecommendationRepository()
     strategy_proposals = FakeStrategyChangeProposalRepository()
     strategy_executions = FakeStrategyChangeExecutionRepository()
+    # The Phase 16 billing stores. The plan catalogue is not owned by a user and is seeded once here,
+    # exactly as a deployment seeds it, so `EntitlementResolver.resolve` finds a free tier to fall
+    # back to (an unseeded catalogue is a `PLAN_CATALOGUE_MISSING` 500, not a fresh-account 200). The
+    # `pro`/`scale` price handles are the fixtures a checkout maps a slug onto; `free` gets none, so
+    # a checkout for it is refused as unpurchasable rather than sent to the provider. The provider is
+    # a `FakeBillingProvider` a test queues verified events into — no HMAC, no socket, no secret.
+    plans = FakePlanRepository()
+    subscriptions = FakeSubscriptionRepository()
+    usage_events = FakeUsageEventRepository()
+    subscription_events = FakeSubscriptionEventRepository()
+    billing_provider = FakeBillingProvider()
+    await seed_plan_catalogue(
+        plans, now=NOW,
+        external_price_ids={"pro": "price_pro", "scale": "price_scale"})
     directory = CompanyDirectoryService(companies, career_sites, discoveries)
     # The assessment service reads the real country packs — the CH pack is what the
     # legal-safety path exercises — over the fake verdict stores. `build_country_packs`
@@ -633,6 +670,24 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     app.dependency_overrides[career_recommendation_engine] = lambda: recommendation_engine
     app.dependency_overrides[application_policy_service] = lambda: policy_workflow
     app.dependency_overrides[strategy_proposal_service] = lambda: strategy_workflow
+    # --- Phase 16 billing -----------------------------------------------------
+    # The two billing services over the fakes, composed exactly as the dependencies do. The
+    # read/checkout service resolves an account's effective plan through the *same*
+    # `EntitlementResolver` the resolver tests exercise, counts the concurrent gauge against the
+    # shared `searches` store, sums metered usage from `usage_events`, and builds every redirect URL
+    # from a server-held `SiteSettings` — a request names only a plan slug, never an origin. The
+    # webhook service is the one write authority over subscriptions: it verifies through the fake
+    # provider (which replays queued events), maps a provider price onto a `Plan`, and records one
+    # idempotent, monotonic `SubscriptionEvent`. Both share the one `billing_provider` so a test that
+    # queues an event drives whichever route it is exercising.
+    billing = BillingService(
+        plans=plans, subscriptions=subscriptions, usage=usage_events,
+        searches=searches, resolver=EntitlementResolver(plans, subscriptions),
+        provider=billing_provider, site=SiteSettings())
+    billing_webhooks = BillingWebhookService(
+        billing_provider, subscriptions, plans, subscription_events)
+    app.dependency_overrides[billing_service] = lambda: billing
+    app.dependency_overrides[billing_webhook_service] = lambda: billing_webhooks
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:
@@ -662,7 +717,11 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
                       role_classifications=role_classifications,
                       career_recommendations=career_recommendations,
                       strategy_proposals=strategy_proposals,
-                      strategy_executions=strategy_executions)
+                      strategy_executions=strategy_executions,
+                      plans=plans, subscriptions=subscriptions,
+                      usage_events=usage_events,
+                      subscription_events=subscription_events,
+                      billing_provider=billing_provider)
 
 
 def operations(app: FastAPI, *, under: str) -> tuple[tuple[str, str], ...]:

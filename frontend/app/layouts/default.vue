@@ -47,6 +47,7 @@ const V2_LINKS = [
   { to: '/interview', label: 'Interview', exact: false },
   { to: '/career', label: 'Career', exact: false },
   { to: '/strategy', label: 'Strategy', exact: false },
+  { to: '/billing', label: 'Billing', exact: false },
 ]
 
 const colorMode = useColorMode()

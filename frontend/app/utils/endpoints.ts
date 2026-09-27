@@ -104,6 +104,14 @@ export function job(template: JobTemplate, jobId: number): string {
 // have no UI of their own — the analytics breakdowns render role families read-only — so they
 // are absent, which the `satisfies` guard permits (it checks listed paths are real, not that
 // every backend path is listed).
+//
+// Phase 16 adds the commercial surface: the read-only catalogue (`/billing/plans`), this account's
+// subscription overview and usage snapshot (`/billing/subscription`, `/billing/usage`, both GET),
+// and the two hosted opens that POST and 201 with a `redirect_url` (`/billing/checkout`,
+// `/billing/portal`). The webhook (`/billing/webhook`) is deliberately absent: it is the one route
+// with no session, reached by a provider carrying a signature rather than a browser carrying a
+// cookie (§64), so this app never calls it — the browser never moves a subscription, a verified
+// webhook does (§16).
 export const V2_ENDPOINTS = {
   login: '/api/v2/auth/login',
   logout: '/api/v2/auth/logout',
@@ -166,6 +174,11 @@ export const V2_ENDPOINTS = {
   applicationOutcomes: '/api/v2/applications/{application_id}/outcomes',
   outcomeCorrect: '/api/v2/outcomes/{outcome_id}/correct',
   outcomeRetract: '/api/v2/outcomes/{outcome_id}/retract',
+  billingPlans: '/api/v2/billing/plans',
+  billingSubscription: '/api/v2/billing/subscription',
+  billingUsage: '/api/v2/billing/usage',
+  billingCheckout: '/api/v2/billing/checkout',
+  billingPortal: '/api/v2/billing/portal',
 } as const satisfies Record<string, keyof paths>
 
 /**

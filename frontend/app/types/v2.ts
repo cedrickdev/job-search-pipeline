@@ -502,6 +502,59 @@ export type StrategyChangeExecutionOutcome = Schemas['StrategyChangeExecutionOut
 /** The approval body: `confirm_sensitive` clears the second gate a loosening change needs. */
 export type ApproveStrategyChangeRequest = Schemas['ApproveStrategyChangeRequest']
 
+// --- Phase 16: SaaS subscriptions & billing ------------------------------------------
+//
+// The commercial surface a browser reads and the two hosted opens it starts. Every type is
+// an alias into the generated document, like the phases above: a field the backend renames
+// fails `nuxt typecheck` here after `npm run gen:api`. The spine's frontend rule is visible
+// in the shapes — the client defines no price, quota or entitlement, it only renders what the
+// catalogue serves (§17, §61). `PlanResponse` deliberately carries no `external_price_id`: the
+// opaque provider handle a checkout needs is server-only, so there is no field for it to leak
+// through, and a checkout body names only a plan slug — the success and cancel URLs are the
+// server's, never the request's (§18).
+
+/** One plan as the catalogue serves it — its price, quotas and entitlements, never a provider handle. */
+export type Plan = Schemas['PlanResponse']
+
+/** The public catalogue, cheapest first — free, then the paid tiers. */
+export type PlanList = Schemas['PlanListResponse']
+
+/** One capability a plan grants and its ceiling — `is_unlimited` surfaced, `limit` null when unbounded. */
+export type Entitlement = Schemas['EntitlementResponse']
+
+/** This account's plan and live subscription — free tier when none, with the window usage meters against. */
+export type SubscriptionOverview = Schemas['SubscriptionOverviewResponse']
+
+/** This account's usage against its plan — one line per metered capability, gauge or per-period. */
+export type UsageSnapshot = Schemas['UsageSnapshotResponse']
+
+/** One metered capability's consumption: what was used, the ceiling, and what is left. */
+export type UsageLine = Schemas['UsageLineResponse']
+
+/** The billing window a snapshot sums against — its label and both ends. */
+export type UsagePeriod = Schemas['UsagePeriodResponse']
+
+/** The one-field checkout body: the plan slug to purchase; the URLs are the server's. */
+export type CheckoutRequest = Schemas['CheckoutRequest']
+
+/** Where to send the browser to complete a purchase — the provider checkout's redirect URL. */
+export type CheckoutResponse = Schemas['CheckoutResponse']
+
+/** Where to send the browser to manage billing — the provider portal's redirect URL. */
+export type PortalResponse = Schemas['PortalResponse']
+
+/** The six metered capabilities — the closed set a plan grants room for. */
+export type EntitlementKey = Schemas['EntitlementKey']
+
+/** `CONCURRENT | PER_PERIOD` — whether a key is a live gauge or a per-period meter. */
+export type EntitlementMeasure = Schemas['EntitlementMeasure']
+
+/** `MONTHLY | YEARLY` — how often a paid plan bills. */
+export type BillingInterval = Schemas['BillingInterval']
+
+/** `TRIALING | ACTIVE | PAST_DUE | CANCEL_AT_PERIOD_END | CANCELED` — a subscription's standing. */
+export type SubscriptionStatus = Schemas['SubscriptionStatus']
+
 /**
  * Every `error` slug `/api/v2` can answer with, as one union.
  *
@@ -528,6 +581,7 @@ export type V2ErrorCode =
   | 'application_submission_unknown'
   | 'artifact_unavailable'
   | 'audio_too_large'
+  | 'billing_customer_missing'
   | 'candidate_profile_not_found'
   | 'capability_not_supported'
   | 'chat_proposal_not_actionable'
@@ -559,6 +613,9 @@ export type V2ErrorCode =
   | 'outcome_not_effective'
   | 'outcome_not_found'
   | 'output_limit_exceeded'
+  | 'plan_catalogue_missing'
+  | 'plan_not_found'
+  | 'plan_not_purchasable'
   | 'proposal_expired'
   | 'proposal_not_found'
   | 'proposal_not_open'
@@ -574,6 +631,7 @@ export type V2ErrorCode =
   | 'question_already_answered'
   | 'question_generation_unavailable'
   | 'question_not_found'
+  | 'quota_exceeded'
   | 'role_classification_not_found'
   | 'search_profile_not_found'
   | 'sensitive_confirmation_required'
@@ -586,3 +644,5 @@ export type V2ErrorCode =
   | 'transcription_unavailable'
   | 'unsupported_audio'
   | 'validation_failed'
+  | 'webhook_malformed'
+  | 'webhook_signature_invalid'

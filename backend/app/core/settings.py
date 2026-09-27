@@ -215,6 +215,19 @@ DEFAULT_STRIPE_API_BASE_URL: Final[str] = "https://api.stripe.com"
 # valid signature, so a captured request cannot be replayed indefinitely.
 DEFAULT_STRIPE_SIGNATURE_TOLERANCE_SECONDS: Final[int] = 300
 
+# The public origin the browser reaches this deployment at — the base of the URLs a hosted
+# checkout or billing portal sends the user back to (Phase 16 §18). Read from the environment and
+# never client-supplied: the success, cancel and return URLs a checkout is opened with are built
+# from this on the server, so a request cannot smuggle an attacker's origin into a provider
+# redirect (open-redirect prevention). Defaults to the Nuxt dev origin so a fresh checkout works
+# without configuration; a real deployment sets it to its own https origin.
+SITE_PUBLIC_BASE_URL_VARIABLE: Final[str] = "JOBSEARCH_PUBLIC_BASE_URL"
+DEFAULT_PUBLIC_BASE_URL: Final[str] = "http://localhost:3000"
+# The path the `/billing` screen lives at, appended to the public base to form the redirect
+# targets. A constant rather than a field: the frontend route is fixed, and a deployment tunes the
+# origin, not the in-app path.
+_BILLING_PATH: Final[str] = "/billing"
+
 _TRUE_WORDS: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 
@@ -477,6 +490,61 @@ class StripeSettings(BaseModel):
             signature_tolerance_seconds=_read_int(
                 source, STRIPE_SIGNATURE_TOLERANCE_VARIABLE,
                 DEFAULT_STRIPE_SIGNATURE_TOLERANCE_SECONDS))
+
+
+class SiteSettings(BaseModel):
+    """The public origin this deployment is reached at, and the redirect URLs derived from it.
+
+    Frozen and closed like every settings model. The one tunable is `public_base_url`; the three
+    redirect URLs a hosted checkout or portal needs are *derived* here rather than accepted from a
+    request, which is the whole point (Phase 16 §18). A provider-hosted checkout takes a
+    `success_url`, a `cancel_url` and a portal takes a `return_url`, and if any of those came from
+    the client an attacker could open a checkout that, on success, bounced the victim's browser to
+    a page the attacker controls. Building them from a server-held origin closes that: the client
+    names only a plan slug, never a URL.
+
+    The trailing slash is stripped so the join is unambiguous — `https://x/` and `https://x` both
+    yield `https://x/billing`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    public_base_url: str = DEFAULT_PUBLIC_BASE_URL
+
+    @field_validator("public_base_url")
+    @classmethod
+    def _strip_trailing_slash(cls, value: str) -> str:
+        trimmed = value.strip().rstrip("/")
+        if not trimmed:
+            raise ValueError("the public base URL must not be empty")
+        return trimmed
+
+    @property
+    def billing_url(self) -> str:
+        """The in-app billing screen — where a portal returns and a checkout lands."""
+        return f"{self.public_base_url}{_BILLING_PATH}"
+
+    @property
+    def checkout_success_url(self) -> str:
+        """Where a hosted checkout sends the browser on success — server-built, not client-sent."""
+        return f"{self.billing_url}?checkout=success"
+
+    @property
+    def checkout_cancel_url(self) -> str:
+        """Where a hosted checkout sends the browser on cancel — server-built, never client-sent."""
+        return f"{self.billing_url}?checkout=cancelled"
+
+    @property
+    def portal_return_url(self) -> str:
+        """Where the billing portal returns the browser — server-built, never client-sent."""
+        return self.billing_url
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
+        """Read the public origin from the environment, or use the local dev default."""
+        source = environ if env is None else env
+        value = source.get(SITE_PUBLIC_BASE_URL_VARIABLE, "").strip()
+        return cls(public_base_url=value or DEFAULT_PUBLIC_BASE_URL)
 
 
 

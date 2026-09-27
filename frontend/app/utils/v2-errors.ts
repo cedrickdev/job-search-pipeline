@@ -152,6 +152,21 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   session_not_active: 'This session is not open for practice. Start a new one.',
   transcription_unavailable: 'That recording could not be transcribed. Try again, or type your answer instead.',
   unsupported_audio: 'That audio format is not supported. Record in a supported format and try again.',
+  // The Phase 16 billing refusals. Three the browser meets on a checkout or portal open: an
+  // account with no provider customer has nothing to manage, a slug the catalogue does not carry
+  // cannot be bought, and the free tier is a real plan you do not subscribe to. `quota_exceeded`
+  // is the commercial half of the effective-permission AND — no room the plan paid for, resolved
+  // by upgrading or by the period resetting, never a safety verdict (§4, §8). The unseeded
+  // catalogue is an operator fault (a 500), and the two webhook refusals are the provider's path
+  // (a 400 the browser never triggers), kept here only because the code set is closed and every
+  // slug the API can answer needs a sentence.
+  billing_customer_missing: 'There is no billing account to manage yet. Subscribe to a plan first.',
+  plan_catalogue_missing: 'Plans are not available right now. Try again in a moment.',
+  plan_not_found: 'That plan does not exist.',
+  plan_not_purchasable: 'That plan cannot be purchased. Choose a paid plan to subscribe.',
+  quota_exceeded: 'Your plan has no room left for this. Upgrade, or wait for the period to reset.',
+  webhook_malformed: 'That billing notification could not be processed.',
+  webhook_signature_invalid: 'That billing notification could not be verified.',
   validation_failed: 'Some of the details below are not valid.',
 }
 

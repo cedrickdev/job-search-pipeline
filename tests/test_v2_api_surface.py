@@ -50,6 +50,16 @@ approve or dismiss one, and classify an opportunity by `POST` or `PUT`). The loo
 load-bearing rule — an outcome is a real-world fact that never moves the Phase 12
 execution lifecycle — is not a surface fact and is proven elsewhere; here these operations
 answer the same four rules the Phase 4 twelve do, and no response schema echoes a secret.
+
+Phase 16 adds six for the commercial surface: three reads (the plan catalogue, this
+account's subscription overview and its usage snapshot) and three writes (open a
+provider-hosted checkout, open the billing portal, and receive one provider webhook).
+Five obey the same four rules the rest of the surface does. The sixth, the webhook, is
+the one exception on the whole V2 surface: it carries no session because the caller is a
+provider, not a browser, so it answers a provider signature rather than a cookie and a
+403/401. It still carries no credential in its response — the acknowledgement is minimal
+and secret-free — and it is held apart from the anonymous 401 sweep in `PROVIDER_OPERATIONS`
+rather than treated as public, because it is authenticated, only not by a session.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -106,6 +116,9 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/applications/{application_id}/events"),
     ("GET", "/api/v2/applications/{application_id}/outcomes"),
     ("GET", "/api/v2/auth/session"),
+    ("GET", "/api/v2/billing/plans"),
+    ("GET", "/api/v2/billing/subscription"),
+    ("GET", "/api/v2/billing/usage"),
     ("GET", "/api/v2/career/analytics"),
     ("GET", "/api/v2/career/recommendations"),
     ("GET", "/api/v2/career/strategy-proposals"),
@@ -148,6 +161,9 @@ V2_OPERATIONS = (
     ("POST", "/api/v2/auth/login"),
     ("POST", "/api/v2/auth/logout"),
     ("POST", "/api/v2/auth/register"),
+    ("POST", "/api/v2/billing/checkout"),
+    ("POST", "/api/v2/billing/portal"),
+    ("POST", "/api/v2/billing/webhook"),
     ("POST", "/api/v2/career/recommendations"),
     ("POST", "/api/v2/career/strategy-proposals"),
     ("POST", "/api/v2/career/strategy-proposals/{proposal_id}/approve"),
@@ -190,6 +206,16 @@ PUBLIC_OPERATIONS = frozenset({
     ("POST", "/api/v2/auth/register"),
 })
 
+# The one write with no session that is *not* public: the billing webhook. A provider
+# calling in carries no cookie, so it cannot answer 401 — it is authenticated by the
+# provider signature the service verifies before it trusts a byte (Phase 16 §64). It is
+# excluded from the anonymous 401 sweep for that reason, not because it is open: an
+# unsigned or unqueued call is a `BillingError` mapped to 400, never a 401 and never an
+# applied subscription change.
+PROVIDER_OPERATIONS = frozenset({
+    ("POST", "/api/v2/billing/webhook"),
+})
+
 # Substrings that must not name a field in any V2 response. `hash` and `digest`
 # cover the stored forms, `token` and `csrf` the live ones.
 FORBIDDEN_IN_RESPONSES = ("password", "token", "digest", "hash", "secret",
@@ -230,14 +256,14 @@ async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_de
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 66
+        assert len({path for _, path in published}) == 72
 
 
 @pytest.mark.asyncio
 async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path):
     """The inventory half of "no GET mutates state".
 
-    Thirty-seven `GET`s, all of them reports. `POST /onboarding/complete` exists precisely
+    Forty `GET`s, all of them reports. `POST /onboarding/complete` exists precisely
     so that the screen displaying progress does not have to be the thing that records
     it, and `POST /company-discovery/run` is the same split for the directory: reading
     it is safe, filling it is a write an operator triggers. The three Phase 7 reads
@@ -256,7 +282,9 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
     pending strategy-proposal queue, its history, one proposal, one opportunity's
     role-classification and the classification list — all views; recording, correcting and
     retracting an outcome, generating recommendations, proposing, approving and dismissing a
-    strategy change, and classifying an opportunity are its writes.
+    strategy change, and classifying an opportunity are its writes. Phase 16 adds three billing
+    reads — the plan catalogue, this account's subscription overview and its usage snapshot —
+    all views; opening a checkout or a portal and receiving a provider webhook are its writes.
     """
     async with api_harness(tmp_path) as api:
         published = operations(api.app, under=API_V2_PREFIX)
@@ -267,6 +295,9 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/applications/{application_id}/events",
             "/api/v2/applications/{application_id}/outcomes",
             "/api/v2/auth/session",
+            "/api/v2/billing/plans",
+            "/api/v2/billing/subscription",
+            "/api/v2/billing/usage",
             "/api/v2/career/analytics",
             "/api/v2/career/recommendations",
             "/api/v2/career/strategy-proposals",
@@ -474,7 +505,7 @@ async def test_the_one_write_a_get_performs_is_last_seen_at_and_it_cannot_extend
 @pytest.mark.asyncio
 async def test_every_operation_but_register_and_login_refuses_an_anonymous_caller(
         tmp_path):
-    """401 from all eighty, with no body sent and nothing created.
+    """401 from all eighty-five, with no body sent and nothing created.
 
     No payload is needed because FastAPI resolves the session dependency before it
     validates a body, so the refusal happens before the request is read — which is
@@ -486,12 +517,18 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
     an anonymous caller is refused before the query is even parsed, so a missing
     cookie short-circuits a malformed radius rather than leaking which queries are
     well formed.
+
+    The billing webhook is *not* in the sweep: it carries no session because a
+    provider calling in has no cookie, so it is authenticated by signature and lives
+    in `PROVIDER_OPERATIONS`, excluded here beside the two public auth routes. Its own
+    refusals — an unsigned or unqueued call is a 400 — are proven in the billing tests.
     """
     async with api_harness(tmp_path) as api:
         protected = [(method, path) for method, path in operations(
-            api.app, under=API_V2_PREFIX) if (method, path) not in PUBLIC_OPERATIONS]
+            api.app, under=API_V2_PREFIX)
+            if (method, path) not in PUBLIC_OPERATIONS | PROVIDER_OPERATIONS]
 
-        assert len(protected) == 80
+        assert len(protected) == 85
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

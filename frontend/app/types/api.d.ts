@@ -785,6 +785,155 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/billing/checkout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Checkout
+         * @description Open a provider-hosted checkout for a purchasable plan, attributed to this account (§18).
+         *
+         *     201, because a new hosted session is created. The service refuses a slug that names no plan
+         *     (404) or a plan that cannot be bought — free, retired, or price-less (409) — before the
+         *     provider is ever called. The success and cancel URLs are the server's, never the request's.
+         */
+        post: operations["open_checkout_api_v2_billing_checkout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/billing/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Plans
+         * @description The purchasable catalogue — active, public plans, cheapest first (§17, §61).
+         *
+         *     Server truth: prices, quotas and entitlements are defined here, and the client only reads
+         *     what this serves. Session-scoped like the rest of the surface, though the catalogue is the
+         *     same for every account — an upgrade screen is an in-app view.
+         */
+        get: operations["list_plans_api_v2_billing_plans_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/billing/portal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Portal
+         * @description Open the provider's billing portal for this account, or refuse if it has no customer.
+         *
+         *     201 for the same reason as checkout — a hosted session is created. An account that never
+         *     subscribed has no provider customer to manage, which is a 409, not a provider error. The
+         *     return URL is the server's `/billing` screen (§18).
+         */
+        post: operations["open_portal_api_v2_billing_portal_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/billing/subscription": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Subscription Overview
+         * @description This account's effective plan, live subscription state and billing window as of now.
+         *
+         *     Straight from the resolver: the paid plan while it grants, the free tier otherwise. A lapsed
+         *     payer still sees the `PAST_DUE` or expired row that explains the free-tier fallback, and
+         *     whether a portal can be opened for it.
+         */
+        get: operations["subscription_overview_api_v2_billing_subscription_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/billing/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Usage Snapshot
+         * @description This account's consumption against its effective plan's ceilings, in the current window.
+         *
+         *     One line per entitlement the plan grants — a period sum for a meter, a live count for the
+         *     concurrent gauge — the same split the metering layer enforces, so the numbers shown are the
+         *     numbers a quota check reads (§6).
+         */
+        get: operations["usage_snapshot_api_v2_billing_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/billing/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Receive Webhook
+         * @description Verify and apply one provider webhook — the only route that changes a subscription (§12).
+         *
+         *     No session: a webhook is a server calling in, authenticated by the provider signature the
+         *     service verifies before it trusts a byte of the payload, never by a browser cookie (§64). The
+         *     raw request bytes are read here — the signature covers the exact bytes, so a parsed body would
+         *     already have lost them — and the headers carry the signature. The service records exactly one
+         *     `SubscriptionEvent` (applied, superseded or ignored) and reconciles idempotently and
+         *     monotonically; a redelivery of an already-processed event returns the record already stored
+         *     without re-applying it. An invalid signature or unparseable payload is a `BillingError` the
+         *     API maps to 400, never a 401.
+         */
+        post: operations["receive_webhook_api_v2_billing_webhook_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/career/analytics": {
         parameters: {
             query?: never;
@@ -2617,6 +2766,17 @@ export interface components {
              */
             weekly_slots: components["schemas"]["WeeklyAvailabilitySlot"][];
         };
+        /**
+         * BillingInterval
+         * @description How often a paid plan renews — the period a per-period meter resets on (§10).
+         *
+         *     Closed and coarse on purpose: a plan bills `MONTHLY` or `YEARLY`, and a free plan bills
+         *     on neither (its period is the calendar month the metering layer falls back to). The value
+         *     is provenance the billing adapter maps onto a provider's own interval; nothing in the
+         *     domain dispatches on it beyond describing the plan.
+         * @enum {string}
+         */
+        BillingInterval: "MONTHLY" | "YEARLY";
         /** Body_post_transcribe_api_transcribe_post */
         Body_post_transcribe_api_transcribe_post: {
             /** File */
@@ -3157,6 +3317,27 @@ export interface components {
          * @enum {string}
          */
         ChatStreamEventType: "TOKEN" | "COMPLETED" | "ERROR";
+        /**
+         * CheckoutRequest
+         * @description The one thing a checkout request carries — the slug of the plan to buy (§18).
+         *
+         *     A slug and nothing else: the account is the session's, and the success and cancel URLs are the
+         *     server's, built from `SiteSettings`, so a request can never smuggle an attacker's origin into a
+         *     provider redirect. The service refuses a slug that names no plan, or a plan that cannot be
+         *     bought, before the provider is ever called.
+         */
+        CheckoutRequest: {
+            /** Plan Slug */
+            plan_slug: string;
+        };
+        /**
+         * CheckoutResponse
+         * @description Where to send the browser to pay — the provider-hosted checkout's redirect URL.
+         */
+        CheckoutResponse: {
+            /** Redirect Url */
+            redirect_url: string;
+        };
         /**
          * ClaimType
          * @description The kind of assertion a claim makes.
@@ -4047,6 +4228,57 @@ export interface components {
          * @enum {string}
          */
         EligibilityStatus: "ELIGIBLE" | "INCOMPLETE" | "REVIEW_REQUIRED" | "INELIGIBLE";
+        /**
+         * EntitlementKey
+         * @description The closed set of capabilities a plan may meter — only things the platform counts (§3).
+         *
+         *     Every member names a capability that already exists as a real, server-side action, so an
+         *     entitlement is always something the platform can actually measure and enforce, never a
+         *     marketing promise with no meter behind it. A key a provider or a client invents fails to
+         *     parse rather than silently granting an allowance the metering layer never tracks, exactly
+         *     as every other closed vocabulary in the domain.
+         *
+         *     - `ACTIVE_SEARCH_PROFILES` — how many search profiles may be *active at once* (a gauge, §6);
+         *     - `LLM_TOKENS` — total LLM tokens per billing period, summed from the Phase 11 `LLMRun`
+         *       telemetry the platform already records — never a second token counter (§5);
+         *     - `DOCUMENT_GENERATIONS` — ATS résumé/cover-letter generations per period;
+         *     - `APPLICATION_SUBMISSIONS` — real application submissions per period (a *commercial* cap
+         *       layered above the `ApplicationPolicy` volume brake, never replacing it, §4);
+         *     - `INTERVIEW_SESSIONS` — adaptive interview-practice sessions per period;
+         *     - `RECOMMENDATION_GENERATIONS` — career-recommendation generation runs per period.
+         * @enum {string}
+         */
+        EntitlementKey: "ACTIVE_SEARCH_PROFILES" | "LLM_TOKENS" | "DOCUMENT_GENERATIONS" | "APPLICATION_SUBMISSIONS" | "INTERVIEW_SESSIONS" | "RECOMMENDATION_GENERATIONS";
+        /**
+         * EntitlementMeasure
+         * @description Whether a key is a live gauge or a per-period meter — the shape its quota is checked as (§6).
+         *
+         *     Two shapes, because "how many search profiles are active *right now*" and "how many tokens
+         *     have I spent *this month*" are different questions with different enforcement. A `CONCURRENT`
+         *     limit is checked against a count of currently-active resources — creating a resource that
+         *     would exceed it is refused, deleting one frees room again. A `PER_PERIOD` limit is checked
+         *     against the sum of usage events in the current billing window — it resets each period and is
+         *     never freed within one. The metering service and the quota check both read the measure from
+         *     `entitlement_measure` so they can never disagree about which question a key asks.
+         * @enum {string}
+         */
+        EntitlementMeasure: "CONCURRENT" | "PER_PERIOD";
+        /**
+         * EntitlementResponse
+         * @description One capability a plan grants and its ceiling — a read-only row of the catalogue (§17, §61).
+         *
+         *     `is_unlimited` is surfaced so a surface need not infer "unlimited" from a null `limit`, and
+         *     `measure` tells it whether the row is a live gauge or a per-period meter. The frontend defines
+         *     none of this; it renders what the catalogue serves.
+         */
+        EntitlementResponse: {
+            /** Is Unlimited */
+            is_unlimited: boolean;
+            key: components["schemas"]["EntitlementKey"];
+            /** Limit */
+            limit: number | null;
+            measure: components["schemas"]["EntitlementMeasure"];
+        };
         /**
          * EvaluateMatchRequest
          * @description Ask for one posting to be assessed for the signed-in account's profile.
@@ -5213,6 +5445,67 @@ export interface components {
              * Format: uuid
              */
             version_id: string;
+        };
+        /**
+         * PlanListResponse
+         * @description The public pricing catalogue — active, public plans, cheapest first (§17, §61).
+         */
+        PlanListResponse: {
+            /** Plans */
+            plans: components["schemas"]["PlanResponse"][];
+        };
+        /**
+         * PlanResponse
+         * @description A plan as the pricing and billing surfaces read it — everything but the provider handle.
+         *
+         *     `external_price_id` is deliberately absent: it is the opaque provider token a checkout needs
+         *     server-side, never something a client acts on, so there is no field for it to leak through.
+         *     `is_free` is surfaced so a surface need not re-derive it from the price. Prices, quotas and
+         *     entitlements are server truth; a client only reads them (§17, §61).
+         */
+        PlanResponse: {
+            billing_interval: components["schemas"]["BillingInterval"] | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Currency */
+            currency: string | null;
+            /** Description */
+            description: string | null;
+            /** Entitlements */
+            entitlements: components["schemas"]["EntitlementResponse"][];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Is Free */
+            is_free: boolean;
+            /** Is Public */
+            is_public: boolean;
+            /** Name */
+            name: string;
+            /** Price Amount Cents */
+            price_amount_cents: number | null;
+            /** Slug */
+            slug: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * PortalResponse
+         * @description Where to send the browser to manage billing — the provider portal's redirect URL.
+         */
+        PortalResponse: {
+            /** Redirect Url */
+            redirect_url: string;
         };
         /**
          * PrepareApplicationAction
@@ -6431,6 +6724,68 @@ export interface components {
             content: string;
         };
         /**
+         * SubscriptionEventOutcome
+         * @description What handling a billing webhook did with it — the closed vocabulary the ledger records.
+         *
+         *     A member a caller invents fails to parse rather than recording an untraceable outcome, the
+         *     discipline every closed domain vocabulary keeps.
+         *
+         *     - `APPLIED` — the event postdated the recorded provenance and updated the subscription;
+         *     - `SUPERSEDED` — a newer event was already applied, so `Subscription.supersedes` rejected
+         *       this one and nothing was written backwards (§15);
+         *     - `IGNORED` — a well-formed event the platform does not act on: a provider event type that
+         *       maps to no subscription state, or one that cannot be attributed to an account. Recorded so
+         *       a redelivery is still recognised and remains a no-op.
+         * @enum {string}
+         */
+        SubscriptionEventOutcome: "APPLIED" | "SUPERSEDED" | "IGNORED";
+        /**
+         * SubscriptionOverviewResponse
+         * @description One account's commercial standing — the `/billing` header, straight from the resolver (§17).
+         *
+         *     `plan` is the effective plan (the paid one while it grants, the free tier otherwise) and
+         *     `is_paid` whether a provider-backed subscription is currently granting. The `status`, window
+         *     and `cancel_at_period_end` describe the live subscription row when there is one — a lapsed
+         *     payer still sees why they fell back to free — and are null/false for an account that never
+         *     subscribed. `can_manage_billing` is whether there is a provider customer a portal can manage.
+         *     No subscription id or customer handle leaves: the client acts on none of them.
+         */
+        SubscriptionOverviewResponse: {
+            /** Can Manage Billing */
+            can_manage_billing: boolean;
+            /** Cancel At Period End */
+            cancel_at_period_end: boolean;
+            /** Current Period End */
+            current_period_end: string | null;
+            /** Current Period Start */
+            current_period_start: string | null;
+            /** Is Paid */
+            is_paid: boolean;
+            period: components["schemas"]["UsagePeriodResponse"];
+            plan: components["schemas"]["PlanResponse"];
+            status: components["schemas"]["SubscriptionStatus"] | null;
+        };
+        /**
+         * SubscriptionStatus
+         * @description The normalized internal lifecycle of a subscription — the closed set from §14.
+         *
+         *     A provider's own vocabulary (Stripe alone has a dozen statuses) is collapsed by the billing
+         *     adapter into exactly the five states the platform reasons about, so the access check never
+         *     meets a status it does not understand. A member a provider invents fails to normalize rather
+         *     than silently granting or denying access.
+         *
+         *     - `TRIALING` — a trial is running; the plan's entitlements apply (§14);
+         *     - `ACTIVE` — paid and current; entitlements apply;
+         *     - `PAST_DUE` — a payment failed and the provider is retrying; access degrades to the free
+         *       tier per the grace rule (§16), data is never touched;
+         *     - `CANCEL_AT_PERIOD_END` — canceled but paid through the current period; entitlements apply
+         *       until `current_period_end`, then it lapses;
+         *     - `CANCELED` — ended; the plan's entitlements no longer apply and the account falls back to
+         *       the free tier (§16).
+         * @enum {string}
+         */
+        SubscriptionStatus: "TRIALING" | "ACTIVE" | "PAST_DUE" | "CANCEL_AT_PERIOD_END" | "CANCELED";
+        /**
          * TimingKind
          * @description The elapsed-time measurements the funnel reports, in real calendar days (§17).
          *
@@ -6519,6 +6874,55 @@ export interface components {
             title_keywords?: string[] | null;
         };
         /**
+         * UsageLineResponse
+         * @description One entitlement's consumption against its ceiling — a single row of the usage panel (§6).
+         *
+         *     `limit` and `remaining` are null when the plan grants the capability without a ceiling, which
+         *     a surface renders as "unlimited" rather than a number. `used` is a real count either way — a
+         *     period sum for a per-period meter, a live count of active resources for the concurrent gauge —
+         *     so a client never has to know which shape a key is to render the row.
+         */
+        UsageLineResponse: {
+            key: components["schemas"]["EntitlementKey"];
+            /** Limit */
+            limit: number | null;
+            measure: components["schemas"]["EntitlementMeasure"];
+            /** Remaining */
+            remaining: number | null;
+            /** Used */
+            used: number;
+        };
+        /**
+         * UsagePeriodResponse
+         * @description The billing window a per-period meter currently sums against — start, end and its label.
+         */
+        UsagePeriodResponse: {
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /** Label */
+            label: string;
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+        };
+        /**
+         * UsageSnapshotResponse
+         * @description The whole usage panel: the billing window, the effective plan, and a line per entitlement.
+         */
+        UsageSnapshotResponse: {
+            /** Is Paid */
+            is_paid: boolean;
+            /** Lines */
+            lines: components["schemas"]["UsageLineResponse"][];
+            period: components["schemas"]["UsagePeriodResponse"];
+            plan: components["schemas"]["PlanResponse"];
+        };
+        /**
          * UserStatus
          * @description Whether the account may be used at all.
          *
@@ -6542,6 +6946,20 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /**
+         * WebhookAckResponse
+         * @description The minimal, secret-free acknowledgement a billing provider gets back from a webhook (§64).
+         *
+         *     A provider needs to know the event was received and how it was resolved — applied, superseded
+         *     by a newer one, or ignored — and nothing about the account behind it. No `user_id` or
+         *     subscription handle leaves here: the caller is the provider, not the account, and the ack is
+         *     for its retry logic, not for reconciling our records.
+         */
+        WebhookAckResponse: {
+            /** Event Type */
+            event_type: string;
+            outcome: components["schemas"]["SubscriptionEventOutcome"];
         };
         /**
          * Weekday
@@ -7933,6 +8351,139 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SignedInResponse"];
+                };
+            };
+        };
+    };
+    open_checkout_api_v2_billing_checkout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CheckoutRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckoutResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_plans_api_v2_billing_plans_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanListResponse"];
+                };
+            };
+        };
+    };
+    open_portal_api_v2_billing_portal_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalResponse"];
+                };
+            };
+        };
+    };
+    subscription_overview_api_v2_billing_subscription_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionOverviewResponse"];
+                };
+            };
+        };
+    };
+    usage_snapshot_api_v2_billing_usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageSnapshotResponse"];
+                };
+            };
+        };
+    };
+    receive_webhook_api_v2_billing_webhook_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookAckResponse"];
                 };
             };
         };

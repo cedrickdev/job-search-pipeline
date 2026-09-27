@@ -30,6 +30,11 @@ from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 
 from backend.app.api import API_V2_PREFIX
 from backend.app.billing.errors import BillingError, BillingErrorCode
+from backend.app.billing.service import (
+    BillingCustomerMissing,
+    PlanNotFound,
+    PlanNotPurchasable,
+)
 from backend.app.career.errors import CareerError, CareerErrorCode
 from backend.app.chat.conversation import (
     ConversationNotFound,
@@ -533,6 +538,30 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         # separate clauses that ran regardless (§4). The body's `error` is the code lowercased.
         status_code = _BILLING_STATUS.get(exc.code, status.HTTP_409_CONFLICT)
         return _json(status_code, exc.code.value.lower(), exc.detail)
+
+    @app.exception_handler(PlanNotFound)
+    async def _plan_not_found(request: Request, exc: PlanNotFound) -> JSONResponse:
+        # 404: a checkout named a slug the catalogue does not carry. A request-shaped billing
+        # refusal — a sibling of `BillingError`, raised by the read/checkout surface, not a member
+        # of its closed code — so it maps here rather than through `_BILLING_STATUS`. `detail` is
+        # the service's own secret-free sentence.
+        return _json(status.HTTP_404_NOT_FOUND, "plan_not_found", exc.detail)
+
+    @app.exception_handler(PlanNotPurchasable)
+    async def _plan_not_purchasable(request: Request,
+                                    exc: PlanNotPurchasable) -> JSONResponse:
+        # 409: the slug names a real plan, but it cannot be bought — the free tier, a retired plan,
+        # or one carrying no provider price. The service refuses it before the provider is called,
+        # rather than handing it over to fail opaquely. The sentence is fixed and secret-free.
+        return _json(status.HTTP_409_CONFLICT, "plan_not_purchasable", exc.detail)
+
+    @app.exception_handler(BillingCustomerMissing)
+    async def _billing_customer_missing(
+            request: Request, exc: BillingCustomerMissing) -> JSONResponse:
+        # 409, not a provider error: a portal manages an existing provider customer, so an account
+        # that never subscribed has nothing to manage. It is a state the caller resolves by
+        # subscribing first, named in the service's own fixed, secret-free sentence.
+        return _json(status.HTTP_409_CONFLICT, "billing_customer_missing", exc.detail)
 
     @app.exception_handler(InterviewGroundingNotFound)
     async def _interview_grounding_missing(

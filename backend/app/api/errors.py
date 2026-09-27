@@ -180,11 +180,17 @@ _CAREER_STATUS: Final[dict[CareerErrorCode, int]] = {
 # commercial clause of the effective-permission AND, never a safety verdict — raising it says
 # nothing about whether the action was safe (§4). A `PLAN_CATALOGUE_MISSING` is a 500: the
 # free-tier plan the resolver falls back to is unseeded, which is a deployment fault, not a
-# well-formed request's. An unmapped code defaults to 409 in the handler; the body's `error` is
-# the code lowercased, the same closed vocabulary the services raise.
+# well-formed request's. A webhook that fails signature or timestamp verification, or a verified
+# one the adapter cannot normalize, is a 400 — the platform is refusing the payload, not the
+# account (§12); a failed call *out* to the provider is a 502. An unmapped code defaults to 409
+# in the handler; the body's `error` is the code lowercased, the same closed vocabulary the
+# services raise.
 _BILLING_STATUS: Final[dict[BillingErrorCode, int]] = {
     BillingErrorCode.QUOTA_EXCEEDED: status.HTTP_402_PAYMENT_REQUIRED,
     BillingErrorCode.PLAN_CATALOGUE_MISSING: status.HTTP_500_INTERNAL_SERVER_ERROR,
+    BillingErrorCode.WEBHOOK_SIGNATURE_INVALID: status.HTTP_400_BAD_REQUEST,
+    BillingErrorCode.WEBHOOK_MALFORMED: status.HTTP_400_BAD_REQUEST,
+    BillingErrorCode.PROVIDER_UNAVAILABLE: status.HTTP_502_BAD_GATEWAY,
 }
 
 

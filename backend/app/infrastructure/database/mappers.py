@@ -149,6 +149,7 @@ from backend.app.domain.identifiers import (
     StrategyChangeExecutionId,
     StrategyChangeProposalId,
     SubmissionAttemptId,
+    SubscriptionEventId,
     SubscriptionId,
     UsageEventId,
     UserId,
@@ -212,6 +213,7 @@ from backend.app.domain.strategy_change import (
     StrategyChangeTarget,
 )
 from backend.app.domain.subscription import Subscription, SubscriptionStatus
+from backend.app.domain.subscription_event import SubscriptionEvent, SubscriptionEventOutcome
 from backend.app.domain.usage import UsageEvent, UsageSourceType
 from backend.app.domain.user import User, UserSession, UserStatus
 from backend.app.infrastructure.database.models import (
@@ -262,6 +264,7 @@ from backend.app.infrastructure.database.models import (
     StrategyChangeExecutionRow,
     StrategyChangeProposalRow,
     SubmissionAttemptRow,
+    SubscriptionEventRow,
     SubscriptionRow,
     UsageEventRow,
     UserRow,
@@ -2754,6 +2757,41 @@ def usage_event_to_domain(row: UsageEventRow) -> UsageEvent:
         occurred_at=row.occurred_at,
         billing_period=row.billing_period,
         idempotency_key=row.idempotency_key,
+        detail=row.detail)
+
+
+def subscription_event_to_row(event: SubscriptionEvent,
+                              row: SubscriptionEventRow | None = None
+                              ) -> SubscriptionEventRow:
+    """A processed `SubscriptionEvent` onto its row. Append-only — the id is derived from the
+    provider's event id, so a redelivery collides here rather than being handled twice — so this
+    is written once and never mutated: `event_at`/`received_at` are the domain instants (provider
+    provenance and platform handling) and the mixin timestamps are row bookkeeping."""
+    target = SubscriptionEventRow(id=event.id) if row is None else row
+    target.provider = event.provider
+    target.external_event_id = event.external_event_id
+    target.event_type = event.event_type
+    target.outcome = event.outcome
+    target.user_id = event.user_id
+    target.subscription_id = event.subscription_id
+    target.event_at = event.event_at
+    target.received_at = event.received_at
+    target.detail = event.detail
+    return target
+
+
+def subscription_event_to_domain(row: SubscriptionEventRow) -> SubscriptionEvent:
+    return SubscriptionEvent(
+        id=SubscriptionEventId(row.id),
+        provider=row.provider,
+        external_event_id=row.external_event_id,
+        event_type=row.event_type,
+        outcome=SubscriptionEventOutcome(row.outcome),
+        user_id=None if row.user_id is None else UserId(row.user_id),
+        subscription_id=(None if row.subscription_id is None
+                         else SubscriptionId(row.subscription_id)),
+        event_at=row.event_at,
+        received_at=row.received_at,
         detail=row.detail)
 
 

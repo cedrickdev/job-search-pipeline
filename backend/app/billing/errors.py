@@ -7,7 +7,7 @@ a closed code vocabulary — not a class per condition — because the code is w
 branches on and the sentence is only for a human reading a log; keeping them together means the
 status for "your plan has no room for this" is decided in exactly one table.
 
-Two disciplines the codes encode, both spine-critical:
+The disciplines the codes encode, all spine-critical:
 
 - **Hitting a commercial ceiling is not a safety refusal, and not a transient one.**
   `QUOTA_EXCEEDED` is the *commercial* half of the effective-permission AND saying "there is no
@@ -22,6 +22,13 @@ Two disciplines the codes encode, both spine-critical:
   is a deployment mistake, so it maps to 500 rather than blaming a well-formed request. It exists
   so a resolver never silently invents an entitlement when its catalogue is absent — it refuses
   loudly instead.
+- **An inbound webhook is never trusted before it is verified (§12).** A subscription's state is
+  webhook-authoritative, so a forged or replayed payload that changed it would be a direct
+  attack on the commercial spine. `WEBHOOK_SIGNATURE_INVALID` rejects a payload whose signature
+  or timestamp does not check out *before* it is parsed, and `WEBHOOK_MALFORMED` rejects a
+  verified one the adapter cannot normalize onto the domain's closed vocabulary — both 400,
+  because the platform, not the account, is refusing the request. A call *out* to the provider
+  that fails is a `PROVIDER_UNAVAILABLE` (502): an upstream fault, distinct from a caller error.
 
 `detail` is composed from ids, keys and fixed sentences the domain owns; it never carries a
 provider's message, a candidate's words or a payload, so surfacing it echoes nothing sensitive.
@@ -40,10 +47,23 @@ class BillingErrorCode(StrEnum):
       current billing window (402); the commercial clause of the AND, never a safety verdict;
     - `PLAN_CATALOGUE_MISSING` — the free-tier plan the resolver falls back to is not seeded, a
       deployment fault the resolver refuses loudly rather than papering over (500).
+    - `WEBHOOK_SIGNATURE_INVALID` — an inbound billing webhook failed signature or timestamp
+      verification, so it is rejected unread (400); the platform never trusts an unsigned or
+      replayed payload to change what an account is subscribed to (§12).
+    - `WEBHOOK_MALFORMED` — a signature-verified webhook could not be normalized: a payload that
+      is not JSON, is missing a field the platform needs, or names a status outside the closed
+      set the domain understands (400). Distinct from a bad signature so a log tells a forged
+      payload from a genuine one the adapter cannot map.
+    - `PROVIDER_UNAVAILABLE` — a call *out* to the billing provider (opening a checkout or a
+      portal session) failed or answered with an error (502); a transient upstream fault, not the
+      caller's request being wrong.
     """
 
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
     PLAN_CATALOGUE_MISSING = "PLAN_CATALOGUE_MISSING"
+    WEBHOOK_SIGNATURE_INVALID = "WEBHOOK_SIGNATURE_INVALID"
+    WEBHOOK_MALFORMED = "WEBHOOK_MALFORMED"
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
 
 
 class BillingError(Exception):

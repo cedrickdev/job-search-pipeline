@@ -130,6 +130,7 @@ from backend.app.domain.strategy_change import (
     StrategyChangeTarget,
 )
 from backend.app.domain.subscription import INTERNAL_BILLING_PROVIDER, SubscriptionStatus
+from backend.app.domain.subscription_event import SubscriptionEventOutcome
 from backend.app.domain.usage import UsageSourceType
 from backend.app.domain.user import UserStatus
 from backend.app.infrastructure.database.base import Base, TimestampedMixin
@@ -3213,6 +3214,45 @@ class UsageEventRow(TimestampedMixin, Base):
     occurred_at: Mapped[datetime]
     billing_period: Mapped[str]
     idempotency_key: Mapped[str]
+    detail: Mapped[str | None]
+
+
+class SubscriptionEventRow(TimestampedMixin, Base):
+    """One processed billing webhook — the idempotency-and-audit ledger (§13).
+
+    Not user-owned the way the others are: a webhook arrives with no session, so the row is keyed
+    for recognition by *event*, not owner. The id derives from the provider's own event id
+    (`subscription_event_id`), so a redelivered event collides on the primary key rather than being
+    handled twice; `UNIQUE (provider, external_event_id)` is the second half of that guard,
+    catching a row whose id was written by hand. `user_id` and `subscription_id` are the account
+    and subscription the event touched *when they could be resolved* — both nullable, because an
+    event the platform cannot attribute is recorded as `IGNORED` rather than dropped so its
+    redelivery stays a no-op; `user_id` is `ON DELETE SET NULL` so a closed account's audit trail
+    survives it rather than cascading away, and `subscription_id` is a plain reference, not a
+    foreign key, so an audit fact never depends on the row it describes still existing. `event_at`
+    is the provider's provenance instant (what the out-of-order guard compares), `received_at` is
+    when the platform handled it. Append-only — written once when the event is handled, never
+    mutated — so the mixin timestamps are row bookkeeping. The index on `user_id` serves the
+    per-account audit feed.
+    """
+
+    __tablename__ = "subscription_events"
+    __table_args__ = (
+        UniqueConstraint("provider", "external_event_id"),
+        Index("ix_subscription_events_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    provider: Mapped[str]
+    external_event_id: Mapped[str]
+    event_type: Mapped[str]
+    outcome: Mapped[SubscriptionEventOutcome] = mapped_column(
+        enum_column(SubscriptionEventOutcome, "subscription_event_outcome"))
+    user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"))
+    subscription_id: Mapped[UUID | None]
+    event_at: Mapped[datetime]
+    received_at: Mapped[datetime]
     detail: Mapped[str | None]
 
 

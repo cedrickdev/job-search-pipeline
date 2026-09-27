@@ -50,6 +50,7 @@ from backend.app.domain.identifiers import (
 )
 from backend.app.domain.entitlement import EntitlementKey
 from backend.app.domain.subscription import SubscriptionStatus
+from backend.app.domain.subscription_event import SubscriptionEventOutcome
 from backend.app.domain.usage import UsageSourceType
 from backend.app.domain.matching import DimensionScore, MatchDimension
 from backend.app.domain.analytics import DimensionKind, RateKind, TimingKind
@@ -110,6 +111,8 @@ from backend.app.infrastructure.database.mappers import (
     strategy_change_proposal_to_row,
     subscription_to_domain,
     subscription_to_row,
+    subscription_event_to_domain,
+    subscription_event_to_row,
     usage_event_to_domain,
     usage_event_to_row,
 )
@@ -146,6 +149,7 @@ from tests.v2_builders import (
     a_strategy_change_execution,
     a_strategy_change_proposal,
     a_subscription,
+    a_subscription_event,
     a_usage_event,
     an_answer_evaluation,
     an_application_outcome,
@@ -1158,3 +1162,24 @@ def test_an_llm_token_usage_event_carries_its_measured_quantity():
     read_back = usage_event_to_domain(usage_event_to_row(event))
     assert read_back == event
     assert read_back.quantity == 4096
+
+
+def test_a_processed_event_survives_the_trip_to_the_row_and_back():
+    """An `APPLIED` event attributed to an account and subscription, round-tripped whole."""
+    event = a_subscription_event()
+    assert subscription_event_to_domain(subscription_event_to_row(event)) == event
+
+
+def test_an_unattributable_event_reads_back_with_its_null_owner_and_subscription():
+    """An `IGNORED` event carries no account and no subscription; both survive as `None`.
+
+    The record the webhook writes when it cannot attribute an event: `user_id` and
+    `subscription_id` are NULL and `detail` explains why. The mapper must store the nulls rather
+    than fabricate handles, and its `detail` note must survive so an operator can read the reason.
+    """
+    event = a_subscription_event(
+        outcome=SubscriptionEventOutcome.IGNORED, user_id=None, subscription_id=None,
+        detail="the subscription could not be attributed to an account")
+    row = subscription_event_to_row(event)
+    assert (row.user_id, row.subscription_id) == (None, None)
+    assert subscription_event_to_domain(row) == event

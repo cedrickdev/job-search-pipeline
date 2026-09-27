@@ -26,11 +26,17 @@ that simply overwrote would let a service test pass against behaviour PostgreSQL
 does not have.
 """
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from pydantic import SecretStr
 
+from backend.app.billing.errors import BillingError, BillingErrorCode
+from backend.app.billing.provider import (
+    CheckoutSession,
+    NormalizedWebhookEvent,
+    PortalSession,
+)
 from backend.app.core.tokens import digests_match
 from backend.app.domain.application import Application, ApplicationState
 from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
@@ -106,6 +112,7 @@ from backend.app.domain.identifiers import (
     StrategyChangeProposalId,
     SubmissionAttemptId,
     SubscriptionId,
+    SubscriptionEventId,
     UsageEventId,
     UserId,
     UserSessionId,
@@ -122,6 +129,7 @@ from backend.app.domain.strategy_change import (
     StrategyChangeProposalStatus,
 )
 from backend.app.domain.subscription import Subscription, SubscriptionStatus
+from backend.app.domain.subscription_event import SubscriptionEvent
 from backend.app.domain.usage import UsageEvent
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.llm.connection import LLMConnection
@@ -170,6 +178,7 @@ from backend.app.repositories.contracts import (
     StrategyChangeProposalRepository,
     SubmissionAttemptRepository,
     SubscriptionRepository,
+    SubscriptionEventRepository,
     UsageEventRepository,
     UserRepository,
 )
@@ -198,7 +207,8 @@ def _implements_contracts() -> tuple[
         ApplicationOutcomeRepository, RoleClassificationRepository,
         CareerRecommendationRepository, StrategyChangeProposalRepository,
         StrategyChangeExecutionRepository, PlanRepository,
-        SubscriptionRepository, UsageEventRepository]:
+        SubscriptionRepository, UsageEventRepository,
+        SubscriptionEventRepository]:
     """Structural conformance, the same guard `sqlalchemy_repositories` carries.
 
     A fake whose signature drifted from the `Protocol` would still run — Python
@@ -227,7 +237,7 @@ def _implements_contracts() -> tuple[
             FakeStrategyChangeProposalRepository(),
             FakeStrategyChangeExecutionRepository(),
             FakePlanRepository(), FakeSubscriptionRepository(),
-            FakeUsageEventRepository())
+            FakeUsageEventRepository(), FakeSubscriptionEventRepository())
 
 
 def _meters_between(one: GeoPoint, other: GeoPoint) -> float:
@@ -1860,6 +1870,13 @@ class FakePlanRepository:
         return next((p.model_copy(deep=True) for p in self.plans.values()
                      if p.slug == slug), None)
 
+    async def get_by_external_price_id(self, external_price_id: str) -> Plan | None:
+        # The webhook's map from a provider price onto a `Plan`. `external_price_id` is unique
+        # where present, so the first match is the only one; a price no plan carries returns
+        # None, which the webhook service treats as an unmapped event rather than a guessed tier.
+        return next((p.model_copy(deep=True) for p in self.plans.values()
+                     if p.external_price_id == external_price_id), None)
+
     async def upsert(self, plan: Plan) -> Plan:
         stored = plan.model_copy(deep=True)
         self.plans[stored.id] = stored
@@ -1897,6 +1914,14 @@ class FakeSubscriptionRepository:
         if found is None or found.user_id != user_id:
             return None
         return found.model_copy(deep=True)
+
+    async def find_by_id(self, subscription_id: SubscriptionId) -> Subscription | None:
+        # The one unscoped read, the webhook path's alone: a provider event carries no session
+        # and must find the row its handle derives to across every account. It takes no `user_id`
+        # by design, so — unlike `get` — it returns another account's subscription; the isolation
+        # tests run against `get`, never this, and it only reads, never widening anyone's access.
+        found = self.subscriptions.get(subscription_id)
+        return None if found is None else found.model_copy(deep=True)
 
     async def get_current(self, user_id: UserId) -> Subscription | None:
         mine = [s for s in self.subscriptions.values()
@@ -1972,6 +1997,96 @@ class FakeUsageEventRepository:
         mine.sort(key=lambda e: str(e.id))
         mine.sort(key=lambda e: e.occurred_at, reverse=True)
         return tuple(mine[:limit])
+
+
+class FakeSubscriptionEventRepository:
+    """The append-only processed-webhook ledger, keyed by event and not by owner (§13).
+
+    Idempotency twin of `FakeUsageEventRepository`, but keyed on the event id the provider's own
+    event id derives, not on a `user_id`: a webhook arrives with no session, so `get` and `add`
+    recognise a redelivery across the whole store. `add` returns the record already stored rather
+    than a second row — the convergence the real `add` reaches when a concurrent handler loses the
+    race on the id and `uq_subscription_events_provider_external_event_id`. `list_for_user` is the
+    one scoped read, the per-account audit feed; an unattributable event carries a null `user_id`
+    and so appears in no one's feed, exactly as the real `WHERE user_id = ?` leaves it out.
+    """
+
+    def __init__(self) -> None:
+        self.events: dict[SubscriptionEventId, SubscriptionEvent] = {}
+
+    async def get(self, event_id: SubscriptionEventId) -> SubscriptionEvent | None:
+        found = self.events.get(event_id)
+        return None if found is None else found.model_copy(deep=True)
+
+    async def add(self, event: SubscriptionEvent) -> SubscriptionEvent:
+        existing = self.events.get(event.id)
+        if existing is not None:
+            return existing.model_copy(deep=True)
+        stored = event.model_copy(deep=True)
+        self.events[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[SubscriptionEvent, ...]:
+        mine = [e.model_copy(deep=True) for e in self.events.values()
+                if e.user_id == user_id]
+        # Most recently received first, ties by id — the real
+        # `ORDER BY received_at DESC, id`.
+        mine.sort(key=lambda e: str(e.id))
+        mine.sort(key=lambda e: e.received_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeBillingProvider:
+    """A `BillingProvider` a test drives without a socket or a signing secret (§11-13).
+
+    The real adapter's job is to *verify a signature then normalize* an inbound webhook, and to
+    open provider-hosted sessions over HTTP; a service test cares about neither the HMAC nor the
+    JSON shape, only about what a *verified* event becomes. So this fake skips verification and
+    replays whatever `NormalizedWebhookEvent` a test queued — the seam the webhook service depends
+    on — and returns canned checkout/portal sessions. `verify_webhook` pops the next queued event
+    in order, so one `process` call consumes one event; queue a `BillingError` instead to drive the
+    reject-before-trust path. It reads no clock: `now` is accepted and ignored, the port's shape.
+    """
+
+    def __init__(self, provider_key: str = "stripe") -> None:
+        self._provider_key = provider_key
+        self.queued: list[NormalizedWebhookEvent | BillingError] = []
+        self.checkout = CheckoutSession(
+            redirect_url="https://billing.example/checkout/cs_fake", external_id="cs_fake")
+        self.portal = PortalSession(redirect_url="https://billing.example/portal/ps_fake")
+        self.open_checkout_calls: list[dict[str, object]] = []
+        self.open_portal_calls: list[dict[str, object]] = []
+
+    @property
+    def provider_key(self) -> str:
+        return self._provider_key
+
+    def queue(self, event: NormalizedWebhookEvent | BillingError) -> None:
+        """Enqueue the next thing `verify_webhook` returns (an event) or raises (a `BillingError`)."""
+        self.queued.append(event)
+
+    def verify_webhook(self, *, payload: bytes, headers: Mapping[str, str],
+                       now: datetime) -> NormalizedWebhookEvent:
+        if not self.queued:
+            raise BillingError(
+                BillingErrorCode.WEBHOOK_MALFORMED, "no webhook was queued for this fake")
+        nxt = self.queued.pop(0)
+        if isinstance(nxt, BillingError):
+            raise nxt
+        return nxt
+
+    async def open_checkout(self, *, plan: Plan, client_user_id: UserId,
+                            success_url: str, cancel_url: str,
+                            customer_id: str | None = None) -> CheckoutSession:
+        self.open_checkout_calls.append({
+            "plan": plan, "client_user_id": client_user_id, "success_url": success_url,
+            "cancel_url": cancel_url, "customer_id": customer_id})
+        return self.checkout
+
+    async def open_portal(self, *, customer_id: str, return_url: str) -> PortalSession:
+        self.open_portal_calls.append({"customer_id": customer_id, "return_url": return_url})
+        return self.portal
 
 
 

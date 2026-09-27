@@ -87,6 +87,7 @@ from backend.app.domain.identifiers import (
     SearchProfileId,
     StrategyChangeProposalId,
     SubmissionAttemptId,
+    SubscriptionEventId,
     SubscriptionId,
     UserId,
     UserSessionId,
@@ -111,6 +112,7 @@ from backend.app.domain.strategy_change import (
     StrategyChangeProposalStatus,
 )
 from backend.app.domain.subscription import Subscription, SubscriptionStatus
+from backend.app.domain.subscription_event import SubscriptionEvent
 from backend.app.domain.usage import UsageEvent
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.infrastructure.database.mappers import (
@@ -181,6 +183,8 @@ from backend.app.infrastructure.database.mappers import (
     strategy_change_proposal_to_row,
     submission_attempt_to_domain,
     submission_attempt_to_row,
+    subscription_event_to_domain,
+    subscription_event_to_row,
     subscription_to_domain,
     subscription_to_row,
     usage_event_to_domain,
@@ -226,6 +230,7 @@ from backend.app.infrastructure.database.models import (
     StrategyChangeExecutionRow,
     StrategyChangeProposalRow,
     SubmissionAttemptRow,
+    SubscriptionEventRow,
     SubscriptionRow,
     UsageEventRow,
     UserRow,
@@ -285,6 +290,7 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
         StrategyChangeExecutionRepository,
         StrategyChangeProposalRepository,
         SubmissionAttemptRepository,
+        SubscriptionEventRepository,
         SubscriptionRepository,
         UsageEventRepository,
         UserRepository,
@@ -307,7 +313,8 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
             "InterviewSessionSummaryRepository", "ApplicationOutcomeRepository",
             "RoleClassificationRepository", "CareerRecommendationRepository",
             "StrategyChangeProposalRepository", "StrategyChangeExecutionRepository",
-            "PlanRepository", "SubscriptionRepository", "UsageEventRepository"]:
+            "PlanRepository", "SubscriptionRepository", "UsageEventRepository",
+            "SubscriptionEventRepository"]:
         """Structural conformance, enforced by `mypy backend`.
 
         The `Protocol`s in `contracts` are satisfied by shape, so nothing would
@@ -350,7 +357,8 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
                 SqlAlchemyStrategyChangeExecutionRepository(session),
                 SqlAlchemyPlanRepository(session),
                 SqlAlchemySubscriptionRepository(session),
-                SqlAlchemyUsageEventRepository(session))
+                SqlAlchemyUsageEventRepository(session),
+                SqlAlchemySubscriptionEventRepository(session))
 
 
 def _rows_affected(result: Result[Any]) -> int:
@@ -2473,6 +2481,15 @@ class SqlAlchemyPlanRepository:
         row = result.scalar_one_or_none()
         return None if row is None else plan_to_domain(row)
 
+    async def get_by_external_price_id(self, external_price_id: str) -> Plan | None:
+        # The webhook path's map from a provider price onto a `Plan`. `external_price_id` is
+        # UNIQUE where non-NULL, so at most one row matches; a price the catalogue never seeded
+        # returns None and the billing service records the event as IGNORED rather than guessing.
+        result = await self._session.execute(
+            self._base_select().where(PlanRow.external_price_id == external_price_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else plan_to_domain(row)
+
     async def upsert(self, plan: Plan) -> Plan:
         # The id derives from the slug, so a re-seed of the catalogue loads the existing
         # row and updates it in place rather than colliding on `uq_plans_slug`.
@@ -2527,6 +2544,17 @@ class SqlAlchemySubscriptionRepository:
                    SubscriptionRow.status != SubscriptionStatus.CANCELED.value)
             .order_by(SubscriptionRow.updated_at.desc(), SubscriptionRow.id)
             .limit(1))
+        row = result.scalar_one_or_none()
+        return None if row is None else subscription_to_domain(row)
+
+    async def find_by_id(self, subscription_id: SubscriptionId) -> Subscription | None:
+        # The one *unscoped* read on this repository, for the webhook path alone: a provider
+        # event arrives with no session and must find the subscription its handle derives to in
+        # order to learn which account already owns it. Every user-facing read stays scoped by
+        # `user_id`; this is a trusted server-to-server signal, not a browser, so it is safe to
+        # look up by id across accounts — and it only reads, never widening anyone's access.
+        result = await self._session.execute(
+            select(SubscriptionRow).where(SubscriptionRow.id == subscription_id))
         row = result.scalar_one_or_none()
         return None if row is None else subscription_to_domain(row)
 
@@ -2636,5 +2664,52 @@ class SqlAlchemyUsageEventRepository:
             .order_by(UsageEventRow.occurred_at.desc(), UsageEventRow.id)
             .limit(limit))
         return tuple(usage_event_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemySubscriptionEventRepository:
+    """`SubscriptionEventRepository` over an `AsyncSession` — the processed-webhook ledger.
+
+    Append-only, and keyed by *event*, not owner: a webhook arrives with no session, so `get` and
+    `add` take the id derived from the provider's own event id, not a `user_id`. `add` inserts
+    inside a SAVEPOINT so a concurrent redelivery of the same event converges on one row rather
+    than raising — the audit twin of `SqlAlchemyUsageEventRepository.add`. `list_for_user` is the
+    one scoped read, the per-account audit feed; an event the platform could not attribute has a
+    NULL `user_id` and simply never appears in anyone's feed.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, event_id: SubscriptionEventId) -> SubscriptionEvent | None:
+        result = await self._session.execute(
+            select(SubscriptionEventRow).where(SubscriptionEventRow.id == event_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else subscription_event_to_domain(row)
+
+    async def add(self, event: SubscriptionEvent) -> SubscriptionEvent:
+        row = subscription_event_to_row(event)
+        try:
+            async with self._session.begin_nested():
+                self._session.add(row)
+                await self._session.flush()
+        except IntegrityError:
+            # A concurrent unit of work already recorded this exact event: the id (and
+            # `uq_subscription_events_provider_external_event_id`) collided. The SAVEPOINT rolled
+            # back and the outer transaction is intact, so the record that won the race is read
+            # back and returned — a redelivery collapses onto one ledger row rather than raising.
+            existing = await self.get(event.id)
+            if existing is None:
+                raise
+            return existing
+        return subscription_event_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[SubscriptionEvent, ...]:
+        result = await self._session.execute(
+            select(SubscriptionEventRow)
+            .where(SubscriptionEventRow.user_id == user_id)
+            .order_by(SubscriptionEventRow.received_at.desc(), SubscriptionEventRow.id)
+            .limit(limit))
+        return tuple(subscription_event_to_domain(row) for row in result.scalars())
 
 

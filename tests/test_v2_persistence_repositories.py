@@ -47,6 +47,7 @@ from backend.app.domain.identifiers import (
 from backend.app.domain.matching import DimensionScore, MatchDimension
 from backend.app.domain.entitlement import EntitlementKey
 from backend.app.domain.subscription import SubscriptionStatus
+from backend.app.domain.subscription_event import SubscriptionEventOutcome
 from backend.app.domain.usage import UsageSourceType
 from backend.app.infrastructure.database.engine import (
     create_session_factory,
@@ -75,6 +76,7 @@ from backend.app.infrastructure.database.models import (
     StrategyChangeExecutionRow,
     StrategyChangeProposalRow,
     SubscriptionRow,
+    SubscriptionEventRow,
     UsageEventRow,
     UserRow,
 )
@@ -96,6 +98,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyStrategyChangeExecutionRepository,
     SqlAlchemyStrategyChangeProposalRepository,
     SqlAlchemySubscriptionRepository,
+    SqlAlchemySubscriptionEventRepository,
     SqlAlchemyUsageEventRepository,
 )
 from tests.v2_builders import (
@@ -115,6 +118,7 @@ from tests.v2_builders import (
     OTHER_RECOMMENDATION,
     OTHER_STRATEGY_PROPOSAL,
     OTHER_SUBSCRIPTION,
+    OTHER_SUBSCRIPTION_EVENT,
     OTHER_USER,
     POLICY,
     PRO_PLAN,
@@ -123,6 +127,7 @@ from tests.v2_builders import (
     RUN,
     STRATEGY_PROPOSAL,
     SUBSCRIPTION,
+    SUBSCRIPTION_EVENT,
     USER,
     a_career_recommendation,
     a_chat_action_execution,
@@ -141,6 +146,7 @@ from tests.v2_builders import (
     a_strategy_change_execution,
     a_strategy_change_proposal,
     a_subscription,
+    a_subscription_event,
     a_usage_event,
     an_eligibility_result,
     an_entitlement,
@@ -1128,6 +1134,11 @@ def usage_events(db_session):
     return SqlAlchemyUsageEventRepository(db_session)
 
 
+@pytest.fixture
+def subscription_events(db_session):
+    return SqlAlchemySubscriptionEventRepository(db_session)
+
+
 @pytest_asyncio.fixture
 async def commercial_accounts(db_session):
     """Two accounts and the `pro` plan: the foreign keys a subscription needs.
@@ -1154,6 +1165,20 @@ async def test_a_plan_and_its_entitlements_come_back_by_id_and_by_slug(plans):
     assert written == a_plan()
     assert await plans.get(PRO_PLAN) == a_plan()
     assert await plans.get_by_slug("pro") == a_plan()
+
+
+async def test_a_plan_is_found_by_its_provider_price_id_for_the_webhook_path(plans):
+    """`get_by_external_price_id` maps a provider's price back onto a `Plan` — the webhook lookup.
+
+    A subscription webhook names the provider's price, never the platform's slug, so applying one
+    means mapping that price onto a plan. A price the catalogue seeded resolves to its plan; a
+    price no plan carries returns `None`, which the webhook service records as an unmapped event
+    rather than guessing a tier.
+    """
+    await plans.upsert(a_plan())
+    found = await plans.get_by_external_price_id("price_fixture_pro")
+    assert found is not None and found.id == PRO_PLAN
+    assert await plans.get_by_external_price_id("price_unmapped") is None
 
 
 async def test_re_seeding_a_plan_updates_one_row_and_reconciles_its_entitlements(
@@ -1213,6 +1238,22 @@ async def test_a_subscription_is_reported_as_absent_to_another_user(
     written = await subscriptions.upsert(a_subscription())
     assert await subscriptions.get(USER, written.id) == written
     assert await subscriptions.get(OTHER_USER, written.id) is None
+
+
+async def test_find_by_id_reads_across_accounts_for_the_webhook_path(
+        commercial_accounts, subscriptions):
+    """`find_by_id` is the one unscoped read — a webhook has no session and must find the row.
+
+    A provider event arrives with no user, so the webhook path looks the subscription up by the
+    id its handle derives to, across the whole table, to learn which account already owns it —
+    where the user-facing `get` returns `None` for a stranger, this returns the row regardless of
+    owner. It only reads: it never widens anyone's access, and no request handler acting for a
+    user reaches it.
+    """
+    await subscriptions.upsert(a_subscription())
+    found = await subscriptions.find_by_id(SUBSCRIPTION)
+    assert found is not None and found.user_id == USER
+    assert await subscriptions.find_by_id(OTHER_SUBSCRIPTION) is None
 
 
 async def test_a_redelivered_webhook_updates_the_one_subscription_row(
@@ -1312,3 +1353,38 @@ async def test_the_usage_list_is_most_recently_occurred_first(
     await usage_events.add(a_usage_event(source_id="newer", occurred_at=LATER))
     listed = await usage_events.list_for_user(USER)
     assert [e.source_id for e in listed] == ["newer", "older"]
+
+
+async def test_a_redelivered_event_collapses_onto_one_ledger_record(
+        db_session, commercial_accounts, subscription_events):
+    """A redelivery of the same webhook converges on one record rather than a second row.
+
+    The record id derives from the provider's event id, so `add` of an already-recorded event
+    collides inside its SAVEPOINT and reads the winning record back — the processed-webhook
+    ledger's idempotency, the audit twin of the usage ledger (§13).
+    """
+    first = await subscription_events.add(a_subscription_event())
+    again = await subscription_events.add(
+        a_subscription_event(detail="redelivered, same event id"))
+    assert again.id == first.id and again == first
+    assert await _count(db_session, SubscriptionEventRow) == 1
+    assert await subscription_events.get(SUBSCRIPTION_EVENT) == first
+
+
+async def test_the_event_feed_scopes_to_its_owner_and_omits_unattributable_events(
+        commercial_accounts, subscription_events):
+    """`list_for_user` is the per-account audit feed; a null-owner event appears in no feed.
+
+    An attributed event is one account's audit fact and never another's; an event the platform
+    could not attribute carries a null `user_id` (recorded `IGNORED` so its redelivery stays a
+    no-op) and so shows up in nobody's feed — the scoped read leaves it out exactly as the real
+    `WHERE user_id = ?` does.
+    """
+    await subscription_events.add(a_subscription_event())
+    await subscription_events.add(a_subscription_event(
+        id=OTHER_SUBSCRIPTION_EVENT, external_event_id="evt_test_0002",
+        outcome=SubscriptionEventOutcome.IGNORED, user_id=None, subscription_id=None,
+        detail="the subscription could not be attributed to an account"))
+    assert [e.id for e in await subscription_events.list_for_user(USER)] == \
+        [SUBSCRIPTION_EVENT]
+    assert await subscription_events.list_for_user(OTHER_USER) == ()

@@ -76,6 +76,7 @@ from backend.app.domain.identifiers import (
     PlanId,
     SearchProfileId,
     StrategyChangeProposalId,
+    SubscriptionEventId,
     SubscriptionId,
     UserId,
     UserSessionId,
@@ -99,6 +100,7 @@ from backend.app.domain.strategy_change import (
     StrategyChangeProposal,
 )
 from backend.app.domain.subscription import Subscription
+from backend.app.domain.subscription_event import SubscriptionEvent
 from backend.app.domain.usage import UsageEvent
 from backend.app.domain.user import User, UserSession
 from backend.app.llm.connection import LLMConnection
@@ -1499,6 +1501,16 @@ class PlanRepository(Protocol):
         """
         ...
 
+    async def get_by_external_price_id(self, external_price_id: str) -> Plan | None:
+        """The plan a billing provider's price maps to, or `None` — the webhook's plan lookup.
+
+        A subscription webhook names the provider's price, never the platform's slug, so applying
+        one means mapping that price back onto a `Plan`. Keyed on the non-null `external_price_id`
+        a deployment stamped at seed time (§17); a price no plan carries returns `None`, which the
+        webhook service treats as an unmapped event rather than guessing a tier.
+        """
+        ...
+
     async def upsert(self, plan: Plan) -> Plan:
         """Write the plan and reconcile its entitlements.
 
@@ -1538,6 +1550,17 @@ class SubscriptionRepository(Protocol):
     async def get(self, user_id: UserId,
                   subscription_id: SubscriptionId) -> Subscription | None:
         """The subscription, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def find_by_id(self, subscription_id: SubscriptionId) -> Subscription | None:
+        """The subscription with this id regardless of owner — the webhook's system-level lookup.
+
+        The one read here that is *not* user-scoped, and deliberately so: a webhook is a trusted
+        server-side signal that arrives with no session, and it must find the row across the whole
+        table to apply the provider's state (the id derives from the provider's own handle, so
+        this is an exact-key read, never a scan). Every user-facing read stays scoped to `get`;
+        this is reached only by the webhook service, never by a request handler acting for a user.
+        """
         ...
 
     async def get_current(self, user_id: UserId) -> Subscription | None:
@@ -1630,6 +1653,51 @@ class UsageEventRepository(Protocol):
             self, user_id: UserId, *,
             limit: int = DEFAULT_LIMIT) -> tuple[UsageEvent, ...]:
         """This user's usage events, most recently occurred first — the consumption feed."""
+        ...
+
+
+@runtime_checkable
+class SubscriptionEventRepository(Protocol):
+    """The append-only ledger of billing webhooks already processed — idempotency and audit (§13).
+
+    Not user-scoped like the others: a webhook arrives with no session, and the ledger's job is to
+    recognise a redelivered *event* across the whole table, so its reads key on the event id (the
+    provider's own event id derives it) rather than on an owner. It offers no `update` — a record
+    is written once when an event is handled and never mutated. Recording is the *last* step of
+    processing a webhook and holds no authority: the record says what was done, it does not do it.
+    """
+
+    async def get(self, event_id: SubscriptionEventId) -> SubscriptionEvent | None:
+        """The processed-event record with this id, or `None` if the event was never handled.
+
+        The redelivery short-circuit: a webhook whose derived id is already here was handled
+        before, so its effect must not be applied again — the service returns the stored record
+        rather than re-processing.
+        """
+        ...
+
+    async def add(self, event: SubscriptionEvent) -> SubscriptionEvent:
+        """Record one processed event, or return the record a concurrent handler already wrote.
+
+        Idempotent by construction, the ledger twin of `UsageEventRepository.add`: the id derives
+        from the provider's event id, so a redelivery composes the same primary key. The insert
+        runs inside a SAVEPOINT; on the common path it succeeds and the fresh record is returned,
+        and when a concurrent handler already committed the same event the insert trips the id (and
+        `UNIQUE (provider, external_event_id)`), the SAVEPOINT rolls back leaving the outer
+        transaction intact, and the record that won the race is read back and returned. So a
+        redelivery collapses onto one record and no raw integrity error escapes.
+        """
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[SubscriptionEvent, ...]:
+        """This user's processed billing events, most recently received first — the audit feed.
+
+        Scoped here on `user_id` because this is the *reading* surface an account (or an operator
+        acting for one) sees, unlike the id-keyed `get`/`add` the webhook path uses; an event the
+        platform could not attribute carries a null owner and so appears in no user's feed.
+        """
         ...
 
 

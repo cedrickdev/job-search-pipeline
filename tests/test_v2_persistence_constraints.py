@@ -54,6 +54,7 @@ from backend.app.domain.strategy_change import (
     StrategyChangeTarget,
 )
 from backend.app.domain.subscription import SubscriptionStatus
+from backend.app.domain.subscription_event import SubscriptionEventOutcome
 from backend.app.domain.usage import UsageSourceType
 from backend.app.infrastructure.database.models import (
     ApplicationOutcomeRow,
@@ -90,6 +91,7 @@ from backend.app.infrastructure.database.models import (
     StrategyChangeExecutionRow,
     StrategyChangeProposalRow,
     SubscriptionRow,
+    SubscriptionEventRow,
     UsageEventRow,
     UserRow,
     UserSessionRow,
@@ -172,6 +174,8 @@ SECOND_PLAN_ENTITLEMENT = UUID("00000000-0000-4000-8000-0000000000fc")
 USAGE_EVENT = UUID("00000000-0000-4000-8000-0000000000fd")
 SECOND_USAGE_EVENT = UUID("00000000-0000-4000-8000-0000000000fe")
 SECOND_PLAN = UUID("00000000-0000-4000-8000-0000000000ff")
+SUBSCRIPTION_EVENT = UUID("00000000-0000-4000-8000-000000000201")
+SECOND_SUBSCRIPTION_EVENT = UUID("00000000-0000-4000-8000-000000000202")
 
 # Two distinct SHA-256 digests, written out rather than computed: what the CHECK
 # polices is the *shape* stored, so a literal that a reader can count is the point.
@@ -1592,6 +1596,21 @@ def a_usage_event_row(**overrides) -> UsageEventRow:
     return UsageEventRow(**columns)
 
 
+def a_subscription_event_row(**overrides) -> SubscriptionEventRow:
+    """One processed webhook, `APPLIED` and attributed to `USER`/`SUBSCRIPTION`.
+
+    Keyed by *event*, not owner: `user_id` is nullable (an unattributable event carries NULL) and
+    `subscription_id` is a plain reference, not a foreign key. Tests override exactly what one
+    rule polices.
+    """
+    columns = {"id": SUBSCRIPTION_EVENT, "provider": "stripe",
+               "external_event_id": "evt_1", "event_type": "customer.subscription.updated",
+               "outcome": SubscriptionEventOutcome.APPLIED, "user_id": USER,
+               "subscription_id": SUBSCRIPTION, "event_at": NOW, "received_at": NOW}
+    columns.update(overrides)
+    return SubscriptionEventRow(**columns)
+
+
 async def seed_plan(session) -> None:
     """The one plan an entitlement or a subscription foreign key points at."""
     session.add(a_plan_row())
@@ -1848,3 +1867,66 @@ async def test_deleting_an_account_deletes_its_commercial_data(db_session):
     # The catalogue is the platform's; it is not the account's to delete.
     assert await _count(db_session, PlanRow) == 1
     assert await _count(db_session, PlanEntitlementRow) == 1
+
+
+async def test_one_provider_event_id_is_one_processed_record(db_session):
+    """`UNIQUE (provider, external_event_id)`: a redelivered webhook records one row.
+
+    The record id derives from the provider's event id, so a redelivery writes the same row; a
+    second row under the same `(provider, external_event_id)` — written by hand — is the duplicate
+    this constraint stops, the second half of the guard the derived id already gives.
+    """
+    await seed_account(db_session)
+    db_session.add(a_subscription_event_row())
+    await db_session.flush()
+    await refuses(db_session, a_subscription_event_row(id=SECOND_SUBSCRIPTION_EVENT),
+                  "uq_subscription_events_provider_external_event_id")
+
+
+async def test_an_unattributable_event_is_recorded_with_a_null_owner(db_session):
+    """A webhook the platform cannot attribute is stored with a NULL `user_id`, not dropped.
+
+    `user_id` is nullable precisely so an event that maps to no account is recorded as `IGNORED`
+    rather than discarded — its redelivery then collides on the id and stays a recognised no-op.
+    A null `subscription_id` is likewise admitted: the row is an audit fact about an event, not a
+    row that must point at a subscription.
+    """
+    db_session.add(a_subscription_event_row(
+        outcome=SubscriptionEventOutcome.IGNORED, user_id=None, subscription_id=None))
+    await db_session.flush()
+    assert await _count(db_session, SubscriptionEventRow) == 1
+
+
+async def test_a_processed_event_may_reference_a_subscription_that_is_not_a_row(db_session):
+    """`subscription_id` is a plain column, not a foreign key — an audit fact stands on its own.
+
+    The event names the subscription it touched, but the record must survive whether or not that
+    subscription row ever existed or still does, so the column carries no FK. A record naming a
+    subscription id with no matching row is admitted — the audit never depends on the thing it
+    describes.
+    """
+    await seed_account(db_session)
+    db_session.add(a_subscription_event_row(subscription_id=OTHER_SUBSCRIPTION))
+    await db_session.flush()
+    assert await _count(db_session, SubscriptionEventRow) == 1
+
+
+async def test_deleting_an_account_preserves_its_processed_event_audit(db_session):
+    """`fk_subscription_events_user_id_users` is `SET NULL`: the audit trail survives the account.
+
+    Unlike the subscription and usage ledgers, which cascade away with the account, the
+    processed-webhook ledger is idempotency and audit: a closed account's events must stay
+    recognised (so a late redelivery is still a no-op) and readable by an operator. Deleting the
+    user nulls the owner rather than deleting the row.
+    """
+    await seed_account(db_session)
+    db_session.add(a_subscription_event_row())
+    await db_session.flush()
+
+    await db_session.execute(delete(UserRow).where(UserRow.id == USER))
+    db_session.expunge_all()
+    assert await _count(db_session, SubscriptionEventRow) == 1
+    owner = await db_session.execute(
+        select(SubscriptionEventRow.user_id).where(
+            SubscriptionEventRow.id == SUBSCRIPTION_EVENT))
+    assert owner.scalar_one() is None

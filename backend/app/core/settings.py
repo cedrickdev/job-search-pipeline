@@ -201,6 +201,20 @@ DEFAULT_DOCUMENT_ARTIFACT_ROOT: Final[str] = "var/document_artifacts"
 # has to be encrypted.
 LLM_SECRET_KEY_VARIABLE: Final[str] = "JOBSEARCH_LLM_SECRET_KEY"  # noqa: S105 — an env var name, not a credential
 
+# The Stripe billing adapter's credentials and endpoint (Phase 16 §11-13). The API key
+# authorises calls *out* (opening a checkout or portal); the webhook secret verifies calls *in*.
+# Both are read from the environment, excluded from the repr, and never stored in the database
+# or returned by the API — a deployment not selling subscriptions (CLI-only, free tier) sets
+# neither, and the adapter raises a clear error only if a billing call is attempted without them.
+STRIPE_SECRET_KEY_VARIABLE: Final[str] = "JOBSEARCH_STRIPE_SECRET_KEY"  # noqa: S105 — an env var name, not a credential
+STRIPE_WEBHOOK_SECRET_VARIABLE: Final[str] = "JOBSEARCH_STRIPE_WEBHOOK_SECRET"  # noqa: S105 — an env var name, not a credential
+STRIPE_API_BASE_URL_VARIABLE: Final[str] = "JOBSEARCH_STRIPE_API_BASE_URL"
+STRIPE_SIGNATURE_TOLERANCE_VARIABLE: Final[str] = "JOBSEARCH_STRIPE_SIGNATURE_TOLERANCE_SECONDS"
+DEFAULT_STRIPE_API_BASE_URL: Final[str] = "https://api.stripe.com"
+# Stripe's own default replay window: a signed payload older than this is rejected even with a
+# valid signature, so a captured request cannot be replayed indefinitely.
+DEFAULT_STRIPE_SIGNATURE_TOLERANCE_SECONDS: Final[int] = 300
+
 _TRUE_WORDS: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 
@@ -407,6 +421,62 @@ class LLMSecretSettings(BaseModel):
         source = environ if env is None else env
         value = source.get(LLM_SECRET_KEY_VARIABLE, "").strip()
         return cls(master_key=value or None)
+
+
+class StripeSettings(BaseModel):
+    """The Stripe billing adapter's credentials and endpoint — env-sourced, never DB (§11-13).
+
+    Frozen and closed like every settings model, and with the same custom repr rule as
+    `DatabaseSettings` and `LLMSecretSettings`: both credentials are excluded from the repr so a
+    traceback that renders this object cannot print them. `secret_key` (the `sk_...` API key)
+    authorises calls *out*; `webhook_secret` (the `whsec_...`) verifies calls *in*. Both are
+    optional because a deployment not selling subscriptions never sets them — the adapter raises
+    a clear error only if a billing call is attempted while one is absent, rather than failing at
+    startup for a feature the deployment does not use. `api_base_url` is overridable so a test can
+    point the adapter at a mock transport and a self-hosted proxy can front the API;
+    `signature_tolerance_seconds` is the replay window a signed webhook must fall within.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    secret_key: str | None = Field(default=None, repr=False)
+    webhook_secret: str | None = Field(default=None, repr=False)
+    api_base_url: str = DEFAULT_STRIPE_API_BASE_URL
+    signature_tolerance_seconds: int = Field(
+        default=DEFAULT_STRIPE_SIGNATURE_TOLERANCE_SECONDS, gt=0, le=86400)
+
+    @property
+    def can_call(self) -> bool:
+        """Whether the API key needed to open a checkout or portal is configured."""
+        return bool(self.secret_key)
+
+    @property
+    def can_verify_webhooks(self) -> bool:
+        """Whether the signing secret needed to verify an inbound webhook is configured."""
+        return bool(self.webhook_secret)
+
+    def __repr__(self) -> str:
+        return (f"StripeSettings(secret_key={'set' if self.can_call else 'unset'!r}, "
+                f"webhook_secret={'set' if self.can_verify_webhooks else 'unset'!r}, "
+                f"api_base_url={self.api_base_url!r}, "
+                f"signature_tolerance_seconds={self.signature_tolerance_seconds!r})")
+
+    __str__ = __repr__
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
+        """Read the Stripe credentials and endpoint, leaving the secrets unset when absent."""
+        source = environ if env is None else env
+        secret_key = source.get(STRIPE_SECRET_KEY_VARIABLE, "").strip()
+        webhook_secret = source.get(STRIPE_WEBHOOK_SECRET_VARIABLE, "").strip()
+        base_url = source.get(STRIPE_API_BASE_URL_VARIABLE, "").strip()
+        return cls(
+            secret_key=secret_key or None,
+            webhook_secret=webhook_secret or None,
+            api_base_url=base_url or DEFAULT_STRIPE_API_BASE_URL,
+            signature_tolerance_seconds=_read_int(
+                source, STRIPE_SIGNATURE_TOLERANCE_VARIABLE,
+                DEFAULT_STRIPE_SIGNATURE_TOLERANCE_SECONDS))
 
 
 

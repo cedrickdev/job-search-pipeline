@@ -130,6 +130,20 @@ USER_OWNED_TABLES = ("application_decisions", "application_outcomes",
 # (whose owner is NOT NULL), so it is its own small category with its own rule below.
 TELEMETRY_TABLES = ("llm_runs",)
 
+# The processed-webhook ledger: user-attributable, but neither user-owned nor telemetry.
+# `subscription_events` (Phase 16) records what the billing service did with each verified
+# webhook — its idempotency and its audit. `user_id` exists so an account (or an operator acting
+# for one) can read its own billing-event feed `WHERE user_id = :current_user`, and it is
+# *nullable* because an event the platform cannot attribute (an unmapped price on a new
+# subscription, a customer it does not know) is recorded as IGNORED rather than dropped, so its
+# redelivery stays a recognised no-op. But unlike telemetry it does *not* cascade from `users`:
+# the FK is `ON DELETE SET NULL`, because a record of which provider events were processed is a
+# system-integrity fact (secret-free `detail`, no PII beyond the nulled attribution) that must
+# outlive the account it once touched — the same reason `subscription_id` is a plain column and
+# not a foreign key. That combination — nullable owner, SET NULL, survives deletion — is its own
+# small category with its own rule below.
+AUDIT_TABLES = ("subscription_events",)
+
 # Rows owned through a parent instead of directly: a language belongs to a profile,
 # an area to a search profile, a dimension score to an evaluation. They carry no
 # `user_id` on purpose — a second copy of the owner is a second thing that can be
@@ -192,17 +206,17 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_fifty_one_v2_tables():
+def test_the_metadata_holds_exactly_the_fifty_two_v2_tables():
     """A tripwire on the shape of the schema itself.
 
-    `models.py` is the only place a V2 table may be declared, so the four ownership
+    `models.py` is the only place a V2 table may be declared, so the five ownership
     groups plus `users` are the inventory. A new table has to be added to one of
     them — which is the moment to ask whether it needs `user_id`, a cascade and a
     migration.
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
-        PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | {"users"}
-    assert len(TABLES) == 51
+        PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | set(AUDIT_TABLES) | {"users"}
+    assert len(TABLES) == 52
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
@@ -346,6 +360,24 @@ def test_telemetry_rows_are_user_attributable_but_not_user_owned(table_name):
     to_connections = [fk for fk in table.foreign_keys
                       if fk.column.table.name == "llm_connections"]
     assert [fk.ondelete for fk in to_connections] == ["SET NULL"]
+
+
+@pytest.mark.parametrize("table_name", AUDIT_TABLES)
+def test_audit_rows_are_user_attributable_but_survive_the_account(table_name):
+    """A processed-webhook record names its account when it can, and outlives it when deleted.
+
+    `user_id` exists so a billing-event feed can be scoped `WHERE user_id = :current_user`, and it
+    is *nullable* — an event the platform could not attribute is recorded as IGNORED with a null
+    owner rather than dropped, so its redelivery stays a recognised no-op. The line between this
+    and telemetry is the delete rule: the FK to `users` is `SET NULL`, not `CASCADE`, because the
+    record of which provider events were processed is a system-integrity fact that must survive the
+    account it once touched (idempotency and audit outlast a subscription, §13).
+    """
+    table = TABLES[table_name]
+    assert "user_id" in table.columns
+    assert table.columns["user_id"].nullable is True
+    to_users = [fk for fk in table.foreign_keys if fk.column.table.name == "users"]
+    assert [fk.ondelete for fk in to_users] == ["SET NULL"]
 
 
 def test_every_foreign_key_states_what_happens_on_delete():

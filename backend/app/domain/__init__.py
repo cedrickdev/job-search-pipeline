@@ -40,5 +40,6 @@ The modules, in dependency order:
 - `strategy_change` — the spine's only mutation: typed, approved edits to a search or policy;
 - `entitlement` — the commercial permission layer: `Plan` and the `Entitlement`s it grants;
 - `subscription` — one account's normalized, webhook-authoritative relationship with a plan;
+- `subscription_event` — the append-only ledger of billing webhooks already processed;
 - `usage` — the append-only, idempotent ledger of what each metered capability consumed.
 """

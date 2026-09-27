@@ -104,6 +104,7 @@ from backend.app.domain.identifiers import (
     SearchProfileId,
     StrategyChangeProposalId,
     SubscriptionId,
+    SubscriptionEventId,
     UserId,
     application_outcome_id,
     candidate_document_id,
@@ -121,6 +122,7 @@ from backend.app.domain.identifiers import (
     role_classification_id,
     strategy_change_execution_id,
     subscription_id,
+    subscription_event_id,
     usage_event_id,
 )
 from backend.app.domain.decision import (
@@ -175,10 +177,18 @@ from backend.app.domain.entitlement import (
     Plan,
 )
 from backend.app.domain.subscription import Subscription, SubscriptionStatus
+from backend.app.domain.subscription_event import (
+    SubscriptionEvent,
+    SubscriptionEventOutcome,
+)
 from backend.app.domain.usage import (
     UsageEvent,
     UsageSourceType,
     build_usage_idempotency_key,
+)
+from backend.app.billing.provider import (
+    NormalizedWebhookEvent,
+    ProviderSubscriptionState,
 )
 from backend.app.llm.connection import LLMConnection, LLMProviderType
 from backend.app.llm.contracts import TaskPurpose
@@ -235,6 +245,11 @@ PRO_PLAN = plan_id("pro")
 OTHER_PLAN = plan_id("scale")
 SUBSCRIPTION = subscription_id("stripe", "sub_test_0001")
 OTHER_SUBSCRIPTION = subscription_id("stripe", "sub_test_0002")
+# A processed billing event's id derives from the provider's own event id
+# (`subscription_event_id`), so a redelivery computes the same id the service would — the
+# ledger's idempotency in one value. Two event handles for the redelivery/out-of-order tests.
+SUBSCRIPTION_EVENT = subscription_event_id("stripe", "evt_test_0001")
+OTHER_SUBSCRIPTION_EVENT = subscription_event_id("stripe", "evt_test_0002")
 
 # Somewhere real, so a distance a test asserts on can be checked against a map.
 LAUSANNE = GeoPoint(latitude=46.5197, longitude=6.6323)
@@ -1176,6 +1191,76 @@ def a_usage_event(*, entitlement_key=EntitlementKey.APPLICATION_SUBMISSIONS,
     }
     fields.update(overrides)
     return UsageEvent(**fields)
+
+
+def a_subscription_event(*, outcome=SubscriptionEventOutcome.APPLIED, **overrides):
+    """One processed billing webhook, `APPLIED` and attributed to `USER`/`SUBSCRIPTION`.
+
+    Its id derives from `(provider, external_event_id)` (`subscription_event_id`), so a
+    redelivery of the same event lands on the one row — the ledger's idempotency. Defaults to a
+    `customer.subscription.updated` recorded as `APPLIED`; an unattributable event passes
+    `outcome=SubscriptionEventOutcome.IGNORED`, `user_id=None`, `detail=...`, and a stale one
+    `outcome=SubscriptionEventOutcome.SUPERSEDED`. `received_at` is when the platform handled it,
+    `event_at` the provider's provenance instant the out-of-order guard compares.
+    """
+    fields = {
+        "id": SUBSCRIPTION_EVENT,
+        "provider": "stripe",
+        "external_event_id": "evt_test_0001",
+        "event_type": "customer.subscription.updated",
+        "outcome": outcome,
+        "user_id": USER,
+        "subscription_id": SUBSCRIPTION,
+        "event_at": LATER,
+        "received_at": LATER,
+        "detail": None,
+    }
+    fields.update(overrides)
+    return SubscriptionEvent(**fields)
+
+
+def a_provider_subscription_state(**overrides):
+    """The subscription state a verified webhook carries — a provider's object, domain-shaped.
+
+    Defaults to `sub_test_0001` (so its derived id is `SUBSCRIPTION`) as `ACTIVE`, its price the
+    `pro` plan's fixture handle (`price_fixture_pro`, what `a_plan()` seeds) and a bounded window.
+    A cancellation passes `status=SubscriptionStatus.CANCELED`; a price no plan carries passes
+    `plan_external_price_id="price_unmapped"` to drive the IGNORED path.
+    """
+    fields = {
+        "external_subscription_id": "sub_test_0001",
+        "status": SubscriptionStatus.ACTIVE,
+        "external_customer_id": "cus_fixture_0001",
+        "plan_external_price_id": "price_fixture_pro",
+        "current_period_start": NOW,
+        "current_period_end": datetime(2026, 3, 31, 9, 30, tzinfo=UTC),
+        "cancel_at_period_end": False,
+    }
+    fields.update(overrides)
+    return ProviderSubscriptionState(**fields)
+
+
+def a_normalized_event(*, subscription=..., **overrides):
+    """A signature-verified webhook, normalized — what a `BillingProvider` hands the service.
+
+    Defaults to a `customer.subscription.updated` for `SUBSCRIPTION`'s handle, echoing `USER` back
+    as `client_user_id` (the account the checkout attributed the subscription to) and dated `LATER`
+    with sequence 2, so it supersedes a subscription seeded at `NOW`/1. Its derived event id is
+    `SUBSCRIPTION_EVENT`. A verified event the platform does not act on passes `subscription=None`
+    (a type carrying no state); pass a built `a_provider_subscription_state(...)` to vary the state.
+    """
+    resolved = a_provider_subscription_state() if subscription is ... else subscription
+    fields = {
+        "provider": "stripe",
+        "external_event_id": "evt_test_0001",
+        "event_type": "customer.subscription.updated",
+        "event_at": LATER,
+        "event_sequence": 2,
+        "subscription": resolved,
+        "client_user_id": USER,
+    }
+    fields.update(overrides)
+    return NormalizedWebhookEvent(**fields)
 
 
 

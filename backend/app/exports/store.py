@@ -17,6 +17,7 @@ controls, but the store still refuses any key that could escape its root, exactl
 `LocalDocumentArtifactStore` does, so the store is never the component that lets a `..` reach
 outside the export directory (docs/ENGINEERING_STANDARDS.md §Security).
 """
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -90,6 +91,17 @@ class AccountExportStore(Protocol):
         """
         ...
 
+    def delete_all_for_user(self, user_id: UserId) -> int:
+        """Remove every archive this account holds; return how many were deleted.
+
+        The account-deletion primitive (§28). An account's archives all live under one
+        owner-scoped prefix, so the whole set is removed without enumerating the export rows —
+        which is what lets deletion clear even an archive whose lifecycle row a caller never
+        listed. Idempotent: an account with nothing stored removes nothing and returns 0 rather
+        than raising, so a rerun reaches the same state.
+        """
+        ...
+
 
 class LocalAccountExportStore:
     """An `AccountExportStore` backed by a directory on the local filesystem.
@@ -131,6 +143,14 @@ class LocalAccountExportStore:
         except (FileNotFoundError, IsADirectoryError):
             return False
         return True
+
+    def delete_all_for_user(self, user_id: UserId) -> int:
+        directory = self._resolve(f"exports/{user_id}")
+        if not directory.is_dir():
+            return 0
+        removed = sum(1 for child in directory.iterdir() if child.is_file())
+        shutil.rmtree(directory)
+        return removed
 
     def _resolve(self, storage_key: str) -> Path:
         """Turn a storage key into an absolute path that cannot escape the root.

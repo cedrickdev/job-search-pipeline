@@ -78,6 +78,17 @@ class DocumentArtifactStore(Protocol):
         """Read the bytes stored under `storage_key`, or raise `ArtifactNotFound`."""
         ...
 
+    def delete(self, storage_key: str) -> bool:
+        """Remove the artifact under `storage_key`; return whether bytes were removed.
+
+        The account-deletion primitive (§28): a document's rendered bytes live in the store, not
+        in a row, so the foreign-key cascade that removes a deleted account's document rows cannot
+        reach them — deletion enumerates the keys and calls this for each. Idempotent: deleting a
+        key that is already gone is a no-op that returns `False` rather than raising, so a rerun
+        after a partial failure reaches the same state.
+        """
+        ...
+
 
 class LocalDocumentArtifactStore:
     """A `DocumentArtifactStore` backed by a directory on the local filesystem.
@@ -113,6 +124,14 @@ class LocalDocumentArtifactStore:
             raise ArtifactNotFound(storage_key) from exc
         return StoredArtifact(storage_key=storage_key, content=content,
                               media_type=_media_type_for(path))
+
+    def delete(self, storage_key: str) -> bool:
+        path = self._resolve(storage_key)
+        try:
+            path.unlink()
+        except (FileNotFoundError, IsADirectoryError):
+            return False
+        return True
 
     def _resolve(self, storage_key: str) -> Path:
         """Turn a storage key into an absolute path that cannot escape the root.

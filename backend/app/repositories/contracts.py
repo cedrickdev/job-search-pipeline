@@ -524,6 +524,21 @@ class UserRepository(Protocol):
         """
         ...
 
+    async def delete(self, user_id: UserId) -> bool:
+        """Erase this account and, by the database's cascade, everything it owns (§28).
+
+        Returns whether a row was removed, so deleting an already-absent account is a no-op
+        rather than an error. Every user-owned table declares `ON DELETE CASCADE` from
+        `users.id`, so a single delete removes the profile, searches, documents, applications,
+        conversations, interviews, career records, subscription, usage and export *rows* in the
+        same statement; `subscription_events` alone declares `ON DELETE SET NULL`, so a billing
+        receipt survives the account it can no longer name. Artifact *bytes* held in a store are
+        not reachable by a foreign key, so the caller deletes those explicitly before this — the
+        cascade is for rows, not blobs.
+        """
+        ...
+
+
 
 @runtime_checkable
 class SessionRepository(Protocol):
@@ -695,6 +710,17 @@ class CandidateDocumentRepository(Protocol):
             self, user_id: UserId, *,
             limit: int = DEFAULT_LIMIT) -> tuple[CandidateDocument, ...]:
         """This user's documents, most recently updated first."""
+        ...
+
+    async def artifact_storage_keys_for_user(self, user_id: UserId) -> tuple[str, ...]:
+        """Every rendered-artifact storage key across all of this user's documents (§28).
+
+        Unbounded, unlike `list_for_user`: account deletion must remove *every* artifact a user
+        has, so a page limit would silently orphan the bytes past the first page. A projection of
+        the keys, not a hydrate of the aggregates — the caller wants what to delete from the
+        store, not the documents themselves — and only the versions that actually reference an
+        artifact, since an unrendered draft has no bytes to remove.
+        """
         ...
 
 

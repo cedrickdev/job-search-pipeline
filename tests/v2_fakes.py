@@ -277,6 +277,13 @@ class FakeUserRepository:
         self.users[stored.id] = stored
         return stored
 
+    async def delete(self, user_id: UserId) -> bool:
+        # The fake holds only the account row; it does not model the database's foreign-key
+        # cascade, so a deletion service is responsible for revoking sessions and clearing
+        # artifacts through their own collaborators, and the row-level cascade is proved against
+        # the real database in the persistence tests.
+        return self.users.pop(user_id, None) is not None
+
 
 class FakeSessionRepository:
     """Sessions, and the revocation and expiry operations, over one dict.
@@ -1010,6 +1017,16 @@ class FakeCandidateDocumentRepository:
         mine.sort(key=lambda document: str(document.id))
         mine.sort(key=lambda document: document.updated_at, reverse=True)
         return tuple(mine[:limit])
+
+    async def artifact_storage_keys_for_user(self, user_id: UserId) -> tuple[str, ...]:
+        # Every rendered version's storage key across this user's documents, unbounded — the
+        # real projection's fake counterpart. A version with no artifact (an unrendered draft)
+        # contributes nothing, exactly as the SQL's `artifact_storage_key IS NOT NULL` filter.
+        return tuple(version.artifact.storage_key
+                     for document in self.documents.values()
+                     if document.user_id == user_id
+                     for version in document.versions
+                     if version.artifact is not None)
 
 
 class FakeLLMConnectionRepository:

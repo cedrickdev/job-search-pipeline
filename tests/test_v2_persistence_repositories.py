@@ -88,6 +88,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyApplicationDecisionRepository,
     SqlAlchemyApplicationOutcomeRepository,
     SqlAlchemyApplicationPolicyRepository,
+    SqlAlchemyCandidateDocumentRepository,
     SqlAlchemyCareerRecommendationRepository,
     SqlAlchemyChatActionExecutionRepository,
     SqlAlchemyChatActionProposalRepository,
@@ -104,6 +105,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemySubscriptionRepository,
     SqlAlchemySubscriptionEventRepository,
     SqlAlchemyUsageEventRepository,
+    SqlAlchemyUserRepository,
 )
 from tests.v2_builders import (
     ACCOUNT_EXPORT,
@@ -146,6 +148,7 @@ from tests.v2_builders import (
     a_plan,
     a_policy,
     a_recommendation_evidence,
+    a_rendered_document,
     a_role_classification,
     a_source_record,
     a_strategy_change_execution,
@@ -1459,3 +1462,47 @@ async def test_the_event_feed_scopes_to_its_owner_and_omits_unattributable_event
     assert [e.id for e in await subscription_events.list_for_user(USER)] == \
         [SUBSCRIPTION_EVENT]
     assert await subscription_events.list_for_user(OTHER_USER) == ()
+
+
+# --------------------------------------------------------------------------
+# Phase 16 M6 — the two primitives account deletion drives: erase the user row (the database's
+# own cascade removes everything it owns) and enumerate the stored artifacts no foreign key
+# reaches. The row cascade itself and the `subscription_events` de-identification are proved in
+# `test_v2_persistence_constraints.py`; here we prove only these two repository methods.
+# --------------------------------------------------------------------------
+
+
+async def test_deleting_an_absent_account_affects_no_rows(db_session):
+    """A `DELETE` for an id that was never stored removes nothing and reports it: `False`.
+
+    This is what makes the deletion service idempotent — a retry after the row is already gone is
+    a no-op, not an error.
+    """
+    users = SqlAlchemyUserRepository(db_session)
+    assert await users.delete(OTHER_USER) is False
+
+
+async def test_deleting_a_present_account_removes_it_and_is_idempotent(
+        db_session, evaluation_prerequisites):
+    """Deleting a stored account returns `True` and the row is gone; a second delete returns `False`.
+
+    The Core `DELETE` is scoped by id, so the first call removes the one row and the second finds
+    nothing — the same statement retried is harmless.
+    """
+    users = SqlAlchemyUserRepository(db_session)
+    assert await users.delete(USER) is True
+    assert await users.get(USER) is None
+    assert await users.delete(USER) is False
+
+
+async def test_artifact_storage_keys_lists_a_users_rendered_keys_and_no_others(
+        db_session, evaluation_prerequisites):
+    """The enumeration returns the owner's rendered artifact keys and is empty for anyone else.
+
+    Deletion removes the stored bytes explicitly because no foreign key reaches an object store;
+    this projection is what tells it which keys to remove, scoped to the account being erased.
+    """
+    documents = SqlAlchemyCandidateDocumentRepository(db_session)
+    await documents.upsert(a_rendered_document(storage_key="documents/u/v1.pdf"))
+    assert await documents.artifact_storage_keys_for_user(USER) == ("documents/u/v1.pdf",)
+    assert await documents.artifact_storage_keys_for_user(OTHER_USER) == ()

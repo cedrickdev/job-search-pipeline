@@ -217,6 +217,7 @@ from backend.app.infrastructure.database.models import (
     CompanyLocationRow,
     CompanyRow,
     ConversationRow,
+    DocumentVersionRow,
     EligibilityResultRow,
     InterviewAnswerEvaluationRow,
     InterviewAnswerRow,
@@ -1116,6 +1117,16 @@ class SqlAlchemyUserRepository:
         await self._session.flush()
         return user_to_domain(row)
 
+    async def delete(self, user_id: UserId) -> bool:
+        # A Core DELETE, not `session.delete(row)`: the database's own `ON DELETE CASCADE`
+        # removes every user-owned child row (and `ON DELETE SET NULL` de-identifies the
+        # subscription-event receipt) in one statement, so there is nothing to load and no ORM
+        # cascade to walk. Scoped by id; deleting an already-absent account affects no rows and
+        # returns False.
+        result = await self._session.execute(
+            delete(UserRow).where(UserRow.id == user_id))
+        return bool(_rows_affected(result))
+
 
 class SqlAlchemySessionRepository:
     """`SessionRepository` over an `AsyncSession`.
@@ -1367,6 +1378,18 @@ class SqlAlchemyCandidateDocumentRepository:
             .order_by(CandidateDocumentRow.updated_at.desc(), CandidateDocumentRow.id)
             .limit(limit))
         return tuple(candidate_document_to_domain(row) for row in result.scalars())
+
+    async def artifact_storage_keys_for_user(self, user_id: UserId) -> tuple[str, ...]:
+        # A projection joined to the parent for the owner predicate, filtered to the versions
+        # that actually reference an artifact — unbounded, because deletion must reach every
+        # stored byte, not the first page `list_for_user` would return.
+        result = await self._session.execute(
+            select(DocumentVersionRow.artifact_storage_key)
+            .join(CandidateDocumentRow,
+                  DocumentVersionRow.document_id == CandidateDocumentRow.id)
+            .where(CandidateDocumentRow.user_id == user_id,
+                   DocumentVersionRow.artifact_storage_key.is_not(None)))
+        return tuple(key for key in result.scalars() if key is not None)
 
 
 class SqlAlchemyLLMConnectionRepository:

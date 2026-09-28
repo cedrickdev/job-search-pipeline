@@ -68,6 +68,13 @@ surface does — under the prefix, authenticated, safe where they read, and carr
 The export's whole reason for being is a secret-free copy of an account's own data, so the
 credential walk that forbids a `password_hash` in a response forbids one in an export response by
 the same absence; what the archive *bytes* exclude is proven in the export tests, not here.
+
+Phase 16 M6 adds one for account deletion: a single write, `POST /me/deletion`. It obeys the same
+four rules the rest of the surface does — under the prefix, authenticated (a missing session is a
+401, held in the anonymous sweep), unsafe so absent from the `GET` set, and carrying no credential.
+Its receipt is counts and an instant, never account data, so the credential walk forbids a secret
+there by the same absence; that a wrong password touches nothing and the row-cascade is complete is
+proven in the deletion tests, not here.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -196,6 +203,7 @@ V2_OPERATIONS = (
     ("POST", "/api/v2/interview-sessions/{session_id}/voice-answers"),
     ("POST", "/api/v2/matches/evaluate"),
     ("POST", "/api/v2/me/claims"),
+    ("POST", "/api/v2/me/deletion"),
     ("POST", "/api/v2/me/evidence"),
     ("POST", "/api/v2/me/exports"),
     ("POST", "/api/v2/me/search-profiles"),
@@ -271,7 +279,7 @@ async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_de
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 75
+        assert len({path for _, path in published}) == 76
 
 
 @pytest.mark.asyncio
@@ -543,7 +551,7 @@ async def test_the_one_write_a_get_performs_is_last_seen_at_and_it_cannot_extend
 @pytest.mark.asyncio
 async def test_every_operation_but_register_and_login_refuses_an_anonymous_caller(
         tmp_path):
-    """401 from all eighty-nine, with no body sent and nothing created.
+    """401 from all ninety, with no body sent and nothing created.
 
     No payload is needed because FastAPI resolves the session dependency before it
     validates a body, so the refusal happens before the request is read — which is
@@ -566,7 +574,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
             api.app, under=API_V2_PREFIX)
             if (method, path) not in PUBLIC_OPERATIONS | PROVIDER_OPERATIONS]
 
-        assert len(protected) == 89
+        assert len(protected) == 90
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

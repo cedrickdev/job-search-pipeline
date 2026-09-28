@@ -28,6 +28,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 
+from backend.app.accounts import ReauthenticationRequired
 from backend.app.api import API_V2_PREFIX
 from backend.app.billing.errors import BillingError, BillingErrorCode
 from backend.app.billing.service import (
@@ -401,6 +402,17 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         # `ArtifactNotFound` is handled. The storage key is not echoed: it is an internal locator.
         return _json(status.HTTP_500_INTERNAL_SERVER_ERROR, "account_export_unavailable",
                      "the stored export archive could not be read")
+
+    @app.exception_handler(ReauthenticationRequired)
+    async def _reauthentication_required(request: Request,
+                                         exc: ReauthenticationRequired) -> JSONResponse:
+        # 403, not 401: the caller *is* authenticated — a valid session reached this handler —
+        # but a destructive account deletion demands the password again, and the one it gave was
+        # missing or wrong. One reply whether the account could not be loaded or the password
+        # simply did not match, so the endpoint cannot be turned into an oracle for whether a
+        # session's account still exists; the fixed sentence echoes nothing the caller sent.
+        return _json(status.HTTP_403_FORBIDDEN, "reauthentication_required",
+                     "this action requires your current password")
 
     @app.exception_handler(InsufficientEvidence)
     async def _insufficient_evidence(request: Request,

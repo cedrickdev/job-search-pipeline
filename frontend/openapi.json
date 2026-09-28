@@ -1,6 +1,60 @@
 {
   "components": {
     "schemas": {
+      "AccountDeletionRequest": {
+        "additionalProperties": false,
+        "description": "The confirmation a destructive account deletion carries (§26).\n\nOnly the password: the owner is the session's, never a body field, so there is no `user_id`\nto override and `extra=\"forbid\"` refuses one. No length band, for the reason `LoginRequest`\ngives — the band is a policy for *choosing* a password, and applying it to a re-authentication\nwould tell a caller a submitted value was too short to be this account's.",
+        "properties": {
+          "password": {
+            "format": "password",
+            "title": "Password",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "password"
+        ],
+        "title": "AccountDeletionRequest",
+        "type": "object"
+      },
+      "AccountDeletionResponse": {
+        "additionalProperties": false,
+        "description": "The receipt a completed deletion returns (§27-29).\n\nCounts and an instant, never data: how many sessions were revoked and how many stored\nartifacts were removed, plus when it happened — enough for a client to confirm the erasure\nwithout echoing a single fact about the account that no longer exists.",
+        "properties": {
+          "deleted_at": {
+            "format": "date-time",
+            "title": "Deleted At",
+            "type": "string"
+          },
+          "document_artifacts_removed": {
+            "title": "Document Artifacts Removed",
+            "type": "integer"
+          },
+          "export_archives_removed": {
+            "title": "Export Archives Removed",
+            "type": "integer"
+          },
+          "sessions_revoked": {
+            "title": "Sessions Revoked",
+            "type": "integer"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "deleted_at",
+          "sessions_revoked",
+          "document_artifacts_removed",
+          "export_archives_removed"
+        ],
+        "title": "AccountDeletionResponse",
+        "type": "object"
+      },
       "AccountExportListResponse": {
         "additionalProperties": false,
         "description": "This account's export requests, most recently updated first, wrapped (§23).",
@@ -12698,6 +12752,48 @@
         "summary": "Add Claim",
         "tags": [
           "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/me/deletion": {
+      "post": {
+        "description": "Permanently erase this account and everything it owns, on password confirmation (§26-29).\n\n200 with a receipt — counts of what was removed and the instant it happened — never any data\nabout the account that no longer exists. The password in the body re-authenticates the\ncaller; a mismatch raises `ReauthenticationRequired` (mapped to 403) before anything is\ntouched. On success the session cookies are cleared, because the session they carry has just\nbeen revoked along with the account. Shared data the account only referenced (a posting, a\ncompany) is untouched, and the de-identified billing receipt survives via `ON DELETE SET NULL`.",
+        "operationId": "delete_account_api_v2_me_deletion_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountDeletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Account",
+        "tags": [
+          "v2-account"
         ]
       }
     },

@@ -42,6 +42,7 @@ from pydantic import (
     model_validator,
 )
 
+from backend.app.accounts import AccountDeletionReceipt
 from backend.app.billing.provider import CheckoutSession, PortalSession
 from backend.app.billing.service import (
     SubscriptionOverview,
@@ -3171,3 +3172,40 @@ class AccountExportListResponse(ApiModel):
            now: datetime) -> "AccountExportListResponse":
         return cls(exports=tuple(AccountExportResponse.of(export, now=now)
                                  for export in exports))
+
+
+# --- account deletion (§26-29) -----------------------------------------------
+
+class AccountDeletionRequest(ApiModel):
+    """The confirmation a destructive account deletion carries (§26).
+
+    Only the password: the owner is the session's, never a body field, so there is no `user_id`
+    to override and `extra="forbid"` refuses one. No length band, for the reason `LoginRequest`
+    gives — the band is a policy for *choosing* a password, and applying it to a re-authentication
+    would tell a caller a submitted value was too short to be this account's.
+    """
+
+    password: Password
+
+
+class AccountDeletionResponse(ApiModel):
+    """The receipt a completed deletion returns (§27-29).
+
+    Counts and an instant, never data: how many sessions were revoked and how many stored
+    artifacts were removed, plus when it happened — enough for a client to confirm the erasure
+    without echoing a single fact about the account that no longer exists.
+    """
+
+    user_id: UserId
+    deleted_at: datetime
+    sessions_revoked: int
+    document_artifacts_removed: int
+    export_archives_removed: int
+
+    @classmethod
+    def of(cls, receipt: AccountDeletionReceipt) -> "AccountDeletionResponse":
+        return cls(
+            user_id=receipt.user_id, deleted_at=receipt.deleted_at,
+            sessions_revoked=receipt.sessions_revoked,
+            document_artifacts_removed=receipt.document_artifacts_removed,
+            export_archives_removed=receipt.export_archives_removed)

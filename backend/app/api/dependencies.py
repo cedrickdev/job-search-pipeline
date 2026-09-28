@@ -41,6 +41,7 @@ from fastapi import Depends, Request
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.accounts import AccountDeletionService
 from backend.app.api.errors import csrf_failed, not_authenticated
 from backend.app.application_engine.bootstrap import build_application_registry
 from backend.app.billing.entitlements import EntitlementResolver
@@ -423,6 +424,27 @@ def account_export_service(
         exports=SqlAlchemyAccountExportRepository(session),
         store=LocalAccountExportStore(Path(settings.artifact_root)),
         settings=settings)
+
+
+def account_deletion_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        doc_settings: Annotated[DocumentSettings, Depends(document_settings)],
+        exp_settings: Annotated[ExportSettings, Depends(export_settings)],
+) -> AccountDeletionService:
+    """Re-authenticate, then erase an account and everything it owns (§26-29).
+
+    Wired to the same user, session and document repositories the rest of the surface uses, and
+    to the two artifact stores rooted at the configured paths — the document store the document
+    service writes to, and the export store the export service writes to — so deletion removes
+    exactly the bytes those services produced. No clock: the route hands `now` on the call, so a
+    deletion's instant is the request's, not the process's.
+    """
+    return AccountDeletionService(
+        users=SqlAlchemyUserRepository(session),
+        sessions=SqlAlchemySessionRepository(session),
+        documents=SqlAlchemyCandidateDocumentRepository(session),
+        document_store=LocalDocumentArtifactStore(Path(doc_settings.artifact_root)),
+        export_store=LocalAccountExportStore(Path(exp_settings.artifact_root)))
 
 
 def llm_secret_settings(request: Request) -> LLMSecretSettings:
@@ -963,3 +985,4 @@ StrategyProposals = Annotated[StrategyProposalService,
 Billing = Annotated[BillingService, Depends(billing_service)]
 BillingWebhooks = Annotated[BillingWebhookService, Depends(billing_webhook_service)]
 AccountExports = Annotated[AccountExportService, Depends(account_export_service)]
+AccountDeletion = Annotated[AccountDeletionService, Depends(account_deletion_service)]

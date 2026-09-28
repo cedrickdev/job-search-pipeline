@@ -53,10 +53,12 @@ import httpx
 from fastapi import FastAPI
 from pydantic import SecretStr
 
+from backend.app.accounts import AccountDeletionService
 from backend.app.api import API_V2_PREFIX
 from backend.app.api.cookies import COOKIE_PATH
 from backend.app.api.dependencies import (
     CSRF_HEADER,
+    account_deletion_service,
     account_export_service,
     application_policy_service,
     application_service,
@@ -568,11 +570,14 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     # generator and the pure guard are the production defaults, and the artifact
     # store writes under `tmp_path` so a rendered PDF has somewhere to land and a
     # download reads real bytes rather than a stub. A local, so a `GENERATE_RESUME`
-    # proposal the chat executor confirms drives this same workflow.
+    # proposal the chat executor confirms drives this same workflow. The store is a
+    # named local because account deletion (below) must delete from the *same*
+    # instance, so a §69 test asserts a rendered artifact's bytes really disappear.
+    document_artifact_store = LocalDocumentArtifactStore(tmp_path / "document_artifacts")
     document_workflow = DocumentService(
         profiles, postings, documents, DeterministicDocumentGenerator(),
         CandidateEvidenceGuard(),
-        LocalDocumentArtifactStore(tmp_path / "document_artifacts"))
+        document_artifact_store)
     app.dependency_overrides[document_service] = lambda: document_workflow
     # A real Fernet cipher over a per-harness master key, so a stored credential is
     # genuinely encrypted and the `has_api_key`/never-the-value guarantee is exercised
@@ -728,6 +733,17 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
         settings=ExportSettings(artifact_root=str(tmp_path / "account_exports"),
                                 retention_hours=168))
     app.dependency_overrides[account_export_service] = lambda: export_workflow
+    # --- Phase 16 M6 account deletion -----------------------------------------
+    # The deletion service over the same fakes and the *same* two artifact stores the document
+    # and export services above write to, so a §69 test that renders a document and produces an
+    # export then deletes the account asserts those very bytes are gone — not a parallel store's.
+    # No provider call on deletion (the billing port has no cancel; the subscription row
+    # cascade-deletes and `subscription_events` de-identifies via SET NULL, proved against the
+    # real database in the persistence tests).
+    account_deletion_workflow = AccountDeletionService(
+        users=users, sessions=sessions, documents=documents,
+        document_store=document_artifact_store, export_store=export_store)
+    app.dependency_overrides[account_deletion_service] = lambda: account_deletion_workflow
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:

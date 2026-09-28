@@ -37,7 +37,7 @@ are server truth, and a client only ever reads them (§17, §61).
 from enum import StrEnum
 from typing import Annotated, Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from backend.app.domain.base import CurrencyCode, DomainModel, NonEmptyStr, UtcDatetime
 from backend.app.domain.identifiers import PlanId
@@ -209,6 +209,22 @@ class Plan(DomainModel):
     is_active: bool = True
     created_at: UtcDatetime
     updated_at: UtcDatetime
+
+    @field_validator("entitlements", mode="after")
+    @classmethod
+    def _entitlements_in_canonical_key_order(
+            cls, entitlements: tuple[Entitlement, ...]) -> tuple[Entitlement, ...]:
+        """Order the entitlements by key so a plan is a keyed bundle, not an ordered list.
+
+        A plan grants each key at most once (the coherence validator below enforces it), so the
+        order they arrive in carries no meaning — two plans granting the same ceilings are the same
+        plan. Sorting on the key gives every `Plan` one canonical representation, so equality never
+        turns on construction order and a catalogue read round-trips to a value equal to the one
+        written: `PlanRow.entitlements` is itself `order_by` its key, and without a matching
+        canonical order here that read would only equal the written plan while the pre-`order_by`
+        in-memory collection happened to survive in the identity map.
+        """
+        return tuple(sorted(entitlements, key=lambda entitlement: entitlement.key.value))
 
     @model_validator(mode="after")
     def _entitlements_and_price_are_coherent(self) -> Self:

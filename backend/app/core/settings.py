@@ -198,6 +198,18 @@ AUTH_LOCKOUT_MINUTES_VARIABLE: Final[str] = "JOBSEARCH_AUTH_LOCKOUT_MINUTES"
 DOCUMENT_ARTIFACT_ROOT_VARIABLE: Final[str] = "JOBSEARCH_DOCUMENT_ARTIFACT_ROOT"
 DEFAULT_DOCUMENT_ARTIFACT_ROOT: Final[str] = "var/document_artifacts"
 
+# Where account-export archives are written, and how long they stay downloadable (Phase 16
+# §23-25, §30). A directory under the working tree by default, like the document store, so a
+# fresh checkout produces exports without configuration; a deployment overrides it to a mounted
+# volume and a future object-store adapter would read a URL from its own variable instead. The
+# retention window is how long a produced archive stays available before the retention sweep
+# (§30) is entitled to purge it — a portable copy of a user's data is temporary by design, so it
+# does not linger on disk indefinitely.
+EXPORT_ARTIFACT_ROOT_VARIABLE: Final[str] = "JOBSEARCH_EXPORT_ARTIFACT_ROOT"
+DEFAULT_EXPORT_ARTIFACT_ROOT: Final[str] = "var/account_exports"
+EXPORT_RETENTION_HOURS_VARIABLE: Final[str] = "JOBSEARCH_EXPORT_RETENTION_HOURS"
+DEFAULT_EXPORT_RETENTION_HOURS: Final[int] = 168  # seven days
+
 # The Fernet master key the LLM connection store encrypts provider credentials with
 # (Phase 11, docs/LLM_PROVIDER_ARCHITECTURE.md §21). Read from the environment,
 # never stored in the database and never returned by the API. A deployment that
@@ -417,6 +429,37 @@ class DocumentSettings(BaseModel):
         source = environ if env is None else env
         value = source.get(DOCUMENT_ARTIFACT_ROOT_VARIABLE, "").strip()
         return cls(artifact_root=value or DEFAULT_DOCUMENT_ARTIFACT_ROOT)
+
+
+class ExportSettings(BaseModel):
+    """Where account-export archives live, and how long they stay downloadable.
+
+    Frozen and closed like every settings model. `artifact_root` is the directory the
+    `LocalAccountExportStore` writes JSON archives under; an object-store adapter would
+    grow its own fields here rather than overloading this one, exactly as `DocumentSettings`
+    would. `retention_hours` is how long a produced archive stays downloadable before the
+    retention sweep (Phase 16 §30) may purge it: an export is a temporary, portable copy of a
+    user's own data, not a second permanent store, so it expires by design. A non-positive
+    window would make every archive born already-expired, so it is refused here rather than
+    silently disabling downloads.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    artifact_root: str = DEFAULT_EXPORT_ARTIFACT_ROOT
+    retention_hours: int = Field(default=DEFAULT_EXPORT_RETENTION_HOURS, ge=1)
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
+        """Read the export root and retention window, or use the defaults."""
+        source = environ if env is None else env
+        value = source.get(EXPORT_ARTIFACT_ROOT_VARIABLE, "").strip()
+        retention_hours = _read_int(
+            source, EXPORT_RETENTION_HOURS_VARIABLE, DEFAULT_EXPORT_RETENTION_HOURS)
+        return cls(
+            artifact_root=value or DEFAULT_EXPORT_ARTIFACT_ROOT,
+            retention_hours=retention_hours,
+        )
 
 
 class LLMSecretSettings(BaseModel):

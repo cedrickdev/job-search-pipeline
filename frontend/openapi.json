@@ -1,6 +1,127 @@
 {
   "components": {
     "schemas": {
+      "AccountExportListResponse": {
+        "additionalProperties": false,
+        "description": "This account's export requests, most recently updated first, wrapped (§23).",
+        "properties": {
+          "exports": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportResponse"
+            },
+            "title": "Exports",
+            "type": "array"
+          }
+        },
+        "required": [
+          "exports"
+        ],
+        "title": "AccountExportListResponse",
+        "type": "object"
+      },
+      "AccountExportResponse": {
+        "additionalProperties": false,
+        "description": "One export request's lifecycle, as the account-data surface reads it (§23-25).\n\nDeliberately not the archive and deliberately not its locator: `storage_key` is absent for\nthe same reason `PlanResponse.external_price_id` is — it is an internal handle the client\nnever acts on, and a download goes through `GET /exports/{id}/download`, not a key. `status`,\n`byte_size`, the completion/expiry instants and a `FAILED` export's machine `failure_reason`\nare the metadata a client renders. `is_downloadable` is computed against the request clock so\nthe fail-safe expiry the domain enforces is reflected in the UI hint the instant a window\nlapses — even before the retention sweep flips the status to `EXPIRED`; the server re-checks\nit authoritatively on download regardless.",
+        "properties": {
+          "byte_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Byte Size"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_downloadable": {
+            "title": "Is Downloadable",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AccountExportStatus"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "schema_version",
+          "byte_size",
+          "is_downloadable",
+          "completed_at",
+          "expires_at",
+          "failure_reason",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AccountExportResponse",
+        "type": "object"
+      },
+      "AccountExportStatus": {
+        "description": "The lifecycle of one export request — the closed set the state machine allows.\n\n- `PENDING` — requested, no archive produced yet; every artifact field is unset;\n- `READY` — the archive is stored and downloadable until it expires; `storage_key`,\n  `byte_size`, `completed_at` and `expires_at` are all set and no failure is recorded;\n- `FAILED` — production failed; `failure_reason` and `completed_at` are set and no artifact\n  exists (a failed export never leaves a half-written archive behind);\n- `EXPIRED` — the archive's retention window elapsed and a retention sweep purged the bytes;\n  `completed_at` and `expires_at` remain as provenance but `storage_key`/`byte_size` are\n  cleared, because the artifact is gone.",
+        "enum": [
+          "PENDING",
+          "READY",
+          "FAILED",
+          "EXPIRED"
+        ],
+        "title": "AccountExportStatus",
+        "type": "string"
+      },
       "AccountResponse": {
         "additionalProperties": false,
         "description": "What a client learns about its own account. No credential fields exist.",
@@ -12639,6 +12760,134 @@
         "summary": "Add Evidence",
         "tags": [
           "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/me/exports": {
+      "get": {
+        "description": "This account's export requests, most recently updated first (§23).\n\n`is_downloadable` on each is computed against the request clock, so an archive whose\nretention window has lapsed reads as not downloadable even before the retention sweep flips\nits status to `EXPIRED`.",
+        "operationId": "list_exports_api_v2_me_exports_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountExportListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Exports",
+        "tags": [
+          "v2-account-export"
+        ]
+      },
+      "post": {
+        "description": "Request an export of everything this account holds, and produce it now (§23-25).\n\n201, because it creates a resource: each request is its own export — asking twice is two\nexports, not an idempotent replace. The synchronous path produces the archive before\nanswering, so the response is the finished `READY` export (or a `FAILED` one carrying a\nmachine reason if production could not complete); a client polls neither in the common case.\nThe archive is gathered from this account's own rows only and swept for secrets before a byte\nis stored (§24).",
+        "operationId": "create_export_api_v2_me_exports_post",
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountExportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Create Export",
+        "tags": [
+          "v2-account-export"
+        ]
+      }
+    },
+    "/api/v2/me/exports/{export_id}": {
+      "get": {
+        "description": "One export's lifecycle record (§23).\n\n404 for \"no such export\" and \"not yours\" alike: the service raises one error for both, so a\ncaller cannot enumerate another account's exports by id.",
+        "operationId": "read_export_api_v2_me_exports__export_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "export_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Export Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountExportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Export",
+        "tags": [
+          "v2-account-export"
+        ]
+      }
+    },
+    "/api/v2/me/exports/{export_id}/download": {
+      "get": {
+        "description": "Stream the produced archive of a `READY`, unexpired export (§25).\n\nA binary response, not JSON envelope: the bytes are read from the export store and returned\nwith the archive's media type and a `Content-Disposition` naming the file. 404 when the\nexport is not this account's; 409 (`account_export_not_ready`) when it exists but has no\ndownloadable archive right now — it is still `PENDING`, it `FAILED`, or its window has lapsed.\nThe download availability is re-checked server-side against the request clock, so an archive\npast its retention window is refused even before a sweep has marked it `EXPIRED`.",
+        "operationId": "download_export_api_v2_me_exports__export_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "export_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Export Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Export",
+        "tags": [
+          "v2-account-export"
         ]
       }
     },

@@ -21,6 +21,7 @@ from backend.app.api.routes import (
     chat,
     companies,
     documents,
+    exports,
     geo,
     interview,
     llm,
@@ -54,4 +55,5 @@ def create_v2_router() -> APIRouter:
     router.include_router(career.router)
     router.include_router(strategy.router)
     router.include_router(billing.router)
+    router.include_router(exports.router)
     return router

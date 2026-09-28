@@ -30,6 +30,7 @@ from uuid import UUID, uuid5
 from pydantic import SecretStr, TypeAdapter
 from sqlalchemy.orm.attributes import flag_modified
 
+from backend.app.domain.account_export import AccountExport, AccountExportStatus
 from backend.app.domain.analytics import DimensionKind, RateKind, TimingKind
 from backend.app.domain.application import (
     Application,
@@ -111,6 +112,7 @@ from backend.app.domain.entitlement import (
 )
 from backend.app.domain.identifiers import (
     SURROGATE_KEY_NAMESPACE,
+    AccountExportId,
     ApplicationDecisionId,
     ApplicationEventId,
     ApplicationId,
@@ -217,6 +219,7 @@ from backend.app.domain.subscription_event import SubscriptionEvent, Subscriptio
 from backend.app.domain.usage import UsageEvent, UsageSourceType
 from backend.app.domain.user import User, UserSession, UserStatus
 from backend.app.infrastructure.database.models import (
+    AccountExportRow,
     ApplicationDecisionRow,
     ApplicationEventRow,
     ApplicationOutcomeRow,
@@ -2793,6 +2796,43 @@ def subscription_event_to_domain(row: SubscriptionEventRow) -> SubscriptionEvent
         event_at=row.event_at,
         received_at=row.received_at,
         detail=row.detail)
+
+
+def account_export_to_row(export: AccountExport,
+                          row: AccountExportRow | None = None) -> AccountExportRow:
+    """An `AccountExport` onto its row. Unlike the append-only ledgers above, an export is
+    mutated as it moves through its lifecycle (PENDING → READY/FAILED → EXPIRED), so
+    `created_at`/`updated_at` are domain facts and `updated_at` is forced into every UPDATE for
+    the reason `application_to_row` states."""
+    target = AccountExportRow(id=export.id) if row is None else row
+    target.user_id = export.user_id
+    target.status = export.status
+    target.schema_version = export.schema_version
+    target.storage_key = export.storage_key
+    target.byte_size = export.byte_size
+    target.completed_at = export.completed_at
+    target.expires_at = export.expires_at
+    target.failure_reason = export.failure_reason
+    target.created_at = export.created_at
+    target.updated_at = export.updated_at
+    if row is not None:
+        flag_modified(target, "updated_at")
+    return target
+
+
+def account_export_to_domain(row: AccountExportRow) -> AccountExport:
+    return AccountExport(
+        id=AccountExportId(row.id),
+        user_id=UserId(row.user_id),
+        status=AccountExportStatus(row.status),
+        schema_version=row.schema_version,
+        storage_key=row.storage_key,
+        byte_size=row.byte_size,
+        completed_at=row.completed_at,
+        expires_at=row.expires_at,
+        failure_reason=row.failure_reason,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
 
 
 

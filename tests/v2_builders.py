@@ -12,10 +12,15 @@ The ids are module constants rather than fresh uuid4s for two reasons: a failure
 message points at a value one can grep for, and the "belongs to another user"
 tests need a second identity that is obviously different.
 """
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
+from backend.app.domain.account_export import (
+    ACCOUNT_EXPORT_SCHEMA_VERSION,
+    AccountExport,
+    AccountExportStatus,
+)
 from backend.app.domain.candidate import (
     Availability,
     CandidateEvidence,
@@ -85,6 +90,7 @@ from backend.app.domain.interview import (
     SessionStyle,
 )
 from backend.app.domain.identifiers import (
+    AccountExportId,
     ApplicationDecisionId,
     ApplicationId,
     ApplicationPolicyId,
@@ -250,6 +256,9 @@ OTHER_SUBSCRIPTION = subscription_id("stripe", "sub_test_0002")
 # ledger's idempotency in one value. Two event handles for the redelivery/out-of-order tests.
 SUBSCRIPTION_EVENT = subscription_event_id("stripe", "evt_test_0001")
 OTHER_SUBSCRIPTION_EVENT = subscription_event_id("stripe", "evt_test_0002")
+# An account export's id is random in production (`new_account_export_id`), so the builder pins
+# a constant — a test that seeds an export under a placeholder passes `id=` explicitly.
+ACCOUNT_EXPORT = AccountExportId(UUID("00000000-0000-4000-8000-000000000111"))
 
 # Somewhere real, so a distance a test asserts on can be checked against a map.
 LAUSANNE = GeoPoint(latitude=46.5197, longitude=6.6323)
@@ -1261,6 +1270,39 @@ def a_normalized_event(*, subscription=..., **overrides):
     }
     fields.update(overrides)
     return NormalizedWebhookEvent(**fields)
+
+
+def an_account_export(*, id=ACCOUNT_EXPORT, status=AccountExportStatus.READY,
+                      storage_key="exports/fixture/archive.json", byte_size=2048,
+                      completed_at=LATER, expires_at=None, **overrides):
+    """A produced, downloadable account export owned by `USER`, its bytes stored elsewhere (§23-25).
+
+    Defaults to a `READY` export carrying the artifact locator and byte size a download needs,
+    completed at `LATER` and lapsing seven days after — like `a_rendered_document`, it describes
+    the locator, it does not write the file, so a download test must `put` real bytes under
+    `storage_key` in the export store. A `PENDING` export passes `status=AccountExportStatus.PENDING,
+    storage_key=None, byte_size=None, completed_at=None` (expiry then defaults to unset); a `FAILED`
+    one passes `status=..., storage_key=None, byte_size=None, expires_at=None,
+    failure_reason="PRODUCTION_FAILED"`. A test that seeds under a placeholder passes `id=`; one
+    for another owner passes `user_id=OTHER_USER`.
+    """
+    resolved_expires = (
+        expires_at if expires_at is not None
+        else (completed_at + timedelta(days=7) if completed_at is not None else None))
+    fields = {
+        "id": id,
+        "user_id": USER,
+        "status": status,
+        "schema_version": ACCOUNT_EXPORT_SCHEMA_VERSION,
+        "storage_key": storage_key,
+        "byte_size": byte_size,
+        "completed_at": completed_at,
+        "expires_at": resolved_expires,
+        "created_at": NOW,
+        "updated_at": LATER,
+    }
+    fields.update(overrides)
+    return AccountExport(**fields)
 
 
 

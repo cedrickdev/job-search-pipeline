@@ -65,6 +65,7 @@ from backend.app.core.settings import (
     AuthSettings,
     DatabaseSettings,
     DocumentSettings,
+    ExportSettings,
     LLMSecretSettings,
     SiteSettings,
     StripeSettings,
@@ -75,6 +76,11 @@ from backend.app.documents import (
     LocalDocumentArtifactStore,
 )
 from backend.app.documents.guard import CandidateEvidenceGuard
+from backend.app.exports import (
+    AccountExportGatherer,
+    AccountExportService,
+    LocalAccountExportStore,
+)
 from backend.app.infrastructure.database.engine import (
     create_async_database_engine,
     create_session_factory,
@@ -89,6 +95,7 @@ from backend.app.llm.recorder import LLMTelemetryRecorder
 from backend.app.llm.router import LLMRouter, PrivacyClass, RoutingPolicy
 from backend.app.llm.secrets import FernetSecretCipher, SecretCipher
 from backend.app.repositories.sqlalchemy_repositories import (
+    SqlAlchemyAccountExportRepository,
     SqlAlchemyApplicationDecisionRepository,
     SqlAlchemyApplicationEventRepository,
     SqlAlchemyApplicationOutcomeRepository,
@@ -160,6 +167,7 @@ SAFE_METHODS: Final[frozenset[str]] = frozenset({"GET", "HEAD", "OPTIONS"})
 AUTH_SETTINGS_ATTRIBUTE: Final[str] = "v2_auth_settings"
 DATABASE_SETTINGS_ATTRIBUTE: Final[str] = "v2_database_settings"
 DOCUMENT_SETTINGS_ATTRIBUTE: Final[str] = "v2_document_settings"
+EXPORT_SETTINGS_ATTRIBUTE: Final[str] = "v2_export_settings"
 LLM_KEY_SETTINGS_ATTRIBUTE: Final[str] = "v2_llm_key_settings"
 LLM_CIPHER_ATTRIBUTE: Final[str] = "v2_llm_cipher"
 SESSION_FACTORY_ATTRIBUTE: Final[str] = "v2_session_factory"
@@ -346,6 +354,75 @@ def document_service(
         DeterministicDocumentGenerator(),
         CandidateEvidenceGuard(),
         LocalDocumentArtifactStore(Path(settings.artifact_root)))
+
+
+def export_settings(request: Request) -> ExportSettings:
+    """Where account-export archives live and how long they stay downloadable, cached (§25).
+
+    Cached on `app.state` like every other settings model, and for the same reason: re-reading
+    the environment per request would let the export root change under a running process and
+    split one deployment's archives across two roots, or let the retention window drift so two
+    exports produced a moment apart lapse under different policies.
+    """
+    settings = getattr(request.app.state, EXPORT_SETTINGS_ATTRIBUTE, None)
+    if isinstance(settings, ExportSettings):
+        return settings
+    resolved = ExportSettings.from_env()
+    setattr(request.app.state, EXPORT_SETTINGS_ATTRIBUTE, resolved)
+    return resolved
+
+
+def account_export_gatherer(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> AccountExportGatherer:
+    """The read side of an export: every user-scoped repository a §23 payload draws on.
+
+    Holds only read repositories and nothing that could read another account's rows or a secret
+    store — no `SessionRepository`, and the one store that holds ciphertext
+    (`LLMConnectionRepository`) is reduced to safe metadata inside the gatherer. Every section is
+    wired here rather than defaulted, so an export can never silently drop one because a
+    repository was forgotten.
+    """
+    return AccountExportGatherer(
+        users=SqlAlchemyUserRepository(session),
+        profiles=SqlAlchemyCandidateProfileRepository(session),
+        searches=SqlAlchemySearchProfileRepository(session),
+        applications=SqlAlchemyApplicationRepository(session),
+        outcomes=SqlAlchemyApplicationOutcomeRepository(session),
+        documents=SqlAlchemyCandidateDocumentRepository(session),
+        role_classifications=SqlAlchemyRoleClassificationRepository(session),
+        recommendations=SqlAlchemyCareerRecommendationRepository(session),
+        strategy_proposals=SqlAlchemyStrategyChangeProposalRepository(session),
+        strategy_executions=SqlAlchemyStrategyChangeExecutionRepository(session),
+        conversations=SqlAlchemyConversationRepository(session),
+        chat_messages=SqlAlchemyChatMessageRepository(session),
+        interview_sessions=SqlAlchemyInterviewSessionRepository(session),
+        interview_summaries=SqlAlchemyInterviewSessionSummaryRepository(session),
+        policies=SqlAlchemyApplicationPolicyRepository(session),
+        llm_connections=SqlAlchemyLLMConnectionRepository(session),
+        subscriptions=SqlAlchemySubscriptionRepository(session),
+        usage_events=SqlAlchemyUsageEventRepository(session),
+        subscription_events=SqlAlchemySubscriptionEventRepository(session))
+
+
+def account_export_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        gatherer: Annotated[AccountExportGatherer, Depends(account_export_gatherer)],
+        settings: Annotated[ExportSettings, Depends(export_settings)],
+) -> AccountExportService:
+    """Request, produce, read and download an account's data exports (§23-25).
+
+    The gatherer (user-scoped reads only), the lifecycle repository, the local export store rooted
+    at the configured path, and the settings that fix the retention window. No clock in the
+    constructor; the route hands `now` to every method, so an export's timestamps and expiry are
+    determined by the request instant. The store is the `LocalAccountExportStore` for now; an
+    object-store adapter would be swapped in here without the service or the route changing (§25).
+    """
+    return AccountExportService(
+        gatherer=gatherer,
+        exports=SqlAlchemyAccountExportRepository(session),
+        store=LocalAccountExportStore(Path(settings.artifact_root)),
+        settings=settings)
 
 
 def llm_secret_settings(request: Request) -> LLMSecretSettings:
@@ -885,3 +962,4 @@ StrategyProposals = Annotated[StrategyProposalService,
                               Depends(strategy_proposal_service)]
 Billing = Annotated[BillingService, Depends(billing_service)]
 BillingWebhooks = Annotated[BillingWebhookService, Depends(billing_webhook_service)]
+AccountExports = Annotated[AccountExportService, Depends(account_export_service)]

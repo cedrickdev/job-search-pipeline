@@ -46,6 +46,11 @@ from backend.app.documents import ArtifactNotFound
 from backend.app.documents.generator import InsufficientEvidence
 from backend.app.domain.application_failure import ApplicationError, ApplicationFailureCode
 from backend.app.domain.interview import InterviewErrorCode
+from backend.app.exports import (
+    AccountExportNotFound,
+    AccountExportNotReady,
+    ExportNotFound,
+)
 from backend.app.interview.service import (
     InterviewError,
     InterviewGroundingNotFound,
@@ -366,6 +371,36 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         # not echoed: it is an internal locator.
         return _json(status.HTTP_500_INTERNAL_SERVER_ERROR, "artifact_unavailable",
                      "the stored document artifact could not be read")
+
+    @app.exception_handler(AccountExportNotFound)
+    async def _account_export_missing(request: Request,
+                                      exc: AccountExportNotFound) -> JSONResponse:
+        # 404 for "no such export" and "not yours" alike — the service raises one exception for
+        # both, so a caller cannot learn another account holds an export by asking for its id.
+        # The id it carries is the client's own but is not echoed.
+        return _json(status.HTTP_404_NOT_FOUND, "account_export_not_found",
+                     "no such export")
+
+    @app.exception_handler(AccountExportNotReady)
+    async def _account_export_not_ready(request: Request,
+                                        exc: AccountExportNotReady) -> JSONResponse:
+        # 409, not 404: the export is real and this account's, but it has no downloadable archive
+        # right now — it is still PENDING, it FAILED, or its retention window has lapsed. The
+        # resource is real and the state is either temporary (poll it) or terminal for a reason
+        # the export's own status explains, so a client re-reads the export rather than treating
+        # it as absent.
+        return _json(status.HTTP_409_CONFLICT, "account_export_not_ready",
+                     "this export has no downloadable archive right now")
+
+    @app.exception_handler(ExportNotFound)
+    async def _export_bytes_gone(request: Request,
+                                 exc: ExportNotFound) -> JSONResponse:
+        # The export row is READY and unexpired, but the store no longer holds the bytes it points
+        # at. A server-side storage fault, not a client error — 500 rather than a 404 that would
+        # tell the caller to re-request over what is really a storage problem, exactly as
+        # `ArtifactNotFound` is handled. The storage key is not echoed: it is an internal locator.
+        return _json(status.HTTP_500_INTERNAL_SERVER_ERROR, "account_export_unavailable",
+                     "the stored export archive could not be read")
 
     @app.exception_handler(InsufficientEvidence)
     async def _insufficient_evidence(request: Request,

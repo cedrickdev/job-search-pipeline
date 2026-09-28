@@ -71,6 +71,7 @@ PlanId = NewType("PlanId", UUID)
 SubscriptionId = NewType("SubscriptionId", UUID)
 SubscriptionEventId = NewType("SubscriptionEventId", UUID)
 UsageEventId = NewType("UsageEventId", UUID)
+AccountExportId = NewType("AccountExportId", UUID)
 
 
 def new_user_id() -> UserId:
@@ -675,3 +676,16 @@ def usage_event_id(idempotency_key: str) -> UsageEventId:
     dependency on the vocabulary that shapes the key.
     """
     return UsageEventId(uuid5(SURROGATE_KEY_NAMESPACE, f"usage_event:{idempotency_key}"))
+
+
+def new_account_export_id() -> AccountExportId:
+    """The id of one account-export request (Phase 16 §23-25).
+
+    Random, not derived: an export is an event a user asks for at an instant — "give me
+    my data now" — not something recomputable from what it holds. Two requests a week
+    apart are two distinct archives with their own artifacts and their own expiry, so
+    each stands on its own; collapsing the second onto the first would hand a user a
+    stale snapshot under the guise of a fresh export. No derived factory is offered:
+    there is no stable business key an export must be found again by.
+    """
+    return AccountExportId(uuid4())

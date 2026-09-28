@@ -62,6 +62,10 @@ from backend.app.discovery.contracts import (
     SourceHealth,
     SourceHealthStatus,
 )
+from backend.app.domain.account_export import (
+    AccountExport,
+    AccountExportStatus,
+)
 from backend.app.domain.analytics import (
     CareerAnalytics,
     CareerFunnel,
@@ -174,6 +178,7 @@ from backend.app.domain.geo import (
     RemoteScope,
 )
 from backend.app.domain.identifiers import (
+    AccountExportId,
     ApplicationId,
     ApplicationOutcomeId,
     CandidateDocumentId,
@@ -3118,3 +3123,51 @@ class WebhookAckResponse(ApiModel):
     @classmethod
     def of(cls, event: SubscriptionEvent) -> "WebhookAckResponse":
         return cls(outcome=event.outcome, event_type=event.event_type)
+
+
+# --- account data export (§23-25) --------------------------------------------
+
+class AccountExportResponse(ApiModel):
+    """One export request's lifecycle, as the account-data surface reads it (§23-25).
+
+    Deliberately not the archive and deliberately not its locator: `storage_key` is absent for
+    the same reason `PlanResponse.external_price_id` is — it is an internal handle the client
+    never acts on, and a download goes through `GET /exports/{id}/download`, not a key. `status`,
+    `byte_size`, the completion/expiry instants and a `FAILED` export's machine `failure_reason`
+    are the metadata a client renders. `is_downloadable` is computed against the request clock so
+    the fail-safe expiry the domain enforces is reflected in the UI hint the instant a window
+    lapses — even before the retention sweep flips the status to `EXPIRED`; the server re-checks
+    it authoritatively on download regardless.
+    """
+
+    id: AccountExportId
+    status: AccountExportStatus
+    schema_version: int
+    byte_size: int | None
+    is_downloadable: bool
+    completed_at: datetime | None
+    expires_at: datetime | None
+    failure_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, export: AccountExport, *, now: datetime) -> "AccountExportResponse":
+        return cls(
+            id=export.id, status=export.status, schema_version=export.schema_version,
+            byte_size=export.byte_size, is_downloadable=export.is_downloadable(now),
+            completed_at=export.completed_at, expires_at=export.expires_at,
+            failure_reason=export.failure_reason,
+            created_at=export.created_at, updated_at=export.updated_at)
+
+
+class AccountExportListResponse(ApiModel):
+    """This account's export requests, most recently updated first, wrapped (§23)."""
+
+    exports: tuple[AccountExportResponse, ...]
+
+    @classmethod
+    def of(cls, exports: tuple[AccountExport, ...], *,
+           now: datetime) -> "AccountExportListResponse":
+        return cls(exports=tuple(AccountExportResponse.of(export, now=now)
+                                 for export in exports))

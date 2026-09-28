@@ -57,6 +57,7 @@ from backend.app.api import API_V2_PREFIX
 from backend.app.api.cookies import COOKIE_PATH
 from backend.app.api.dependencies import (
     CSRF_HEADER,
+    account_export_service,
     application_policy_service,
     application_service,
     assessment_service,
@@ -97,12 +98,17 @@ from backend.app.chat.context import ChatContextBuilder
 from backend.app.chat.conversation import ChatConversationService
 from backend.app.chat.executor import ChatActionExecutor
 from backend.app.chat.validators import ProposalValidator
-from backend.app.core.settings import AuthSettings, SiteSettings
+from backend.app.core.settings import AuthSettings, ExportSettings, SiteSettings
 from backend.app.documents import (
     DeterministicDocumentGenerator,
     LocalDocumentArtifactStore,
 )
 from backend.app.documents.guard import CandidateEvidenceGuard
+from backend.app.exports import (
+    AccountExportGatherer,
+    AccountExportService,
+    LocalAccountExportStore,
+)
 from backend.app.application_engine.bootstrap import build_application_registry
 from backend.app.llm.capabilities import BASELINE_CAPABILITY, Capability
 from backend.app.llm.recorder import LLMTelemetryRecorder
@@ -133,6 +139,7 @@ from backend.app.llm.secrets import FernetSecretCipher, generate_master_key
 from server.app import create_app
 from tests.v2_fakes import (
     FakeApplicationDecisionRepository,
+    FakeAccountExportRepository,
     FakeApplicationEventRepository,
     FakeApplicationOutcomeRepository,
     FakeApplicationPolicyRepository,
@@ -350,6 +357,10 @@ class Harness:
     usage_events: FakeUsageEventRepository
     subscription_events: FakeSubscriptionEventRepository
     billing_provider: FakeBillingProvider
+    # The Phase 16 M5 account-export store, exposed so a test can seed a produced export or assert
+    # that a read left it untouched. The export *store* (the archive bytes) is rooted under
+    # `tmp_path`, exactly like the document artifact store, so a download reads real bytes.
+    account_exports: FakeAccountExportRepository
 
     def url(self, path: str) -> str:
         """A V2 path, prefixed once so no test spells `/api/v2` itself."""
@@ -515,6 +526,10 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     usage_events = FakeUsageEventRepository()
     subscription_events = FakeSubscriptionEventRepository()
     billing_provider = FakeBillingProvider()
+    # The Phase 16 M5 account-export store: the lifecycle rows a request produces. Independent of
+    # the rest; the gatherer below reads the account's own data through the same user-scoped fakes
+    # the routes use, so an export built here contains exactly what those stores hold.
+    account_exports = FakeAccountExportRepository()
     await seed_plan_catalogue(
         plans, now=NOW,
         external_price_ids={"pro": "price_pro", "scale": "price_scale"})
@@ -688,6 +703,31 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
         billing_provider, subscriptions, plans, subscription_events)
     app.dependency_overrides[billing_service] = lambda: billing
     app.dependency_overrides[billing_webhook_service] = lambda: billing_webhooks
+    # --- Phase 16 M5 account data export --------------------------------------
+    # The export service over the fakes, composed exactly as the dependency does. The gatherer holds
+    # every user-scoped read an export draws on (§23) — the same stores the rest of the harness
+    # wires — and holds nothing that could read another account's rows or a secret store. The store
+    # writes JSON archives under `tmp_path`, like the document artifact store, so a produced export
+    # lands somewhere real and a download reads true bytes rather than a stub. `ExportSettings` fixes
+    # the retention window; the route hands `now` to every call, so an export's expiry is the
+    # request instant plus that window.
+    export_store = LocalAccountExportStore(tmp_path / "account_exports")
+    export_gatherer = AccountExportGatherer(
+        users=users, profiles=profiles, searches=searches, applications=applications,
+        outcomes=career_outcomes, documents=documents,
+        role_classifications=role_classifications,
+        recommendations=career_recommendations,
+        strategy_proposals=strategy_proposals, strategy_executions=strategy_executions,
+        conversations=conversations, chat_messages=chat_messages,
+        interview_sessions=interview_sessions, interview_summaries=interview_summaries,
+        policies=application_policies, llm_connections=llm_connections,
+        subscriptions=subscriptions, usage_events=usage_events,
+        subscription_events=subscription_events)
+    export_workflow = AccountExportService(
+        gatherer=export_gatherer, exports=account_exports, store=export_store,
+        settings=ExportSettings(artifact_root=str(tmp_path / "account_exports"),
+                                retention_hours=168))
+    app.dependency_overrides[account_export_service] = lambda: export_workflow
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:
@@ -721,7 +761,8 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
                       plans=plans, subscriptions=subscriptions,
                       usage_events=usage_events,
                       subscription_events=subscription_events,
-                      billing_provider=billing_provider)
+                      billing_provider=billing_provider,
+                      account_exports=account_exports)
 
 
 def operations(app: FastAPI, *, under: str) -> tuple[tuple[str, str], ...]:

@@ -37,6 +37,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.domain.account_export import AccountExport
 from backend.app.domain.application import Application, ApplicationState
 from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
 from backend.app.domain.candidate import CandidateProfile
@@ -66,6 +67,7 @@ from backend.app.domain.geo import (
     remote_scope_of,
 )
 from backend.app.domain.identifiers import (
+    AccountExportId,
     ApplicationDecisionId,
     ApplicationId,
     ApplicationOutcomeId,
@@ -116,6 +118,8 @@ from backend.app.domain.subscription_event import SubscriptionEvent
 from backend.app.domain.usage import UsageEvent
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.infrastructure.database.mappers import (
+    account_export_to_domain,
+    account_export_to_row,
     application_decision_to_domain,
     application_decision_to_row,
     application_event_to_domain,
@@ -195,6 +199,7 @@ from backend.app.infrastructure.database.mappers import (
     user_to_row,
 )
 from backend.app.infrastructure.database.models import (
+    AccountExportRow,
     ApplicationDecisionRow,
     ApplicationEventRow,
     ApplicationOutcomeRow,
@@ -257,6 +262,7 @@ from backend.app.repositories.contracts import (
 
 if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
     from backend.app.repositories.contracts import (
+        AccountExportRepository,
         ApplicationDecisionRepository,
         ApplicationEventRepository,
         ApplicationOutcomeRepository,
@@ -314,7 +320,7 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
             "RoleClassificationRepository", "CareerRecommendationRepository",
             "StrategyChangeProposalRepository", "StrategyChangeExecutionRepository",
             "PlanRepository", "SubscriptionRepository", "UsageEventRepository",
-            "SubscriptionEventRepository"]:
+            "SubscriptionEventRepository", "AccountExportRepository"]:
         """Structural conformance, enforced by `mypy backend`.
 
         The `Protocol`s in `contracts` are satisfied by shape, so nothing would
@@ -358,7 +364,8 @@ if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
                 SqlAlchemyPlanRepository(session),
                 SqlAlchemySubscriptionRepository(session),
                 SqlAlchemyUsageEventRepository(session),
-                SqlAlchemySubscriptionEventRepository(session))
+                SqlAlchemySubscriptionEventRepository(session),
+                SqlAlchemyAccountExportRepository(session))
 
 
 def _rows_affected(result: Result[Any]) -> int:
@@ -2711,5 +2718,47 @@ class SqlAlchemySubscriptionEventRepository:
             .order_by(SubscriptionEventRow.received_at.desc(), SubscriptionEventRow.id)
             .limit(limit))
         return tuple(subscription_event_to_domain(row) for row in result.scalars())
+
+
+class SqlAlchemyAccountExportRepository:
+    """`AccountExportRepository` over an `AsyncSession`, `user_id` on every read.
+
+    The upsert loads by `(user_id, id)`, so a write can never reach across accounts — exactly as
+    `SqlAlchemySubscriptionRepository` does — which is the store-level half of §23's "do not
+    silently export data owned by another user". Unlike the append-only ledgers, an export row is
+    mutated in place as the service moves it through its lifecycle, so the upsert loads the
+    existing row before writing.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _row(self, user_id: UserId,
+                   export_id: AccountExportId) -> AccountExportRow | None:
+        result = await self._session.execute(
+            select(AccountExportRow).where(
+                AccountExportRow.id == export_id,
+                AccountExportRow.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get(self, user_id: UserId,
+                  export_id: AccountExportId) -> AccountExport | None:
+        row = await self._row(user_id, export_id)
+        return None if row is None else account_export_to_domain(row)
+
+    async def upsert(self, export: AccountExport) -> AccountExport:
+        row = account_export_to_row(export, await self._row(export.user_id, export.id))
+        self._session.add(row)
+        await self._session.flush()
+        return account_export_to_domain(row)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[AccountExport, ...]:
+        result = await self._session.execute(
+            select(AccountExportRow)
+            .where(AccountExportRow.user_id == user_id)
+            .order_by(AccountExportRow.updated_at.desc(), AccountExportRow.id)
+            .limit(limit))
+        return tuple(account_export_to_domain(row) for row in result.scalars())
 
 

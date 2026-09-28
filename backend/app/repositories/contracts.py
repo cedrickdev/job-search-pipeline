@@ -31,6 +31,7 @@ from typing import NamedTuple, Protocol, runtime_checkable
 
 from pydantic import SecretStr
 
+from backend.app.domain.account_export import AccountExport
 from backend.app.domain.application import Application
 from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
 from backend.app.domain.candidate import CandidateProfile
@@ -56,6 +57,7 @@ from backend.app.domain.eligibility import EligibilityResult
 from backend.app.domain.entitlement import EntitlementKey, Plan
 from backend.app.domain.geo import GeoSearchQuery, GeoStatus, RemoteScope
 from backend.app.domain.identifiers import (
+    AccountExportId,
     ApplicationDecisionId,
     ApplicationId,
     ApplicationOutcomeId,
@@ -1736,6 +1738,39 @@ class SubscriptionEventRepository(Protocol):
         acting for one) sees, unlike the id-keyed `get`/`add` the webhook path uses; an event the
         platform could not attribute carries a null owner and so appears in no user's feed.
         """
+        ...
+
+
+@runtime_checkable
+class AccountExportRepository(Protocol):
+    """One account's export requests and the archives they produced — user-owned (§23-25).
+
+    `user_id` comes first on every read, so another account's export reads as absent and an
+    upsert cannot take one over — the store-level half of §23's "do not silently export data
+    owned by another user". The id is random (`new_account_export_id`), so each request is its
+    own row; the export service drives the lifecycle (PENDING → READY/FAILED → EXPIRED) through
+    `upsert`, which is why — unlike the append-only ledgers above — this row is mutated in place.
+    The archive *bytes* live in the `AccountExportStore`, never here: this repository holds only
+    the metadata locating them.
+    """
+
+    async def get(self, user_id: UserId,
+                  export_id: AccountExportId) -> AccountExport | None:
+        """The export, or `None` — including when it belongs to somebody else."""
+        ...
+
+    async def upsert(self, export: AccountExport) -> AccountExport:
+        """Write the export; the owner comes from `export.user_id`.
+
+        Keyed on the export id, so each lifecycle transition (the service produces a new
+        `AccountExport` value) updates the one row rather than appending.
+        """
+        ...
+
+    async def list_for_user(
+            self, user_id: UserId, *,
+            limit: int = DEFAULT_LIMIT) -> tuple[AccountExport, ...]:
+        """This user's export requests, most recently updated first — the export history."""
         ...
 
 

@@ -60,6 +60,14 @@ provider, not a browser, so it answers a provider signature rather than a cookie
 403/401. It still carries no credential in its response — the acknowledgement is minimal
 and secret-free — and it is held apart from the anonymous 401 sweep in `PROVIDER_OPERATIONS`
 rather than treated as public, because it is authenticated, only not by a session.
+
+Phase 16 M5 adds four for the account-data-export surface: three reads (this account's export
+history, one export's lifecycle record and its archive download) and one write (request an
+export, which produces it synchronously). All four obey the same four rules the rest of the
+surface does — under the prefix, authenticated, safe where they read, and carrying no credential.
+The export's whole reason for being is a secret-free copy of an account's own data, so the
+credential walk that forbids a `password_hash` in a response forbids one in an export response by
+the same absence; what the archive *bytes* exclude is proven in the export tests, not here.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -68,9 +76,11 @@ import pytest
 
 from backend.app.api import API_V2_PREFIX
 from backend.app.documents import LocalDocumentArtifactStore
+from backend.app.exports import LocalAccountExportStore
 from backend.app.domain.application import Application, build_idempotency_key
 from backend.app.domain.application_channel import ApplicationChannel
 from backend.app.domain.identifiers import (
+    AccountExportId,
     ApplicationId,
     CandidateDocumentId,
     CompanyId,
@@ -100,6 +110,7 @@ from tests.v2_builders import (
     a_role_classification,
     a_search_profile,
     a_strategy_change_proposal,
+    an_account_export,
     an_eligibility_result,
     an_interview_session,
     an_llm_connection,
@@ -142,6 +153,9 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/interview-sessions/{session_id}/readiness"),
     ("GET", "/api/v2/matches"),
     ("GET", "/api/v2/me/evidence"),
+    ("GET", "/api/v2/me/exports"),
+    ("GET", "/api/v2/me/exports/{export_id}"),
+    ("GET", "/api/v2/me/exports/{export_id}/download"),
     ("GET", "/api/v2/me/profile"),
     ("GET", "/api/v2/me/search-profiles"),
     ("GET", "/api/v2/me/search-profiles/{search_profile_id}/opportunities"),
@@ -183,6 +197,7 @@ V2_OPERATIONS = (
     ("POST", "/api/v2/matches/evaluate"),
     ("POST", "/api/v2/me/claims"),
     ("POST", "/api/v2/me/evidence"),
+    ("POST", "/api/v2/me/exports"),
     ("POST", "/api/v2/me/search-profiles"),
     ("POST", "/api/v2/onboarding/complete"),
     ("POST", "/api/v2/opportunities/{opportunity_id}/cover-letter"),
@@ -256,14 +271,14 @@ async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_de
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 72
+        assert len({path for _, path in published}) == 75
 
 
 @pytest.mark.asyncio
 async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path):
     """The inventory half of "no GET mutates state".
 
-    Forty `GET`s, all of them reports. `POST /onboarding/complete` exists precisely
+    Forty-three `GET`s, all of them reports. `POST /onboarding/complete` exists precisely
     so that the screen displaying progress does not have to be the thing that records
     it, and `POST /company-discovery/run` is the same split for the directory: reading
     it is safe, filling it is a write an operator triggers. The three Phase 7 reads
@@ -285,6 +300,9 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
     strategy change, and classifying an opportunity are its writes. Phase 16 adds three billing
     reads — the plan catalogue, this account's subscription overview and its usage snapshot —
     all views; opening a checkout or a portal and receiving a provider webhook are its writes.
+    Phase 16 M5 adds three account-export reads — the export history list, one export's lifecycle
+    record and its archive download — all views; requesting an export (`POST /me/exports`), which
+    produces the archive, is its write.
     """
     async with api_harness(tmp_path) as api:
         published = operations(api.app, under=API_V2_PREFIX)
@@ -321,6 +339,9 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/interview-sessions/{session_id}/readiness",
             "/api/v2/matches",
             "/api/v2/me/evidence",
+            "/api/v2/me/exports",
+            "/api/v2/me/exports/{export_id}",
+            "/api/v2/me/exports/{export_id}/download",
             "/api/v2/me/profile",
             "/api/v2/me/search-profiles",
             "/api/v2/me/search-profiles/{search_profile_id}/opportunities",
@@ -434,6 +455,21 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
             id=StrategyChangeProposalId(PLACEHOLDER_ID), user_id=user_id))
         await api.role_classifications.upsert(a_role_classification(
             user_id=user_id, opportunity_id=posting_id))
+        # `GET /me/exports/{id}` and its `/download` read a produced export, so the sweep
+        # exercises their 200 path only when a READY one exists under the placeholder id for this
+        # account. Its archive bytes are written under the same key the harness's export store
+        # uses, and its window is set to lapse well after the request clock, so the download
+        # streams real bytes rather than a 409. The export *list* read beside them needs no
+        # seed — an empty list is a 200.
+        export_id = AccountExportId(PLACEHOLDER_ID)
+        export_store = LocalAccountExportStore(tmp_path / "account_exports")
+        export_key = export_store.key_for(user_id, export_id)
+        export_store.put(export_key, b'{"schema_version": 1}')
+        await api.account_exports.upsert(an_account_export(
+            id=export_id, user_id=user_id, storage_key=export_key,
+            byte_size=len(b'{"schema_version": 1}'),
+            completed_at=api.clock.instant,
+            expires_at=api.clock.instant + timedelta(hours=168)))
         reads = [_get_with_scope(concrete(path)) for method, path in operations(
             api.app, under=API_V2_PREFIX) if method == "GET"]
         before = deepcopy((api.users.users, api.sessions.sessions,
@@ -453,7 +489,8 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                            api.role_classifications.classifications,
                            api.career_recommendations.recommendations,
                            api.strategy_proposals.proposals,
-                           api.strategy_executions.executions))
+                           api.strategy_executions.executions,
+                           api.account_exports.exports))
 
         for path in reads:
             for _ in range(2):
@@ -473,7 +510,8 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                 api.role_classifications.classifications,
                 api.career_recommendations.recommendations,
                 api.strategy_proposals.proposals,
-                api.strategy_executions.executions) == before
+                api.strategy_executions.executions,
+                api.account_exports.exports) == before
 
 
 @pytest.mark.asyncio
@@ -505,7 +543,7 @@ async def test_the_one_write_a_get_performs_is_last_seen_at_and_it_cannot_extend
 @pytest.mark.asyncio
 async def test_every_operation_but_register_and_login_refuses_an_anonymous_caller(
         tmp_path):
-    """401 from all eighty-five, with no body sent and nothing created.
+    """401 from all eighty-nine, with no body sent and nothing created.
 
     No payload is needed because FastAPI resolves the session dependency before it
     validates a body, so the refusal happens before the request is read — which is
@@ -528,7 +566,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
             api.app, under=API_V2_PREFIX)
             if (method, path) not in PUBLIC_OPERATIONS | PROVIDER_OPERATIONS]
 
-        assert len(protected) == 85
+        assert len(protected) == 89
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

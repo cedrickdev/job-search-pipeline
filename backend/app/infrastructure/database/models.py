@@ -35,6 +35,7 @@ from typing import Any, Final
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     Enum,
     ForeignKey,
@@ -51,6 +52,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql.elements import TextClause
 
+from backend.app.domain.account_export import AccountExportStatus
 from backend.app.domain.analytics import DimensionKind, RateKind, TimingKind
 from backend.app.domain.application import ApplicationState, SubmissionOutcome
 from backend.app.domain.application_channel import (
@@ -3254,6 +3256,64 @@ class SubscriptionEventRow(TimestampedMixin, Base):
     event_at: Mapped[datetime]
     received_at: Mapped[datetime]
     detail: Mapped[str | None]
+
+
+# `AccountExport`'s state machine, the flattened form of `AccountExport._state_and_fields_are_
+# coherent`: exactly one branch per status names which of the artifact/completion/expiry/failure
+# fields must be set and which must be null, so a row can only ever be in one coherent state.
+_ACCOUNT_EXPORT_STATE_COHERENT: Final[str] = (
+    "(status = 'PENDING' AND storage_key IS NULL AND byte_size IS NULL"
+    " AND completed_at IS NULL AND expires_at IS NULL AND failure_reason IS NULL)"
+    " OR (status = 'READY' AND storage_key IS NOT NULL AND byte_size IS NOT NULL"
+    " AND completed_at IS NOT NULL AND expires_at IS NOT NULL AND failure_reason IS NULL)"
+    " OR (status = 'FAILED' AND storage_key IS NULL AND byte_size IS NULL"
+    " AND completed_at IS NOT NULL AND expires_at IS NULL AND failure_reason IS NOT NULL)"
+    " OR (status = 'EXPIRED' AND storage_key IS NULL AND byte_size IS NULL"
+    " AND completed_at IS NOT NULL AND expires_at IS NOT NULL AND failure_reason IS NULL)"
+)
+
+
+class AccountExportRow(TimestampedMixin, Base):
+    """One account-export request and the archive it produced (§23-25).
+
+    User-owned, read `WHERE user_id = ?`, cascading from `users` — so account deletion (§27-28)
+    removes an export's *row* by the same FK cascade every other user-owned table relies on,
+    while the archive *bytes* live in the export store and are deleted explicitly (§28: external
+    artifacts still require explicit deletion). The id is random (`new_account_export_id`), so
+    each request is its own row rather than collapsing onto a prior snapshot. `status` is the
+    normalized lifecycle; the artifact fields (`storage_key`, `byte_size`) locate the stored
+    archive and its size; `completed_at`/`expires_at` bound its availability and
+    `failure_reason` explains a failed one. The state CHECK restates `AccountExport`'s coherence
+    validator so the database refuses an incoherent row, and `expires_at > completed_at` restates
+    its forward-running retention window. `byte_size` is `BIGINT` — an archive is measured in
+    bytes and need not fit `INT`. The index on `(user_id, created_at)` serves the per-account
+    "my exports, newest first" feed. `created_at`/`updated_at` are domain facts (a transition
+    advances `updated_at`), so the mapper forces `updated_at` into every UPDATE.
+    """
+
+    __tablename__ = "account_exports"
+    __table_args__ = (
+        CheckConstraint("schema_version >= 1", name="schema_version_positive"),
+        CheckConstraint("byte_size IS NULL OR byte_size >= 0", name="byte_size_non_negative"),
+        CheckConstraint(_ACCOUNT_EXPORT_STATE_COHERENT, name="state_coherent"),
+        CheckConstraint(
+            "expires_at IS NULL OR completed_at IS NULL OR expires_at > completed_at",
+            name="expiry_after_completion"),
+        CheckConstraint("updated_at >= created_at", name="updated_at_after_created_at"),
+        Index("ix_account_exports_user_id_created_at", "user_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    status: Mapped[AccountExportStatus] = mapped_column(
+        enum_column(AccountExportStatus, "account_export_status"))
+    schema_version: Mapped[int] = mapped_column(Integer)
+    storage_key: Mapped[str | None]
+    byte_size: Mapped[int | None] = mapped_column(BigInteger)
+    completed_at: Mapped[datetime | None]
+    expires_at: Mapped[datetime | None]
+    failure_reason: Mapped[str | None]
 
 
 

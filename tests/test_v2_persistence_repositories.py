@@ -12,7 +12,7 @@ except the three `session_scope` ones at the end. `session_scope` *is* the commi
 boundary, so proving that it commits means letting it, and those clean up after
 themselves.
 """
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -21,6 +21,7 @@ import pytest_asyncio
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, StatementError
 
+from backend.app.domain.account_export import AccountExportStatus
 from backend.app.domain.common import Location, Reason, ReasonImpact
 from backend.app.domain.chat import ChatActionProposalStatus, ChatMessageRole
 from backend.app.domain.application import ApplicationState
@@ -36,6 +37,7 @@ from backend.app.domain.eligibility import (
     RuleAuthority,
 )
 from backend.app.domain.identifiers import (
+    AccountExportId,
     CandidateProfileId,
     CompanyLocationId,
     ConversationId,
@@ -54,6 +56,7 @@ from backend.app.infrastructure.database.engine import (
     session_scope,
 )
 from backend.app.infrastructure.database.models import (
+    AccountExportRow,
     ApplicationOutcomeRow,
     ApplicationRow,
     CandidateProfileRow,
@@ -81,6 +84,7 @@ from backend.app.infrastructure.database.models import (
     UserRow,
 )
 from backend.app.repositories.sqlalchemy_repositories import (
+    SqlAlchemyAccountExportRepository,
     SqlAlchemyApplicationDecisionRepository,
     SqlAlchemyApplicationOutcomeRepository,
     SqlAlchemyApplicationPolicyRepository,
@@ -102,6 +106,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyUsageEventRepository,
 )
 from tests.v2_builders import (
+    ACCOUNT_EXPORT,
     APPLICATION,
     COMPANY,
     COMPANY_LOCATION,
@@ -148,6 +153,7 @@ from tests.v2_builders import (
     a_subscription,
     a_subscription_event,
     a_usage_event,
+    an_account_export,
     an_eligibility_result,
     an_entitlement,
     an_evaluation,
@@ -1299,6 +1305,71 @@ async def test_the_subscription_list_scopes_to_its_owner(
     assert [s.id for s in await subscriptions.list_for_user(USER)] == [SUBSCRIPTION]
     assert [s.id for s in await subscriptions.list_for_user(OTHER_USER)] == \
         [OTHER_SUBSCRIPTION]
+
+
+# --------------------------------------------------------------------------
+# Phase 16 M5 — the account-export lifecycle repository. User-scoped like every entity,
+# and mutated in place as an export moves PENDING → READY/FAILED → EXPIRED.
+# --------------------------------------------------------------------------
+
+SECOND_EXPORT = AccountExportId(UUID("00000000-0000-4000-8000-000000000112"))
+FOREIGN_EXPORT = AccountExportId(UUID("00000000-0000-4000-8000-000000000113"))
+
+
+@pytest.fixture
+def account_exports(db_session):
+    return SqlAlchemyAccountExportRepository(db_session)
+
+
+@pytest_asyncio.fixture
+async def export_accounts(db_session):
+    """Two accounts: the foreign-key target every export row cascades from."""
+    db_session.add_all([a_user_row(display_name="owner"),
+                        a_user_row(id=OTHER_USER, display_name="somebody else")])
+    await db_session.flush()
+
+
+async def test_an_export_comes_back_exactly_as_it_went_in(export_accounts, account_exports):
+    """One assertion over every column, because a READY export populates them all."""
+    written = await account_exports.upsert(an_account_export())
+    assert written == an_account_export()
+    assert await account_exports.get(USER, ACCOUNT_EXPORT) == an_account_export()
+
+
+async def test_an_export_is_reported_as_absent_to_another_user(
+        export_accounts, account_exports):
+    """An export is user data: a stranger naming its id reads `None`, not the row (§68)."""
+    await account_exports.upsert(an_account_export())
+    assert await account_exports.get(OTHER_USER, ACCOUNT_EXPORT) is None
+
+
+async def test_a_lifecycle_transition_updates_the_one_row(
+        db_session, export_accounts, account_exports):
+    """PENDING → READY lands on the one row: an export is mutated in place, not appended.
+
+    The id is stable across the transition, so producing an archive updates the request row rather
+    than inventing a second — the property `account_export_to_row`'s in-place update depends on.
+    """
+    pending = an_account_export(status=AccountExportStatus.PENDING, storage_key=None,
+                                byte_size=None, completed_at=None)
+    await account_exports.upsert(pending)
+    ready = pending.completed(storage_key="exports/u/e.json", byte_size=64,
+                              expires_at=LATER + timedelta(days=7), as_of=LATER)
+    await account_exports.upsert(ready)
+    assert await _count(db_session, AccountExportRow) == 1
+    stored = await account_exports.get(USER, ACCOUNT_EXPORT)
+    assert stored is not None and stored.status is AccountExportStatus.READY
+
+
+async def test_the_export_list_is_most_recently_updated_first_and_scoped(
+        export_accounts, account_exports):
+    """`list_for_user` is one account's exports newest-first, and never another account's."""
+    await account_exports.upsert(an_account_export(updated_at=NOW))
+    await account_exports.upsert(an_account_export(id=SECOND_EXPORT, updated_at=LATER))
+    await account_exports.upsert(an_account_export(id=FOREIGN_EXPORT, user_id=OTHER_USER))
+    listed = await account_exports.list_for_user(USER)
+    assert [e.id for e in listed] == [SECOND_EXPORT, ACCOUNT_EXPORT]
+    assert [e.id for e in await account_exports.list_for_user(OTHER_USER)] == [FOREIGN_EXPORT]
 
 
 async def test_a_usage_event_is_reported_as_absent_to_another_user(

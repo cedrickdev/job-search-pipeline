@@ -38,6 +38,7 @@ from backend.app.billing.provider import (
     PortalSession,
 )
 from backend.app.core.tokens import digests_match
+from backend.app.domain.account_export import AccountExport
 from backend.app.domain.application import Application, ApplicationState
 from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
 from backend.app.domain.candidate import CandidateProfile
@@ -79,6 +80,7 @@ from backend.app.domain.interview import (
     InterviewSessionSummary,
 )
 from backend.app.domain.identifiers import (
+    AccountExportId,
     ApplicationDecisionId,
     ApplicationId,
     ApplicationOutcomeId,
@@ -137,6 +139,7 @@ from backend.app.llm.sessions import ProviderSession
 from backend.app.llm.telemetry import LLMRun
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
+    AccountExportRepository,
     ApplicationDecisionRepository,
     ApplicationEventRepository,
     ApplicationOutcomeRepository,
@@ -208,7 +211,7 @@ def _implements_contracts() -> tuple[
         CareerRecommendationRepository, StrategyChangeProposalRepository,
         StrategyChangeExecutionRepository, PlanRepository,
         SubscriptionRepository, UsageEventRepository,
-        SubscriptionEventRepository]:
+        SubscriptionEventRepository, AccountExportRepository]:
     """Structural conformance, the same guard `sqlalchemy_repositories` carries.
 
     A fake whose signature drifted from the `Protocol` would still run — Python
@@ -237,7 +240,8 @@ def _implements_contracts() -> tuple[
             FakeStrategyChangeProposalRepository(),
             FakeStrategyChangeExecutionRepository(),
             FakePlanRepository(), FakeSubscriptionRepository(),
-            FakeUsageEventRepository(), FakeSubscriptionEventRepository())
+            FakeUsageEventRepository(), FakeSubscriptionEventRepository(),
+            FakeAccountExportRepository())
 
 
 def _meters_between(one: GeoPoint, other: GeoPoint) -> float:
@@ -2034,6 +2038,40 @@ class FakeSubscriptionEventRepository:
         # `ORDER BY received_at DESC, id`.
         mine.sort(key=lambda e: str(e.id))
         mine.sort(key=lambda e: e.received_at, reverse=True)
+        return tuple(mine[:limit])
+
+
+class FakeAccountExportRepository:
+    """A user's export requests, keyed by id and owner-scoped on every read (§23-25).
+
+    `get` refuses another account's row exactly where the contract says — the store-level half of
+    "do not silently export data owned by another user" — so a foreign or missing id both read as
+    `None`. `upsert` keys on the export id, so each lifecycle transition (the service produces a
+    new `AccountExport` value) updates the one row rather than appending. `list_for_user` answers
+    most-recently-updated first, ties by id — the real `ORDER BY updated_at DESC, id`.
+    """
+
+    def __init__(self) -> None:
+        self.exports: dict[AccountExportId, AccountExport] = {}
+
+    async def get(self, user_id: UserId,
+                  export_id: AccountExportId) -> AccountExport | None:
+        found = self.exports.get(export_id)
+        if found is None or found.user_id != user_id:
+            return None
+        return found.model_copy(deep=True)
+
+    async def upsert(self, export: AccountExport) -> AccountExport:
+        stored = export.model_copy(deep=True)
+        self.exports[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def list_for_user(self, user_id: UserId, *,
+                            limit: int = DEFAULT_LIMIT) -> tuple[AccountExport, ...]:
+        mine = [e.model_copy(deep=True) for e in self.exports.values()
+                if e.user_id == user_id]
+        mine.sort(key=lambda e: str(e.id))
+        mine.sort(key=lambda e: e.updated_at, reverse=True)
         return tuple(mine[:limit])
 
 

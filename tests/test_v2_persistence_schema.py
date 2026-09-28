@@ -109,7 +109,9 @@ SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
 # deletion one statement even though a subscription's provider handle and a usage event's
 # idempotency key both derive its id. The plan catalogue they reference is a shared fact
 # (`plans`, above) and the entitlements a plan grants are parent-owned by it (below).
-USER_OWNED_TABLES = ("application_decisions", "application_outcomes",
+# `account_exports` (M5, §23-25) is user-owned for the same reason: an export is one account's
+# own data, read `WHERE user_id = :current_user` and cascaded from `users` on deletion.
+USER_OWNED_TABLES = ("account_exports", "application_decisions", "application_outcomes",
                      "application_policies", "applications",
                      "candidate_documents", "candidate_profiles",
                      "career_recommendations",
@@ -206,7 +208,7 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_fifty_two_v2_tables():
+def test_the_metadata_holds_exactly_the_fifty_three_v2_tables():
     """A tripwire on the shape of the schema itself.
 
     `models.py` is the only place a V2 table may be declared, so the five ownership
@@ -216,7 +218,7 @@ def test_the_metadata_holds_exactly_the_fifty_two_v2_tables():
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
         PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | set(AUDIT_TABLES) | {"users"}
-    assert len(TABLES) == 52
+    assert len(TABLES) == 53
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))

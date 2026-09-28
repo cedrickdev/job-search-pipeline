@@ -42,4 +42,6 @@ The modules, in dependency order:
 - `subscription` — one account's normalized, webhook-authoritative relationship with a plan;
 - `subscription_event` — the append-only ledger of billing webhooks already processed;
 - `usage` — the append-only, idempotent ledger of what each metered capability consumed.
+- `account_export` — the lifecycle of a request to hand a user a portable, secret-free copy
+  of their own data (§23-25).
 """

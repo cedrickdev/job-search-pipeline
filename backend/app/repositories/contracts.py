@@ -80,6 +80,7 @@ from backend.app.domain.identifiers import (
     StrategyChangeProposalId,
     SubscriptionEventId,
     SubscriptionId,
+    TaskRunId,
     UserId,
     UserSessionId,
 )
@@ -103,6 +104,7 @@ from backend.app.domain.strategy_change import (
 )
 from backend.app.domain.subscription import Subscription
 from backend.app.domain.subscription_event import SubscriptionEvent
+from backend.app.domain.task import TaskLane, TaskRun
 from backend.app.domain.usage import UsageEvent
 from backend.app.domain.user import User, UserSession
 from backend.app.llm.connection import LLMConnection
@@ -1856,6 +1858,82 @@ class AccountExportRepository(Protocol):
 
         The dry-run read paired with `list_expired`, so `run_retention --dry-run` reports an
         honest count of archives it would purge without loading a row. Operator-scope, count only.
+        """
+        ...
+
+
+@runtime_checkable
+class TaskRunRepository(Protocol):
+    """The durable queue of background task runs — operator-scope, worker-driven (§32-40).
+
+    Unlike the user-owned repositories, every read here is operator-scope: a worker processes
+    tasks across all accounts (and ownerless operator jobs like a retention sweep), so there is no
+    `user_id` to scope by. Authorization is *not* this layer's job — a queued job carries no
+    authority; the handler the worker dispatches to re-derives it from the payload and re-runs the
+    owning service's own checks before any irreversible act (§36). `add` is the dispatcher's
+    idempotent enqueue; `lease_next` is the atomic claim two workers race on safely; `save`
+    persists a transition the worker computed; the two list reads feed stale-lease recovery and
+    dead-letter inspection.
+    """
+
+    async def add(self, task: TaskRun) -> TaskRun:
+        """Enqueue a task, returning the row that now exists — idempotent by construction (§37).
+
+        The twin of `UsageEventRepository.add`: the id derives from the idempotency key, so
+        enqueuing the same job twice collides and this returns the *existing* row unchanged rather
+        than resetting an in-flight or finished task back to `QUEUED`. At-least-once delivery is
+        therefore safe — a redelivered enqueue is a no-op that hands back the task already there.
+        """
+        ...
+
+    async def get_by_id(self, run_id: TaskRunId) -> TaskRun | None:
+        """The task with this id, or `None` — operator-scope, keyed by id like the audit ledgers.
+
+        Keyed by the run, not an owner, because the worker and the recovery sweep act on tasks
+        regardless of who (if anyone) owns them.
+        """
+        ...
+
+    async def save(self, task: TaskRun) -> TaskRun:
+        """Persist a transition of an existing task (lease, success, retry, dead-letter, recover).
+
+        Loads the row by id and writes the new state onto it, so a lifecycle transition updates
+        the one row rather than appending — the twin of `AccountExportRepository.upsert`. Used by
+        the worker after it has already claimed the task, never to enqueue (`add` does that).
+        """
+        ...
+
+    async def lease_next(self, lane: TaskLane, *, worker: str, lease_expires_at: datetime,
+                         as_of: datetime) -> TaskRun | None:
+        """Atomically claim the next due task on `lane`, or `None` if none is ready (§40).
+
+        The concurrency-safe heart of the worker: it selects the oldest `QUEUED` task on the lane
+        whose `available_at` has arrived, `FOR UPDATE SKIP LOCKED` so two workers racing for work
+        each claim a *different* row rather than blocking or double-claiming, marks it `RUNNING`
+        with this `worker`'s lease (spending an attempt), and returns it. `None` means the lane is
+        idle. Scoped to one lane so the browser lane and the general lane never draw from each
+        other's work — the isolation §35 requires, made a property of the claim itself.
+        """
+        ...
+
+    async def list_stale_leases(self, as_of: datetime, *,
+                                limit: int = DEFAULT_LIMIT) -> tuple[TaskRun, ...]:
+        """`RUNNING` tasks whose lease has lapsed at `as_of` — the recovery sweep's work-list (§40).
+
+        Operator-scope, across every lane and owner: a worker that died mid-run left its task
+        `RUNNING` with an expired lease, and recovery returns each to `QUEUED` so another worker
+        can take it. Capped and ordered by `lease_expires_at`, so recovery pages the longest-dead
+        first and loops until a page comes back short; each recovered task leaves this list.
+        """
+        ...
+
+    async def list_dead_lettered(self, *,
+                                 limit: int = DEFAULT_LIMIT) -> tuple[TaskRun, ...]:
+        """`DEAD_LETTERED` tasks, most recently finished first — the durable failure trace (§39).
+
+        Operator-scope: the dead-letter queue an operator inspects to see what could not be
+        completed and why (each row carries its typed, secret-free failure). A terminal state, so
+        this feed only grows as jobs give up; nothing here is retried automatically.
         """
         ...
 

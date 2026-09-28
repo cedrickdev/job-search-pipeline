@@ -44,4 +44,6 @@ The modules, in dependency order:
 - `usage` — the append-only, idempotent ledger of what each metered capability consumed.
 - `account_export` — the lifecycle of a request to hand a user a portable, secret-free copy
   of their own data (§23-25).
+- `task` — the durable, idempotent record of one background job: its lane, state machine,
+  retry classification and lease (Phase 16 §32-40).
 """

@@ -72,6 +72,7 @@ SubscriptionId = NewType("SubscriptionId", UUID)
 SubscriptionEventId = NewType("SubscriptionEventId", UUID)
 UsageEventId = NewType("UsageEventId", UUID)
 AccountExportId = NewType("AccountExportId", UUID)
+TaskRunId = NewType("TaskRunId", UUID)
 
 
 def new_user_id() -> UserId:
@@ -689,3 +690,21 @@ def new_account_export_id() -> AccountExportId:
     there is no stable business key an export must be found again by.
     """
     return AccountExportId(uuid4())
+
+
+def task_run_id(idempotency_key: str) -> TaskRunId:
+    """The id of one background task run, derived from its idempotency key (Phase 16 §32, §37).
+
+    Derived rather than random, and this is the load-bearing half of at-least-once safety: the id
+    *is* a function of the caller's idempotency key, so enqueuing the same job twice — a retried
+    request, a redelivered queue message — computes the same primary key and collides instead of
+    running the work a second time (§37). The database's UNIQUE on the idempotency key is the
+    second half — it catches a hand-written row that bypassed this function — but the derivation is
+    what makes the common path idempotent by construction rather than by a caught race.
+
+    `idempotency_key` is the caller's stable handle for "this exact job"; it is passed in rather
+    than shaped here for the reason every derivation in this module keeps its key rules out of the
+    id factory — this module knows about UUIDs and must not grow a dependency on the vocabulary
+    that composes the key.
+    """
+    return TaskRunId(uuid5(SURROGATE_KEY_NAMESPACE, f"task_run:{idempotency_key}"))

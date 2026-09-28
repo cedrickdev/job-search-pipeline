@@ -34,6 +34,7 @@ DEPENDENCY_ORDER = (
     "application_event", "execution_gate", "chat", "interview",
     "outcome", "role", "analytics", "recommendation", "strategy_change",
     "entitlement", "subscription", "subscription_event", "usage", "account_export",
+    "task",
 )
 
 # Named explicitly rather than derived, so the list reads as the phase order's

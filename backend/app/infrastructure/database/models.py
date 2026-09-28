@@ -133,6 +133,7 @@ from backend.app.domain.strategy_change import (
 )
 from backend.app.domain.subscription import INTERNAL_BILLING_PROVIDER, SubscriptionStatus
 from backend.app.domain.subscription_event import SubscriptionEventOutcome
+from backend.app.domain.task import TaskFailureClass, TaskKind, TaskLane, TaskStatus
 from backend.app.domain.usage import UsageSourceType
 from backend.app.domain.user import UserStatus
 from backend.app.infrastructure.database.base import Base, TimestampedMixin
@@ -3314,6 +3315,110 @@ class AccountExportRow(TimestampedMixin, Base):
     completed_at: Mapped[datetime | None]
     expires_at: Mapped[datetime | None]
     failure_reason: Mapped[str | None]
+
+
+# `TaskRun`'s lane rule, the flattened form of `lane_for_kind`: a browser job carries the BROWSER
+# lane and everything else the GENERAL lane, so a mislabelled task cannot be written past the model
+# (§35). `APPLICATION_SUBMISSION` is the one browser kind (`_BROWSER_KINDS`); keep this in step if
+# that set grows.
+_TASK_RUN_LANE_MATCHES_KIND: Final[str] = (
+    "(kind = 'APPLICATION_SUBMISSION' AND lane = 'BROWSER')"
+    " OR (kind <> 'APPLICATION_SUBMISSION' AND lane = 'GENERAL')"
+)
+
+# `TaskRun`'s lease is both-or-neither: a task either holds a lease (owner and expiry) or holds
+# none, never half of one.
+_TASK_RUN_LEASE_COHERENT: Final[str] = (
+    "(lease_owner IS NULL) = (lease_expires_at IS NULL)"
+)
+
+# `TaskRun`'s failure triple: class and reason are set together or both null, and a detail line is
+# only ever attached to a recorded failure.
+_TASK_RUN_FAILURE_COHERENT: Final[str] = (
+    "((last_failure_class IS NULL) = (failure_reason IS NULL))"
+    " AND (failure_detail IS NULL OR failure_reason IS NOT NULL)"
+)
+
+# `TaskRun`'s state machine, the flattened form of `TaskRun._state_is_coherent`: one branch per
+# status names which of the lease/timing/failure fields must be set and which must be null, so a
+# row can only ever be in one coherent state (§40). A QUEUED row deliberately leaves failure and
+# started_at unconstrained here — a transient retry is re-queued carrying both, a fresh enqueue
+# carries neither — while the separate failure-coherence CHECK still holds across every status.
+_TASK_RUN_STATE_COHERENT: Final[str] = (
+    "(status = 'QUEUED' AND lease_owner IS NULL AND lease_expires_at IS NULL"
+    " AND finished_at IS NULL)"
+    " OR (status = 'RUNNING' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL"
+    " AND started_at IS NOT NULL AND finished_at IS NULL"
+    " AND last_failure_class IS NULL AND attempts >= 1)"
+    " OR (status = 'SUCCEEDED' AND lease_owner IS NULL AND lease_expires_at IS NULL"
+    " AND started_at IS NOT NULL AND finished_at IS NOT NULL AND last_failure_class IS NULL)"
+    " OR (status = 'DEAD_LETTERED' AND lease_owner IS NULL AND lease_expires_at IS NULL"
+    " AND started_at IS NOT NULL AND finished_at IS NOT NULL"
+    " AND last_failure_class IS NOT NULL AND attempts >= 1)"
+)
+
+class TaskRunRow(TimestampedMixin, Base):
+    """One durable background task run — the source of truth a worker leases and drives (§32-40).
+
+    User-owned when a job belongs to an account (`user_id` cascades from `users` so a deleted
+    account's queued work vanishes with it, §27); `user_id` is nullable because an operator job
+    like a retention sweep belongs to no account. The id derives from the `idempotency_key`
+    (`task_run_id`), so enqueuing the same job twice collides on the primary key rather than
+    running it twice; `UNIQUE (idempotency_key)` is the second half of that guard (§37). The lane
+    CHECK restates `lane_for_kind` so a browser job cannot be written onto the general lane past
+    the model (§35); the state CHECK restates `TaskRun`'s coherence validator so the database
+    refuses an incoherent row; the lease and failure CHECKs restate their both-or-neither rules.
+    `payload` is JSONB (handler inputs — ids, never secrets). The index on `(lane, status,
+    available_at)` is the lease query's lookup ("the next due job on this lane"); `(status,
+    lease_expires_at)` is the stale-lease sweep's; `(user_id, created_at)` serves the per-account
+    feed. `created_at`/`updated_at` are domain facts (a transition advances `updated_at`), so the
+    mapper forces `updated_at` into every UPDATE.
+    """
+
+    __tablename__ = "task_runs"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key"),
+        CheckConstraint("max_attempts >= 1", name="max_attempts_positive"),
+        CheckConstraint("attempts >= 0", name="attempts_non_negative"),
+        CheckConstraint("attempts <= max_attempts", name="attempts_within_max"),
+        CheckConstraint(_TASK_RUN_LANE_MATCHES_KIND, name="lane_matches_kind"),
+        CheckConstraint(_TASK_RUN_LEASE_COHERENT, name="lease_coherent"),
+        CheckConstraint(_TASK_RUN_FAILURE_COHERENT, name="failure_coherent"),
+        CheckConstraint(_TASK_RUN_STATE_COHERENT, name="state_coherent"),
+        CheckConstraint("available_at >= enqueued_at", name="available_at_after_enqueued"),
+        CheckConstraint(
+            "started_at IS NULL OR started_at >= enqueued_at", name="started_at_after_enqueued"),
+        CheckConstraint(
+            "finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at",
+            name="finished_at_after_started"),
+        CheckConstraint("updated_at >= created_at", name="updated_at_after_created_at"),
+        Index("ix_task_runs_lane_status_available_at", "lane", "status", "available_at"),
+        Index("ix_task_runs_status_lease_expires_at", "status", "lease_expires_at"),
+        Index("ix_task_runs_user_id_created_at", "user_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    kind: Mapped[TaskKind] = mapped_column(enum_column(TaskKind, "task_kind"))
+    lane: Mapped[TaskLane] = mapped_column(enum_column(TaskLane, "task_lane"))
+    status: Mapped[TaskStatus] = mapped_column(enum_column(TaskStatus, "task_status"))
+    idempotency_key: Mapped[str]
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
+    max_attempts: Mapped[int] = mapped_column(Integer)
+    attempts: Mapped[int] = mapped_column(Integer)
+    available_at: Mapped[datetime]
+    lease_owner: Mapped[str | None]
+    lease_expires_at: Mapped[datetime | None]
+    last_failure_class: Mapped[TaskFailureClass | None] = mapped_column(
+        enum_column(TaskFailureClass, "task_failure_class"))
+    failure_reason: Mapped[str | None]
+    failure_detail: Mapped[str | None]
+    enqueued_at: Mapped[datetime]
+    started_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
+
 
 
 

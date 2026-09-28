@@ -146,6 +146,19 @@ TELEMETRY_TABLES = ("llm_runs",)
 # small category with its own rule below.
 AUDIT_TABLES = ("subscription_events",)
 
+# The durable background queue: user-attributable when a job belongs to an account, but owned by no
+# request. `task_runs` (Phase 16 §32-40) is one unit of deferred work and where it stands between
+# QUEUED and a terminal state. `user_id` exists so a user can read their own queued work and so
+# account deletion (§27) takes the jobs enqueued for them — hence the cascade from `users`, like a
+# user-owned table. But it is *nullable*, because an operator job like a retention sweep or an
+# analytics roll-up belongs to no account, which is the line between this and a user-owned table
+# whose owner may not be NULL. Unlike telemetry it carries no `connection_id`, and unlike the audit
+# ledger it cascades rather than surviving deletion: queued work for a deleted account is work that
+# must not run. That combination — nullable owner, CASCADE, no connection — is its own small
+# category with its own rule below.
+WORK_TABLES = ("task_runs",)
+
+
 # Rows owned through a parent instead of directly: a language belongs to a profile,
 # an area to a search profile, a dimension score to an evaluation. They carry no
 # `user_id` on purpose — a second copy of the owner is a second thing that can be
@@ -208,17 +221,18 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_fifty_three_v2_tables():
+def test_the_metadata_holds_exactly_the_fifty_four_v2_tables():
     """A tripwire on the shape of the schema itself.
 
-    `models.py` is the only place a V2 table may be declared, so the five ownership
+    `models.py` is the only place a V2 table may be declared, so the six ownership
     groups plus `users` are the inventory. A new table has to be added to one of
     them — which is the moment to ask whether it needs `user_id`, a cascade and a
     migration.
     """
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
-        PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | set(AUDIT_TABLES) | {"users"}
-    assert len(TABLES) == 53
+        PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | set(AUDIT_TABLES) | set(
+        WORK_TABLES) | {"users"}
+    assert len(TABLES) == 54
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
@@ -380,6 +394,25 @@ def test_audit_rows_are_user_attributable_but_survive_the_account(table_name):
     assert table.columns["user_id"].nullable is True
     to_users = [fk for fk in table.foreign_keys if fk.column.table.name == "users"]
     assert [fk.ondelete for fk in to_users] == ["SET NULL"]
+
+
+@pytest.mark.parametrize("table_name", WORK_TABLES)
+def test_work_rows_are_user_attributable_but_owned_by_no_request(table_name):
+    """A queued job names its account when it has one, and vanishes with it when deleted.
+
+    `user_id` exists so a user can read their own queued work `WHERE user_id = :current_user`, and
+    it is *nullable* because an operator job — a retention sweep, an analytics roll-up — belongs to
+    no account, which is the line between this and a user-owned table whose owner may not be NULL.
+    The delete rule is the line against the audit ledger: the FK to `users` is `CASCADE`, not
+    `SET NULL`, because queued work for a deleted account is work that must not run (§27). Unlike
+    telemetry, a task carries no `connection_id`.
+    """
+    table = TABLES[table_name]
+    assert "user_id" in table.columns
+    assert table.columns["user_id"].nullable is True
+    to_users = [fk for fk in table.foreign_keys if fk.column.table.name == "users"]
+    assert [fk.ondelete for fk in to_users] == ["CASCADE"]
+    assert "connection_id" not in table.columns
 
 
 def test_every_foreign_key_states_what_happens_on_delete():

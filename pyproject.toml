@@ -88,6 +88,15 @@ dev = [
     "pypdf==6.4.0",
 ]
 
+# The background worker's queue-notification transport (Phase 16 §33). Redis is a
+# notification-only layer over the durable `TaskRun` table — the worker polls the
+# database regardless — so it is an *extra*, not a base dependency: the default test
+# suite and a CLI-only deployment never import it (the client is loaded lazily inside
+# `RedisNotifyingDispatcher`), and only a worker deployment installs `.[worker]`.
+worker = [
+    "redis>=5,<7",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Explicit rather than defaulted: `strict` means an async test without the
@@ -110,14 +119,19 @@ build-backend = "setuptools.build_meta"
 packages = ["pipeline", "pipeline.sources", "pipeline.apply", "dashboard", "server", "server.routes",
             "backend", "backend.app", "backend.app.domain", "backend.app.compat",
             "backend.app.core", "backend.app.infrastructure",
-            "backend.app.infrastructure.database", "backend.app.repositories",
+            "backend.app.infrastructure.database", "backend.app.infrastructure.tasks",
+            "backend.app.repositories",
             "backend.app.cli", "backend.app.services", "backend.app.api",
             "backend.app.api.routes", "backend.app.discovery",
             "backend.app.discovery.adapters",
             "backend.app.companies", "backend.app.companies.providers",
             "backend.app.geo",
             "backend.app.llm", "backend.app.llm.providers", "backend.app.chat",
-            "backend.app.billing",
+            "backend.app.billing", "backend.app.accounts",
+            "backend.app.application_engine", "backend.app.application_engine.adapters",
+            "backend.app.career", "backend.app.documents", "backend.app.eligibility",
+            "backend.app.exports", "backend.app.interview", "backend.app.matching",
+            "backend.app.retention", "backend.app.tasks",
             "country_packs", "country_packs.ch"]
 
 # A Country Pack is five YAML files and a six-line loader (Phase 5): without this

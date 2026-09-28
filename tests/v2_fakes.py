@@ -115,6 +115,7 @@ from backend.app.domain.identifiers import (
     SubmissionAttemptId,
     SubscriptionId,
     SubscriptionEventId,
+    TaskRunId,
     UsageEventId,
     UserId,
     UserSessionId,
@@ -132,6 +133,7 @@ from backend.app.domain.strategy_change import (
 )
 from backend.app.domain.subscription import Subscription, SubscriptionStatus
 from backend.app.domain.subscription_event import SubscriptionEvent
+from backend.app.domain.task import TaskKind, TaskLane, TaskRun, TaskSpec, TaskStatus
 from backend.app.domain.usage import UsageEvent
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.llm.connection import LLMConnection
@@ -182,6 +184,7 @@ from backend.app.repositories.contracts import (
     SubmissionAttemptRepository,
     SubscriptionRepository,
     SubscriptionEventRepository,
+    TaskRunRepository,
     UsageEventRepository,
     UserRepository,
 )
@@ -211,7 +214,8 @@ def _implements_contracts() -> tuple[
         CareerRecommendationRepository, StrategyChangeProposalRepository,
         StrategyChangeExecutionRepository, PlanRepository,
         SubscriptionRepository, UsageEventRepository,
-        SubscriptionEventRepository, AccountExportRepository]:
+        SubscriptionEventRepository, AccountExportRepository,
+        TaskRunRepository]:
     """Structural conformance, the same guard `sqlalchemy_repositories` carries.
 
     A fake whose signature drifted from the `Protocol` would still run — Python
@@ -241,7 +245,7 @@ def _implements_contracts() -> tuple[
             FakeStrategyChangeExecutionRepository(),
             FakePlanRepository(), FakeSubscriptionRepository(),
             FakeUsageEventRepository(), FakeSubscriptionEventRepository(),
-            FakeAccountExportRepository())
+            FakeAccountExportRepository(), FakeTaskRunRepository())
 
 
 def _meters_between(one: GeoPoint, other: GeoPoint) -> float:
@@ -2121,6 +2125,103 @@ class FakeAccountExportRepository:
     async def count_expired(self, as_of: datetime) -> int:
         return sum(1 for e in self.exports.values()
                    if e.status is AccountExportStatus.READY and e.is_expired(as_of))
+
+
+class FakeTaskRunRepository:
+    """The durable queue, keyed by run id and operator-scope on every read (§32-40).
+
+    `add` honours the idempotency the id encodes — a second enqueue of the same job returns the
+    stored run rather than a second row, the convergence the real `add` reaches when a concurrent
+    insert loses the race on the primary key, so an in-flight or finished task is never reset to
+    QUEUED. `save` upserts the one row a transition produced. `lease_next` is the claim: it takes
+    the oldest due QUEUED task *on the given lane only* — the isolation §35 requires — and applies
+    the domain `leased` transition, the same value the real repository writes under `FOR UPDATE SKIP
+    LOCKED`; single-threaded here, the locking it buys is a property of the database asserted in the
+    concurrent PostgreSQL test. The two list reads mirror the real orderings (`lease_expires_at`
+    for the recovery sweep, `finished_at DESC` for the dead-letter feed).
+    """
+
+    def __init__(self) -> None:
+        self.tasks: dict[TaskRunId, TaskRun] = {}
+
+    async def add(self, task: TaskRun) -> TaskRun:
+        existing = self.tasks.get(task.id)
+        if existing is not None:
+            return existing.model_copy(deep=True)
+        stored = task.model_copy(deep=True)
+        self.tasks[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def get_by_id(self, run_id: TaskRunId) -> TaskRun | None:
+        found = self.tasks.get(run_id)
+        return None if found is None else found.model_copy(deep=True)
+
+    async def save(self, task: TaskRun) -> TaskRun:
+        stored = task.model_copy(deep=True)
+        self.tasks[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def lease_next(self, lane: TaskLane, *, worker: str, lease_expires_at: datetime,
+                         as_of: datetime) -> TaskRun | None:
+        due = [t for t in self.tasks.values()
+               if t.lane == lane and t.status is TaskStatus.QUEUED
+               and t.available_at <= as_of]
+        if not due:
+            return None
+        # The oldest due task, ties by id — the real `ORDER BY available_at, id LIMIT 1`.
+        due.sort(key=lambda t: str(t.id))
+        due.sort(key=lambda t: t.available_at)
+        leased = due[0].leased(
+            worker=worker, lease_expires_at=lease_expires_at, as_of=as_of)
+        self.tasks[leased.id] = leased
+        return leased.model_copy(deep=True)
+
+    async def list_stale_leases(self, as_of: datetime, *,
+                                limit: int = DEFAULT_LIMIT) -> tuple[TaskRun, ...]:
+        stale = [t.model_copy(deep=True) for t in self.tasks.values()
+                 if t.status is TaskStatus.RUNNING and t.lease_expires_at is not None
+                 and t.lease_expires_at <= as_of]
+        stale.sort(key=lambda t: str(t.id))
+        # A RUNNING task always carries lease_expires_at (the domain validator guarantees it); the
+        # `or as_of` only satisfies the type-checker and never fires, since a datetime is truthy.
+        stale.sort(key=lambda t: t.lease_expires_at or as_of)
+        return tuple(stale[:limit])
+
+    async def list_dead_lettered(self, *,
+                                 limit: int = DEFAULT_LIMIT) -> tuple[TaskRun, ...]:
+        dead = [t.model_copy(deep=True) for t in self.tasks.values()
+                if t.status is TaskStatus.DEAD_LETTERED]
+        dead.sort(key=lambda t: str(t.id))
+        # A DEAD_LETTERED task always carries finished_at (the domain validator guarantees it); the
+        # `or t.enqueued_at` only satisfies the type-checker and never fires.
+        dead.sort(key=lambda t: t.finished_at or t.enqueued_at, reverse=True)
+        return tuple(dead[:limit])
+
+
+class FakeTaskDispatcher:
+    """A `TaskDispatcher` a service test drives without a queue table or a worker (§32, §37).
+
+    Records every `TaskSpec` a service enqueues and hands back the run id the spec derives, so a
+    test asserts *what background work a workflow scheduled* without running it. Idempotent like the
+    real dispatcher: enqueuing the same job twice (same idempotency key ⇒ same `run_id`) records it
+    once and returns the same id, so a caller that retries an enqueue cannot appear to double-queue.
+    `enqueued` preserves first-seen order for assertions; `enqueued_kinds` is the common shorthand.
+    """
+
+    def __init__(self) -> None:
+        self.enqueued: list[TaskSpec] = []
+        self._seen: set[TaskRunId] = set()
+
+    async def enqueue(self, task: TaskSpec) -> TaskRunId:
+        if task.run_id not in self._seen:
+            self._seen.add(task.run_id)
+            self.enqueued.append(task)
+        return task.run_id
+
+    @property
+    def enqueued_kinds(self) -> list[TaskKind]:
+        """The kinds enqueued, in first-seen order — the usual thing a test asserts on."""
+        return [spec.kind for spec in self.enqueued]
 
 
 class FakeBillingProvider:

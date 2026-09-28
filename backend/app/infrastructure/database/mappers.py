@@ -153,6 +153,7 @@ from backend.app.domain.identifiers import (
     SubmissionAttemptId,
     SubscriptionEventId,
     SubscriptionId,
+    TaskRunId,
     UsageEventId,
     UserId,
     UserSessionId,
@@ -216,6 +217,13 @@ from backend.app.domain.strategy_change import (
 )
 from backend.app.domain.subscription import Subscription, SubscriptionStatus
 from backend.app.domain.subscription_event import SubscriptionEvent, SubscriptionEventOutcome
+from backend.app.domain.task import (
+    TaskFailureClass,
+    TaskKind,
+    TaskLane,
+    TaskRun,
+    TaskStatus,
+)
 from backend.app.domain.usage import UsageEvent, UsageSourceType
 from backend.app.domain.user import User, UserSession, UserStatus
 from backend.app.infrastructure.database.models import (
@@ -269,6 +277,7 @@ from backend.app.infrastructure.database.models import (
     SubmissionAttemptRow,
     SubscriptionEventRow,
     SubscriptionRow,
+    TaskRunRow,
     UsageEventRow,
     UserRow,
     UserSessionRow,
@@ -2831,6 +2840,62 @@ def account_export_to_domain(row: AccountExportRow) -> AccountExport:
         completed_at=row.completed_at,
         expires_at=row.expires_at,
         failure_reason=row.failure_reason,
+        created_at=row.created_at,
+        updated_at=row.updated_at)
+
+
+def task_run_to_row(task: TaskRun, row: TaskRunRow | None = None) -> TaskRunRow:
+    """A `TaskRun` onto its row. A task is mutated as it moves through its lifecycle (QUEUED →
+    RUNNING → SUCCEEDED/DEAD_LETTERED, and back to QUEUED on retry or lease recovery), so
+    `created_at`/`updated_at` are domain facts and `updated_at` is forced into every UPDATE for
+    the reason `application_to_row` states. `dict(task.payload)` is copied in so the row does not
+    alias the frozen domain value's mapping."""
+    target = TaskRunRow(id=task.id) if row is None else row
+    target.user_id = task.user_id
+    target.kind = task.kind
+    target.lane = task.lane
+    target.status = task.status
+    target.idempotency_key = task.idempotency_key
+    target.payload = dict(task.payload)
+    target.max_attempts = task.max_attempts
+    target.attempts = task.attempts
+    target.available_at = task.available_at
+    target.lease_owner = task.lease_owner
+    target.lease_expires_at = task.lease_expires_at
+    target.last_failure_class = task.last_failure_class
+    target.failure_reason = task.failure_reason
+    target.failure_detail = task.failure_detail
+    target.enqueued_at = task.enqueued_at
+    target.started_at = task.started_at
+    target.finished_at = task.finished_at
+    target.created_at = task.created_at
+    target.updated_at = task.updated_at
+    if row is not None:
+        flag_modified(target, "updated_at")
+    return target
+
+
+def task_run_to_domain(row: TaskRunRow) -> TaskRun:
+    return TaskRun(
+        id=TaskRunId(row.id),
+        user_id=None if row.user_id is None else UserId(row.user_id),
+        kind=TaskKind(row.kind),
+        lane=TaskLane(row.lane),
+        status=TaskStatus(row.status),
+        idempotency_key=row.idempotency_key,
+        payload=dict(row.payload),
+        max_attempts=row.max_attempts,
+        attempts=row.attempts,
+        available_at=row.available_at,
+        lease_owner=row.lease_owner,
+        lease_expires_at=row.lease_expires_at,
+        last_failure_class=(None if row.last_failure_class is None
+                            else TaskFailureClass(row.last_failure_class)),
+        failure_reason=row.failure_reason,
+        failure_detail=row.failure_detail,
+        enqueued_at=row.enqueued_at,
+        started_at=row.started_at,
+        finished_at=row.finished_at,
         created_at=row.created_at,
         updated_at=row.updated_at)
 

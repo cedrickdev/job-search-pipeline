@@ -91,6 +91,7 @@ from backend.app.domain.identifiers import (
     SubmissionAttemptId,
     SubscriptionEventId,
     SubscriptionId,
+    TaskRunId,
     UserId,
     UserSessionId,
 )
@@ -115,6 +116,7 @@ from backend.app.domain.strategy_change import (
 )
 from backend.app.domain.subscription import Subscription, SubscriptionStatus
 from backend.app.domain.subscription_event import SubscriptionEvent
+from backend.app.domain.task import TaskLane, TaskRun, TaskStatus
 from backend.app.domain.usage import UsageEvent
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.infrastructure.database.mappers import (
@@ -191,6 +193,8 @@ from backend.app.infrastructure.database.mappers import (
     subscription_event_to_row,
     subscription_to_domain,
     subscription_to_row,
+    task_run_to_domain,
+    task_run_to_row,
     usage_event_to_domain,
     usage_event_to_row,
     user_session_to_domain,
@@ -238,6 +242,7 @@ from backend.app.infrastructure.database.models import (
     SubmissionAttemptRow,
     SubscriptionEventRow,
     SubscriptionRow,
+    TaskRunRow,
     UsageEventRow,
     UserRow,
     UserSessionRow,
@@ -2836,5 +2841,96 @@ class SqlAlchemyAccountExportRepository:
                    AccountExportRow.expires_at.is_not(None),
                    AccountExportRow.expires_at <= as_of))
         return int(result.scalar_one())
+
+
+class SqlAlchemyTaskRunRepository:
+    """`TaskRunRepository` over an `AsyncSession` — the durable queue, operator-scope (§32-40).
+
+    `add` inserts inside a SAVEPOINT so a concurrent (or redelivered) enqueue of the same job
+    converges on one row rather than raising — the queue twin of `SqlAlchemyUsageEventRepository.
+    add`, and what makes at-least-once delivery safe. `lease_next` is the concurrency-safe claim:
+    `FOR UPDATE SKIP LOCKED` lets racing workers each take a different row rather than blocking or
+    double-claiming, and the transition to `RUNNING` is written in the same statement, so once the
+    caller commits the task is no longer visible as `QUEUED`. Every read is operator-scope — a
+    worker acts across owners — so none takes a `user_id`.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, task: TaskRun) -> TaskRun:
+        row = task_run_to_row(task)
+        try:
+            async with self._session.begin_nested():
+                self._session.add(row)
+                await self._session.flush()
+        except IntegrityError:
+            # A concurrent unit of work already enqueued this exact job: the id (and
+            # `uq_task_runs_idempotency_key`) collided. The SAVEPOINT rolled back and the outer
+            # transaction is intact, so the run that won the race is read back and returned — a
+            # re-enqueue is a no-op that never resets an in-flight or finished task to QUEUED.
+            existing = await self.get_by_id(task.id)
+            if existing is None:
+                raise
+            return existing
+        return task_run_to_domain(row)
+
+    async def get_by_id(self, run_id: TaskRunId) -> TaskRun | None:
+        result = await self._session.execute(
+            select(TaskRunRow).where(TaskRunRow.id == run_id))
+        row = result.scalar_one_or_none()
+        return None if row is None else task_run_to_domain(row)
+
+    async def save(self, task: TaskRun) -> TaskRun:
+        result = await self._session.execute(
+            select(TaskRunRow).where(TaskRunRow.id == task.id))
+        existing = result.scalar_one_or_none()
+        row = task_run_to_row(task, existing)
+        self._session.add(row)
+        await self._session.flush()
+        return task_run_to_domain(row)
+
+    async def lease_next(self, lane: TaskLane, *, worker: str, lease_expires_at: datetime,
+                         as_of: datetime) -> TaskRun | None:
+        # The oldest due QUEUED task on this lane, locked `FOR UPDATE SKIP LOCKED` so a second
+        # worker racing for work skips this row and claims the next rather than blocking on it or
+        # double-claiming it. The claim (QUEUED → RUNNING, an attempt spent, the lease stamped) is
+        # written before the caller commits, so the row leaves the QUEUED work-list atomically.
+        result = await self._session.execute(
+            select(TaskRunRow)
+            .where(TaskRunRow.lane == lane,
+                   TaskRunRow.status == TaskStatus.QUEUED,
+                   TaskRunRow.available_at <= as_of)
+            .order_by(TaskRunRow.available_at, TaskRunRow.id)
+            .limit(1)
+            .with_for_update(skip_locked=True))
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        leased = task_run_to_domain(row).leased(
+            worker=worker, lease_expires_at=lease_expires_at, as_of=as_of)
+        task_run_to_row(leased, row)
+        await self._session.flush()
+        return leased
+
+    async def list_stale_leases(self, as_of: datetime, *,
+                                limit: int = DEFAULT_LIMIT) -> tuple[TaskRun, ...]:
+        result = await self._session.execute(
+            select(TaskRunRow)
+            .where(TaskRunRow.status == TaskStatus.RUNNING,
+                   TaskRunRow.lease_expires_at.is_not(None),
+                   TaskRunRow.lease_expires_at <= as_of)
+            .order_by(TaskRunRow.lease_expires_at, TaskRunRow.id)
+            .limit(limit))
+        return tuple(task_run_to_domain(row) for row in result.scalars())
+
+    async def list_dead_lettered(self, *,
+                                 limit: int = DEFAULT_LIMIT) -> tuple[TaskRun, ...]:
+        result = await self._session.execute(
+            select(TaskRunRow)
+            .where(TaskRunRow.status == TaskStatus.DEAD_LETTERED)
+            .order_by(TaskRunRow.finished_at.desc(), TaskRunRow.id)
+            .limit(limit))
+        return tuple(task_run_to_domain(row) for row in result.scalars())
 
 

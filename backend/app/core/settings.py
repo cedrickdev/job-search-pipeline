@@ -210,6 +210,20 @@ DEFAULT_EXPORT_ARTIFACT_ROOT: Final[str] = "var/account_exports"
 EXPORT_RETENTION_HOURS_VARIABLE: Final[str] = "JOBSEARCH_EXPORT_RETENTION_HOURS"
 DEFAULT_EXPORT_RETENTION_HOURS: Final[int] = 168  # seven days
 
+# The retention sweep's own windows (Phase 16 §30-31). Deliberately narrow: the sweep purges
+# only data that is *legitimately temporary*, and most of that data already carries its own
+# expiry — a `UserSession` has an absolute `expires_at`, an `AccountExport` an `expires_at` set
+# from `ExportSettings.retention_hours`. The one temporary category with no stored expiry is a
+# `ProviderSession`, which is idle-based (a resumable provider handle refreshed on every turn),
+# so the policy that says "how long may one sit unused" lives here rather than on the row.
+# `sweep_batch_limit` is the per-statement cap the looping deletes honour, so a sweep never locks
+# a whole table in one statement; the service loops until a page comes back short.
+RETENTION_PROVIDER_SESSION_IDLE_HOURS_VARIABLE: Final[str] = (
+    "JOBSEARCH_RETENTION_PROVIDER_SESSION_IDLE_HOURS")
+DEFAULT_RETENTION_PROVIDER_SESSION_IDLE_HOURS: Final[int] = 720  # thirty days
+RETENTION_SWEEP_BATCH_LIMIT_VARIABLE: Final[str] = "JOBSEARCH_RETENTION_SWEEP_BATCH_LIMIT"
+DEFAULT_RETENTION_SWEEP_BATCH_LIMIT: Final[int] = 500
+
 # The Fernet master key the LLM connection store encrypts provider credentials with
 # (Phase 11, docs/LLM_PROVIDER_ARCHITECTURE.md §21). Read from the environment,
 # never stored in the database and never returned by the API. A deployment that
@@ -459,6 +473,51 @@ class ExportSettings(BaseModel):
         return cls(
             artifact_root=value or DEFAULT_EXPORT_ARTIFACT_ROOT,
             retention_hours=retention_hours,
+        )
+
+
+class RetentionSettings(BaseModel):
+    """The retention sweep's windows — how long legitimately-temporary data may linger (§30-31).
+
+    Frozen and closed like every settings model. Deliberately narrow, because most temporary
+    data already carries its own expiry: a `UserSession` has an absolute `expires_at` the sweep
+    compares to `now`, and an `AccountExport` an `expires_at` set from
+    `ExportSettings.retention_hours` when it was produced. The one temporary category with no
+    stored expiry is the `ProviderSession` — an idle-based provider handle refreshed on every
+    turn — so `provider_session_idle_hours` is the policy that says how long one may sit unused
+    before the sweep deletes it. `sweep_batch_limit` is the per-statement cap the looping deletes
+    and lists honour, so a sweep never locks a whole table in one statement; the service loops
+    until a page comes back short.
+
+    What this policy does *not* mention is as important as what it does: there is no window here
+    for CandidateEvidence, application audit history, outcomes or user-created documents, because
+    §30 forbids auto-expiring them. The sweep can only touch what this policy names, and it names
+    only temporary data.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider_session_idle_hours: int = Field(
+        default=DEFAULT_RETENTION_PROVIDER_SESSION_IDLE_HOURS, ge=1)
+    sweep_batch_limit: int = Field(
+        default=DEFAULT_RETENTION_SWEEP_BATCH_LIMIT, ge=1, le=100000)
+
+    @property
+    def provider_session_max_idle(self) -> timedelta:
+        """How long a provider session may sit unused before it is stale."""
+        return timedelta(hours=self.provider_session_idle_hours)
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
+        """Read the retention windows from the environment, or use the safe defaults."""
+        source = environ if env is None else env
+        return cls(
+            provider_session_idle_hours=_read_int(
+                source, RETENTION_PROVIDER_SESSION_IDLE_HOURS_VARIABLE,
+                DEFAULT_RETENTION_PROVIDER_SESSION_IDLE_HOURS),
+            sweep_batch_limit=_read_int(
+                source, RETENTION_SWEEP_BATCH_LIMIT_VARIABLE,
+                DEFAULT_RETENTION_SWEEP_BATCH_LIMIT),
         )
 
 

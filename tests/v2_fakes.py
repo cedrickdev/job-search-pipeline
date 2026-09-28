@@ -38,7 +38,7 @@ from backend.app.billing.provider import (
     PortalSession,
 )
 from backend.app.core.tokens import digests_match
-from backend.app.domain.account_export import AccountExport
+from backend.app.domain.account_export import AccountExport, AccountExportStatus
 from backend.app.domain.application import Application, ApplicationState
 from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
 from backend.app.domain.candidate import CandidateProfile
@@ -335,6 +335,10 @@ class FakeSessionRepository:
         for session in doomed:
             del self.sessions[session.id]
         return len(doomed)
+
+    async def count_expired(self, as_of: datetime) -> int:
+        return sum(1 for session in self.sessions.values()
+                   if session.expires_at < as_of)
 
 
 class FakeCandidateProfileRepository:
@@ -1104,6 +1108,19 @@ class FakeProviderSessionRepository:
         stored = session.model_copy(deep=True)
         self.sessions[stored.id] = stored
         return stored
+
+    async def delete_stale(self, not_updated_since: datetime, *,
+                           limit: int = DEFAULT_LIMIT) -> int:
+        doomed = sorted((session for session in self.sessions.values()
+                         if session.updated_at < not_updated_since),
+                        key=lambda session: session.updated_at)[:limit]
+        for session in doomed:
+            del self.sessions[session.id]
+        return len(doomed)
+
+    async def count_stale(self, not_updated_since: datetime) -> int:
+        return sum(1 for session in self.sessions.values()
+                   if session.updated_at < not_updated_since)
 
 
 class FakeLLMRunRepository:
@@ -2090,6 +2107,20 @@ class FakeAccountExportRepository:
         mine.sort(key=lambda e: str(e.id))
         mine.sort(key=lambda e: e.updated_at, reverse=True)
         return tuple(mine[:limit])
+
+    async def list_expired(self, as_of: datetime, *,
+                           limit: int = DEFAULT_LIMIT) -> tuple[AccountExport, ...]:
+        lapsed = [e.model_copy(deep=True) for e in self.exports.values()
+                  if e.status is AccountExportStatus.READY and e.is_expired(as_of)]
+        lapsed.sort(key=lambda e: str(e.id))
+        # A READY export always carries expires_at (the domain validator guarantees it); the
+        # `or as_of` only satisfies the type-checker and never fires, since a datetime is truthy.
+        lapsed.sort(key=lambda e: e.expires_at or as_of)
+        return tuple(lapsed[:limit])
+
+    async def count_expired(self, as_of: datetime) -> int:
+        return sum(1 for e in self.exports.values()
+                   if e.status is AccountExportStatus.READY and e.is_expired(as_of))
 
 
 class FakeBillingProvider:

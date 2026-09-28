@@ -1282,12 +1282,14 @@ def an_account_export(*, id=ACCOUNT_EXPORT, status=AccountExportStatus.READY,
     the locator, it does not write the file, so a download test must `put` real bytes under
     `storage_key` in the export store. A `PENDING` export passes `status=AccountExportStatus.PENDING,
     storage_key=None, byte_size=None, completed_at=None` (expiry then defaults to unset); a `FAILED`
-    one passes `status=..., storage_key=None, byte_size=None, expires_at=None,
-    failure_reason="PRODUCTION_FAILED"`. A test that seeds under a placeholder passes `id=`; one
+    one passes `status=AccountExportStatus.FAILED, storage_key=None, byte_size=None,
+    failure_reason="PRODUCTION_FAILED"` (a failed production keeps its `completed_at` but never a
+    window, so the auto-expiry is dropped). A test that seeds under a placeholder passes `id=`; one
     for another owner passes `user_id=OTHER_USER`.
     """
     resolved_expires = (
-        expires_at if expires_at is not None
+        None if status is AccountExportStatus.FAILED  # a failed production has no window (§23)
+        else expires_at if expires_at is not None
         else (completed_at + timedelta(days=7) if completed_at is not None else None))
     fields = {
         "id": id,

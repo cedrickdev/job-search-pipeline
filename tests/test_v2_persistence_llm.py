@@ -10,6 +10,7 @@ the model.
 
 Every test runs inside the transaction `db_session` opened and will roll back.
 """
+from datetime import timedelta
 from uuid import UUID
 
 import pytest
@@ -34,6 +35,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
 from tests.v2_builders import (
     CONNECTION,
     LATER,
+    NOW,
     OTHER_CONNECTION,
     OTHER_USER,
     RUN,
@@ -237,6 +239,44 @@ async def test_a_session_is_invisible_to_another_user(seeded_users, connections,
     await connections.upsert(an_llm_connection())
     await sessions.upsert(a_provider_session())
     assert await sessions.get(OTHER_USER, CONNECTION, "chat-1") is None
+
+
+async def test_stale_provider_sessions_are_swept_across_owners_and_a_fresh_one_stays(
+        seeded_users, db_session, connections, sessions):
+    """`delete_stale`/`count_stale` are retention's provider-session half — idle-based, all owners.
+
+    A provider session carries no stored expiry, so staleness is "not touched since a cutoff". The
+    sweep is operator-scope (no `user_id`): a session idle on either owner's connection goes, and a
+    recently-used one stays. `count_stale` matches `delete_stale`'s predicate for `--dry-run`, and a
+    rerun removes nothing — the drained rows are already gone (§30-31).
+    """
+    await connections.upsert(an_llm_connection())
+    await connections.upsert(an_llm_connection(id=OTHER_CONNECTION, user_id=OTHER_USER))
+    await sessions.upsert(a_provider_session(conversation_key="idle", updated_at=NOW))
+    await sessions.upsert(a_provider_session(
+        connection_id=OTHER_CONNECTION, user_id=OTHER_USER,
+        conversation_key="idle-other", updated_at=NOW))
+    fresh = a_provider_session(conversation_key="used", updated_at=LATER)
+    await sessions.upsert(fresh)
+    cutoff = NOW + timedelta(hours=12)  # between NOW (idle) and LATER (fresh)
+
+    assert await sessions.count_stale(cutoff) == 2  # the dry-run read, both owners' idle rows
+    assert await sessions.delete_stale(cutoff) == 2
+    assert await sessions.count_stale(cutoff) == 0 and await sessions.delete_stale(cutoff) == 0
+    assert await _count(db_session, ProviderSessionRow) == 1  # the fresh one survives
+    assert await sessions.get(USER, CONNECTION, "used") == fresh
+
+
+async def test_delete_stale_caps_each_page_at_its_limit(
+        seeded_users, db_session, connections, sessions):
+    """The cap keeps a sweep from locking the table: a page removes at most `limit`, then loops."""
+    await connections.upsert(an_llm_connection())
+    for i in range(5):
+        await sessions.upsert(a_provider_session(conversation_key=f"idle-{i}", updated_at=NOW))
+    cutoff = NOW + timedelta(hours=12)
+
+    assert await sessions.delete_stale(cutoff, limit=2) == 2  # one capped page
+    assert await _count(db_session, ProviderSessionRow) == 3  # three still to drain
 
 
 # --- telemetry runs --------------------------------------------------------

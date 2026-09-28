@@ -111,6 +111,54 @@ the just-revoked token is refused on replay.
 Deletion also never touches an `ApplicationPolicy`'s safety rules or any eligibility
 brake as a side effect — losing an account is not a path to widening a guard.
 
+## Retention — sweeping temporary data on a schedule (§30–31, §70)
+
+Export and deletion are things an *account holder* does to their own data. Retention is
+the counterweight the *platform* runs on its own: the data that is temporary **by
+design** must not linger past the window it was promised, whoever owns it. A liability
+lurks in the opposite of deletion — a platform that keeps everything forever. The sweep
+removes exactly three categories, and nothing else:
+
+- **Expired user sessions** — a session past its stored absolute `expires_at` is an
+  attack surface no one will resume.
+- **Lapsed `READY` export archives** — an export past its own `expires_at` is a copy of
+  a user's data still sitting in the object store past the window the download was
+  offered for. The sweep purges the bytes and marks the row `EXPIRED`.
+- **Idle provider sessions** — an LLM provider handle carries no stored expiry, so
+  staleness is idle-based: a row untouched since `now − provider_session_max_idle` is
+  state no conversation will resume.
+
+`python -m backend.app.cli.run_retention` runs one sweep under the deployment's
+`RetentionSettings` (the provider idle window and a per-statement batch cap; sessions and
+exports carry their own expiry, so the policy stays narrow). `--dry-run` reports what a
+sweep *would* remove — counted from the same predicates — without touching a row or a
+byte. An operator runs it directly until a worker schedules it (M8).
+
+### What retention never auto-expires
+
+The sweep touches only data temporary by the policy's own definition. It holds **no
+repository** for the account's persistent history, so there is no path from a sweep to
+it — it cannot widen to reach:
+
+- **candidate evidence** and the profile claims the truth guard rests on;
+- **application audit history** — applications, decisions and their event trail;
+- **career outcomes, recommendations and strategy history**;
+- **user-created documents** (resumes, cover letters) and their rendered versions.
+
+A `PENDING` or `FAILED` export is likewise persistent record, not a lapsed archive: the
+export sweep purges only lapsed `READY` rows, so a request not yet produced and an
+auditable failed production both survive.
+
+### Idempotent and fail-safe (§31)
+
+A rerun — after a crash, or a redelivered schedule — reaches the same state and raises
+nothing: deleting an already-gone row or archive is a no-op, and an export drops out of
+the work-list the instant its row becomes `EXPIRED`. Crucially, an export purge marks the
+row `EXPIRED` **only after** the store confirms the bytes are gone. If the store faults,
+the row is left `READY` and the fault is recorded as a typed failure that names the export
+and a fixed reason — never its contents — so a rerun retries rather than orphaning bytes
+behind an `EXPIRED` row. The CLI exits `0` on a clean sweep and `3` when a purge failed.
+
 ## Where each guarantee is proved
 
 | Guarantee | Proved in |
@@ -122,3 +170,6 @@ brake as a side effect — losing an account is not a path to widening a guard.
 | The database cascade removes every user-owned row | `tests/test_v2_persistence_constraints.py` |
 | `subscription_events` is de-identified, not deleted | `tests/test_v2_persistence_constraints.py` |
 | The two deletion repository primitives (`delete`, artifact-key enumeration) | `tests/test_v2_persistence_repositories.py` |
+| Retention sweeps only expired sessions, lapsed `READY` archives and idle provider sessions; persistent history is never touched (§30, §70) | `tests/test_v2_retention.py` |
+| Retention is idempotent and fail-safe — a store fault leaves the row `READY` for a rerun (§31) | `tests/test_v2_retention.py` |
+| The retention repository primitives (`count_expired`, `list_expired`, `delete_stale`/`count_stale`) match across owners | `tests/test_v2_persistence_repositories.py`, `tests/test_v2_persistence_llm.py` |

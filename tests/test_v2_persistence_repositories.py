@@ -21,6 +21,7 @@ import pytest_asyncio
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, StatementError
 
+from backend.app.core.tokens import digest_of, new_token
 from backend.app.domain.account_export import AccountExportStatus
 from backend.app.domain.common import Location, Reason, ReasonImpact
 from backend.app.domain.chat import ChatActionProposalStatus, ChatMessageRole
@@ -45,12 +46,14 @@ from backend.app.domain.identifiers import (
     EvidenceId,
     MatchEvaluationId,
     OpportunityId,
+    new_user_session_id,
 )
 from backend.app.domain.matching import DimensionScore, MatchDimension
 from backend.app.domain.entitlement import EntitlementKey
 from backend.app.domain.subscription import SubscriptionStatus
 from backend.app.domain.subscription_event import SubscriptionEventOutcome
 from backend.app.domain.usage import UsageSourceType
+from backend.app.domain.user import UserSession
 from backend.app.infrastructure.database.engine import (
     create_session_factory,
     session_scope,
@@ -100,6 +103,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyOpportunityRepository,
     SqlAlchemyPlanRepository,
     SqlAlchemyRoleClassificationRepository,
+    SqlAlchemySessionRepository,
     SqlAlchemyStrategyChangeExecutionRepository,
     SqlAlchemyStrategyChangeProposalRepository,
     SqlAlchemySubscriptionRepository,
@@ -1317,6 +1321,7 @@ async def test_the_subscription_list_scopes_to_its_owner(
 
 SECOND_EXPORT = AccountExportId(UUID("00000000-0000-4000-8000-000000000112"))
 FOREIGN_EXPORT = AccountExportId(UUID("00000000-0000-4000-8000-000000000113"))
+THIRD_EXPORT = AccountExportId(UUID("00000000-0000-4000-8000-000000000114"))
 
 
 @pytest.fixture
@@ -1373,6 +1378,87 @@ async def test_the_export_list_is_most_recently_updated_first_and_scoped(
     listed = await account_exports.list_for_user(USER)
     assert [e.id for e in listed] == [SECOND_EXPORT, ACCOUNT_EXPORT]
     assert [e.id for e in await account_exports.list_for_user(OTHER_USER)] == [FOREIGN_EXPORT]
+
+
+async def test_list_expired_pages_lapsed_ready_archives_across_owners(
+        export_accounts, account_exports):
+    """`list_expired` is the retention work-list: lapsed READY archives, oldest-first, all owners.
+
+    Only a READY export past its `expires_at` qualifies — a still-downloadable one and a FAILED
+    request are both excluded — and the read carries no `user_id`, so one operator sweep sees every
+    account's lapsed archive (§30). The `limit` caps a page, so no single statement locks the table.
+    """
+    sweep_at = LATER + timedelta(days=30)
+    await account_exports.upsert(an_account_export())  # lapsed (expires LATER + 7d), USER
+    await account_exports.upsert(
+        an_account_export(id=THIRD_EXPORT, user_id=OTHER_USER))  # lapsed, another owner
+    await account_exports.upsert(  # still downloadable — excluded
+        an_account_export(id=SECOND_EXPORT, expires_at=sweep_at + timedelta(days=7)))
+    await account_exports.upsert(  # not READY — excluded
+        an_account_export(id=FOREIGN_EXPORT, status=AccountExportStatus.FAILED, storage_key=None,
+                          byte_size=None, expires_at=None, failure_reason="PRODUCTION_FAILED"))
+
+    lapsed = await account_exports.list_expired(sweep_at)
+    assert [e.id for e in lapsed] == [ACCOUNT_EXPORT, THIRD_EXPORT]  # oldest, then lowest id
+    # The cap pages one row at a time, so the loop drains rather than locking the table.
+    assert [e.id for e in await account_exports.list_expired(sweep_at, limit=1)] == [ACCOUNT_EXPORT]
+
+
+async def test_count_expired_counts_the_same_lapsed_ready_archives(
+        export_accounts, account_exports):
+    """`count_expired` powers `--dry-run`: the work-list's size without touching a byte.
+
+    It matches `list_expired`'s predicate exactly — lapsed READY only, every owner — and reads
+    zero before anything has lapsed, so a dry run reports precisely what a real sweep would purge.
+    """
+    sweep_at = LATER + timedelta(days=30)
+    await account_exports.upsert(an_account_export())
+    await account_exports.upsert(an_account_export(id=THIRD_EXPORT, user_id=OTHER_USER))
+    await account_exports.upsert(
+        an_account_export(id=SECOND_EXPORT, expires_at=sweep_at + timedelta(days=7)))
+    assert await account_exports.count_expired(NOW) == 0  # nothing has lapsed yet
+    assert await account_exports.count_expired(sweep_at) == 2
+
+
+@pytest_asyncio.fixture
+async def session_account(db_session):
+    """The one account every user-session row below cascades from."""
+    db_session.add(a_user_row(display_name="owner"))
+    await db_session.flush()
+
+
+@pytest.fixture
+def user_sessions(db_session):
+    return SqlAlchemySessionRepository(db_session)
+
+
+def _a_user_session(*, expires_at):
+    """A live `USER` session with two distinct token digests, lapsing at `expires_at`."""
+    return UserSession(
+        id=new_user_session_id(), user_id=USER,
+        token_digest=digest_of(new_token()), csrf_token_digest=digest_of(new_token()),
+        issued_at=NOW, expires_at=expires_at, last_seen_at=NOW)
+
+
+async def test_expired_sessions_are_counted_then_swept_under_the_cap(
+        session_account, user_sessions):
+    """`count_expired`/`delete_expired` are retention's session half — absolute-lifetime, all owners.
+
+    A session past its stored `expires_at` is an attack surface no one will resume; the sweep removes
+    it. `count_expired` matches `delete_expired`'s predicate exactly (`<`), so `--dry-run` reports what
+    a real sweep would remove; the cap pages a large table; and a rerun removes nothing once the
+    expired rows are gone, while a still-live session is never touched (§30-31).
+    """
+    await user_sessions.upsert(_a_user_session(expires_at=NOW + timedelta(days=1)))
+    await user_sessions.upsert(_a_user_session(expires_at=NOW + timedelta(days=2)))
+    live = await user_sessions.upsert(_a_user_session(expires_at=LATER + timedelta(days=30)))
+    sweep_at = LATER + timedelta(days=7)  # past both short sessions, before the live one
+
+    assert await user_sessions.count_expired(sweep_at) == 2  # the dry-run read
+    assert await user_sessions.delete_expired(sweep_at, limit=1) == 1  # one capped page
+    assert await user_sessions.delete_expired(sweep_at) == 1  # the loop drains the remainder
+    assert await user_sessions.count_expired(sweep_at) == 0  # nothing left; a rerun is a no-op
+    assert await user_sessions.get_by_digest(live.token_digest) is not None  # the live one stays
 
 
 async def test_a_usage_event_is_reported_as_absent_to_another_user(

@@ -37,7 +37,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.domain.account_export import AccountExport
+from backend.app.domain.account_export import AccountExport, AccountExportStatus
 from backend.app.domain.application import Application, ApplicationState
 from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
 from backend.app.domain.candidate import CandidateProfile
@@ -1194,6 +1194,13 @@ class SqlAlchemySessionRepository:
             delete(UserSessionRow).where(UserSessionRow.id.in_(doomed)))
         return _rows_affected(result)
 
+    async def count_expired(self, as_of: datetime) -> int:
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(UserSessionRow)
+            .where(UserSessionRow.expires_at < as_of))
+        return int(result.scalar_one())
+
 
 class SqlAlchemyCandidateProfileRepository:
     """`CandidateProfileRepository` over an `AsyncSession`.
@@ -1496,6 +1503,27 @@ class SqlAlchemyProviderSessionRepository:
         self._session.add(row)
         await self._session.flush()
         return provider_session_to_domain(row)
+
+    async def delete_stale(self, not_updated_since: datetime, *,
+                           limit: int = DEFAULT_LIMIT) -> int:
+        # The same capped subquery `SessionRepository.delete_expired` uses: `DELETE … LIMIT`
+        # is not PostgreSQL, and the cap keeps housekeeping from locking the table in one
+        # statement. Staleness is idle-based — a provider session has no stored expiry — so
+        # the caller passes `now - max_idle` and every row untouched since then is doomed.
+        doomed = (select(ProviderSessionRow.id)
+                  .where(ProviderSessionRow.updated_at < not_updated_since)
+                  .order_by(ProviderSessionRow.updated_at)
+                  .limit(limit))
+        result = await self._session.execute(
+            delete(ProviderSessionRow).where(ProviderSessionRow.id.in_(doomed)))
+        return _rows_affected(result)
+
+    async def count_stale(self, not_updated_since: datetime) -> int:
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(ProviderSessionRow)
+            .where(ProviderSessionRow.updated_at < not_updated_since))
+        return int(result.scalar_one())
 
 
 class SqlAlchemyLLMRunRepository:
@@ -2783,5 +2811,30 @@ class SqlAlchemyAccountExportRepository:
             .order_by(AccountExportRow.updated_at.desc(), AccountExportRow.id)
             .limit(limit))
         return tuple(account_export_to_domain(row) for row in result.scalars())
+
+    async def list_expired(self, as_of: datetime, *,
+                           limit: int = DEFAULT_LIMIT) -> tuple[AccountExport, ...]:
+        # Operator-scope (no user_id): the retention sweep purges lapsed archives whoever owns
+        # them, exactly as SessionRepository.delete_expired deletes across owners. Only READY
+        # rows past their window are returned — the only ones with bytes still to purge. `<=`
+        # matches the domain's own `is_expired` (`as_of >= expires_at`), so the sweep purges
+        # precisely what `is_downloadable` already refuses.
+        result = await self._session.execute(
+            select(AccountExportRow)
+            .where(AccountExportRow.status == AccountExportStatus.READY,
+                   AccountExportRow.expires_at.is_not(None),
+                   AccountExportRow.expires_at <= as_of)
+            .order_by(AccountExportRow.expires_at, AccountExportRow.id)
+            .limit(limit))
+        return tuple(account_export_to_domain(row) for row in result.scalars())
+
+    async def count_expired(self, as_of: datetime) -> int:
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(AccountExportRow)
+            .where(AccountExportRow.status == AccountExportStatus.READY,
+                   AccountExportRow.expires_at.is_not(None),
+                   AccountExportRow.expires_at <= as_of))
+        return int(result.scalar_one())
 
 

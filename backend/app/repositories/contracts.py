@@ -587,7 +587,19 @@ class SessionRepository(Protocol):
 
         Capped like every other bulk method. Nothing schedules this in Phase 4 —
         it is the housekeeping a worker will call, and it exists now so the table
-        does not grow without a stated way to prune it.
+        does not grow without a stated way to prune it. Phase 16's retention sweep
+        (§30) is the caller that finally schedules it.
+        """
+        ...
+
+    async def count_expired(self, as_of: datetime) -> int:
+        """How many sessions have expired before `as_of`, deleting nothing.
+
+        The retention sweep's dry-run read (§30): it lets an operator preview what a
+        sweep *would* delete without touching a row, so `run_retention --dry-run`
+        reports an honest count rather than an estimate. Operator-scope by design —
+        housekeeping counts across all owners, exactly as `delete_expired` deletes
+        across all owners — and returns only a number, never a session or a digest.
         """
         ...
 
@@ -858,6 +870,29 @@ class ProviderSessionRepository(Protocol):
         Idempotent per `(connection_id, conversation_key)` — the pair the id derives
         from — so continuing a conversation updates the one row rather than adding a
         second.
+        """
+        ...
+
+    async def delete_stale(self, not_updated_since: datetime, *,
+                           limit: int = DEFAULT_LIMIT) -> int:
+        """Delete provider sessions untouched since `not_updated_since`; returns how many.
+
+        The retention sweep's provider-session primitive (§30). A `ProviderSession` has no
+        stored expiry — it is a resumable provider handle refreshed on every turn — so
+        staleness is idle-based: the caller passes `now - RetentionSettings.provider_session_
+        max_idle`, and every row whose `updated_at` predates it is deleted. Operator-scope
+        (all owners) and capped like `SessionRepository.delete_expired`, so housekeeping never
+        locks the whole table in one statement; the sweep loops until a page comes back short.
+        Deleting an already-gone row is a no-op, so a rerun reaches the same state (§31).
+        """
+        ...
+
+    async def count_stale(self, not_updated_since: datetime) -> int:
+        """How many provider sessions are idle since `not_updated_since`, deleting nothing.
+
+        The dry-run read paired with `delete_stale`, so `run_retention --dry-run` previews the
+        provider sweep without touching a row. Operator-scope, and returns only a count — never
+        a session handle.
         """
         ...
 
@@ -1797,6 +1832,31 @@ class AccountExportRepository(Protocol):
             self, user_id: UserId, *,
             limit: int = DEFAULT_LIMIT) -> tuple[AccountExport, ...]:
         """This user's export requests, most recently updated first — the export history."""
+        ...
+
+    async def list_expired(self, as_of: datetime, *,
+                           limit: int = DEFAULT_LIMIT) -> tuple[AccountExport, ...]:
+        """`READY` exports whose retention window has elapsed at `as_of` — the sweep's work-list.
+
+        Operator-scope (all owners), unlike every other read here, because the retention sweep
+        (§30) purges archives regardless of who owns them — the same operator scope
+        `SessionRepository.delete_expired` already has. It returns only `READY` exports past
+        their `expires_at`, because those are the only ones with bytes still to purge: a
+        `PENDING`/`FAILED` export never had an archive, and an `EXPIRED` one has already been
+        swept. An `AccountExport` carries no secret (docs/DATA_LIFECYCLE.md §68), so listing the
+        metadata across owners exposes nothing — the archive *bytes* live in the store, not here.
+        Capped and ordered by `expires_at`, so the sweep pages the oldest-lapsed first and loops
+        until a page comes back short; each purge marks a row `EXPIRED`, which drops it from this
+        list, so the loop terminates.
+        """
+        ...
+
+    async def count_expired(self, as_of: datetime) -> int:
+        """How many `READY` exports have lapsed at `as_of`, listing nothing.
+
+        The dry-run read paired with `list_expired`, so `run_retention --dry-run` reports an
+        honest count of archives it would purge without loading a row. Operator-scope, count only.
+        """
         ...
 
 

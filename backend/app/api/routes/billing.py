@@ -24,6 +24,7 @@ from fastapi import APIRouter, Request, status
 from backend.app.api.dependencies import (
     Billing,
     BillingWebhooks,
+    CheckoutRateLimit,
     CurrentSession,
     Now,
 )
@@ -79,7 +80,8 @@ async def usage_snapshot(current: CurrentSession, service: Billing,
 
 
 @router.post("/checkout", response_model=CheckoutResponse,
-             status_code=status.HTTP_201_CREATED)
+             status_code=status.HTTP_201_CREATED,
+             dependencies=[CheckoutRateLimit])
 async def open_checkout(body: CheckoutRequest, current: CurrentSession,
                         service: Billing) -> CheckoutResponse:
     """Open a provider-hosted checkout for a purchasable plan, attributed to this account (§18).

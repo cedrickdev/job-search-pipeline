@@ -31,7 +31,7 @@ here rather than reached for inside a route: this is the only module a request-f
 test has to override to run the whole V2 surface without PostgreSQL, and a route that
 built its own service would take that property away.
 """
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Final
@@ -42,7 +42,7 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.accounts import AccountDeletionService
-from backend.app.api.errors import csrf_failed, not_authenticated
+from backend.app.api.errors import RateLimited, csrf_failed, not_authenticated
 from backend.app.application_engine.bootstrap import build_application_registry
 from backend.app.billing.entitlements import EntitlementResolver
 from backend.app.billing.provider import BillingProvider
@@ -68,6 +68,7 @@ from backend.app.core.settings import (
     DocumentSettings,
     ExportSettings,
     LLMSecretSettings,
+    RateLimitSettings,
     SiteSettings,
     StripeSettings,
 )
@@ -87,6 +88,7 @@ from backend.app.infrastructure.database.engine import (
     create_session_factory,
     session_scope,
 )
+from backend.app.infrastructure.ratelimit import RedisRateLimiter
 from backend.app.interview.context import InterviewContextBuilder
 from backend.app.interview.llm import InterviewLLM
 from backend.app.interview.service import InterviewService
@@ -95,6 +97,7 @@ from backend.app.llm.bootstrap import build_llm_provider_registry
 from backend.app.llm.recorder import LLMTelemetryRecorder
 from backend.app.llm.router import LLMRouter, PrivacyClass, RoutingPolicy
 from backend.app.llm.secrets import FernetSecretCipher, SecretCipher
+from backend.app.ratelimit import RateLimitCategory, RateLimiter
 from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyAccountExportRepository,
     SqlAlchemyApplicationDecisionRepository,
@@ -176,6 +179,8 @@ ENGINE_ATTRIBUTE: Final[str] = "v2_engine"
 COUNTRY_PACKS_ATTRIBUTE: Final[str] = "v2_country_packs"
 STRIPE_SETTINGS_ATTRIBUTE: Final[str] = "v2_stripe_settings"
 SITE_SETTINGS_ATTRIBUTE: Final[str] = "v2_site_settings"
+RATE_LIMIT_SETTINGS_ATTRIBUTE: Final[str] = "v2_rate_limit_settings"
+RATE_LIMITER_ATTRIBUTE: Final[str] = "v2_rate_limiter"
 
 # The sentinel a cached `None` cipher is stored as, so "resolved to no cipher" is told
 # apart from "not resolved yet" — a deployment with no master key must not re-read the
@@ -894,6 +899,140 @@ def site_settings(request: Request) -> SiteSettings:
     resolved = SiteSettings.from_env()
     setattr(request.app.state, SITE_SETTINGS_ATTRIBUTE, resolved)
     return resolved
+
+
+def rate_limit_settings(request: Request) -> RateLimitSettings:
+    """The abuse-limit windows and proxy-trust for this deployment, resolved once and cached.
+
+    Cached on `app.state` like every other settings model, and for the same reason: re-reading
+    `JOBSEARCH_RATE_LIMIT_*` per request would let a window change under a running process and
+    split one deployment's counting across two rules. Enabled by default — a deployment is
+    protected without any configuration (§49) — and the test harness overrides this with a
+    disabled instance so the existing suite's many repeated logins never trip a limit.
+    """
+    settings = getattr(request.app.state, RATE_LIMIT_SETTINGS_ATTRIBUTE, None)
+    if isinstance(settings, RateLimitSettings):
+        return settings
+    resolved = RateLimitSettings.from_env()
+    setattr(request.app.state, RATE_LIMIT_SETTINGS_ATTRIBUTE, resolved)
+    return resolved
+
+
+def rate_limiter(
+        request: Request,
+        settings: Annotated[RateLimitSettings, Depends(rate_limit_settings)],
+) -> RateLimiter:
+    """The window counter store, built once and cached on the app (§49).
+
+    A `RedisRateLimiter` so the count is shared across every web worker pointed at the same
+    Redis — the single fact that makes the limit horizontal-safe (§49). Built lazily and cached
+    on `app.state` like every other adapter; `_lifespan` closes it on shutdown. The Redis URL
+    comes from the settings object the accessor above already resolved, so one deployment's
+    limiter cannot end up on a different Redis than its queue by re-reading the environment at
+    two different moments. A test overrides this dependency with an in-memory limiter and never
+    opens a socket.
+    """
+    existing = getattr(request.app.state, RATE_LIMITER_ATTRIBUTE, None)
+    if isinstance(existing, RedisRateLimiter):
+        return existing
+    limiter = RedisRateLimiter(redis_url=settings.redis_url)
+    setattr(request.app.state, RATE_LIMITER_ATTRIBUTE, limiter)
+    return limiter
+
+
+def client_ip(request: Request, *, trusted_proxy_count: int) -> str:
+    """The network identity to rate-limit an anonymous request by (§51).
+
+    With no trusted proxies (the default), the only trustworthy source is the socket peer:
+    `X-Forwarded-For` is attacker-controlled, and honouring it would let one client mint an
+    unlimited supply of identities by varying a header, defeating the limit entirely (§51 —
+    do not trust arbitrary forwarding headers unless proxy trust is explicitly configured).
+    When a deployment sits behind `N` proxies it trusts, it says so, and the real client is the
+    entry those proxies appended `N` from the end — anything further left was supplied by a hop
+    we do not trust and is ignored. A missing socket peer (an ASGI transport with no client, as
+    in some test clients) degrades to a fixed label rather than raising: a shared bucket is a
+    safe degradation, and a network identity only ever counts a short window here, never
+    permanently bans (§51).
+    """
+    peer = request.client.host if request.client else "unknown"
+    if trusted_proxy_count <= 0:
+        return peer
+    forwarded = request.headers.get("X-Forwarded-For")
+    if not forwarded:
+        return peer
+    parts = [part.strip() for part in forwarded.split(",") if part.strip()]
+    if len(parts) >= trusted_proxy_count:
+        return parts[-trusted_proxy_count]
+    return peer
+
+
+def limit_by_ip(category: RateLimitCategory) -> Callable[..., Awaitable[None]]:
+    """A dependency that rate-limits an anonymous route by network identity (§49, §51).
+
+    Used for `register` and `log_in`, which have no session yet — the only identity available
+    is the network one `client_ip` derives. Returns a fresh dependency per category so the
+    counter for one abuse-prone endpoint is never shared with another's. A disabled deployment
+    (and the default test harness) short-circuits before touching the limiter, so nothing is
+    counted and no Redis is reached.
+    """
+    async def dependency(
+            request: Request,
+            settings: Annotated[RateLimitSettings, Depends(rate_limit_settings)],
+            limiter: Annotated[RateLimiter, Depends(rate_limiter)],
+            instant: Annotated[datetime, Depends(now)],
+    ) -> None:
+        if not settings.enabled:
+            return
+        identity = client_ip(request, trusted_proxy_count=settings.trusted_proxy_count)
+        decision = await limiter.check(
+            namespace=category.value, identity=identity,
+            rule=settings.rule_for(category), now=instant)
+        if not decision.allowed:
+            raise RateLimited(decision.retry_after_seconds)
+
+    return dependency
+
+
+def limit_by_user(category: RateLimitCategory) -> Callable[..., Awaitable[None]]:
+    """A dependency that rate-limits an authenticated route by the acting user (§49, §51).
+
+    Depends on `current_session`, so it runs only after the cookie has resolved to a real
+    account (and, for an unsafe method, after CSRF): the limit is keyed to the user, never the
+    IP, so it neither ties one office's users together behind a shared NAT nor lets a
+    per-account counter be dodged by rotating IPs. Applied to chat generation, document and
+    export generation, checkout creation, and the re-auth-sensitive account deletion — the
+    provider webhook is deliberately never limited this way, since it carries no session (§64).
+    """
+    async def dependency(
+            current: Annotated[AuthenticatedSession, Depends(current_session)],
+            settings: Annotated[RateLimitSettings, Depends(rate_limit_settings)],
+            limiter: Annotated[RateLimiter, Depends(rate_limiter)],
+            instant: Annotated[datetime, Depends(now)],
+    ) -> None:
+        if not settings.enabled:
+            return
+        decision = await limiter.check(
+            namespace=category.value, identity=str(current.user.id),
+            rule=settings.rule_for(category), now=instant)
+        if not decision.allowed:
+            raise RateLimited(decision.retry_after_seconds)
+
+    return dependency
+
+
+# Pre-built route guards, one per abuse-prone endpoint (§49). Assembled here beside the
+# factories so a route file names a guard and never restates the category-to-limit wiring,
+# the same way every service is composed here rather than reached for inside a route. Each
+# `limit_by_*` call is a distinct callable, so FastAPI keeps their per-request counters and
+# their dedup separate; `current_session` is still shared with the route that also depends on
+# it, so authentication runs exactly once.
+RegisterRateLimit = Depends(limit_by_ip(RateLimitCategory.REGISTER))
+LoginRateLimit = Depends(limit_by_ip(RateLimitCategory.LOGIN))
+ReauthRateLimit = Depends(limit_by_user(RateLimitCategory.REAUTH))
+ChatRateLimit = Depends(limit_by_user(RateLimitCategory.CHAT))
+DocumentRateLimit = Depends(limit_by_user(RateLimitCategory.DOCUMENT))
+ExportRateLimit = Depends(limit_by_user(RateLimitCategory.EXPORT))
+CheckoutRateLimit = Depends(limit_by_user(RateLimitCategory.CHECKOUT))
 
 
 async def billing_provider(

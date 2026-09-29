@@ -18,13 +18,20 @@ service call and clears the cookies.
 from fastapi import APIRouter, Response
 
 from backend.app.api.cookies import clear_session_cookies
-from backend.app.api.dependencies import AccountDeletion, Auth, CurrentSession, Now
+from backend.app.api.dependencies import (
+    AccountDeletion,
+    Auth,
+    CurrentSession,
+    Now,
+    ReauthRateLimit,
+)
 from backend.app.api.schemas import AccountDeletionRequest, AccountDeletionResponse
 
 router = APIRouter(tags=["v2-account"])
 
 
-@router.post("/me/deletion", response_model=AccountDeletionResponse)
+@router.post("/me/deletion", response_model=AccountDeletionResponse,
+             dependencies=[ReauthRateLimit])
 async def delete_account(body: AccountDeletionRequest, response: Response,
                          current: CurrentSession, service: AccountDeletion,
                          settings: Auth, instant: Now) -> AccountDeletionResponse:

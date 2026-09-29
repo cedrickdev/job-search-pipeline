@@ -21,7 +21,14 @@ and losing the OpenAPI type.
 from fastapi import APIRouter, Response, status
 
 from backend.app.api.cookies import clear_session_cookies, set_session_cookies
-from backend.app.api.dependencies import Auth, Authentication, CurrentSession, Now
+from backend.app.api.dependencies import (
+    Auth,
+    Authentication,
+    CurrentSession,
+    LoginRateLimit,
+    Now,
+    RegisterRateLimit,
+)
 from backend.app.api.schemas import (
     AccountResponse,
     LoginRequest,
@@ -35,7 +42,8 @@ router = APIRouter(prefix="/auth", tags=["v2-auth"])
 
 
 @router.post("/register", response_model=SignedInResponse,
-             status_code=status.HTTP_201_CREATED)
+             status_code=status.HTTP_201_CREATED,
+             dependencies=[RegisterRateLimit])
 async def register(body: RegisterRequest, response: Response,
                    service: Authentication, settings: Auth,
                    instant: Now) -> SignedInResponse:
@@ -53,7 +61,8 @@ async def register(body: RegisterRequest, response: Response,
     return _signed_in_response(signed_in.user, signed_in.session)
 
 
-@router.post("/login", response_model=SignedInResponse)
+@router.post("/login", response_model=SignedInResponse,
+             dependencies=[LoginRateLimit])
 async def log_in(body: LoginRequest, response: Response, service: Authentication,
                  settings: Auth, instant: Now) -> SignedInResponse:
     """Verify a password and issue a session.

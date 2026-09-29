@@ -20,7 +20,13 @@ so a caller cannot learn another account holds a document by asking for it.
 """
 from fastapi import APIRouter, Response, status
 
-from backend.app.api.dependencies import CurrentSession, Documents, Evidence, Now
+from backend.app.api.dependencies import (
+    CurrentSession,
+    DocumentRateLimit,
+    Documents,
+    Evidence,
+    Now,
+)
 from backend.app.api.schemas import (
     AddClaimRequest,
     AddEvidenceRequest,
@@ -96,7 +102,8 @@ async def list_evidence(current: CurrentSession,
 # --- generated documents -----------------------------------------------------
 
 @router.post("/opportunities/{opportunity_id}/resume",
-             response_model=CandidateDocumentResponse)
+             response_model=CandidateDocumentResponse,
+             dependencies=[DocumentRateLimit])
 async def generate_resume(opportunity_id: OpportunityId,
                           body: GenerateDocumentRequest, current: CurrentSession,
                           service: Documents, instant: Now
@@ -116,7 +123,8 @@ async def generate_resume(opportunity_id: OpportunityId,
 
 
 @router.post("/opportunities/{opportunity_id}/cover-letter",
-             response_model=CandidateDocumentResponse)
+             response_model=CandidateDocumentResponse,
+             dependencies=[DocumentRateLimit])
 async def generate_cover_letter(opportunity_id: OpportunityId,
                                 body: GenerateDocumentRequest, current: CurrentSession,
                                 service: Documents, instant: Now

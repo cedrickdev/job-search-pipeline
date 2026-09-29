@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.api.dependencies import ENGINE_ATTRIBUTE
+from backend.app.api.dependencies import ENGINE_ATTRIBUTE, RATE_LIMITER_ATTRIBUTE
 from backend.app.api.errors import install_v2_error_handlers
 from backend.app.api.router import create_v2_router
 from backend.app.observability import install_observability
@@ -29,7 +29,9 @@ async def _lifespan(app: FastAPI):
     The V2 engine is disposed on the way out. It is created lazily by the first
     ``/api/v2`` request that needs it (see ``backend.app.api.dependencies``), so
     the attribute is usually absent — an app that served only V1 has no pool to
-    close."""
+    close. The Redis-backed rate limiter, when one was built, is closed the same
+    way and for the same reason; a test's in-memory limiter has no ``aclose`` and
+    is left alone."""
     from server.scheduler import scheduler_loop
     task = asyncio.create_task(scheduler_loop(app))
     app.state.scheduler_task = task
@@ -42,6 +44,10 @@ async def _lifespan(app: FastAPI):
         engine = getattr(app.state, ENGINE_ATTRIBUTE, None)
         if engine is not None:
             await engine.dispose()
+        limiter = getattr(app.state, RATE_LIMITER_ATTRIBUTE, None)
+        aclose = getattr(limiter, "aclose", None)
+        if callable(aclose):
+            await aclose()
 
 
 def _mount_spa(app: FastAPI, spa_dist: Path) -> None:

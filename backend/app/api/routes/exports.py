@@ -15,7 +15,12 @@ only turns the session and the request clock into service calls.
 """
 from fastapi import APIRouter, Response, status
 
-from backend.app.api.dependencies import AccountExports, CurrentSession, Now
+from backend.app.api.dependencies import (
+    AccountExports,
+    CurrentSession,
+    ExportRateLimit,
+    Now,
+)
 from backend.app.api.schemas import (
     AccountExportListResponse,
     AccountExportResponse,
@@ -27,7 +32,8 @@ router = APIRouter(tags=["v2-account-export"])
 
 
 @router.post("/me/exports", response_model=AccountExportResponse,
-             status_code=status.HTTP_201_CREATED)
+             status_code=status.HTTP_201_CREATED,
+             dependencies=[ExportRateLimit])
 async def create_export(current: CurrentSession, service: AccountExports,
                         instant: Now) -> AccountExportResponse:
     """Request an export of everything this account holds, and produce it now (§23-25).

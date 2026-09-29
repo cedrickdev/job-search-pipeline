@@ -43,6 +43,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # "current secret version" has one source of truth rather than a literal repeated here.
 from backend.app.llm.secrets import CURRENT_SECRET_VERSION
 
+# The rate-limit vocabulary (Phase 16 §49-52). Imported from the `ratelimit` leaf so the
+# category enum and the window rule have one home; `RateLimitSettings` below only *sizes* them.
+from backend.app.ratelimit import RateLimitCategory, RateLimitRule
+
+# The development Redis URL, reused rather than restated: the rate limiter and the task queue both
+# point at the deployment's one Redis, so the dev default has a single source of truth (the same
+# reason `CURRENT_SECRET_VERSION` is imported above, not copied).
+from backend.app.tasks.settings import LOCAL_DEV_REDIS_URL
+
 # Matches docker-compose.yml. Not a secret: the port is bound to 127.0.0.1 and
 # the credentials exist only in that file, which is why it is safe to write here
 # and why `docs/PERSISTENCE.md` tells deployments to override it.
@@ -287,6 +296,48 @@ DEFAULT_PUBLIC_BASE_URL: Final[str] = "http://localhost:3000"
 # targets. A constant rather than a field: the frontend route is fixed, and a deployment tunes the
 # origin, not the in-app path.
 _BILLING_PATH: Final[str] = "/billing"
+
+# Rate limiting for abuse-prone endpoints (Phase 16 §49-52). `enabled` is the master switch — on by
+# default so a deployment is protected without configuration, and turned off explicitly (the test
+# harness does this so the existing request-flow suite is unaffected). The limiter shares the
+# deployment's one Redis with the task queue, so the URL resolves through the same
+# `JOBSEARCH_REDIS_URL`/`REDIS_URL` names, most-specific-first, and is kept off the repr (§41). The
+# trusted-proxy count is the §51 knob: 0 means "read the socket peer and never trust a forwarding
+# header", and only a positive value (set when a known number of reverse proxies front this app)
+# lets `X-Forwarded-For` be consulted, and then only at the correct hop.
+RATE_LIMIT_ENABLED_VARIABLE: Final[str] = "JOBSEARCH_RATE_LIMIT_ENABLED"
+RATE_LIMIT_TRUSTED_PROXY_COUNT_VARIABLE: Final[str] = "JOBSEARCH_RATE_LIMIT_TRUSTED_PROXY_COUNT"
+# The env var names the rate-limit Redis URL resolves through. The same conventional names the
+# queue uses (`backend/app/tasks/settings.py`): one Redis, one pair of names, resolved the same way.
+_RATE_LIMIT_REDIS_URL_VARIABLES: Final[tuple[str, ...]] = ("JOBSEARCH_REDIS_URL", "REDIS_URL")
+
+# The per-category defaults, sized so a human never trips them and abuse does. Registration and
+# checkout are rare (per hour); a login window is generous per IP because the per-account lockout
+# (Phase 4) is the tighter, additive brake §50 keeps; chat is per-minute because a person sends
+# many messages a session; document and export generation are expensive, so they are hourly. All
+# are overridable per category through `JOBSEARCH_RATE_LIMIT_<CATEGORY>_MAX_EVENTS` and
+# `..._WINDOW_SECONDS`.
+_DEFAULT_RATE_LIMIT_RULES: Final[dict[RateLimitCategory, RateLimitRule]] = {
+    RateLimitCategory.REGISTER: RateLimitRule(max_events=20, window_seconds=3600),
+    RateLimitCategory.LOGIN: RateLimitRule(max_events=60, window_seconds=300),
+    RateLimitCategory.REAUTH: RateLimitRule(max_events=10, window_seconds=3600),
+    RateLimitCategory.CHAT: RateLimitRule(max_events=30, window_seconds=60),
+    RateLimitCategory.DOCUMENT: RateLimitRule(max_events=20, window_seconds=3600),
+    RateLimitCategory.EXPORT: RateLimitRule(max_events=5, window_seconds=3600),
+    RateLimitCategory.CHECKOUT: RateLimitRule(max_events=10, window_seconds=3600),
+}
+
+
+def _rate_limit_rule_variables(category: RateLimitCategory) -> tuple[str, str]:
+    """The (max-events, window-seconds) env var names for one category — derived, so one prefix.
+
+    A category `LOGIN` reads `JOBSEARCH_RATE_LIMIT_LOGIN_MAX_EVENTS` and
+    `JOBSEARCH_RATE_LIMIT_LOGIN_WINDOW_SECONDS`, so the whole family is greppable by the shared
+    `JOBSEARCH_RATE_LIMIT_` prefix rather than fourteen separate constants drifting out of step.
+    """
+    base = f"JOBSEARCH_RATE_LIMIT_{category.name}"
+    return f"{base}_MAX_EVENTS", f"{base}_WINDOW_SECONDS"
+
 
 _TRUE_WORDS: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
@@ -759,4 +810,63 @@ class SiteSettings(BaseModel):
         return cls(public_base_url=value or DEFAULT_PUBLIC_BASE_URL)
 
 
+class RateLimitSettings(BaseModel):
+    """How abuse-prone endpoints are rate limited, and against which Redis (Phase 16 §49-52).
 
+    Frozen and closed like every settings model. `enabled` is the master switch; `redis_url` is
+    excluded from the repr because it can carry a password (§41), the same rule
+    `TaskQueueSettings` follows. `trusted_proxy_count` is the §51 identity knob (see the module
+    constant), and `rules` sizes each category's window — a lookup falls back to the safe default
+    for any category a caller did not override, so a test can tighten one window without restating
+    the other six.
+
+    Nothing here weakens an existing protection: rate limiting is *additive* (§50). A paid plan can
+    raise a commercial quota, but this layer only ever *refuses* extra traffic — it can never widen
+    a safety brake, and it is not consulted at all when `enabled` is false.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = True
+    redis_url: str = Field(default=LOCAL_DEV_REDIS_URL, repr=False)
+    trusted_proxy_count: int = Field(default=0, ge=0, le=16)
+    rules: Mapping[RateLimitCategory, RateLimitRule] = Field(
+        default_factory=lambda: dict(_DEFAULT_RATE_LIMIT_RULES))
+
+    def rule_for(self, category: RateLimitCategory) -> RateLimitRule:
+        """The window for `category`, falling back to the safe default if it was not overridden."""
+        return self.rules.get(category, _DEFAULT_RATE_LIMIT_RULES[category])
+
+    @classmethod
+    def disabled(cls) -> Self:
+        """Rate limiting turned off — the request-flow test harness's default, so the existing
+        suite is unaffected and a new test opts in explicitly with tiny windows."""
+        return cls(enabled=False)
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
+        """Read the switch, the Redis URL, the proxy count and every category window.
+
+        The Redis URL resolves most-specific-first, the same discipline the queue and the database
+        use, so an unrelated `REDIS_URL` cannot silently redirect a project that sets
+        `JOBSEARCH_REDIS_URL`. Each category's window defaults to `_DEFAULT_RATE_LIMIT_RULES` and is
+        overridden only when both of its env vars are read (a partial override still yields a valid
+        rule because `_read_int` falls back per field).
+        """
+        source = environ if env is None else env
+        redis_url = next(
+            (source[name] for name in _RATE_LIMIT_REDIS_URL_VARIABLES
+             if source.get(name, "").strip()),
+            LOCAL_DEV_REDIS_URL)
+        rules: dict[RateLimitCategory, RateLimitRule] = {}
+        for category, default in _DEFAULT_RATE_LIMIT_RULES.items():
+            max_events_var, window_var = _rate_limit_rule_variables(category)
+            rules[category] = RateLimitRule(
+                max_events=_read_int(source, max_events_var, default.max_events),
+                window_seconds=_read_int(source, window_var, default.window_seconds))
+        return cls(
+            enabled=_read_bool(source, RATE_LIMIT_ENABLED_VARIABLE, True),
+            redis_url=redis_url,
+            trusted_proxy_count=_read_int(
+                source, RATE_LIMIT_TRUSTED_PROXY_COUNT_VARIABLE, 0),
+            rules=rules)

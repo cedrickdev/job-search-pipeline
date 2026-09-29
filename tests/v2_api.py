@@ -81,6 +81,8 @@ from backend.app.api.dependencies import (
     now,
     onboarding_service,
     outcome_service,
+    rate_limit_settings,
+    rate_limiter,
     role_classification_service,
     session_factory,
     strategy_proposal_service,
@@ -100,7 +102,12 @@ from backend.app.chat.context import ChatContextBuilder
 from backend.app.chat.conversation import ChatConversationService
 from backend.app.chat.executor import ChatActionExecutor
 from backend.app.chat.validators import ProposalValidator
-from backend.app.core.settings import AuthSettings, ExportSettings, SiteSettings
+from backend.app.core.settings import (
+    AuthSettings,
+    ExportSettings,
+    RateLimitSettings,
+    SiteSettings,
+)
 from backend.app.documents import (
     DeterministicDocumentGenerator,
     LocalDocumentArtifactStore,
@@ -138,6 +145,7 @@ from backend.app.services.llm_connections import LLMConnectionService
 from backend.app.services.onboarding import OnboardingService
 from backend.app.discovery.bootstrap import build_country_packs
 from backend.app.llm.secrets import FernetSecretCipher, generate_master_key
+from backend.app.ratelimit import InMemoryRateLimiter
 from server.app import create_app
 from tests.v2_fakes import (
     FakeApplicationDecisionRepository,
@@ -452,7 +460,8 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
                      instant: datetime = NOW,
                      chat_provider: FakeProvider | None = None,
                      interview_llm: FakeInterviewLLM | None = None,
-                     interview_transcriber: SpeechTranscriber | None = None
+                     interview_transcriber: SpeechTranscriber | None = None,
+                     rate_limits: RateLimitSettings | None = None
                      ) -> AsyncIterator[Harness]:
     """The application wired to fresh fakes, with a cookie-keeping client.
 
@@ -460,8 +469,16 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     policy or a different origin, and a fixture would have to be parameterized to
     give them one. `create_app` is called per harness so the two dependency
     override dictionaries of two tests cannot meet.
+
+    Rate limiting is *disabled by default* here: the suite signs in, registers and
+    generates far more often than any real client, and a live limiter would turn
+    that traffic into spurious 429s. A rate-limit test passes an explicit
+    `RateLimitSettings` with tiny windows; either way the limiter is the in-memory
+    one, so no test opens a Redis socket (§49).
     """
     resolved = settings if settings is not None else AuthSettings.for_local_http()
+    resolved_rate_limits = (rate_limits if rate_limits is not None
+                            else RateLimitSettings.disabled())
     clock = Clock(instant)
     users = FakeUserRepository()
     sessions = FakeSessionRepository()
@@ -744,6 +761,14 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
         users=users, sessions=sessions, documents=documents,
         document_store=document_artifact_store, export_store=export_store)
     app.dependency_overrides[account_deletion_service] = lambda: account_deletion_workflow
+    # --- Phase 16 M11 rate limiting -------------------------------------------
+    # Disabled windows and a single in-memory limiter, so the suite's repeated sign-ins never
+    # trip a limit and no test reaches Redis (§49). A rate-limit test passes tiny windows via
+    # `rate_limits=`; the one shared limiter means its counts persist across requests in a test,
+    # exactly as one Redis would across web workers.
+    rate_limiter_fake = InMemoryRateLimiter()
+    app.dependency_overrides[rate_limit_settings] = lambda: resolved_rate_limits
+    app.dependency_overrides[rate_limiter] = lambda: rate_limiter_fake
     app.dependency_overrides[session_factory] = _no_database
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=base_url) as client:

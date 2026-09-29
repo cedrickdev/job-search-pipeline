@@ -238,6 +238,22 @@ def csrf_failed() -> ApiError:
                     "the CSRF cookie issued with this session")
 
 
+class RateLimited(Exception):
+    """429 when a caller exceeds an abuse-prone endpoint's rate (Phase 16 §49, §52).
+
+    Carries only the seconds until the window resets — never which category tripped, which account
+    or IP was counted, nor any request input — so the reply leaks nothing an attacker could
+    enumerate with (§52): one fixed sentence for every category, the same way `InvalidCredentials`
+    is one reply for every failed-sign-in reason. Raised by the `limit_by_ip`/`limit_by_user`
+    dependencies and mapped once, below, to a 429 carrying a `Retry-After` header and a
+    `retry_after` body field.
+    """
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        super().__init__("rate limit exceeded")
+        self.retry_after_seconds = max(0, retry_after_seconds)
+
+
 def company_not_found() -> ApiError:
     """404 for a company id nothing is stored under.
 
@@ -281,6 +297,18 @@ def install_v2_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError) -> JSONResponse:
         return _json(exc.status_code, exc.error, exc.detail)
+
+    @app.exception_handler(RateLimited)
+    async def _rate_limited(request: Request, exc: RateLimited) -> JSONResponse:
+        # 429 with the retry hint in both the standard `Retry-After` header and the body (§52).
+        # One fixed sentence for every category: the reply says nothing about which endpoint's
+        # limit tripped, whether an email exists, or another account's state — so it cannot be
+        # turned into an enumeration oracle. `retry_after` is the seconds until the window resets.
+        response = _json(status.HTTP_429_TOO_MANY_REQUESTS, "rate_limited",
+                         "too many requests; please retry after a short wait",
+                         retry_after=exc.retry_after_seconds)
+        response.headers["Retry-After"] = str(exc.retry_after_seconds)
+        return response
 
     @app.exception_handler(InvalidCredentials)
     async def _invalid_credentials(request: Request,

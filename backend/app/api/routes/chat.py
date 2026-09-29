@@ -29,6 +29,7 @@ from fastapi.responses import StreamingResponse
 from backend.app.api.dependencies import (
     ChatActions,
     ChatConversations,
+    ChatRateLimit,
     CurrentSession,
     Now,
 )
@@ -122,7 +123,8 @@ async def list_proposals(conversation_id: ConversationId, current: CurrentSessio
 # --- one streaming turn -----------------------------------------------------
 
 @router.post("/chat/conversations/{conversation_id}/messages",
-             response_model=None, responses=_STREAM_RESPONSES)
+             response_model=None, responses=_STREAM_RESPONSES,
+             dependencies=[ChatRateLimit])
 async def send_message(conversation_id: ConversationId, body: SendMessageRequest,
                        current: CurrentSession, service: ChatConversations,
                        instant: Now) -> StreamingResponse:

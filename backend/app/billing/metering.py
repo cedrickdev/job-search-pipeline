@@ -22,6 +22,7 @@ Two rules the module keeps, both load-bearing:
   consumption, and re-metering the same source collapses onto one row by the id the idempotency
   key derives (§7, §9).
 """
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 from backend.app.billing.entitlements import EntitlementResolver, ResolvedEntitlements
@@ -96,6 +97,31 @@ class MeteringService:
                 "authorize")
         self._require_room(resolved.entitlement_for(key), key,
                            already_used=active_count, quantity=quantity, period=None)
+
+    async def authorize_active_gauge(
+            self, user_id: UserId, key: EntitlementKey, *,
+            count_active: Callable[[], Awaitable[int]], as_of: datetime,
+            quantity: int = 1) -> ResolvedEntitlements:
+        """Reserve room for `quantity` more of a concurrent gauge under the usage lock (§6, §8).
+
+        The race-safe creation path a gauge needs. `authorize_concurrent` is pure and trusts the
+        count it is handed; here the count must be read *inside* the reservation or two racing
+        creators of the same account both read the gauge below its ceiling and both create. So this
+        takes the transaction-scoped usage-budget lock — the same lock a per-period `authorize`
+        takes, in the same namespace — counts the currently-active resources under it via
+        `count_active`, resolves the plan and checks the live count. A second worker blocks on the
+        lock until this transaction commits its new resource, then counts it. Returns the resolved
+        entitlements. Only for a concurrent gauge; a per-period meter is reserved with `authorize`.
+        """
+        if entitlement_measure(key) is not EntitlementMeasure.CONCURRENT:
+            raise ValueError(
+                f"{key.value} is a per-period meter, not a concurrent gauge; reserve it with "
+                "authorize")
+        await self._usage.lock_usage_budget(user_id)
+        active_count = await count_active()
+        resolved = await self._resolver.resolve(user_id, as_of=as_of)
+        self.authorize_concurrent(resolved, key, active_count=active_count, quantity=quantity)
+        return resolved
 
     def _require_room(self, entitlement: Entitlement | None, key: EntitlementKey, *,
                       already_used: int, quantity: int, period: UsagePeriod | None) -> None:

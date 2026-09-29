@@ -1976,6 +1976,12 @@ class FakeSubscriptionRepository:
         found = self.subscriptions.get(subscription_id)
         return None if found is None else found.model_copy(deep=True)
 
+    async def lock_subscription(self, subscription_id: SubscriptionId) -> None:
+        # No-op: an in-memory fake has no concurrency to serialize. The real advisory lock's
+        # guarantee (a newer webhook state always wins two concurrent deliveries) is proved
+        # against PostgreSQL in tests/test_v2_persistence_billing_concurrency.py, not here.
+        return None
+
     async def get_current(self, user_id: UserId) -> Subscription | None:
         mine = [s for s in self.subscriptions.values()
                 if s.user_id == user_id
@@ -2224,6 +2230,16 @@ class FakeTaskRunRepository:
             if t.status is TaskStatus.RUNNING and t.lease_expires_at is not None
             and t.lease_expires_at <= as_of)
 
+    async def cancel_queued_for_user(self, user_id: UserId) -> int:
+        # The real `DELETE ... WHERE user_id = :id AND status = 'QUEUED'`: drop this owner's
+        # not-yet-claimed tasks (TaskStatus has no canceled state), leave RUNNING ones to the
+        # cascade, and return how many went. Idempotent — a retry finds nothing and returns 0.
+        doomed = [run_id for run_id, t in self.tasks.items()
+                  if t.user_id == user_id and t.status is TaskStatus.QUEUED]
+        for run_id in doomed:
+            del self.tasks[run_id]
+        return len(doomed)
+
 
 class FakeTaskDispatcher:
     """A `TaskDispatcher` a service test drives without a queue table or a worker (§32, §37).
@@ -2271,6 +2287,8 @@ class FakeBillingProvider:
         self.portal = PortalSession(redirect_url="https://billing.example/portal/ps_fake")
         self.open_checkout_calls: list[dict[str, object]] = []
         self.open_portal_calls: list[dict[str, object]] = []
+        self.cancel_subscription_calls: list[str] = []
+        self.cancel_error: BillingError | None = None
 
     @property
     def provider_key(self) -> str:
@@ -2301,6 +2319,14 @@ class FakeBillingProvider:
     async def open_portal(self, *, customer_id: str, return_url: str) -> PortalSession:
         self.open_portal_calls.append({"customer_id": customer_id, "return_url": return_url})
         return self.portal
+
+    async def cancel_subscription(self, *, external_subscription_id: str) -> None:
+        # Records the handle it was asked to cancel; a test that queues `cancel_error` drives the
+        # provider-unavailable path (deletion must then fail closed and delete nothing). The real
+        # adapter treats an already-gone subscription as success, so the happy path just records.
+        self.cancel_subscription_calls.append(external_subscription_id)
+        if self.cancel_error is not None:
+            raise self.cancel_error
 
 
 

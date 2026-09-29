@@ -89,7 +89,7 @@ from backend.app.api.dependencies import (
 )
 from backend.app.companies.orchestrator import CompanyDiscoveryOrchestrator
 from backend.app.companies.registry import CompanyProviderRegistry
-from backend.app.billing.catalogue import seed_plan_catalogue
+from backend.app.billing.catalogue import DEMO_PLAN_PRICES, seed_plan_catalogue
 from backend.app.billing.entitlements import EntitlementResolver
 from backend.app.billing.service import BillingService
 from backend.app.billing.webhooks import BillingWebhookService
@@ -184,6 +184,7 @@ from tests.v2_fakes import (
     FakeSubmissionAttemptRepository,
     FakeSubscriptionEventRepository,
     FakeSubscriptionRepository,
+    FakeTaskRunRepository,
     FakeUsageEventRepository,
     FakeUserRepository,
 )
@@ -550,7 +551,7 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     # the routes use, so an export built here contains exactly what those stores hold.
     account_exports = FakeAccountExportRepository()
     await seed_plan_catalogue(
-        plans, now=NOW,
+        plans, now=NOW, prices=DEMO_PLAN_PRICES,
         external_price_ids={"pro": "price_pro", "scale": "price_scale"})
     directory = CompanyDirectoryService(companies, career_sites, discoveries)
     # The assessment service reads the real country packs — the CH pack is what the
@@ -754,11 +755,14 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
     # The deletion service over the same fakes and the *same* two artifact stores the document
     # and export services above write to, so a §69 test that renders a document and produces an
     # export then deletes the account asserts those very bytes are gone — not a parallel store's.
-    # No provider call on deletion (the billing port has no cancel; the subscription row
-    # cascade-deletes and `subscription_events` de-identifies via SET NULL, proved against the
-    # real database in the persistence tests).
+    # It shares the one `subscriptions` and `billing_provider` (so a provider-backed subscription is
+    # settled through the port before the local row cascade-deletes, §27) and its own task queue
+    # (so queued user work is cancelled before erasure). `subscription_events` de-identifies via
+    # SET NULL, proved against the real database in the persistence tests.
+    account_task_runs = FakeTaskRunRepository()
     account_deletion_workflow = AccountDeletionService(
-        users=users, sessions=sessions, documents=documents,
+        users=users, sessions=sessions, subscriptions=subscriptions,
+        tasks=account_task_runs, provider=billing_provider, documents=documents,
         document_store=document_artifact_store, export_store=export_store)
     app.dependency_overrides[account_deletion_service] = lambda: account_deletion_workflow
     # --- Phase 16 M11 rate limiting -------------------------------------------

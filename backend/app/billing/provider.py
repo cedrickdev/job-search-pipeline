@@ -144,3 +144,16 @@ class BillingProvider(Protocol):
         back as webhooks. Raises `BillingError(PROVIDER_UNAVAILABLE)` on an upstream failure.
         """
         ...
+
+    async def cancel_subscription(self, *, external_subscription_id: str) -> None:
+        """Settle a provider-side subscription so account deletion leaves nothing paying (§27).
+
+        Account deletion cannot silently drop the local row while the account keeps paying the
+        provider, and it cannot depend directly on Stripe, so it calls *this* — the port's own
+        cancel. Idempotent by contract: a subscription the provider no longer has (already
+        canceled, or a 404) is a *success*, so a deletion retried after a partial failure
+        converges rather than wedging. Raises `BillingError(PROVIDER_UNAVAILABLE)` only when the
+        provider is reached but cannot confirm the cancel, so the caller can fail closed and leave
+        the account intact rather than orphan a live subscription.
+        """
+        ...

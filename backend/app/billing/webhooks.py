@@ -111,6 +111,13 @@ class BillingWebhookService:
                     f"event type '{event.event_type}' carries no subscription state")
 
         derived_id = subscription_id(event.provider, state.external_subscription_id)
+        # Take the per-subscription lock before the read, so this whole read-modify-write
+        # serializes against a concurrent delivery of another of this subscription's states
+        # (§15). Held to commit: a second worker blocks here, then reads what this one wrote and
+        # `supersedes` decides monotonically — the newer state always wins, whichever commits
+        # last. Without it two out-of-order deliveries both read the same prior row, both pass
+        # `supersedes`, and the later-committing (older) one clobbers the newer.
+        await self._subscriptions.lock_subscription(derived_id)
         existing = await self._subscriptions.find_by_id(derived_id)
 
         user_id = existing.user_id if existing is not None else event.client_user_id

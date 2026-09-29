@@ -45,6 +45,7 @@ from backend.app.accounts import AccountDeletionService
 from backend.app.api.errors import RateLimited, csrf_failed, not_authenticated
 from backend.app.application_engine.bootstrap import build_application_registry
 from backend.app.billing.entitlements import EntitlementResolver
+from backend.app.billing.metering import MeteringService
 from backend.app.billing.provider import BillingProvider
 from backend.app.billing.service import BillingService
 from backend.app.billing.stripe_provider import StripeBillingProvider
@@ -134,6 +135,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemySubmissionAttemptRepository,
     SqlAlchemySubscriptionEventRepository,
     SqlAlchemySubscriptionRepository,
+    SqlAlchemyTaskRunRepository,
     SqlAlchemyUsageEventRepository,
     SqlAlchemyUserRepository,
 )
@@ -260,12 +262,32 @@ def authentication_service(
                                  SqlAlchemySessionRepository(session), settings)
 
 
+def _metering(session: AsyncSession) -> MeteringService:
+    """Compose the metering service over a request's session — the spine's enforcement end (§5-9).
+
+    Mirrors `billing_service`'s construction so every metered domain service shares one
+    resolver/ledger shape: a plan and subscription repository resolve the account's effective
+    entitlements and window, and the usage-event ledger both sums a period under the advisory
+    lock and writes the authoritative event. Built per request over the *request's* session so a
+    reservation and its `record` live in the one unit of work whose commit releases the lock —
+    the property the race-safe count → decide → write rests on. Handed to a domain service as an
+    optional collaborator: with it wired the service enforces the commercial quota as one clause
+    of its effective-permission AND, and without it (a unit test that isolates the domain rules)
+    the service behaves exactly as before.
+    """
+    return MeteringService(
+        EntitlementResolver(SqlAlchemyPlanRepository(session),
+                            SqlAlchemySubscriptionRepository(session)),
+        SqlAlchemyUsageEventRepository(session))
+
+
 def onboarding_service(
         session: Annotated[AsyncSession, Depends(database_session)],
 ) -> OnboardingService:
     return OnboardingService(SqlAlchemyCandidateProfileRepository(session),
                              SqlAlchemySearchProfileRepository(session),
-                             SqlAlchemyUserRepository(session))
+                             SqlAlchemyUserRepository(session),
+                             metering=_metering(session))
 
 
 def country_packs(request: Request) -> CountryPackRegistry:
@@ -359,7 +381,8 @@ def document_service(
         SqlAlchemyCandidateDocumentRepository(session),
         DeterministicDocumentGenerator(),
         CandidateEvidenceGuard(),
-        LocalDocumentArtifactStore(Path(settings.artifact_root)))
+        LocalDocumentArtifactStore(Path(settings.artifact_root)),
+        metering=_metering(session))
 
 
 def export_settings(request: Request) -> ExportSettings:
@@ -429,27 +452,6 @@ def account_export_service(
         exports=SqlAlchemyAccountExportRepository(session),
         store=LocalAccountExportStore(Path(settings.artifact_root)),
         settings=settings)
-
-
-def account_deletion_service(
-        session: Annotated[AsyncSession, Depends(database_session)],
-        doc_settings: Annotated[DocumentSettings, Depends(document_settings)],
-        exp_settings: Annotated[ExportSettings, Depends(export_settings)],
-) -> AccountDeletionService:
-    """Re-authenticate, then erase an account and everything it owns (§26-29).
-
-    Wired to the same user, session and document repositories the rest of the surface uses, and
-    to the two artifact stores rooted at the configured paths — the document store the document
-    service writes to, and the export store the export service writes to — so deletion removes
-    exactly the bytes those services produced. No clock: the route hands `now` on the call, so a
-    deletion's instant is the request's, not the process's.
-    """
-    return AccountDeletionService(
-        users=SqlAlchemyUserRepository(session),
-        sessions=SqlAlchemySessionRepository(session),
-        documents=SqlAlchemyCandidateDocumentRepository(session),
-        document_store=LocalDocumentArtifactStore(Path(doc_settings.artifact_root)),
-        export_store=LocalAccountExportStore(Path(exp_settings.artifact_root)))
 
 
 def llm_secret_settings(request: Request) -> LLMSecretSettings:
@@ -651,7 +653,8 @@ def application_service(
         profiles=SqlAlchemyCandidateProfileRepository(session),
         opportunities=SqlAlchemyOpportunityRepository(session),
         documents=SqlAlchemyCandidateDocumentRepository(session),
-        registry=build_application_registry())
+        registry=build_application_registry(),
+        metering=_metering(session))
 
 
 async def chat_conversation_service(
@@ -689,7 +692,8 @@ async def chat_conversation_service(
             strategy_proposals=SqlAlchemyStrategyChangeProposalRepository(session)),
         router=LLMRouter(registry),
         recorder=LLMTelemetryRecorder(
-            runs=SqlAlchemyLLMRunRepository(session), connections=connections),
+            runs=SqlAlchemyLLMRunRepository(session), connections=connections,
+            metering=_metering(session)),
         policy=RoutingPolicy(privacy=PrivacyClass.EXTERNAL_ALLOWED))
 
 
@@ -759,9 +763,11 @@ async def interview_service(
             router=LLMRouter(registry),
             policy=RoutingPolicy(privacy=PrivacyClass.LOCAL_ONLY),
             recorder=LLMTelemetryRecorder(
-                runs=SqlAlchemyLLMRunRepository(session), connections=connections),
+                runs=SqlAlchemyLLMRunRepository(session), connections=connections,
+                metering=_metering(session)),
             user_id=current.user.id),
-        transcriber=WhisperCppTranscriber())
+        transcriber=WhisperCppTranscriber(),
+        metering=_metering(session))
 
 
 def outcome_service(
@@ -832,7 +838,8 @@ def career_recommendation_engine(
     """
     return CareerRecommendationEngine(
         analytics=analytics,
-        recommendations=SqlAlchemyCareerRecommendationRepository(session))
+        recommendations=SqlAlchemyCareerRecommendationRepository(session),
+        metering=_metering(session))
 
 
 def application_policy_service(
@@ -1048,6 +1055,32 @@ async def billing_provider(
     """
     async with httpx.AsyncClient() as client:
         yield StripeBillingProvider(settings, client)
+
+
+def account_deletion_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        provider: Annotated[BillingProvider, Depends(billing_provider)],
+        doc_settings: Annotated[DocumentSettings, Depends(document_settings)],
+        exp_settings: Annotated[ExportSettings, Depends(export_settings)],
+) -> AccountDeletionService:
+    """Re-authenticate, then erase an account and everything it owns (§26-29).
+
+    Wired to the same user, session, subscription, task and document repositories the rest of the
+    surface uses, to the billing provider that settles the account's provider-side subscription
+    before the local row is dropped (§27), and to the two artifact stores rooted at the configured
+    paths — the document store the document service writes to, and the export store the export
+    service writes to — so deletion removes exactly the bytes those services produced. No clock:
+    the route hands `now` on the call, so a deletion's instant is the request's, not the process's.
+    """
+    return AccountDeletionService(
+        users=SqlAlchemyUserRepository(session),
+        sessions=SqlAlchemySessionRepository(session),
+        subscriptions=SqlAlchemySubscriptionRepository(session),
+        tasks=SqlAlchemyTaskRunRepository(session),
+        provider=provider,
+        documents=SqlAlchemyCandidateDocumentRepository(session),
+        document_store=LocalDocumentArtifactStore(Path(doc_settings.artifact_root)),
+        export_store=LocalAccountExportStore(Path(exp_settings.artifact_root)))
 
 
 def billing_service(

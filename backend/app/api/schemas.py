@@ -3191,14 +3191,17 @@ class AccountDeletionRequest(ApiModel):
 class AccountDeletionResponse(ApiModel):
     """The receipt a completed deletion returns (§27-29).
 
-    Counts and an instant, never data: how many sessions were revoked and how many stored
-    artifacts were removed, plus when it happened — enough for a client to confirm the erasure
-    without echoing a single fact about the account that no longer exists.
+    Counts and an instant, never data: how many sessions were revoked, whether the provider-side
+    subscription was canceled, how many queued tasks were dropped and how many stored artifacts
+    were removed, plus when it happened — enough for a client to confirm the erasure without
+    echoing a single fact about the account that no longer exists.
     """
 
     user_id: UserId
     deleted_at: datetime
     sessions_revoked: int
+    external_subscription_canceled: bool
+    tasks_canceled: int
     document_artifacts_removed: int
     export_archives_removed: int
 
@@ -3207,5 +3210,7 @@ class AccountDeletionResponse(ApiModel):
         return cls(
             user_id=receipt.user_id, deleted_at=receipt.deleted_at,
             sessions_revoked=receipt.sessions_revoked,
+            external_subscription_canceled=receipt.external_subscription_canceled,
+            tasks_canceled=receipt.tasks_canceled,
             document_artifacts_removed=receipt.document_artifacts_removed,
             export_archives_removed=receipt.export_archives_removed)

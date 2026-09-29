@@ -31,6 +31,7 @@ jobs run in the same image and environment as the application.
 | `worker` | the general lane: discovery, export, retention | `workers` |
 | `browser-worker` | the browser lane: Playwright submissions only | `workers` |
 | `migrate` | `alembic upgrade head`, the explicit schema step | `tools` |
+| `seed-plans` | write/reconcile the plan catalogue, idempotently | `tools` |
 | `import-v1` | the V1 SQLite importer | `tools` |
 | `backup` | write a PostgreSQL dump | `tools` |
 | `restore-check` | restore-drill the newest dump | `tools` |
@@ -38,10 +39,14 @@ jobs run in the same image and environment as the application.
 ```
 docker compose up -d                        # db + Redis + API + frontend
 docker compose --profile workers up -d      # add the general and browser workers
-docker compose run --rm migrate             # alembic upgrade head (run once per deploy)
+docker compose run --rm migrate             # 1. alembic upgrade head (once per deploy)
+docker compose run --rm seed-plans          # 2. seed/reconcile the plan catalogue
 docker compose run --rm backup              # write a dump
 docker compose run --rm restore-check       # restore-drill the newest dump
 ```
+
+The deployment order is **migrate → seed/reconcile plans → start services**: the schema exists,
+then the catalogue the entitlement resolver reads exists, then the API and workers roll (see below).
 
 ## Background workers and lanes (§32–40)
 
@@ -82,6 +87,38 @@ docker compose run --rm migrate     # or the equivalent one-shot Job in your orc
 `/api/v2` answers `503` until it has been run against a fresh database. Migrations are additive
 (§62): a new revision adds tables/columns, it does not rewrite or drop what a running old version
 still reads, so the migrate step can run before the new code rolls.
+
+## The plan catalogue is seeded explicitly (§2, §17)
+
+`alembic upgrade head` creates the `plans` table but never its rows. The `free`/`pro`/`scale`
+catalogue the entitlement resolver and the billing surface read is written by a **second explicit
+step**, run after migrate and before the API/workers roll:
+
+```
+docker compose run --rm seed-plans      # python -m backend.app.cli.seed_plans
+```
+
+It is **never** run implicitly on startup — seeding is a deployment action with its own command, so
+a running service never races a catalogue write and an operator decides when a pricing change takes
+effect. Re-running is safe: the seed is idempotent (each tier keeps its `created_at` and reconciles
+its entitlements), so the same command doubles as the **reconcile** step after any catalogue or
+pricing change.
+
+Pricing is deployment-configured, never baked into the image (§17). A paid tier's amount and its
+provider-side checkout handle come from the environment — set them before this step:
+
+- `JOBSEARCH_PLAN_PRICE_<SLUG>` — `"<amount_cents>:<currency>"`, e.g. `JOBSEARCH_PLAN_PRICE_PRO=1900:CHF`.
+  A tier with no such variable is seeded **unpriced** (coherent, but not sellable until priced) —
+  never an invented amount.
+- `JOBSEARCH_PLAN_PRICE_ID_<SLUG>` — the opaque provider price handle a checkout needs, e.g.
+  `JOBSEARCH_PLAN_PRICE_ID_PRO=price_…`. Absent → no checkout is offered for that tier.
+
+See [.env.example](../.env.example) ("Plan pricing") for the block and [SaaS billing](./SAAS_BILLING.md)
+for the catalogue's role. The dev composition's `seed-plans` command passes `--demo`, which seeds
+non-production demo pricing instead of reading the environment; a production catalogue drops `--demo`.
+The command exits `0` on a clean seed and `3` on a failure (nothing was written — investigate and
+re-run; the seed is idempotent). Until the catalogue is seeded, the free tier is unresolved and the
+billing surface has no plans to offer.
 
 ## Backup and recovery (§45–48)
 

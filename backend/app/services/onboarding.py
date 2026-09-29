@@ -27,6 +27,7 @@ from typing import Annotated
 
 from pydantic import Field
 
+from backend.app.billing.metering import MeteringService
 from backend.app.domain.base import DomainModel, LanguageCode, NonEmptyStr
 from backend.app.domain.candidate import (
     Availability,
@@ -34,6 +35,7 @@ from backend.app.domain.candidate import (
     WorkAuthorization,
 )
 from backend.app.domain.common import LanguageProficiency, Location, WorkloadRange
+from backend.app.domain.entitlement import EntitlementKey
 from backend.app.domain.identifiers import (
     SearchProfileId,
     UserId,
@@ -146,10 +148,12 @@ class OnboardingService:
     """
 
     def __init__(self, profiles: CandidateProfileRepository,
-                 searches: SearchProfileRepository, users: UserRepository) -> None:
+                 searches: SearchProfileRepository, users: UserRepository, *,
+                 metering: MeteringService | None = None) -> None:
         self._profiles = profiles
         self._searches = searches
         self._users = users
+        self._metering = metering
 
     async def profile(self, user_id: UserId) -> CandidateProfile | None:
         """This account's profile, or `None` if onboarding has not saved one."""
@@ -203,7 +207,19 @@ class OnboardingService:
 
     async def create_search(self, user_id: UserId, draft: SearchProfileDraft, *,
                             now: datetime) -> SearchProfile:
-        """Save a new search under a fresh id."""
+        """Save a new search under a fresh id.
+
+        An *active* search counts against the account's `ACTIVE_SEARCH_PROFILES` gauge, so when
+        metering is wired the commercial ceiling is checked first, under the usage lock, against a
+        live count of currently-active searches (§6). Creating a paused search consumes no gauge
+        room — it is inert until activated, and `update_search` re-checks the ceiling then. The
+        gauge reserves nothing: the row this writes *is* the next count, which is why the check must
+        hold the lock the write commits under.
+        """
+        if self._metering is not None and draft.is_active:
+            await self._metering.authorize_active_gauge(
+                user_id, EntitlementKey.ACTIVE_SEARCH_PROFILES,
+                count_active=lambda: self._active_search_count(user_id), as_of=now)
         return await self._searches.upsert(
             self._search_from_draft(new_search_profile_id(), user_id, draft,
                                     created_at=now, updated_at=now))
@@ -217,13 +233,33 @@ class OnboardingService:
         caution: `created_at` belongs to the row and must survive an edit, and the
         load is the authorization check — another user's id reads as absent, so this
         raises instead of writing.
+
+        Activating a currently-paused search is the one edit that adds to the
+        `ACTIVE_SEARCH_PROFILES` gauge, so it is checked against the ceiling exactly as a create
+        would be (§6); the load's own row is paused and so absent from the live active count, which
+        `+1` then accounts for. Editing an already-active search, or pausing one, changes no gauge
+        total and is never refused for quota.
         """
         existing = await self._searches.get(user_id, search_profile_id)
         if existing is None:
             raise SearchProfileNotFound(str(search_profile_id))
+        if self._metering is not None and draft.is_active and not existing.is_active:
+            await self._metering.authorize_active_gauge(
+                user_id, EntitlementKey.ACTIVE_SEARCH_PROFILES,
+                count_active=lambda: self._active_search_count(user_id), as_of=now)
         return await self._searches.upsert(
             self._search_from_draft(search_profile_id, user_id, draft,
                                     created_at=existing.created_at, updated_at=now))
+
+    async def _active_search_count(self, user_id: UserId) -> int:
+        """How many of this account's searches are currently active — the gauge's live count.
+
+        Read under the usage lock `authorize_active_gauge` holds, so a concurrent creator of the
+        same account has either not yet committed its new search (and is blocked on the lock) or
+        has, and its row is counted here. `active_only` lets the `(user_id, is_active)` index serve
+        the count.
+        """
+        return len(await self._searches.list_for_user(user_id, active_only=True))
 
     async def delete_search(self, user_id: UserId,
                             search_profile_id: SearchProfileId) -> None:

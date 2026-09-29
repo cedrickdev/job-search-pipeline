@@ -28,6 +28,7 @@ account's document reads as absent and cannot be downloaded by guessing an id.
 """
 from datetime import datetime
 
+from backend.app.billing.metering import MeteringService
 from backend.app.documents import (
     DocumentArtifactStore,
     DocumentGenerator,
@@ -48,6 +49,7 @@ from backend.app.domain.documents import (
     DocumentVersion,
     GenerationContext,
 )
+from backend.app.domain.entitlement import EntitlementKey
 from backend.app.domain.identifiers import (
     CandidateDocumentId,
     DocumentVersionId,
@@ -57,6 +59,7 @@ from backend.app.domain.identifiers import (
     document_version_id,
 )
 from backend.app.domain.opportunity import Opportunity
+from backend.app.domain.usage import UsageSourceType
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
     CandidateDocumentRepository,
@@ -112,13 +115,15 @@ class DocumentService:
                  documents: CandidateDocumentRepository,
                  generator: DocumentGenerator,
                  guard: CandidateEvidenceGuard,
-                 artifacts: DocumentArtifactStore) -> None:
+                 artifacts: DocumentArtifactStore, *,
+                 metering: MeteringService | None = None) -> None:
         self._profiles = profiles
         self._opportunities = opportunities
         self._documents = documents
         self._generator = generator
         self._guard = guard
         self._artifacts = artifacts
+        self._metering = metering
 
     async def generate(self, user_id: UserId, opportunity_id: OpportunityId,
                        document_type: CandidateDocumentType, *, now: datetime,
@@ -136,6 +141,14 @@ class DocumentService:
         flush reuses the same rows rather than accreting a duplicate. A fresh call
         after a *successful* one, though, is a new attempt and a new version — that
         is regeneration, and it is meant to grow the history.
+
+        When metering is wired, the `DOCUMENT_GENERATIONS` commercial quota is reserved before
+        the generator is asked to compose — so an account with no room spends no LLM call — and
+        the authoritative usage event is recorded against the persisted version once it exists,
+        keyed on the version id so a retried call collapses onto one event (§5-9). A generation
+        that could not be composed at all (`InsufficientEvidence`) reserves under the lock but
+        records nothing and rolls back, consuming no allowance; a version that was *rejected* by
+        the guard is still a generation that ran, so it is metered like a rendered one.
         """
         profile = await self._profiles.get_default(user_id)
         if profile is None:
@@ -143,6 +156,11 @@ class DocumentService:
         opportunity = await self._opportunities.get(opportunity_id)
         if opportunity is None:
             raise OpportunityNotFound(str(opportunity_id))
+
+        resolved = None
+        if self._metering is not None:
+            resolved = await self._metering.authorize(
+                user_id, EntitlementKey.DOCUMENT_GENERATIONS, quantity=1, as_of=now)
 
         target_language = language or opportunity.posting_language \
             or self._candidate_language(profile)
@@ -168,7 +186,13 @@ class DocumentService:
             versions=versions,
             created_at=existing.created_at if existing is not None else now,
             updated_at=now)
-        return await self._documents.upsert(document)
+        stored = await self._documents.upsert(document)
+        if self._metering is not None and resolved is not None:
+            await self._metering.record(
+                user_id, EntitlementKey.DOCUMENT_GENERATIONS,
+                source_type=UsageSourceType.DOCUMENT_VERSION, source_id=str(version.id),
+                quantity=1, occurred_at=now, billing_period=resolved.period.label)
+        return stored
 
     async def document(self, user_id: UserId,
                        document_id: CandidateDocumentId) -> CandidateDocument:

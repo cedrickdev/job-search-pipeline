@@ -2589,6 +2589,23 @@ class SqlAlchemyPlanRepository:
         return tuple(plan_to_domain(row) for row in result.scalars())
 
 
+_SUBSCRIPTION_APPLY_LOCK_NAMESPACE = 0x53554253  # "SUBS" — namespaces this lock class.
+
+
+def _subscription_apply_lock_key(subscription_id: SubscriptionId) -> int:
+    """A stable signed int4 advisory-lock key for one subscription's webhook application.
+
+    The twin of `_usage_budget_lock_key`, in its own namespace and keyed on the *subscription*
+    rather than the user: two webhook deliveries for the same subscription (an older and a newer
+    provider state, redelivered out of order and processed concurrently) must serialize their
+    read-modify-write, so the newer state always wins regardless of which transaction commits
+    last. Folding the id's first four bytes into a signed int4 maps one subscription to one key; a
+    collision between two *different* subscriptions only serializes them against each other
+    briefly, which is harmless.
+    """
+    return int.from_bytes(subscription_id.bytes[:4], "big", signed=True)
+
+
 class SqlAlchemySubscriptionRepository:
     """`SubscriptionRepository` over an `AsyncSession`, `user_id` on every read.
 
@@ -2623,6 +2640,19 @@ class SqlAlchemySubscriptionRepository:
             .limit(1))
         row = result.scalar_one_or_none()
         return None if row is None else subscription_to_domain(row)
+
+    async def lock_subscription(self, subscription_id: SubscriptionId) -> None:
+        # Serialize the webhook read-modify-write for one subscription against a concurrent
+        # delivery of another of its states. Transaction-scoped, so it is held from before the
+        # `find_by_id` this precedes through the `upsert` to the commit that releases it: a second
+        # worker blocks here until the first commits, then reads the state the first wrote and
+        # `supersedes` decides monotonically. Twin of `lock_usage_budget`, keyed on the
+        # subscription (§15). It is only ever taken before a read, never after a write, so two
+        # subscriptions can never deadlock against each other.
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(
+                _SUBSCRIPTION_APPLY_LOCK_NAMESPACE,
+                _subscription_apply_lock_key(subscription_id))))
 
     async def find_by_id(self, subscription_id: SubscriptionId) -> Subscription | None:
         # The one *unscoped* read on this repository, for the webhook path alone: a provider
@@ -2970,5 +3000,17 @@ class SqlAlchemyTaskRunRepository:
                    TaskRunRow.lease_expires_at.is_not(None),
                    TaskRunRow.lease_expires_at <= as_of))
         return int(result.scalar_one())
+
+    async def cancel_queued_for_user(self, user_id: UserId) -> int:
+        # Account deletion's "cancel queued user tasks" step: a DELETE of this owner's not-yet-
+        # claimed tasks (TaskStatus has no canceled state to transition to). Deleting the rows
+        # takes their locks now, closing the window where a worker's FOR UPDATE SKIP LOCKED lease
+        # could claim one between here and the user's removal; a RUNNING task is left untouched and
+        # swept by the ON DELETE CASCADE on user_id. Idempotent — a retry deletes nothing (0).
+        result = await self._session.execute(
+            delete(TaskRunRow).where(
+                TaskRunRow.user_id == user_id,
+                TaskRunRow.status == TaskStatus.QUEUED))
+        return _rows_affected(result)
 
 

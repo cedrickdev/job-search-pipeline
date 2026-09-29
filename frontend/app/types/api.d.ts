@@ -2556,9 +2556,10 @@ export interface components {
          * AccountDeletionResponse
          * @description The receipt a completed deletion returns (§27-29).
          *
-         *     Counts and an instant, never data: how many sessions were revoked and how many stored
-         *     artifacts were removed, plus when it happened — enough for a client to confirm the erasure
-         *     without echoing a single fact about the account that no longer exists.
+         *     Counts and an instant, never data: how many sessions were revoked, whether the provider-side
+         *     subscription was canceled, how many queued tasks were dropped and how many stored artifacts
+         *     were removed, plus when it happened — enough for a client to confirm the erasure without
+         *     echoing a single fact about the account that no longer exists.
          */
         AccountDeletionResponse: {
             /**
@@ -2570,8 +2571,12 @@ export interface components {
             document_artifacts_removed: number;
             /** Export Archives Removed */
             export_archives_removed: number;
+            /** External Subscription Canceled */
+            external_subscription_canceled: boolean;
             /** Sessions Revoked */
             sessions_revoked: number;
+            /** Tasks Canceled */
+            tasks_canceled: number;
             /**
              * User Id
              * Format: uuid

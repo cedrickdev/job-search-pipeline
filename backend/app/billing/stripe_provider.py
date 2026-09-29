@@ -19,6 +19,7 @@ import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
@@ -159,6 +160,17 @@ class StripeBillingProvider:
             "/v1/billing_portal/sessions", {"customer": customer_id, "return_url": return_url})
         return PortalSession(redirect_url=_require_str(body, "url"))
 
+    async def cancel_subscription(self, *, external_subscription_id: str) -> None:
+        """Cancel a Stripe subscription so account deletion leaves nothing paying (§27).
+
+        `DELETE /v1/subscriptions/{id}` is Stripe's immediate cancel. Idempotent by contract: a
+        404 means the subscription is already gone provider-side, which is exactly the end state
+        the caller wants, so it is a success — a deletion retried after a partial failure
+        converges rather than wedging on a subscription that no longer exists. Any other error
+        status is `PROVIDER_UNAVAILABLE`, so the caller fails closed and leaves the account intact.
+        """
+        await self._delete(f"/v1/subscriptions/{quote(external_subscription_id, safe='')}")
+
     async def _post(self, path: str, data: dict[str, str]) -> dict[str, Any]:
         """POST form-encoded to the Stripe API with the bearer key, or raise PROVIDER_UNAVAILABLE.
 
@@ -187,6 +199,31 @@ class StripeBillingProvider:
         if not isinstance(body, dict):
             raise _provider_unavailable("the billing provider returned an unexpected response")
         return body
+
+    async def _delete(self, path: str) -> None:
+        """DELETE at the Stripe API with the bearer key; 404 is success, else PROVIDER_UNAVAILABLE.
+
+        The one caller (`cancel_subscription`) needs no response body, only that the resource is
+        gone — so a 2xx and a 404 (already gone) are both success, and every other status is a
+        provider failure the caller fails closed on. Like `_post`, the detail carries only the
+        HTTP status and a fixed sentence, never Stripe's own message (§54).
+        """
+        if not self._settings.secret_key:
+            raise _provider_unavailable(
+                "no Stripe secret key is configured; the billing provider cannot be called")
+        url = self._settings.api_base_url.rstrip("/") + path
+        try:
+            response = await self._client.request(
+                "DELETE", url,
+                headers={"Authorization": f"Bearer {self._settings.secret_key}"})
+        except httpx.HTTPError as error:
+            raise _provider_unavailable(
+                f"the billing provider could not be reached ({type(error).__name__})") from error
+        if response.status_code == 404:
+            return
+        if response.status_code >= 400:
+            raise _provider_unavailable(
+                f"the billing provider answered with status {response.status_code}")
 
 
 def _header_value(headers: Mapping[str, str], name: str) -> str | None:

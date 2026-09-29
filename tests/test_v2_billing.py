@@ -14,10 +14,16 @@ real second worker is proved in `test_v2_persistence_usage_concurrency.py`):
 """
 import pytest
 
-from backend.app.billing.catalogue import FREE_PLAN_SLUG, seed_plan_catalogue
+from backend.app.billing.catalogue import (
+    DEMO_PLAN_PRICES,
+    FREE_PLAN_SLUG,
+    PlanPrice,
+    seed_plan_catalogue,
+)
 from backend.app.billing.entitlements import EntitlementResolver
 from backend.app.billing.errors import BillingError, BillingErrorCode
-from backend.app.domain.entitlement import EntitlementKey
+from backend.app.cli.seed_plans import format_seed_report, plan_pricing_from_env
+from backend.app.domain.entitlement import BillingInterval, EntitlementKey
 from backend.app.domain.subscription import SubscriptionStatus
 from backend.app.billing.metering import MeteringService
 from backend.app.domain.usage import UsageSourceType, calendar_month_period
@@ -256,15 +262,46 @@ async def test_record_is_idempotent_on_the_same_source():
 # -- the catalogue seed: the three tiers, idempotent, and the deployment's price handles -------
 
 async def test_seed_writes_the_free_pro_and_scale_tiers():
-    """A deployment writes exactly the three tiers, the free one carrying no price (§17, §61)."""
+    """A deployment writes exactly the three tiers; without configured pricing, none is priced.
+
+    Pricing is deployment-configured, never baked into the catalogue (§17, §61): a seed with no
+    `prices` still writes the three tiers and keeps each paid tier's monthly `billing_interval`,
+    but leaves them *unpriced* — coherent, and simply not sellable until an operator supplies a
+    price. No invented CHF amount appears in the catalogue definition.
+    """
     plans = FakePlanRepository()
     written = await seed_plan_catalogue(plans, now=NOW)
     by_slug = {plan.slug: plan for plan in written}
     assert set(by_slug) == {"free", "pro", "scale"}
     assert by_slug["free"].is_free and by_slug["free"].price_amount_cents is None
-    assert by_slug["pro"].price_amount_cents == 1900
+    # A paid tier with no configured price is unpriced but keeps its billing cadence.
+    assert by_slug["pro"].price_amount_cents is None
+    assert by_slug["pro"].currency is None
+    assert by_slug["pro"].billing_interval is BillingInterval.MONTHLY
     # `scale` leaves its heavy meters unlimited — a real granted value, not an omission.
     assert by_slug["scale"].entitlement_for(EntitlementKey.APPLICATION_SUBMISSIONS).limit is None
+
+
+async def test_seed_applies_configured_prices_to_the_paid_tiers():
+    """A deployment (or the demo set) supplies each paid tier's amount and currency at seed time.
+
+    The one place a price enters the catalogue is `prices` at seed time; the free tier is never
+    priced. `DEMO_PLAN_PRICES` is the explicitly non-production set fixtures use.
+    """
+    plans = FakePlanRepository()
+    written = await seed_plan_catalogue(
+        plans, now=NOW,
+        prices={"pro": PlanPrice(amount_cents=2500, currency="EUR")})
+    by_slug = {plan.slug: plan for plan in written}
+    assert (by_slug["pro"].price_amount_cents, by_slug["pro"].currency) == (2500, "EUR")
+    assert not by_slug["pro"].is_free
+    assert by_slug["free"].price_amount_cents is None  # the free tier is never priced
+    assert by_slug["scale"].price_amount_cents is None  # a tier absent from prices stays unpriced
+
+    demo = {plan.slug: plan for plan in await seed_plan_catalogue(
+        plans, now=LATER, prices=DEMO_PLAN_PRICES)}
+    assert (demo["pro"].price_amount_cents, demo["pro"].currency) == (1900, "CHF")
+    assert (demo["scale"].price_amount_cents, demo["scale"].currency) == (4900, "CHF")
 
 
 async def test_seed_is_idempotent_and_preserves_created_at():
@@ -287,6 +324,43 @@ async def test_seed_applies_the_deployment_price_handles():
     by_slug = {plan.slug: plan for plan in written}
     assert by_slug["pro"].external_price_id == "price_live_pro"
     assert by_slug["scale"].external_price_id is None  # absent → no handle, never fabricated
+
+
+# -- the seed CLI's env parsing: pricing is read from the environment, never baked in (§17) -----
+
+async def test_plan_pricing_from_env_reads_amounts_and_handles_per_slug():
+    """`JOBSEARCH_PLAN_PRICE_<SLUG>` and `..._PRICE_ID_<SLUG>` map to amounts and handles."""
+    external_price_ids, prices = plan_pricing_from_env({
+        "JOBSEARCH_PLAN_PRICE_PRO": "1900:CHF",
+        "JOBSEARCH_PLAN_PRICE_ID_PRO": "price_live_pro",
+        "JOBSEARCH_PLAN_PRICE_SCALE": "4900:CHF",
+        "UNRELATED": "ignored",
+    })
+    assert external_price_ids == {"pro": "price_live_pro"}
+    assert prices == {
+        "pro": PlanPrice(amount_cents=1900, currency="CHF"),
+        "scale": PlanPrice(amount_cents=4900, currency="CHF"),
+    }
+
+
+async def test_plan_pricing_from_env_rejects_a_malformed_amount_naming_the_variable():
+    """A price with no currency or a non-numeric amount is refused, naming the variable."""
+    with pytest.raises(ValueError, match="JOBSEARCH_PLAN_PRICE_PRO"):
+        plan_pricing_from_env({"JOBSEARCH_PLAN_PRICE_PRO": "1900"})
+    with pytest.raises(ValueError, match="JOBSEARCH_PLAN_PRICE_PRO"):
+        plan_pricing_from_env({"JOBSEARCH_PLAN_PRICE_PRO": "free:CHF"})
+
+
+async def test_seed_report_is_a_data_free_tally_without_the_handle_value():
+    """The CLI's report names each tier's price and whether it is sellable, never a handle value."""
+    plans = FakePlanRepository()
+    written = await seed_plan_catalogue(
+        plans, now=NOW, prices=DEMO_PLAN_PRICES,
+        external_price_ids={"pro": "price_live_pro"})
+    report = format_seed_report(written)
+    assert "1900 CHF" in report and "unpriced (not sellable)" in report
+    assert "checkout handle set" in report and "no checkout handle" in report
+    assert "price_live_pro" not in report  # the handle value never appears
 
 
 # -- the spine's hard rule: a plan's quota can raise commercial room but never widen a brake ---

@@ -32,16 +32,21 @@ from backend.app.accounts import (
     AccountDeletionService,
     ReauthenticationRequired,
 )
+from backend.app.billing.errors import BillingError, BillingErrorCode
 from backend.app.core.settings import AuthSettings
 from backend.app.documents.artifacts import ArtifactNotFound, LocalDocumentArtifactStore
 from backend.app.domain.identifiers import AccountExportId
+from backend.app.domain.task import TaskKind, TaskSpec, TaskStatus
 from backend.app.exports.store import ExportNotFound, LocalAccountExportStore
 from backend.app.services.authentication import AuthenticationService, SignedInUser
 from tests.v2_api import EMAIL, OTHER_EMAIL, PASSWORD, WRONG_PASSWORD, api_harness
-from tests.v2_builders import LATER, NOW, OTHER_USER, a_rendered_document
+from tests.v2_builders import LATER, NOW, OTHER_USER, a_rendered_document, a_subscription
 from tests.v2_fakes import (
+    FakeBillingProvider,
     FakeCandidateDocumentRepository,
     FakeSessionRepository,
+    FakeSubscriptionRepository,
+    FakeTaskRunRepository,
     FakeUserRepository,
 )
 
@@ -63,10 +68,20 @@ async def _register(users: FakeUserRepository, sessions: FakeSessionRepository, 
                                display_name="Candidate", now=NOW)
 
 
-def _service(*, users, sessions, documents, document_store, export_store):
-    """An `AccountDeletionService` over fakes and two real local stores."""
+def _service(*, users, sessions, documents, document_store, export_store,
+             subscriptions=None, tasks=None, provider=None):
+    """An `AccountDeletionService` over fakes and two real local stores.
+
+    The subscription repository, task queue and billing provider default to empty/quiet fakes, so
+    a test that cares only about rows-and-bytes need not wire them; a test exercising §27's external
+    settlement seeds a provider-backed subscription and inspects the `FakeBillingProvider`.
+    """
     return AccountDeletionService(
-        users=users, sessions=sessions, documents=documents,
+        users=users, sessions=sessions,
+        subscriptions=subscriptions if subscriptions is not None else FakeSubscriptionRepository(),
+        tasks=tasks if tasks is not None else FakeTaskRunRepository(),
+        provider=provider if provider is not None else FakeBillingProvider(),
+        documents=documents,
         document_store=document_store, export_store=export_store)
 
 
@@ -149,6 +164,7 @@ async def test_the_correct_password_erases_the_account_and_returns_accurate_coun
 
     assert receipt == AccountDeletionReceipt(
         user_id=account.user.id, deleted_at=LATER, sessions_revoked=2,
+        external_subscription_canceled=False, tasks_canceled=0,
         document_artifacts_removed=1, export_archives_removed=1)
     assert await users.get(account.user.id) is None
     assert all(session.revoked_at == LATER for session in sessions.sessions.values())
@@ -174,6 +190,144 @@ async def test_an_account_with_no_artifacts_deletes_cleanly_with_zero_counts(tmp
     assert receipt.export_archives_removed == 0
     assert receipt.sessions_revoked == 1
     assert await users.get(account.user.id) is None
+
+
+# --------------------------------------------------------------------------
+# The service (§27): settle the external subscription and cancel queued tasks before erasing.
+# --------------------------------------------------------------------------
+
+
+def _queued_task(user_id, *, key: str):
+    """A fresh QUEUED general-lane task owned by `user_id`, keyed so its id is distinct."""
+    return TaskSpec(
+        kind=TaskKind.OPPORTUNITY_DISCOVERY, idempotency_key=key,
+        user_id=user_id).to_queued_run(as_of=NOW)
+
+
+@pytest.mark.asyncio
+async def test_deletion_cancels_a_provider_backed_subscription_before_erasing(tmp_path) -> None:
+    """A provider-backed subscription is canceled with the provider, then the account is erased (§27).
+
+    Deleting the local row while the provider keeps charging would strand a paying account, so the
+    service settles the external subscription first — through the provider-neutral port, never a
+    Stripe call — passing the exact external handle. The receipt records the cancel, and the account
+    is gone. The DB cascade removes the local subscription row; the fake models only the external leg.
+    """
+    users, sessions = FakeUserRepository(), FakeSessionRepository()
+    subscriptions, provider = FakeSubscriptionRepository(), FakeBillingProvider()
+    account = await _register(users, sessions)
+    await subscriptions.upsert(a_subscription(user_id=account.user.id))
+    service = _service(
+        users=users, sessions=sessions, subscriptions=subscriptions, provider=provider,
+        documents=FakeCandidateDocumentRepository(),
+        document_store=LocalDocumentArtifactStore(tmp_path / "documents"),
+        export_store=LocalAccountExportStore(tmp_path / "exports"))
+
+    receipt = await service.delete(account.user.id, password=PASSWORD, now=LATER)
+
+    assert provider.cancel_subscription_calls == ["sub_test_0001"]
+    assert receipt.external_subscription_canceled is True
+    assert await users.get(account.user.id) is None
+
+
+@pytest.mark.asyncio
+async def test_an_internal_free_tier_subscription_is_never_canceled_externally(tmp_path) -> None:
+    """The internal free tier has nothing external to settle, so the provider is never called (§27).
+
+    An account on the internal tier carries no provider handle; cancelling "with the provider" would
+    be meaningless. The service recognises `is_provider_backed` is false and skips the call, the
+    receipt says so, and the local row still vanishes with the account.
+    """
+    users, sessions = FakeUserRepository(), FakeSessionRepository()
+    subscriptions, provider = FakeSubscriptionRepository(), FakeBillingProvider()
+    account = await _register(users, sessions)
+    await subscriptions.upsert(a_subscription(
+        user_id=account.user.id, provider="internal", external_customer_id=None,
+        external_subscription_id=None, current_period_start=None, current_period_end=None))
+    service = _service(
+        users=users, sessions=sessions, subscriptions=subscriptions, provider=provider,
+        documents=FakeCandidateDocumentRepository(),
+        document_store=LocalDocumentArtifactStore(tmp_path / "documents"),
+        export_store=LocalAccountExportStore(tmp_path / "exports"))
+
+    receipt = await service.delete(account.user.id, password=PASSWORD, now=LATER)
+
+    assert provider.cancel_subscription_calls == []
+    assert receipt.external_subscription_canceled is False
+    assert await users.get(account.user.id) is None
+
+
+@pytest.mark.asyncio
+async def test_deletion_cancels_only_the_accounts_queued_tasks(tmp_path) -> None:
+    """Queued tasks the account owns are dropped; a running one and another account's are left (§27).
+
+    The "cancel queued user tasks" step is a DELETE of not-yet-claimed rows — closing the window a
+    worker could otherwise lease one in. A RUNNING task is left to finish (the cascade sweeps it when
+    the user row goes), and another account's queued work is never touched. The count is exactly the
+    account's queued rows.
+    """
+    users, sessions = FakeUserRepository(), FakeSessionRepository()
+    tasks = FakeTaskRunRepository()
+    account = await _register(users, sessions)
+    await tasks.add(_queued_task(account.user.id, key="mine-1"))
+    await tasks.add(_queued_task(account.user.id, key="mine-2"))
+    running = _queued_task(account.user.id, key="mine-running").leased(
+        worker="w1", lease_expires_at=LATER, as_of=NOW)
+    await tasks.add(running)
+    other = _queued_task(OTHER_USER, key="theirs-1")
+    await tasks.add(other)
+    service = _service(
+        users=users, sessions=sessions, tasks=tasks,
+        documents=FakeCandidateDocumentRepository(),
+        document_store=LocalDocumentArtifactStore(tmp_path / "documents"),
+        export_store=LocalAccountExportStore(tmp_path / "exports"))
+
+    receipt = await service.delete(account.user.id, password=PASSWORD, now=LATER)
+
+    assert receipt.tasks_canceled == 2
+    remaining = {t.idempotency_key for t in tasks.tasks.values()}
+    assert remaining == {"mine-running", "theirs-1"}
+
+
+@pytest.mark.asyncio
+async def test_a_provider_that_cannot_confirm_the_cancel_aborts_the_whole_deletion(
+        tmp_path) -> None:
+    """If the provider cannot confirm the cancel, deletion fails closed — nothing irreversible runs.
+
+    The external cancel is settled *before* any irreversible step (the account row, the stored
+    bytes, the queued tasks), so a `PROVIDER_UNAVAILABLE` propagates and, at the request boundary,
+    rolls the whole transaction back rather than dropping the local account while a paid subscription
+    keeps charging. Over fakes there is no transaction to roll back, so the test asserts the
+    irreversible steps never ran: the account still exists, its artifact bytes and queued tasks are
+    intact. (The DB rollback that also restores the revoked sessions is proved in the persistence
+    suite, not here — the fakes model no transaction.)
+    """
+    users, sessions = FakeUserRepository(), FakeSessionRepository()
+    subscriptions, provider, tasks = (
+        FakeSubscriptionRepository(), FakeBillingProvider(), FakeTaskRunRepository())
+    provider.cancel_error = BillingError(
+        BillingErrorCode.PROVIDER_UNAVAILABLE, "the billing provider could not be reached")
+    account = await _register(users, sessions)
+    await subscriptions.upsert(a_subscription(user_id=account.user.id))
+    await tasks.add(_queued_task(account.user.id, key="mine-1"))
+    document_store = LocalDocumentArtifactStore(tmp_path / "documents")
+    document_store.put(_ARTIFACT_KEY, b"%PDF-1.4 fake bytes")
+    documents = FakeCandidateDocumentRepository()
+    await documents.upsert(
+        a_rendered_document(storage_key=_ARTIFACT_KEY, user_id=account.user.id))
+    service = _service(
+        users=users, sessions=sessions, subscriptions=subscriptions, provider=provider,
+        tasks=tasks, documents=documents, document_store=document_store,
+        export_store=LocalAccountExportStore(tmp_path / "exports"))
+
+    with pytest.raises(BillingError) as raised:
+        await service.delete(account.user.id, password=PASSWORD, now=LATER)
+    assert raised.value.code is BillingErrorCode.PROVIDER_UNAVAILABLE
+
+    # Nothing irreversible ran: cancel is before the account row, the bytes and the queued tasks.
+    assert await users.get(account.user.id) is not None
+    assert document_store.get(_ARTIFACT_KEY).content == b"%PDF-1.4 fake bytes"
+    assert {t.idempotency_key for t in tasks.tasks.values()} == {"mine-1"}
 
 
 # --------------------------------------------------------------------------

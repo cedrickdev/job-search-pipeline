@@ -284,6 +284,28 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobsearch}:${POSTGRES_PASSWORD:-jobsearch_dev_only}@postgres:5432/${POSTGRES_DB:-jobsearch_dev}
     command: ["alembic", "upgrade", "head"]
 
+  # Write (or reconcile) the free/pro/scale plan catalogue — the deliberate step that turns the
+  # empty `plans` table a fresh migration leaves into the catalogue the entitlement resolver and
+  # billing surface read (§2, §17). Idempotent, so it doubles as the reconcile step after a
+  # pricing change; run it AFTER `migrate` and BEFORE rolling the API/workers. The dev command
+  # uses `--demo` (non-production demo pricing); a production catalogue drops `--demo` and sets
+  # JOBSEARCH_PLAN_PRICE_<SLUG>/JOBSEARCH_PLAN_PRICE_ID_<SLUG> (see .env.example, "Plan pricing").
+  seed-plans:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobsearch}:${POSTGRES_PASSWORD:-jobsearch_dev_only}@postgres:5432/${POSTGRES_DB:-jobsearch_dev}
+      JOBSEARCH_PLAN_PRICE_PRO: ${JOBSEARCH_PLAN_PRICE_PRO:-}
+      JOBSEARCH_PLAN_PRICE_ID_PRO: ${JOBSEARCH_PLAN_PRICE_ID_PRO:-}
+      JOBSEARCH_PLAN_PRICE_SCALE: ${JOBSEARCH_PLAN_PRICE_SCALE:-}
+      JOBSEARCH_PLAN_PRICE_ID_SCALE: ${JOBSEARCH_PLAN_PRICE_ID_SCALE:-}
+    command: ["python", "-m", "backend.app.cli.seed_plans", "--demo"]
+
   import-v1:
     profiles: ["tools"]
     build:

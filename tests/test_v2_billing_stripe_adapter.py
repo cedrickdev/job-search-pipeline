@@ -417,3 +417,75 @@ async def test_a_call_out_without_a_secret_key_is_refused_before_any_request():
     assert caught.value.code is BillingErrorCode.PROVIDER_UNAVAILABLE
 
 
+# --- cancel_subscription: settle a provider-side subscription, idempotently (§27) -------------
+
+
+async def test_cancel_subscription_deletes_the_subscription_with_the_bearer_key():
+    """The cancel is a `DELETE /v1/subscriptions/{id}` with the bearer key; the handle is URL-safe."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["auth"] = request.headers.get("Authorization")
+        return httpx.Response(200, json={"id": "sub_test_0001", "status": "canceled"})
+
+    async with _calling(handler) as provider:
+        await provider.cancel_subscription(external_subscription_id="sub_test_0001")
+
+    assert seen["method"] == "DELETE"
+    assert seen["path"] == "/v1/subscriptions/sub_test_0001"
+    assert seen["auth"] == f"Bearer {_API_CREDENTIAL}"
+
+
+async def test_cancel_subscription_url_encodes_the_handle():
+    """A handle with a path-significant character is percent-encoded, never split into a new path."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["raw_path"] = request.url.raw_path.decode()
+        return httpx.Response(200, json={})
+
+    async with _calling(handler) as provider:
+        await provider.cancel_subscription(external_subscription_id="sub/ab?x")
+
+    assert seen["raw_path"] == "/v1/subscriptions/sub%2Fab%3Fx"
+
+
+async def test_cancel_subscription_treats_an_already_gone_subscription_as_success():
+    """A 404 means the subscription is already gone provider-side — the end state the caller wants.
+
+    Idempotent by contract, so a deletion retried after a partial failure converges rather than
+    wedging on a subscription that no longer exists: a 404 returns without raising.
+    """
+    async with _calling(lambda _r: httpx.Response(404, json={"error": "no such subscription"})) \
+            as provider:
+        await provider.cancel_subscription(external_subscription_id="sub_gone")
+
+
+async def test_cancel_subscription_maps_a_provider_error_to_provider_unavailable():
+    """Any non-404 error status is `PROVIDER_UNAVAILABLE`, its message never surfaced (§54)."""
+    async with _calling(lambda _r: httpx.Response(500, text="upstream boom")) as provider:
+        with pytest.raises(BillingError) as caught:
+            await provider.cancel_subscription(external_subscription_id="sub_test_0001")
+    assert caught.value.code is BillingErrorCode.PROVIDER_UNAVAILABLE
+    assert "boom" not in caught.value.detail
+
+
+async def test_cancel_subscription_maps_a_transport_failure_to_provider_unavailable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    async with _calling(handler) as provider:
+        with pytest.raises(BillingError) as caught:
+            await provider.cancel_subscription(external_subscription_id="sub_test_0001")
+    assert caught.value.code is BillingErrorCode.PROVIDER_UNAVAILABLE
+
+
+async def test_cancel_subscription_without_a_secret_key_is_refused_before_any_request():
+    async with _calling(_no_http, secret_key=None) as provider:
+        with pytest.raises(BillingError) as caught:
+            await provider.cancel_subscription(external_subscription_id="sub_test_0001")
+    assert caught.value.code is BillingErrorCode.PROVIDER_UNAVAILABLE
+
+

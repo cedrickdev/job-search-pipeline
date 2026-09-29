@@ -26,6 +26,7 @@ Three disciplines it keeps, each mirroring a rule the domain already enforces:
 from dataclasses import dataclass
 from datetime import datetime
 
+from backend.app.billing.metering import MeteringService
 from backend.app.career.analytics import CareerAnalyticsService
 from backend.app.domain.analytics import (
     CareerAnalytics,
@@ -34,6 +35,7 @@ from backend.app.domain.analytics import (
     DimensionKind,
     RateKind,
 )
+from backend.app.domain.entitlement import EntitlementKey
 from backend.app.domain.identifiers import (
     LLMRunId,
     UserId,
@@ -47,6 +49,7 @@ from backend.app.domain.recommendation import (
     RecommendationKind,
     asserts_causation,
 )
+from backend.app.domain.usage import UsageSourceType
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
     CareerRecommendationRepository,
@@ -132,10 +135,12 @@ class CareerRecommendationEngine:
 
     def __init__(self, analytics: CareerAnalyticsService,
                  recommendations: CareerRecommendationRepository, *,
-                 narrator: RecommendationNarrator | None = None) -> None:
+                 narrator: RecommendationNarrator | None = None,
+                 metering: MeteringService | None = None) -> None:
         self._analytics = analytics
         self._recommendations = recommendations
         self._narrator = narrator
+        self._metering = metering
 
     async def recommend(self, user_id: UserId, *, now: datetime,
                         horizon_days: int | None = None) -> tuple[CareerRecommendation, ...]:
@@ -148,7 +153,20 @@ class CareerRecommendationEngine:
         whose logical content already exists for this account is returned unchanged rather than
         added again, so re-running over unchanged analytics is idempotent instead of a flood of
         duplicate rows. A draft resting on genuinely new evidence is a fresh observation, added.
+
+        When metering is wired the `RECOMMENDATION_GENERATIONS` commercial quota is reserved
+        first, under the usage lock, so an account with no room left runs no generation (§5-9);
+        the run then meters one authoritative event *per surfaced recommendation*, keyed on the
+        recommendation id. That keying makes it naturally idempotent: a recommendation the
+        fingerprint gate returned unchanged already carries its event, so re-metering collapses
+        onto the one row and the account is charged once for a recommendation, never again for
+        re-surfacing it. The reservation is a minimal fail-closed check — a run whose derivation
+        yields nothing new records nothing and consumes no allowance.
         """
+        resolved = None
+        if self._metering is not None:
+            resolved = await self._metering.authorize(
+                user_id, EntitlementKey.RECOMMENDATION_GENERATIONS, quantity=1, as_of=now)
         report = (await self._analytics.report(user_id, now=now)
                   if horizon_days is None
                   else await self._analytics.report(user_id, now=now,
@@ -156,6 +174,13 @@ class CareerRecommendationEngine:
         stored: list[CareerRecommendation] = []
         for draft in self._derive(report):
             stored.append(await self._persist(user_id, draft, report, now=now))
+        if self._metering is not None and resolved is not None:
+            for recommendation in stored:
+                await self._metering.record(
+                    user_id, EntitlementKey.RECOMMENDATION_GENERATIONS,
+                    source_type=UsageSourceType.CAREER_RECOMMENDATION,
+                    source_id=str(recommendation.id), quantity=1, occurred_at=now,
+                    billing_period=resolved.period.label)
         return tuple(stored)
 
     async def latest(self, user_id: UserId, *,

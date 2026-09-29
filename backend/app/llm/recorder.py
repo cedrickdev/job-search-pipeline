@@ -32,7 +32,10 @@ import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
 
+from backend.app.billing.metering import MeteringService
+from backend.app.domain.entitlement import EntitlementKey
 from backend.app.domain.identifiers import UserId, new_llm_run_id
+from backend.app.domain.usage import UsageSourceType
 from backend.app.llm.connection import LLMConnection
 from backend.app.llm.contracts import (
     LLMRequest,
@@ -81,11 +84,13 @@ class LLMTelemetryRecorder:
     def __init__(self, *, runs: LLMRunRepository,
                  connections: Sequence[LLMConnection] = (),
                  clock: Clock = utc_now,
-                 monotonic: Monotonic = time.monotonic) -> None:
+                 monotonic: Monotonic = time.monotonic,
+                 metering: MeteringService | None = None) -> None:
         self._runs = runs
         self._by_key = {connection_provider_key(c): c for c in connections}
         self._clock = clock
         self._monotonic = monotonic
+        self._metering = metering
 
     async def route(self, router: LLMRouter, request: LLMRequest,
                     policy: RoutingPolicy, *,
@@ -97,11 +102,23 @@ class LLMTelemetryRecorder:
         On a provider failure the run is written with the failure's typed code and the
         primary provider it was attributed to, then the `LLMError` is re-raised
         unchanged. A refusal with no eligible provider writes nothing.
+
+        When metering is wired and the call is attributed to a user, the `LLM_TOKENS`
+        commercial quota is reserved before the provider is asked — an account with an
+        exhausted period is refused here with `QUOTA_EXCEEDED` and no provider is spent — and
+        the *measured* token total is recorded against the written run afterward (§5-9). Tokens
+        the provider did not report stay unknown: `record` writes no event for a `None` total, so
+        an unmeasurable call meters nothing rather than a fabricated zero, and a failed call
+        (which carries no usage) likewise consumes no allowance.
         """
         candidates = router.candidates(request, policy)
         primary_key = candidates[0].metadata.provider_key if candidates else None
         started_at = self._clock()
         start = self._monotonic()
+        resolved = None
+        if self._metering is not None and user_id is not None:
+            resolved = await self._metering.authorize(
+                user_id, EntitlementKey.LLM_TOKENS, quantity=1, as_of=started_at)
         try:
             outcome = await router.route(request, policy)
         except LLMError as error:
@@ -116,6 +133,12 @@ class LLMTelemetryRecorder:
         await self._record_success(
             request, outcome, user_id=user_id, started_at=started_at,
             finished_at=finished_at, latency_ms=self._elapsed_ms(start))
+        if self._metering is not None and resolved is not None and user_id is not None:
+            await self._metering.record(
+                user_id, EntitlementKey.LLM_TOKENS,
+                source_type=UsageSourceType.LLM_RUN, source_id=str(outcome.run_id),
+                quantity=outcome.response.usage.total_tokens, occurred_at=finished_at,
+                billing_period=resolved.period.label)
         return outcome
 
     def stream(self, router: LLMRouter, request: LLMRequest, policy: RoutingPolicy, *,
@@ -276,11 +299,22 @@ class RecordedStream:
         wall time the user waited for the answer, measured on the monotonic clock the same
         way `route` measures a one-shot call. `NoProviderAvailable` from an empty route is
         raised by the first `__anext__` below and propagates out un-recorded.
+
+        When metering is wired and the stream is attributed to a user, `LLM_TOKENS` is
+        reserved before the provider streams — an exhausted account is refused with
+        `QUOTA_EXCEEDED` out of the first `__anext__`, having spent no provider — and the
+        terminal run's measured token total is recorded when the stream ends. An unknown total
+        (a provider that streamed no usage) or a failed stream meters nothing (§5-9).
         """
+        metering = self._recorder._metering
         candidates = self._router.candidates(self._request, self._policy)
         primary_key = candidates[0].metadata.provider_key if candidates else None
         started_at = self._recorder._clock()
         start = self._recorder._monotonic()
+        resolved = None
+        if metering is not None and self._user_id is not None:
+            resolved = await metering.authorize(
+                self._user_id, EntitlementKey.LLM_TOKENS, quantity=1, as_of=started_at)
         parts: list[str] = []
         usage = TokenUsage()
         response: LLMResponse | None = None
@@ -299,11 +333,19 @@ class RecordedStream:
             yield event
         self.text = "".join(parts)
         if primary_key is not None:
+            finished_at = self._recorder._clock()
             self.run = await self._recorder._record_stream(
                 self._request, user_id=self._user_id, provider_key=primary_key,
                 response=response, error=error, usage=usage, started_at=started_at,
-                finished_at=self._recorder._clock(),
+                finished_at=finished_at,
                 latency_ms=self._recorder._elapsed_ms(start))
+            if (metering is not None and resolved is not None
+                    and self._user_id is not None and self.run is not None):
+                await metering.record(
+                    self._user_id, EntitlementKey.LLM_TOKENS,
+                    source_type=UsageSourceType.LLM_RUN, source_id=str(self.run.id),
+                    quantity=self.run.total_tokens, occurred_at=finished_at,
+                    billing_period=resolved.period.label)
 
 
 def _stream_failure(event: LLMStreamEvent | None) -> tuple[LLMFailureCode, str]:

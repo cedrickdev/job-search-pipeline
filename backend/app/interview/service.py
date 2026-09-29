@@ -36,7 +36,9 @@ from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
 
+from backend.app.billing.metering import MeteringService
 from backend.app.domain.base import LanguageCode
+from backend.app.domain.entitlement import EntitlementKey
 from backend.app.domain.identifiers import (
     ApplicationId,
     CandidateProfileId,
@@ -66,6 +68,7 @@ from backend.app.domain.interview import (
     aggregate_session_readiness,
     can_transition_session,
 )
+from backend.app.domain.usage import UsageSourceType
 from backend.app.interview.context import InterviewContext, InterviewContextBuilder
 from backend.app.interview.engine import InterviewQuestionEngine, QuestionRequest
 from backend.app.interview.guard import InterviewCoachingGuard
@@ -234,6 +237,7 @@ class InterviewService:
                  transcriber: SpeechTranscriber,
                  engine: InterviewQuestionEngine | None = None,
                  guard: InterviewCoachingGuard | None = None,
+                 metering: MeteringService | None = None,
                  min_auto_evaluate_transcript_confidence: float =
                      MIN_AUTO_EVALUATE_TRANSCRIPT_CONFIDENCE) -> None:
         self._sessions = sessions
@@ -247,6 +251,7 @@ class InterviewService:
         self._transcriber = transcriber
         self._engine = engine or InterviewQuestionEngine()
         self._guard = guard or InterviewCoachingGuard()
+        self._metering = metering
         self._min_transcript_confidence = min_auto_evaluate_transcript_confidence
 
     async def create_session(self, user_id: UserId, *,
@@ -269,7 +274,18 @@ class InterviewService:
         planned-but-not-started session. The plan's mode is stamped by the platform, never
         read from the payload, so the session and its plan can never disagree, and the run
         that authored the plan is recorded as `plan_llm_run_id` for exact provenance (§27-40).
+
+        When metering is wired, the `INTERVIEW_SESSIONS` commercial quota is reserved first,
+        under the usage lock, so a plan-authoring LLM call is never spent for an account with no
+        room left (§5-9); the authoritative usage event is recorded only once the session is
+        stored, so a grounding refusal or a planner failure consumes nothing. The reservation is
+        one clause of the effective-permission AND — it can refuse a session for lack of paid
+        room, never grant one the grounding or plan would not.
         """
+        resolved = None
+        if self._metering is not None:
+            resolved = await self._metering.authorize(
+                user_id, EntitlementKey.INTERVIEW_SESSIONS, quantity=1, as_of=now)
         context = await self._context.build(
             user_id=user_id, candidate_profile_id=candidate_profile_id,
             opportunity_id=opportunity_id)
@@ -284,7 +300,13 @@ class InterviewService:
             status=InterviewSessionStatus.CREATED, language=language, plan=plan_result.value,
             plan_llm_run_id=plan_result.llm_run_id,
             title=_derive_title(title, context), created_at=now, updated_at=now)
-        return await self._sessions.upsert(session)
+        stored = await self._sessions.upsert(session)
+        if self._metering is not None and resolved is not None:
+            await self._metering.record(
+                user_id, EntitlementKey.INTERVIEW_SESSIONS,
+                source_type=UsageSourceType.INTERVIEW_SESSION, source_id=str(stored.id),
+                quantity=1, occurred_at=now, billing_period=resolved.period.label)
+        return stored
 
     async def get_session(self, user_id: UserId,
                           session_id: InterviewSessionId) -> InterviewSession:

@@ -32,6 +32,7 @@ from backend.app.application_engine.contracts import (
     ApplicationContext,
 )
 from backend.app.application_engine.registry import ApplicationAdapterRegistry
+from backend.app.billing.metering import MeteringService
 from backend.app.domain.application import (
     Application,
     ApplicationState,
@@ -65,6 +66,7 @@ from backend.app.domain.documents import (
     DocumentStatus,
     DocumentVersion,
 )
+from backend.app.domain.entitlement import EntitlementKey
 from backend.app.domain.execution_gate import (
     ApplicationExecutionGate,
     ExecutionAuthorization,
@@ -78,6 +80,7 @@ from backend.app.domain.identifiers import (
     new_application_event_id,
     submission_attempt_id,
 )
+from backend.app.domain.usage import UsageSourceType
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
     ApplicationDecisionRepository,
@@ -152,7 +155,8 @@ class ApplicationService:
                  profiles: CandidateProfileRepository,
                  opportunities: OpportunityRepository,
                  documents: CandidateDocumentRepository,
-                 registry: ApplicationAdapterRegistry) -> None:
+                 registry: ApplicationAdapterRegistry,
+                 metering: MeteringService | None = None) -> None:
         self._applications = applications
         self._events = events
         self._attempts = attempts
@@ -164,6 +168,7 @@ class ApplicationService:
         self._opportunities = opportunities
         self._documents = documents
         self._registry = registry
+        self._metering = metering
 
     # -- reads ---------------------------------------------------------------
 
@@ -334,6 +339,17 @@ class ApplicationService:
         (§15), writes an in-flight attempt before the send (§88), and records the
         typed outcome. An ambiguous send becomes STATE_UNKNOWN, never a retryable
         failure.
+
+        When metering is wired the `APPLICATION_SUBMISSIONS` commercial quota is one *added*
+        clause of the effective-permission AND (§4): the safety gate is evaluated first and its
+        refusal surfaces unchanged — a paid plan never loosens `ApplicationPolicy`, eligibility
+        or a human-required stop — and only a submission the gate would otherwise permit is then
+        checked for commercial room. Exhausted room raises `QUOTA_EXCEEDED` before the SUBMITTING
+        transition, so the application stays APPROVED and retryable when the window resets and no
+        irreversible act is spent. The usage lock is taken *after* the submission-budget lock
+        (their fixed order, in separate namespaces), and the authoritative event is recorded only
+        for a `SUBMITTED` outcome — a FAILED, STATE_UNKNOWN or human-required send consumes no
+        allowance (§9).
         """
         app = await self.get(user_id, app_id)
         if app.state is not ApplicationState.APPROVED:
@@ -350,6 +366,13 @@ class ApplicationService:
         stopped = await self._stop_if_gate_refuses(app, authorization, now=now)
         if stopped is not None:
             return stopped
+
+        # The commercial clause, evaluated only once the safety gate permits: it can refuse a
+        # submission the plan has no room for, never authorize one the gate would have stopped.
+        resolved = None
+        if self._metering is not None:
+            resolved = await self._metering.authorize(
+                user_id, EntitlementKey.APPLICATION_SUBMISSIONS, quantity=1, as_of=now)
 
         context = await self._build_context(app)
         not_ready = _first_unready_pin(app.pinned_documents, context.documents)
@@ -376,7 +399,16 @@ class ApplicationService:
             result = SubmissionResult(
                 outcome=SubmissionOutcome.STATE_UNKNOWN,
                 detail="the adapter raised during submission; the outcome is unknown")
-        return await self._finish(app, attempt, result, now=now)
+        finished = await self._finish(app, attempt, result, now=now)
+        if (self._metering is not None and resolved is not None
+                and result.outcome is SubmissionOutcome.SUBMITTED):
+            # Only a landed submission consumes the allowance, and only once: the event id
+            # derives from the application id, so a redelivered submission collapses onto it.
+            await self._metering.record(
+                user_id, EntitlementKey.APPLICATION_SUBMISSIONS,
+                source_type=UsageSourceType.APPLICATION_SUBMISSION, source_id=str(app.id),
+                quantity=1, occurred_at=now, billing_period=resolved.period.label)
+        return finished
 
     async def _stop_if_gate_refuses(self, app: Application,
                                     authorization: ExecutionAuthorization, *,

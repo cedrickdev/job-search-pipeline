@@ -11,9 +11,16 @@ frontend only ever *reads*, never defines (§17, §61). Three tiers:
 - `scale` — the top monthly tier, leaving the heavy meters *unlimited* (`limit=None`, a real
   granted value distinct from a large number) and keeping only a generous concurrent-search cap.
 
-The prices are the product's own; the `external_price_id` a checkout needs is **not** baked in —
-it is a provider-side handle an operator supplies at seed time (`external_price_ids`), so the
-same catalogue definition serves every deployment and a fixture never carries a real Stripe id.
+What a paid tier *costs* is **not** baked into the catalogue as production truth (§17, §61).
+A `_PlanDefinition` fixes a tier's identity, its `billing_interval` (that it is monthly-recurring)
+and the ceilings it grants — never an amount. Both the price (`prices`) and the provider-side
+`external_price_id` a checkout needs are supplied at seed time by the deployment, so the same
+catalogue definition serves every deployment, a fixture never carries a real provider id, and no
+approved product price is hard-coded here. A tier seeded with no price is coherent but not
+sellable (`is_free` is true and there is no `external_price_id`), which is exactly what an
+operator who has not yet configured pricing should get — never an invented amount.
+`DEMO_PLAN_PRICES` is the one explicitly-labelled non-production price set, for fixtures, local
+runs and `--demo`.
 
 `seed_plan_catalogue` is idempotent by construction: `plan_id` derives from the slug, so an
 `upsert` lands on the one `free`/`pro`/`scale` row and reconciles its entitlements rather than
@@ -38,16 +45,29 @@ from backend.app.repositories.contracts import PlanRepository
 # the seed writes. Named once here so the resolver and the catalogue agree on one spelling.
 FREE_PLAN_SLUG = "free"
 
-# The prices are in the smallest currency unit (Rappen), the shape `Plan.price_amount_cents`
-# holds and a provider expects. CHF because the platform's fixtures and country packs are Swiss.
-_CURRENCY = "CHF"
+
+@dataclass(frozen=True)
+class PlanPrice:
+    """A deployment-supplied price for one paid tier: an amount and its currency.
+
+    `amount_cents` is in the smallest currency unit (e.g. Rappen for CHF), the shape
+    `Plan.price_amount_cents` holds and a provider expects. Kept out of `_PlanDefinition` on
+    purpose: what a tier *costs* is a deployment decision (or an explicitly-labelled demo value),
+    never a constant baked into the catalogue as production truth (§17, §61). The server stays
+    authoritative — a client only ever renders the price the seed wrote.
+    """
+
+    amount_cents: int
+    currency: str
 
 
 @dataclass(frozen=True)
 class _PlanDefinition:
-    """One tier's product truth: its identity, price and the ceilings it grants.
+    """One tier's product truth: its identity, its billing cadence and the ceilings it grants.
 
-    A plain application-layer value, turned into a domain `Plan` by `_build_plan`. `entitlements`
+    A plain application-layer value, turned into a domain `Plan` by `_build_plan`. It carries no
+    price amount — that is supplied at seed time (`prices`) — only `billing_interval`, which is
+    product structure (a monthly-recurring tier) rather than an approved amount. `entitlements`
     is a `(key, limit)` mapping where `None` is unlimited — every key a tier grants appears once,
     and a key it omits is simply not granted (the resolver treats that absence as no allowance).
     """
@@ -55,16 +75,16 @@ class _PlanDefinition:
     slug: str
     name: str
     description: str
-    price_amount_cents: int | None
     billing_interval: BillingInterval | None
     entitlements: Mapping[EntitlementKey, int | None]
 
 
-# The catalogue, cheapest first. A free tier sets no price/currency/interval; a paid tier sets all
-# three (the domain's all-or-nothing price rule). `scale` leaves its heavy meters unlimited.
+# The catalogue, cheapest first. A tier carries no price amount here — only its billing cadence
+# (a paid tier is monthly-recurring) and the ceilings it grants. `scale` leaves its heavy meters
+# unlimited. Prices are applied at seed time from a deployment's config, never baked in.
 _PLAN_DEFINITIONS: tuple[_PlanDefinition, ...] = (
     _PlanDefinition(
-        slug=FREE_PLAN_SLUG, name="Free", price_amount_cents=None, billing_interval=None,
+        slug=FREE_PLAN_SLUG, name="Free", billing_interval=None,
         description="Try every capability with modest monthly ceilings.",
         entitlements={
             EntitlementKey.ACTIVE_SEARCH_PROFILES: 1,
@@ -75,7 +95,7 @@ _PLAN_DEFINITIONS: tuple[_PlanDefinition, ...] = (
             EntitlementKey.RECOMMENDATION_GENERATIONS: 3,
         }),
     _PlanDefinition(
-        slug="pro", name="Pro", price_amount_cents=1900, billing_interval=BillingInterval.MONTHLY,
+        slug="pro", name="Pro", billing_interval=BillingInterval.MONTHLY,
         description="Higher monthly ceilings for an active search.",
         entitlements={
             EntitlementKey.ACTIVE_SEARCH_PROFILES: 10,
@@ -86,8 +106,7 @@ _PLAN_DEFINITIONS: tuple[_PlanDefinition, ...] = (
             EntitlementKey.RECOMMENDATION_GENERATIONS: 100,
         }),
     _PlanDefinition(
-        slug="scale", name="Scale", price_amount_cents=4900,
-        billing_interval=BillingInterval.MONTHLY,
+        slug="scale", name="Scale", billing_interval=BillingInterval.MONTHLY,
         description="Unlimited generation and submission for a full-time search.",
         entitlements={
             EntitlementKey.ACTIVE_SEARCH_PROFILES: 100,
@@ -100,21 +119,34 @@ _PLAN_DEFINITIONS: tuple[_PlanDefinition, ...] = (
 )
 
 
-def _build_plan(definition: _PlanDefinition, *, external_price_id: str | None,
-                created_at: datetime, updated_at: datetime) -> Plan:
-    """One `_PlanDefinition` into a domain `Plan`, with the deployment's price handle applied.
+# Non-production demo pricing. These CHF amounts are **not** approved product pricing (§17): they
+# exist only so fixtures, local runs and the `--demo` seed have a concrete, clearly-labelled price
+# to render. A real deployment supplies its own prices at seed time (see
+# `backend/app/cli/seed_plans.py`); this constant is never the source of a production catalogue.
+DEMO_PLAN_PRICES: Mapping[str, PlanPrice] = {
+    "pro": PlanPrice(amount_cents=1900, currency="CHF"),
+    "scale": PlanPrice(amount_cents=4900, currency="CHF"),
+}
 
-    The id derives from the slug (so the write is an idempotent upsert), the currency rides along
-    only for a priced tier (the free tier keeps `None` for the domain's all-or-nothing rule), and
-    the entitlements become value objects sorted by key so the seeded order is stable.
+
+def _build_plan(definition: _PlanDefinition, *, external_price_id: str | None,
+                price: PlanPrice | None, created_at: datetime, updated_at: datetime) -> Plan:
+    """One `_PlanDefinition` into a domain `Plan`, with the deployment's price and handle applied.
+
+    The id derives from the slug (so the write is an idempotent upsert). The amount and currency
+    ride along only when a `PlanPrice` is supplied for this tier — a tier with no configured price
+    is seeded unpriced (both `None`) but keeps its `billing_interval`, which the domain accepts as
+    a coherent, simply-not-yet-sellable plan. The entitlements become value objects sorted by key
+    so the seeded order is stable.
     """
-    currency = _CURRENCY if definition.price_amount_cents is not None else None
+    price_amount_cents = price.amount_cents if price is not None else None
+    currency = price.currency if price is not None else None
     entitlements = tuple(
         Entitlement(key=key, limit=definition.entitlements[key])
         for key in sorted(definition.entitlements, key=lambda k: k.value))
     return Plan(
         id=plan_id(definition.slug), slug=definition.slug, name=definition.name,
-        description=definition.description, price_amount_cents=definition.price_amount_cents,
+        description=definition.description, price_amount_cents=price_amount_cents,
         currency=currency, billing_interval=definition.billing_interval,
         external_price_id=external_price_id, entitlements=entitlements,
         is_public=True, is_active=True, created_at=created_at, updated_at=updated_at)
@@ -122,22 +154,27 @@ def _build_plan(definition: _PlanDefinition, *, external_price_id: str | None,
 
 async def seed_plan_catalogue(
         plans: PlanRepository, *, now: datetime,
-        external_price_ids: Mapping[str, str] | None = None) -> tuple[Plan, ...]:
+        external_price_ids: Mapping[str, str] | None = None,
+        prices: Mapping[str, PlanPrice] | None = None) -> tuple[Plan, ...]:
     """Write (or reconcile) the `free`/`pro`/`scale` catalogue, idempotently (§2, §17).
 
-    Called at deployment time. `external_price_ids` maps a slug to the provider-side price handle
-    a checkout for that tier needs; a tier absent from it is seeded with no handle, so a checkout
-    is simply not offered for it until an operator supplies one — never a fabricated id. Each plan
-    keeps its original `created_at` on a re-seed (read back first) and advances `updated_at` to
-    `now`, and the returned tuple is what is now stored, so a caller sees the reconciled catalogue.
+    Called at deployment time by `backend.app.cli.seed_plans`, never implicitly on startup.
+    `prices` maps a slug to the amount+currency a deployment (or the demo set) assigns that tier;
+    a tier absent from it is seeded unpriced — coherent, but not sellable until priced, never an
+    invented amount. `external_price_ids` maps a slug to the provider-side price handle a checkout
+    for that tier needs; a tier absent from it is seeded with no handle, so a checkout is simply
+    not offered for it. Each plan keeps its original `created_at` on a re-seed (read back first)
+    and advances `updated_at` to `now`, and the returned tuple is what is now stored, so a caller
+    sees the reconciled catalogue.
     """
-    prices = external_price_ids or {}
+    price_ids = external_price_ids or {}
+    price_by_slug = prices or {}
     written: list[Plan] = []
     for definition in _PLAN_DEFINITIONS:
         existing = await plans.get_by_slug(definition.slug)
         created_at = existing.created_at if existing is not None else now
         plan = _build_plan(
-            definition, external_price_id=prices.get(definition.slug),
-            created_at=created_at, updated_at=now)
+            definition, external_price_id=price_ids.get(definition.slug),
+            price=price_by_slug.get(definition.slug), created_at=created_at, updated_at=now)
         written.append(await plans.upsert(plan))
     return tuple(written)

@@ -20,7 +20,7 @@
       },
       "AccountDeletionResponse": {
         "additionalProperties": false,
-        "description": "The receipt a completed deletion returns (§27-29).\n\nCounts and an instant, never data: how many sessions were revoked and how many stored\nartifacts were removed, plus when it happened — enough for a client to confirm the erasure\nwithout echoing a single fact about the account that no longer exists.",
+        "description": "The receipt a completed deletion returns (§27-29).\n\nCounts and an instant, never data: how many sessions were revoked, whether the provider-side\nsubscription was canceled, how many queued tasks were dropped and how many stored artifacts\nwere removed, plus when it happened — enough for a client to confirm the erasure without\nechoing a single fact about the account that no longer exists.",
         "properties": {
           "deleted_at": {
             "format": "date-time",
@@ -35,8 +35,16 @@
             "title": "Export Archives Removed",
             "type": "integer"
           },
+          "external_subscription_canceled": {
+            "title": "External Subscription Canceled",
+            "type": "boolean"
+          },
           "sessions_revoked": {
             "title": "Sessions Revoked",
+            "type": "integer"
+          },
+          "tasks_canceled": {
+            "title": "Tasks Canceled",
             "type": "integer"
           },
           "user_id": {
@@ -49,6 +57,8 @@
           "user_id",
           "deleted_at",
           "sessions_revoked",
+          "external_subscription_canceled",
+          "tasks_canceled",
           "document_artifacts_removed",
           "export_archives_removed"
         ],

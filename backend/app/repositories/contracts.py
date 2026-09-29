@@ -1687,6 +1687,20 @@ class SubscriptionRepository(Protocol):
         """
         ...
 
+    async def lock_subscription(self, subscription_id: SubscriptionId) -> None:
+        """Take the transaction-scoped lock that serializes a webhook's apply for one subscription.
+
+        The concurrency guard behind §15's "never apply an event backwards": two deliveries of the
+        same subscription's state (an older and a newer, redelivered out of order and processed at
+        once) must serialize their `find_by_id → supersedes → upsert`, or the later-committing
+        transaction could clobber the newer state with the older one. The webhook service calls
+        this before it reads, and the lock releases at commit, so the second worker reads what the
+        first wrote and `supersedes` decides monotonically. Keyed on the subscription, in its own
+        namespace — the twin of `lock_usage_budget`. A fake with no real concurrency implements it
+        as a no-op; the guarantee is a PostgreSQL advisory lock proved by a real-database test.
+        """
+        ...
+
     async def get_current(self, user_id: UserId) -> Subscription | None:
         """The subscription the entitlement resolver reads for this account, or `None`.
 
@@ -1988,6 +2002,19 @@ class TaskRunRepository(Protocol):
         Operator-scope and uncapped (a count, not a page, unlike `list_stale_leases`): the collector
         exposes it as `task_stale_leases`, whose sustained rise means workers are dying mid-task —
         the pull-based stand-in for a missing heartbeat, read without walking the rows.
+        """
+        ...
+
+    async def cancel_queued_for_user(self, user_id: UserId) -> int:
+        """Remove this user's still-`QUEUED` tasks, returning how many — a deletion step (§27).
+
+        The one owner-scoped write on this operator-scope repository, and the deletion order's
+        "cancel queued user tasks" step: a `DELETE` (not a status transition — `TaskStatus` has no
+        canceled state) of the account's tasks that have not yet been claimed. Deleting the rows
+        locks them immediately, closing the window where a worker's `FOR UPDATE SKIP LOCKED` lease
+        could claim one *between* this call and the account's removal; a task already `RUNNING`
+        is left to finish or lapse and is swept by the `ON DELETE CASCADE` on `user_id` when the
+        user row goes. Idempotent: a retried deletion finds nothing left to cancel and returns 0.
         """
         ...
 

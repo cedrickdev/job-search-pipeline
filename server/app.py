@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.app.api.dependencies import ENGINE_ATTRIBUTE, RATE_LIMITER_ATTRIBUTE
 from backend.app.api.errors import install_v2_error_handlers
 from backend.app.api.router import create_v2_router
+from backend.app.core.production import validate_production_readiness
 from backend.app.observability import install_observability
 from pipeline import paths
 from pipeline.db import connect, init_db
@@ -82,6 +83,12 @@ def _mount_spa(app: FastAPI, spa_dist: Path) -> None:
 def create_app(db_path: str | Path | None = None,
                settings_path: str | Path | None = None,
                spa_dist: str | Path | None = None) -> FastAPI:
+    # Fail closed before building anything if this is a production deployment missing critical
+    # configuration (§53). A no-op unless JOBSEARCH_ENV=production, so development and the test
+    # suite are never gated; in production it refuses to boot on a dev database URL, an absent
+    # Redis, a non-https origin or an insecure cookie rather than serving with them.
+    validate_production_readiness()
+
     app = FastAPI(title="Job Search Command Center", lifespan=_lifespan)
 
     if db_path is None:

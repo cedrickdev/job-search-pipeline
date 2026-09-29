@@ -1,15 +1,24 @@
 # syntax=docker/dockerfile:1
 
-# The backend image: one environment that can run Alembic, the V1 importer and the
-# FastAPI application, with the workers joining no earlier than Phase 12. All three
-# are in use — docker-compose.yml `migrate`, `import-v1` and, since Phase 3, `api`,
-# each spelling out its own command.
+# The backend image: one environment that runs Alembic, the V1 importer, the FastAPI
+# application and — since Phase 16 — the general and browser task-queue workers.
+# docker-compose.yml `migrate`, `import-v1`, `api` and `worker` each spell out their
+# own command against the lean `runtime` stage below.
+#
+# Two stages, one base (Phase 16 §57 — keep ordinary images minimal):
+#   - `runtime` is the default target: WeasyPrint's shared libraries and nothing else,
+#     so the API and the general worker stay small and carry no database tooling.
+#   - `tools` adds the PostgreSQL 17 client (`pg_dump`/`pg_restore`/`psql`) that the
+#     backup and restore-check jobs shell out to (§45-46). It is a superset built only
+#     by those jobs, so a `pg_dump` binary is never shipped in the request-serving image.
+# The browser image is separate again (docker/browser-worker.Dockerfile): Playwright's
+# browsers are large and belong only on the lane that drives them (§57).
 #
 # Python 3.12, matching `requires-python = ">=3.12"` and the version CI pins. The
 # local interpreter is newer; the image is what production would run, so it tracks
 # the floor rather than the developer's machine.
 ARG PYTHON_VERSION=3.12
-FROM python:${PYTHON_VERSION}-slim
+FROM python:${PYTHON_VERSION}-slim AS base
 
 # `PYTHONDONTWRITEBYTECODE` keeps root-owned .pyc files out of a tree the
 # non-root user cannot write to; `PYTHONUNBUFFERED` makes the import report show
@@ -58,11 +67,46 @@ RUN pip install -e .
 # runtime user, because Docker seeds a fresh named volume from the image path
 # including its ownership. Without this the `api` service would mount a root-owned
 # empty volume and create_app would fail to write tracker.db as uid 10001.
-RUN mkdir -p /app/data && chown 10001:10001 /app/data
+# `data/` and `var/` are excluded from the build context (`data/` holds the operator's
+# tracker and job-board logins; `var/` holds generated artifacts), so both directories
+# are created here — and owned by the runtime user, because Docker seeds a fresh named
+# volume from the image path including its ownership. Without this the mounted volumes
+# would be root-owned and create_app / the workers would fail to write as uid 10001.
+RUN mkdir -p /app/data /app/var && chown 10001:10001 /app/data /app/var
 
+# ── tools ───────────────────────────────────────────────────────────────────────
+# The backup and restore-check jobs (§45-46) shell out to `pg_dump`, `pg_restore` and
+# `psql`. They must match the server: Debian bookworm ships client 15, and `pg_dump`
+# refuses to dump from a newer server, so this stage adds the PostgreSQL 17 client from
+# the PGDG apt repository. It is a superset of `runtime`, built ONLY by the backup jobs,
+# so no libpq tooling is ever shipped in the request-serving image (§57).
+FROM base AS tools
+USER root
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y curl ca-certificates gnupg \
+    && install -d /usr/share/keyrings \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg \
+    && . /etc/os-release \
+    && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install --no-install-recommends -y postgresql-client-17 \
+    && apt-get purge -y curl gnupg \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+# The dump directory, owned by the runtime user, because Docker seeds a fresh named
+# volume from the image path including its ownership — see the `backups` volume.
+RUN mkdir -p /app/var/backups && chown 10001:10001 /app/var/backups
 USER 10001:10001
+# A safe default — listing managed dumps writes nothing; the jobs state `create`/`verify`.
+CMD ["python", "-m", "backend.app.cli.run_backup", "list"]
 
-# A default, not a policy: every service in docker-compose.yml states its own
-# command, so the composition alone tells you what will run. Migrating is the safe
-# thing to do with no argument at all — it is idempotent.
+# ── runtime ─────────────────────────────────────────────────────────────────────
+# The default target: the API, the general worker, `migrate` and the V1 importer. No
+# database client and no browsers — the minimal request-serving surface (§57). A
+# default command, not a policy: every service states its own, so the composition
+# alone tells you what runs. Migrating is the safe no-argument thing to do — idempotent.
+FROM base AS runtime
+USER 10001:10001
 CMD ["alembic", "upgrade", "head"]

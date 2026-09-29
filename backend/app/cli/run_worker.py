@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.api import dependencies
 from backend.app.application_engine.bootstrap import build_application_registry
 from backend.app.application_engine.task_dispatcher import SubprocessTaskDispatcher
+from backend.app.core.production import validate_production_readiness
 from backend.app.core.settings import DatabaseSettings, ExportSettings, RetentionSettings
 from backend.app.domain.task import TaskKind, TaskLane
 from backend.app.exports.store import LocalAccountExportStore
@@ -204,6 +205,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # A production worker fails closed on missing critical configuration exactly as the API does
+    # (§53) — a no-op unless JOBSEARCH_ENV=production, so a dev drain is never gated.
+    validate_production_readiness()
     lane = TaskLane(args.lane)
     try:
         return asyncio.run(_run(lane, once=args.once))

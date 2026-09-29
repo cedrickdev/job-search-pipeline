@@ -1,26 +1,30 @@
-# Development composition for the V2 foundation.
+# Development composition for the V2 platform.
 #
-# Three long-running services — the database (Phase 2), the FastAPI API and the
-# Nuxt frontend (Phase 3) — plus two one-shot commands that must run in the same
-# environment as the application (docs/IMPLEMENTATION_PLAN.md Phases 2 and 3).
-# Redis, the background worker and the Playwright browser worker join no earlier
-# than Phase 12; they are deliberately absent rather than declared and disabled,
-# because an inert service still has to be maintained and docs/ARCHITECTURE.md §13
-# already records the target composition.
+# Long-running services — the database (Phase 2), Redis (Phase 16), the FastAPI API
+# and the Nuxt frontend (Phase 3) — plus the Phase 16 background workers and the
+# one-shot commands that must run in the same environment as the application
+# (docs/ARCHITECTURE.md §13, docs/PRODUCTION_DEPLOYMENT.md).
 #
-#   docker compose up -d                              database + API + frontend
+#   docker compose up -d                              database + Redis + API + frontend
+#   docker compose --profile workers up -d            add the general and browser workers
 #   docker compose up -d postgres                     the database alone
 #   docker compose run --rm migrate                   alembic upgrade head
 #   docker compose run --rm import-v1 --help          V1 SQLite import
+#   docker compose run --rm backup                    write a PostgreSQL dump (§45)
+#   docker compose run --rm restore-check             restore-drill the newest dump (§46)
 #
-# The `tools` profile keeps the two one-shot services out of `docker compose up`,
-# so starting the stack never runs a migration as a side effect.
+# Two profiles keep `docker compose up` lean: `workers` holds the two task-queue
+# workers (so the base stack is db + Redis + API + frontend), and `tools` holds the
+# one-shot jobs, so starting the stack never runs a migration, a backup or an import
+# as a side effect.
 #
 # No service reads `.env`. Compose interpolates it into the values below, which is
 # how a developer overrides a port or the password, but nothing here mounts it or
 # passes it through: `.env` holds V1's real API credentials and none of them belong
-# in these containers (docs/ENGINEERING_STANDARDS.md §Security). The same rule is
-# why no container sees `data/` or `cv/` — see the `api` service below.
+# in these containers, and no image layer ever carries a secret (§55). The same rule
+# is why no container sees `data/` or `cv/` — see the `api` service below. A real
+# deployment supplies secrets through its orchestrator's secret store, never this file
+# (docs/PRODUCTION_DEPLOYMENT.md).
 
 name: jobsearch
 
@@ -64,6 +68,27 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  redis:
+    # Redis, added in Phase 16. One deployment, one Redis, shared by the rate limiter
+    # (§49) and the task subsystem (§34) — the same instance the workers point at. Pinned
+    # to a minor line for the reason postgres is: an operator's stack and CI run the
+    # identical server. `--save "" --appendonly no` turns persistence off: the queue's
+    # truth is the PostgreSQL table (§34, DB-as-truth) and the rate-limit windows are
+    # ephemeral and fail open (§50), so nothing here needs to survive a restart.
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      # Loopback only, on the non-default port the dev Redis URL uses (LOCAL_DEV_REDIS_URL
+      # is redis://127.0.0.1:56379/0), so a developer's own Redis on 6379 is left alone.
+      - "127.0.0.1:${REDIS_PORT:-56379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
   # Added in Phase 3, because a migrated frontend needs an API to talk to inside
   # the composition (completion criterion 8). One FastAPI application serves both
   # surfaces: V1's 29 SQLite-backed operations and, since Phase 4, `/api/v2`
@@ -90,6 +115,12 @@ services:
       # does not. It also drops the `__Host-` prefix, which a non-`Secure` cookie
       # cannot carry. Never set this in a deployment a browser reaches over HTTPS.
       JOBSEARCH_AUTH_COOKIE_SECURE: "false"
+      # The composition's one Redis, reached by service name. Without it the rate
+      # limiter (on by default) would resolve LOCAL_DEV_REDIS_URL — 127.0.0.1:56379,
+      # which inside this container is the container itself — and fail open on every
+      # guarded request. Pointing it at the `redis` service makes the limit real in the
+      # composition and matches how a deployment wires it (docs/PRODUCTION_DEPLOYMENT.md).
+      JOBSEARCH_REDIS_URL: redis://redis:6379/0
     volumes:
       # A named volume, NOT a bind mount of ./data. That directory holds the
       # operator's real tracker, job-board logins and answers.yaml; a container
@@ -100,6 +131,10 @@ services:
       # the composition (docs/ENGINEERING_STANDARDS.md §Security). To work against
       # real data instead, replace this line with `- ./data:/app/data`, knowingly.
       - api_data:/app/data
+      # Generated artifacts (account exports, document renders) live under /app/var. A
+      # named volume shared with the `worker`, `backup` and `restore-check` services so an
+      # export the general worker writes is the one the API streams back, and dumps persist.
+      - app_var:/app/var
     ports:
       # Loopback only, on the port start.sh already uses, so the browser cannot
       # tell a containerized API from a host one.
@@ -140,6 +175,11 @@ services:
       # before and is not now.
       postgres:
         condition: service_healthy
+      redis:
+        # `service_started`, not `service_healthy`: the limiter fails open on a Redis
+        # fault (§50), so the API is useful before Redis answers and must not be held
+        # back by it — but declaring the edge still starts Redis first and orders shutdown.
+        condition: service_started
     # The schema is still `docker compose run --rm migrate`'s job, not a startup
     # step: a service that migrates on boot migrates on every scale-up and every
     # restart loop. `/api/v2` answers 503 until it has been run once.
@@ -187,6 +227,51 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # The general-lane task worker (Phase 16 §34-35): discovery, export and retention
+  # work, never a browser submission. Behind the `workers` profile so the base `up`
+  # stays db + Redis + API + frontend; add it with `docker compose --profile workers up`.
+  worker:
+    profiles: ["workers"]
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    command: ["python", "-m", "backend.app.cli.run_worker", "--lane", "general"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobsearch}:${POSTGRES_PASSWORD:-jobsearch_dev_only}@postgres:5432/${POSTGRES_DB:-jobsearch_dev}
+      JOBSEARCH_REDIS_URL: redis://redis:6379/0
+    volumes:
+      # Shares the API's artifact volume so an export it writes is the file the API
+      # streams back (see the `api` service). No `data/` — the worker touches no SQLite.
+      - app_var:/app/var
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    # The schema is `docker compose run --rm migrate`'s job, never a worker startup step
+    # (§58): a worker that migrates on boot migrates on every scale-up and restart loop.
+    restart: unless-stopped
+
+  # The browser-lane worker (Phase 16 §35): Playwright application submissions, on its
+  # own Playwright-capable image so browsers never bloat the API/general-worker image.
+  # `browser_concurrency` defaults to 1, so a wedged submission cannot starve the lane.
+  # Also `workers`-profiled — a dev machine rarely needs a real browser submission.
+  browser-worker:
+    profiles: ["workers"]
+    build:
+      context: .
+      dockerfile: docker/browser-worker.Dockerfile
+    command: ["python", "-m", "backend.app.cli.run_worker", "--lane", "browser"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobsearch}:${POSTGRES_PASSWORD:-jobsearch_dev_only}@postgres:5432/${POSTGRES_DB:-jobsearch_dev}
+      JOBSEARCH_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
   migrate:
     profiles: ["tools"]
     build:
@@ -217,6 +302,44 @@ services:
     entrypoint: ["python", "-m", "backend.app.cli.import_v1"]
     command: ["--sqlite", "/data/tracker.db", "--on-error", "skip"]
 
+  # A PostgreSQL dump under /app/var/backups on the shared artifact volume (§45). Built
+  # from the `tools` image stage — the only one carrying pg_dump/pg_restore/psql (the
+  # PostgreSQL 17 client, matching the server). The password reaches pg_dump through its
+  # environment, never a command line or any output (backend/app/backup/tools.py).
+  backup:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+      target: tools
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobsearch}:${POSTGRES_PASSWORD:-jobsearch_dev_only}@postgres:5432/${POSTGRES_DB:-jobsearch_dev}
+    volumes:
+      - app_var:/app/var
+    command: ["python", "-m", "backend.app.cli.run_backup", "create"]
+
+  # The §46 recovery drill: restore the newest dump into an isolated scratch database,
+  # check its migration revision and representative record counts, then drop the scratch
+  # database. Exit 3 (NOT VERIFIED) is the signal a monitored drill watches for. Same
+  # `tools` image, same shared volume so it reads the dump `backup` wrote.
+  restore-check:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+      target: tools
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobsearch}:${POSTGRES_PASSWORD:-jobsearch_dev_only}@postgres:5432/${POSTGRES_DB:-jobsearch_dev}
+    volumes:
+      - app_var:/app/var
+    command: ["python", "-m", "backend.app.cli.run_backup", "verify"]
+
 volumes:
   postgres_data:
     # Named, so `docker compose down` keeps the data and only
@@ -228,6 +351,12 @@ volumes:
     # from the host `data/` on purpose (see the `api` service). Nothing in it is
     # precious — `down -v` and it is bootstrapped empty again on the next start.
     name: jobsearch_api_data
+
+  # Generated artifacts under /app/var: account exports, document renders and PostgreSQL
+  # dumps. Shared by `api`, `worker`, `backup` and `restore-check` so a file one writes is
+  # the file another reads. `down` keeps it; only `down -v` throws the dumps away.
+  app_var:
+    name: jobsearch_app_var
 
   # Container-side node_modules and .nuxt, so the bind-mounted sources do not
   # shadow the Linux install with the host's macOS one.

@@ -14093,6 +14093,66 @@
           "v2-llm-settings"
         ]
       }
+    },
+    "/health/live": {
+      "get": {
+        "description": "Liveness: the process is up. Touches no dependency, so a blip never restarts it (§43).",
+        "operationId": "health_live_health_live_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health Live",
+        "tags": [
+          "observability"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "description": "Readiness: the database — the one dependency an API request needs — is usable (§43).",
+        "operationId": "health_ready_health_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health Ready",
+        "tags": [
+          "observability"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "The Prometheus text exposition, refreshed from the durable tables.\n\nStays up even when the database is down — the outage alert reads this very endpoint (§42, §44).",
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Metrics",
+        "tags": [
+          "observability"
+        ]
+      }
     }
   }
 }

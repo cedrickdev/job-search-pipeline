@@ -130,6 +130,11 @@ exists because a cookie jar that has accepted a `Secure` cookie will not send it
 over `http://` — a developer running the production policy on `localhost` gets a
 login that appears to succeed and then does not.
 
+Phase 16 makes this a fail-closed startup rule (§54): in `JOBSEARCH_ENV=production` the
+production validator rejects an explicit `JOBSEARCH_AUTH_COOKIE_SECURE=false` and requires an
+`https://` public origin, so the `Secure` cookie the app mints is always one the browser will
+return. See [Production Deployment](./PRODUCTION_DEPLOYMENT.md).
+
 ## CSRF
 
 Two independent controls, and neither is trusted alone.
@@ -230,6 +235,12 @@ A wrong password is answered `401 invalid_credentials` throughout — including 
 attempt that trips the lock. `423 account_locked`, with `locked_until`, is only ever
 returned to a caller who supplied the **correct** password: at that point they have
 demonstrated ownership, and telling them how long to wait is help rather than a leak.
+
+Phase 16 adds Redis-backed rate limiting *in front of* this DB-backed lockout, never in place of
+it: the `login` (and `register`, re-auth) categories throttle a window across all web workers, and
+the limiter **fails open** on a Redis fault so it can never itself lock everyone out. The two
+protections are additive and independent — a limiter outage leaves the account lockout fully intact.
+See [Rate Limiting](./RATE_LIMITING.md).
 
 ## Enumeration
 

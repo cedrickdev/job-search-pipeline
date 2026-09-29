@@ -362,6 +362,23 @@ Current revisions:
 | `0002` | the eight core tables, their indexes and constraints |
 | `0003` | Phase 4: six tables for identity and saved searches, and the columns that complete `users` and `candidate_profiles` |
 | `0004` | Phase 6: three company tables, thirteen columns on `companies`, and the backfill that gives every existing employer its comparison forms |
+| `0005` | Phase 7: geo search — coordinates and the geocoding enrichment columns |
+| `0006` | Phase 9: eligibility results |
+| `0007` | Phase 10: the document/version lifecycle and candidate evidence |
+| `0008` | Phase 11: the provider-neutral LLM platform — connections and encrypted credentials |
+| `0009` | Phase 12: the application engine |
+| `0010`–`0011` | Phase 13: career chat and conversation scope |
+| `0012`–`0013` | Phase 14: interview sessions and LLM-run provenance |
+| `0014`–`0016` | Phase 15: career intelligence, the recommendation snapshot and its dedup unique constraint (head before Phase 16) |
+| `0017` | Phase 16: the SaaS spine — plans, subscriptions and the append-only usage-event ledger (§62) |
+| `0018` | Phase 16: the `subscription_events` ledger — idempotent, auditable billing webhooks |
+| `0019` | Phase 16: `account_exports` — portable, secret-free, expiring copies of a user's own data |
+| `0020` | Phase 16: `task_runs` — the durable, idempotent background queue table |
+
+Phase 16's revisions are strictly **additive** (§62): each creates new tables referencing the
+pre-existing `users`, parents before children, and no revision rewrites or drops a column a running
+old version still reads — so `alembic upgrade head` can run *before* the new code rolls (see the
+explicit-migration step in [Operations](./OPERATIONS.md) and [Production Deployment](./PRODUCTION_DEPLOYMENT.md) §58).
 
 `0001` is separate because no `geography` column can be declared before the extension
 exists, and `IF NOT EXISTS` makes it a silent no-op on the development database (where

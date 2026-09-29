@@ -178,6 +178,12 @@ Task families:
 - interview preparation;
 - analytics.
 
+Realized in Phase 16 as a durable, DB-as-truth task queue rather than any of the libraries listed
+above: the PostgreSQL task table is the source of truth and Redis only signals readiness, giving
+at-least-once delivery with leases, retry and a dead-letter lane, across two isolated lanes (general
+and browser). See [Operations](./OPERATIONS.md) for the lanes and the runbook, and
+[Production Deployment](./PRODUCTION_DEPLOYMENT.md) for how the workers are composed.
+
 ## 7. Source plugin contract
 
 Implemented in Phase 5. See [Country Packs and Source Plugins](./COUNTRY_PACKS.md)
@@ -448,6 +454,11 @@ Every workflow run should expose:
 
 Never log raw credentials.
 
+Phase 16 realized this surface: `install_observability` mounts `/health/live`, `/health/ready` and
+`/metrics` (Prometheus), stamps every request with a correlation id, and records task and LLM-run
+telemetry — all under a logging contract that never emits a secret or a body (§41). See
+[Observability](./OBSERVABILITY.md) and the alerting checklist in [Operations](./OPERATIONS.md).
+
 ## 15. Security boundaries
 
 Sensitive data includes:
@@ -478,6 +489,14 @@ rest with Fernet (AES-128-CBC + HMAC-SHA256), the master key comes from
 platform never injects `ANTHROPIC_API_KEY`, and `server/_env.py::child_env()` strips
 the whole `ANTHROPIC_*` namespace from every subprocess. There is no raw-prompt
 endpoint. [LLM Connections](./LLM_CONNECTIONS.md) is the reference.
+
+Phase 16 added the credential vault's versioning and rotation (a master-key version tag so a dump
+holds only ciphertext, rotated in place — [Credential Security](./CREDENTIAL_SECURITY.md)), the
+commercial layer that can only *restrict* a candidate's effective permission and never widens a
+safety brake ([SaaS Billing](./SAAS_BILLING.md), [Usage and Quotas](./USAGE_AND_QUOTAS.md)),
+horizontal-safe rate limiting additive to the account lockout ([Rate Limiting](./RATE_LIMITING.md)),
+the user-owned export/deletion and retention lifecycle ([Data Lifecycle](./DATA_LIFECYCLE.md)), and
+the fail-closed production startup gate ([Production Deployment](./PRODUCTION_DEPLOYMENT.md)).
 
 ## 16. Migration philosophy
 

@@ -1842,6 +1842,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/me/deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete Account
+         * @description Permanently erase this account and everything it owns, on password confirmation (§26-29).
+         *
+         *     200 with a receipt — counts of what was removed and the instant it happened — never any data
+         *     about the account that no longer exists. The password in the body re-authenticates the
+         *     caller; a mismatch raises `ReauthenticationRequired` (mapped to 403) before anything is
+         *     touched. On success the session cookies are cleared, because the session they carry has just
+         *     been revoked along with the account. Shared data the account only referenced (a posting, a
+         *     company) is untouched, and the de-identified billing receipt survives via `ON DELETE SET NULL`.
+         */
+        post: operations["delete_account_api_v2_me_deletion_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/me/evidence": {
         parameters: {
             query?: never;
@@ -1869,6 +1896,91 @@ export interface paths {
          *     there is nothing to hang it on.
          */
         post: operations["add_evidence_api_v2_me_evidence_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Exports
+         * @description This account's export requests, most recently updated first (§23).
+         *
+         *     `is_downloadable` on each is computed against the request clock, so an archive whose
+         *     retention window has lapsed reads as not downloadable even before the retention sweep flips
+         *     its status to `EXPIRED`.
+         */
+        get: operations["list_exports_api_v2_me_exports_get"];
+        put?: never;
+        /**
+         * Create Export
+         * @description Request an export of everything this account holds, and produce it now (§23-25).
+         *
+         *     201, because it creates a resource: each request is its own export — asking twice is two
+         *     exports, not an idempotent replace. The synchronous path produces the archive before
+         *     answering, so the response is the finished `READY` export (or a `FAILED` one carrying a
+         *     machine reason if production could not complete); a client polls neither in the common case.
+         *     The archive is gathered from this account's own rows only and swept for secrets before a byte
+         *     is stored (§24).
+         */
+        post: operations["create_export_api_v2_me_exports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/exports/{export_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Export
+         * @description One export's lifecycle record (§23).
+         *
+         *     404 for "no such export" and "not yours" alike: the service raises one error for both, so a
+         *     caller cannot enumerate another account's exports by id.
+         */
+        get: operations["read_export_api_v2_me_exports__export_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/exports/{export_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Export
+         * @description Stream the produced archive of a `READY`, unexpired export (§25).
+         *
+         *     A binary response, not JSON envelope: the bytes are read from the export store and returned
+         *     with the archive's media type and a `Content-Disposition` naming the file. 404 when the
+         *     export is not this account's; 409 (`account_export_not_ready`) when it exists but has no
+         *     downloadable archive right now — it is still `PENDING`, it `FAILED`, or its window has lapsed.
+         *     The download availability is re-checked server-side against the request clock, so an archive
+         *     past its retention window is refused even before a sweep has marked it `EXPIRED`.
+         */
+        get: operations["download_export_api_v2_me_exports__export_id__download_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2358,10 +2470,180 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/health/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Health Live
+         * @description Liveness: the process is up. Touches no dependency, so a blip never restarts it (§43).
+         */
+        get: operations["health_live_health_live_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Health Ready
+         * @description Readiness: the database — the one dependency an API request needs — is usable (§43).
+         */
+        get: operations["health_ready_health_ready_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics
+         * @description The Prometheus text exposition, refreshed from the durable tables.
+         *
+         *     Stays up even when the database is down — the outage alert reads this very endpoint (§42, §44).
+         */
+        get: operations["metrics_metrics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AccountDeletionRequest
+         * @description The confirmation a destructive account deletion carries (§26).
+         *
+         *     Only the password: the owner is the session's, never a body field, so there is no `user_id`
+         *     to override and `extra="forbid"` refuses one. No length band, for the reason `LoginRequest`
+         *     gives — the band is a policy for *choosing* a password, and applying it to a re-authentication
+         *     would tell a caller a submitted value was too short to be this account's.
+         */
+        AccountDeletionRequest: {
+            /**
+             * Password
+             * Format: password
+             */
+            password: string;
+        };
+        /**
+         * AccountDeletionResponse
+         * @description The receipt a completed deletion returns (§27-29).
+         *
+         *     Counts and an instant, never data: how many sessions were revoked and how many stored
+         *     artifacts were removed, plus when it happened — enough for a client to confirm the erasure
+         *     without echoing a single fact about the account that no longer exists.
+         */
+        AccountDeletionResponse: {
+            /**
+             * Deleted At
+             * Format: date-time
+             */
+            deleted_at: string;
+            /** Document Artifacts Removed */
+            document_artifacts_removed: number;
+            /** Export Archives Removed */
+            export_archives_removed: number;
+            /** Sessions Revoked */
+            sessions_revoked: number;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /**
+         * AccountExportListResponse
+         * @description This account's export requests, most recently updated first, wrapped (§23).
+         */
+        AccountExportListResponse: {
+            /** Exports */
+            exports: components["schemas"]["AccountExportResponse"][];
+        };
+        /**
+         * AccountExportResponse
+         * @description One export request's lifecycle, as the account-data surface reads it (§23-25).
+         *
+         *     Deliberately not the archive and deliberately not its locator: `storage_key` is absent for
+         *     the same reason `PlanResponse.external_price_id` is — it is an internal handle the client
+         *     never acts on, and a download goes through `GET /exports/{id}/download`, not a key. `status`,
+         *     `byte_size`, the completion/expiry instants and a `FAILED` export's machine `failure_reason`
+         *     are the metadata a client renders. `is_downloadable` is computed against the request clock so
+         *     the fail-safe expiry the domain enforces is reflected in the UI hint the instant a window
+         *     lapses — even before the retention sweep flips the status to `EXPIRED`; the server re-checks
+         *     it authoritatively on download regardless.
+         */
+        AccountExportResponse: {
+            /** Byte Size */
+            byte_size: number | null;
+            /** Completed At */
+            completed_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Expires At */
+            expires_at: string | null;
+            /** Failure Reason */
+            failure_reason: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Downloadable */
+            is_downloadable: boolean;
+            /** Schema Version */
+            schema_version: number;
+            status: components["schemas"]["AccountExportStatus"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * AccountExportStatus
+         * @description The lifecycle of one export request — the closed set the state machine allows.
+         *
+         *     - `PENDING` — requested, no archive produced yet; every artifact field is unset;
+         *     - `READY` — the archive is stored and downloadable until it expires; `storage_key`,
+         *       `byte_size`, `completed_at` and `expires_at` are all set and no failure is recorded;
+         *     - `FAILED` — production failed; `failure_reason` and `completed_at` are set and no artifact
+         *       exists (a failed export never leaves a half-written archive behind);
+         *     - `EXPIRED` — the archive's retention window elapsed and a retention sweep purged the bytes;
+         *       `completed_at` and `expires_at` remain as provenance but `storage_key`/`byte_size` are
+         *       cleared, because the artifact is gone.
+         * @enum {string}
+         */
+        AccountExportStatus: "PENDING" | "READY" | "FAILED" | "EXPIRED";
         /**
          * AccountResponse
          * @description What a client learns about its own account. No credential fields exist.
@@ -9680,6 +9962,39 @@ export interface operations {
             };
         };
     };
+    delete_account_api_v2_me_deletion_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountDeletionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountDeletionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_evidence_api_v2_me_evidence_get: {
         parameters: {
             query?: never;
@@ -9720,6 +10035,108 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CandidateEvidenceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_exports_api_v2_me_exports_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountExportListResponse"];
+                };
+            };
+        };
+    };
+    create_export_api_v2_me_exports_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountExportResponse"];
+                };
+            };
+        };
+    };
+    read_export_api_v2_me_exports__export_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                export_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountExportResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_export_api_v2_me_exports__export_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                export_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -10515,6 +10932,66 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    health_live_health_live_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    health_ready_health_ready_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    metrics_metrics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

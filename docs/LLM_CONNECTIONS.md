@@ -148,6 +148,14 @@ operator's key ceremony — it is not called at runtime.
 is constructed with `cipher=None` and a deployment stays able to manage CLI and keyless
 connections while refusing to store a hosted key it could not protect.
 
+Phase 16 hardened this into a versioned vault with a real rotation path: an operator sets a new
+active `JOBSEARCH_LLM_SECRET_KEY` under a bumped `JOBSEARCH_LLM_SECRET_KEY_VERSION`, keeps the
+previous key available under its own version (`JOBSEARCH_LLM_SECRET_KEY_V<n>`) while a rotation
+re-encrypts existing rows, and removes it once the rotation reports zero failures. A dump therefore
+holds only ciphertext and a version tag — never anything that decrypts it — and production fails
+closed at startup if `JOBSEARCH_LLM_CREDENTIAL_ENCRYPTION_ENABLED=true` without a master key (§53).
+See [Credential Security](./CREDENTIAL_SECURITY.md) for the rotation contract.
+
 ## The service
 
 `LLMConnectionService` (`backend/app/services/llm_connections.py`) is the write side.

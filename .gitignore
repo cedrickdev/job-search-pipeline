@@ -29,6 +29,9 @@ data/cover_letters/
 data/tailored/
 data/upload_staging/
 
+# PostgreSQL dumps (Phase 16 §45): a full copy of the database, never committed.
+var/backups/
+
 # Whisper weights: large binary, not a secret.
 data/models/
 

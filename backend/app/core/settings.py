@@ -224,6 +224,25 @@ DEFAULT_RETENTION_PROVIDER_SESSION_IDLE_HOURS: Final[int] = 720  # thirty days
 RETENTION_SWEEP_BATCH_LIMIT_VARIABLE: Final[str] = "JOBSEARCH_RETENTION_SWEEP_BATCH_LIMIT"
 DEFAULT_RETENTION_SWEEP_BATCH_LIMIT: Final[int] = 500
 
+# PostgreSQL backup/recovery tooling (Phase 16 §45-48). Where dump files are written, how long they
+# are kept before pruning, and where the libpq binaries live. The dump directory holds
+# credential-free custom-format archives (the password never enters a dump); it defaults under the
+# working tree so a fresh checkout can take a backup without configuration, and a deployment
+# overrides it to a mounted volume or ships the files to object storage. The retention window is the
+# §48 knob — how many days of local dumps to keep — and the three binary paths default to the bare
+# names resolved on PATH, overridable so a deployment can pin a specific client version (the server
+# and client majors must match for pg_restore to read the dump).
+BACKUP_ARTIFACT_ROOT_VARIABLE: Final[str] = "JOBSEARCH_BACKUP_ARTIFACT_ROOT"
+DEFAULT_BACKUP_ARTIFACT_ROOT: Final[str] = "var/backups"
+BACKUP_RETENTION_DAYS_VARIABLE: Final[str] = "JOBSEARCH_BACKUP_RETENTION_DAYS"
+DEFAULT_BACKUP_RETENTION_DAYS: Final[int] = 30
+BACKUP_PG_DUMP_PATH_VARIABLE: Final[str] = "JOBSEARCH_PG_DUMP_PATH"
+BACKUP_PG_RESTORE_PATH_VARIABLE: Final[str] = "JOBSEARCH_PG_RESTORE_PATH"
+BACKUP_PSQL_PATH_VARIABLE: Final[str] = "JOBSEARCH_PSQL_PATH"
+DEFAULT_PG_DUMP_PATH: Final[str] = "pg_dump"
+DEFAULT_PG_RESTORE_PATH: Final[str] = "pg_restore"
+DEFAULT_PSQL_PATH: Final[str] = "psql"
+
 # The Fernet master key the LLM connection store encrypts provider credentials with
 # (Phase 11, docs/LLM_PROVIDER_ARCHITECTURE.md §21). Read from the environment,
 # never stored in the database and never returned by the API. A deployment that
@@ -519,6 +538,44 @@ class RetentionSettings(BaseModel):
                 source, RETENTION_SWEEP_BATCH_LIMIT_VARIABLE,
                 DEFAULT_RETENTION_SWEEP_BATCH_LIMIT),
         )
+
+
+class BackupSettings(BaseModel):
+    """PostgreSQL backup/recovery tooling — where dumps live, how long they are kept (§45-48).
+
+    Frozen and closed like every settings model. Nothing here is a secret: a dump file's *path* is
+    safe to log, and the one credential a backup needs (the database password) is never a field —
+    it is read from `DatabaseSettings` at call time and handed to the libpq child through its
+    environment, never stored here and never placed on a command line (`backup/connection.py`).
+
+    `retention_days` is the §48 knob: local dumps older than this are eligible for pruning. The
+    three binary paths default to the bare names resolved on `PATH`, overridable so a deployment can
+    pin a client whose major matches the server (pg_restore refuses a dump from a newer server).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    artifact_root: str = DEFAULT_BACKUP_ARTIFACT_ROOT
+    retention_days: int = Field(default=DEFAULT_BACKUP_RETENTION_DAYS, ge=1)
+    pg_dump_path: str = DEFAULT_PG_DUMP_PATH
+    pg_restore_path: str = DEFAULT_PG_RESTORE_PATH
+    psql_path: str = DEFAULT_PSQL_PATH
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
+        """Read the dump directory, retention window and tool paths, or use the defaults."""
+        source = environ if env is None else env
+        root = source.get(BACKUP_ARTIFACT_ROOT_VARIABLE, "").strip()
+        return cls(
+            artifact_root=root or DEFAULT_BACKUP_ARTIFACT_ROOT,
+            retention_days=_read_int(
+                source, BACKUP_RETENTION_DAYS_VARIABLE, DEFAULT_BACKUP_RETENTION_DAYS),
+            pg_dump_path=source.get(
+                BACKUP_PG_DUMP_PATH_VARIABLE, "").strip() or DEFAULT_PG_DUMP_PATH,
+            pg_restore_path=source.get(
+                BACKUP_PG_RESTORE_PATH_VARIABLE, "").strip() or DEFAULT_PG_RESTORE_PATH,
+            psql_path=source.get(
+                BACKUP_PSQL_PATH_VARIABLE, "").strip() or DEFAULT_PSQL_PATH)
 
 
 class LLMSecretSettings(BaseModel):

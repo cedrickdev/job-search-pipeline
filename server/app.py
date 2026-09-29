@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.app.api.dependencies import ENGINE_ATTRIBUTE
 from backend.app.api.errors import install_v2_error_handlers
 from backend.app.api.router import create_v2_router
+from backend.app.observability import install_observability
 from pipeline import paths
 from pipeline.db import connect, init_db
 from server.apply_dispatch import ApplyDispatcher
@@ -123,6 +124,12 @@ def create_app(db_path: str | Path | None = None,
     # backend.app.api.errors so V1 bodies are untouched.
     install_v2_error_handlers(app)
     app.include_router(create_v2_router())
+
+    # Observability (§41-44): the JSON log formatter, the correlation-id/HTTP-metrics middleware,
+    # and the root-level /health/live, /health/ready and /metrics routes. Installed after the API
+    # routers so the middleware wraps the whole surface, and before the SPA mount so the health
+    # and metrics paths are real routes the SPA fallback never shadows.
+    install_observability(app)
 
     # SPA mount is registered LAST so every /api route keeps precedence.
     spa_path = Path(spa_dist) if spa_dist is not None else paths.FRONTEND_DIST

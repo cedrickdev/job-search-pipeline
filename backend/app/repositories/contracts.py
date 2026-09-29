@@ -104,12 +104,12 @@ from backend.app.domain.strategy_change import (
 )
 from backend.app.domain.subscription import Subscription
 from backend.app.domain.subscription_event import SubscriptionEvent
-from backend.app.domain.task import TaskLane, TaskRun
+from backend.app.domain.task import TaskLane, TaskRun, TaskStatus
 from backend.app.domain.usage import UsageEvent
 from backend.app.domain.user import User, UserSession
 from backend.app.llm.connection import LLMConnection
 from backend.app.llm.sessions import ProviderSession
-from backend.app.llm.telemetry import LLMRun
+from backend.app.llm.telemetry import LLMRun, LLMRunStatus
 
 # Every list method is capped. An uncapped query is fine against the empty
 # development database and is an outage against a real one, and the caller that
@@ -899,6 +899,17 @@ class ProviderSessionRepository(Protocol):
         ...
 
 
+class LLMRunStatusCount(NamedTuple):
+    """How many telemetry runs ended in one status — a metrics scrape's view of the LLM (§42).
+
+    Operator-scope and aggregate: it carries a status and a count, never a run or a user, so the
+    observability layer can render `llm_runs{status="FAILED"}` without reading a single owned row.
+    """
+
+    status: LLMRunStatus
+    total: int
+
+
 @runtime_checkable
 class LLMRunRepository(Protocol):
     """LLM telemetry runs — written once at the start, updated once at the end (§56).
@@ -921,6 +932,16 @@ class LLMRunRepository(Protocol):
     async def list_for_user(self, user_id: UserId, *,
                             limit: int = DEFAULT_LIMIT) -> tuple[LLMRun, ...]:
         """This user's runs, most recently started first — the telemetry feed."""
+        ...
+
+    async def status_counts(self) -> tuple[LLMRunStatusCount, ...]:
+        """Runs grouped by terminal (or in-flight) status, across all owners — for `/metrics` (§42).
+
+        Operator-scope and aggregate: the observability collector reads it at scrape time to expose
+        `llm_runs{status=...}`, so a provider failure spike (`FAILED`/`TIMEOUT` climbing) is visible
+        without duplicating the Phase 11 telemetry table. Returns only the statuses present; a
+        status with no runs is simply absent (the collector renders it as zero).
+        """
         ...
 
 
@@ -1862,6 +1883,19 @@ class AccountExportRepository(Protocol):
         ...
 
 
+class TaskStatusCount(NamedTuple):
+    """How many task runs sit in one (lane, status) cell — the queue's shape for `/metrics` (§42).
+
+    Operator-scope and aggregate: it carries a lane, a status and a count, never a run or an owner,
+    so the observability collector can render `task_runs{lane="BROWSER",status="DEAD_LETTERED"}`
+    (a browser-worker failure spike) without touching a single owned row or a high-cardinality id.
+    """
+
+    lane: TaskLane
+    status: TaskStatus
+    total: int
+
+
 @runtime_checkable
 class TaskRunRepository(Protocol):
     """The durable queue of background task runs — operator-scope, worker-driven (§32-40).
@@ -1934,6 +1968,26 @@ class TaskRunRepository(Protocol):
         Operator-scope: the dead-letter queue an operator inspects to see what could not be
         completed and why (each row carries its typed, secret-free failure). A terminal state, so
         this feed only grows as jobs give up; nothing here is retried automatically.
+        """
+        ...
+
+    async def status_counts(self) -> tuple[TaskStatusCount, ...]:
+        """The queue's shape: how many runs sit in each (lane, status) cell — for `/metrics` (§42).
+
+        Operator-scope and aggregate, one GROUP BY across the whole table: the observability
+        collector reads it at scrape time to expose queue depth (`QUEUED` per lane), throughput
+        (`SUCCEEDED`) and failure (`DEAD_LETTERED`) without a per-row read or a high-cardinality
+        label. Only non-empty cells are returned; a cell with no runs is absent, and the collector
+        renders the declared lanes/statuses as zero so a series never simply vanishes.
+        """
+        ...
+
+    async def count_stale_leases(self, as_of: datetime) -> int:
+        """How many `RUNNING` tasks hold a lapsed lease at `as_of` — a worker-health signal (§40).
+
+        Operator-scope and uncapped (a count, not a page, unlike `list_stale_leases`): the collector
+        exposes it as `task_stale_leases`, whose sustained rise means workers are dying mid-task —
+        the pull-based stand-in for a missing heartbeat, read without walking the rows.
         """
         ...
 

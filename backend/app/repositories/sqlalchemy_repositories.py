@@ -261,9 +261,11 @@ from backend.app.repositories.contracts import (
     CompanyFilter,
     CompanyGeoResult,
     CompanyPage,
+    LLMRunStatusCount,
     MatchedRadius,
     OpportunityGeoResult,
     OpportunityNearby,
+    TaskStatusCount,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - a compile-time assertion, never executed
@@ -1562,6 +1564,18 @@ class SqlAlchemyLLMRunRepository:
             .order_by(LLMRunRow.started_at.desc(), LLMRunRow.id)
             .limit(limit))
         return tuple(llm_run_to_domain(row) for row in result.scalars())
+
+    async def status_counts(self) -> tuple[LLMRunStatusCount, ...]:
+        # One GROUP BY across every run, operator-scope: the aggregate a `/metrics` scrape needs,
+        # never a row and never a `user_id`. `COUNT(*)` is an int in PostgreSQL; the cast keeps the
+        # NamedTuple honest under a driver that hands back a Decimal.
+        result = await self._session.execute(
+            select(LLMRunRow.status, func.count())
+            .group_by(LLMRunRow.status)
+            .order_by(LLMRunRow.status))
+        return tuple(
+            LLMRunStatusCount(status=status, total=int(count))
+            for status, count in result.all())
 
 
 
@@ -2932,5 +2946,29 @@ class SqlAlchemyTaskRunRepository:
             .order_by(TaskRunRow.finished_at.desc(), TaskRunRow.id)
             .limit(limit))
         return tuple(task_run_to_domain(row) for row in result.scalars())
+
+    async def status_counts(self) -> tuple[TaskStatusCount, ...]:
+        # One GROUP BY over (lane, status) across the whole queue — the aggregate a `/metrics`
+        # scrape reads, never a row and never a `user_id`. Ordered so the render is deterministic;
+        # `COUNT(*)` is cast to int so a Decimal-returning driver cannot leak into the NamedTuple.
+        result = await self._session.execute(
+            select(TaskRunRow.lane, TaskRunRow.status, func.count())
+            .group_by(TaskRunRow.lane, TaskRunRow.status)
+            .order_by(TaskRunRow.lane, TaskRunRow.status))
+        return tuple(
+            TaskStatusCount(lane=lane, status=status, total=int(count))
+            for lane, status, count in result.all())
+
+    async def count_stale_leases(self, as_of: datetime) -> int:
+        # The uncapped count `list_stale_leases` pages — a RUNNING task whose lease has lapsed at
+        # `as_of` — so the collector exposes `task_stale_leases` without walking the rows. `?? 0`
+        # via `or 0` never fires (COUNT always returns a row), it only settles the Optional type.
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(TaskRunRow)
+            .where(TaskRunRow.status == TaskStatus.RUNNING,
+                   TaskRunRow.lease_expires_at.is_not(None),
+                   TaskRunRow.lease_expires_at <= as_of))
+        return int(result.scalar_one())
 
 

@@ -138,7 +138,7 @@ from backend.app.domain.usage import UsageEvent
 from backend.app.domain.user import User, UserSession, normalize_email
 from backend.app.llm.connection import LLMConnection
 from backend.app.llm.sessions import ProviderSession
-from backend.app.llm.telemetry import LLMRun
+from backend.app.llm.telemetry import LLMRun, LLMRunStatus
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
     AccountExportRepository,
@@ -169,6 +169,7 @@ from backend.app.repositories.contracts import (
     InterviewSessionSummaryRepository,
     LLMConnectionRepository,
     LLMRunRepository,
+    LLMRunStatusCount,
     MatchedRadius,
     MatchEvaluationRepository,
     OpportunityGeoResult,
@@ -185,6 +186,7 @@ from backend.app.repositories.contracts import (
     SubscriptionRepository,
     SubscriptionEventRepository,
     TaskRunRepository,
+    TaskStatusCount,
     UsageEventRepository,
     UserRepository,
 )
@@ -1152,6 +1154,15 @@ class FakeLLMRunRepository:
         mine.sort(key=lambda run: str(run.id))
         mine.sort(key=lambda run: run.started_at, reverse=True)
         return tuple(mine[:limit])
+
+    async def status_counts(self) -> tuple[LLMRunStatusCount, ...]:
+        # Aggregate across every run, operator-scope — the real `GROUP BY status ORDER BY status`.
+        counts: dict[LLMRunStatus, int] = {}
+        for run in self.runs.values():
+            counts[run.status] = counts.get(run.status, 0) + 1
+        return tuple(
+            LLMRunStatusCount(status=status, total=counts[status])
+            for status in sorted(counts, key=lambda s: s.value))
 
 
 class FakeApplicationPolicyRepository:
@@ -2196,6 +2207,22 @@ class FakeTaskRunRepository:
         # `or t.enqueued_at` only satisfies the type-checker and never fires.
         dead.sort(key=lambda t: t.finished_at or t.enqueued_at, reverse=True)
         return tuple(dead[:limit])
+
+    async def status_counts(self) -> tuple[TaskStatusCount, ...]:
+        # Aggregate over (lane, status) across the whole queue — the real `GROUP BY lane, status
+        # ORDER BY lane, status`. Only non-empty cells are returned, as the SQL does.
+        counts: dict[tuple[TaskLane, TaskStatus], int] = {}
+        for t in self.tasks.values():
+            counts[(t.lane, t.status)] = counts.get((t.lane, t.status), 0) + 1
+        return tuple(
+            TaskStatusCount(lane=lane, status=status, total=counts[(lane, status)])
+            for lane, status in sorted(counts, key=lambda k: (k[0].value, k[1].value)))
+
+    async def count_stale_leases(self, as_of: datetime) -> int:
+        return sum(
+            1 for t in self.tasks.values()
+            if t.status is TaskStatus.RUNNING and t.lease_expires_at is not None
+            and t.lease_expires_at <= as_of)
 
 
 class FakeTaskDispatcher:

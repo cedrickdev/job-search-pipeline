@@ -34,6 +34,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.api import dependencies
 from backend.app.application_engine.bootstrap import build_application_registry
 from backend.app.application_engine.task_dispatcher import SubprocessTaskDispatcher
+from backend.app.billing.entitlements import EntitlementResolver
+from backend.app.billing.metering import MeteringService
 from backend.app.core.production import validate_production_readiness
 from backend.app.core.settings import DatabaseSettings, ExportSettings, RetentionSettings
 from backend.app.domain.task import TaskKind, TaskLane
@@ -53,9 +55,12 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyEligibilityResultRepository,
     SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
+    SqlAlchemyPlanRepository,
     SqlAlchemyProviderSessionRepository,
     SqlAlchemySessionRepository,
     SqlAlchemySubmissionAttemptRepository,
+    SqlAlchemySubscriptionRepository,
+    SqlAlchemyUsageEventRepository,
 )
 from backend.app.retention.service import RetentionService
 from backend.app.services.applications import ApplicationService
@@ -102,10 +107,24 @@ def _browser_registry() -> dict[TaskKind, TaskHandler]:
     registers the browser adapter so a submission is actually driven — but the handler still calls
     Phase 12's `ApplicationService.submit`, which re-checks every authority before the irreversible
     act (§36). A queued task carries no authority; this wiring adds none.
+
+    The service is composed with the *same* authoritative `MeteringService` the API wires (§4-9):
+    the browser lane is where an autonomous submission is physically sent, so the commercial
+    `APPLICATION_SUBMISSIONS` clause of the effective-permission AND must be enforced here too, or a
+    queued submission would spend an allowance the account no longer has. `submit` evaluates the
+    safety gate *first* and only then the quota, so an exhausted plan is refused with
+    `QUOTA_EXCEEDED` before the SUBMITTING transition — the browser adapter's `submit` is never
+    called — and the application stays APPROVED, retryable when the window resets. The metering
+    never loosens a safety gate; it can only restrict a submission the gate already permitted.
     """
     registry = build_application_registry(task_dispatcher=SubprocessTaskDispatcher())
 
     def application_factory(session: AsyncSession) -> ApplicationService:
+        metering = MeteringService(
+            EntitlementResolver(
+                SqlAlchemyPlanRepository(session),
+                SqlAlchemySubscriptionRepository(session)),
+            SqlAlchemyUsageEventRepository(session))
         return ApplicationService(
             applications=SqlAlchemyApplicationRepository(session),
             events=SqlAlchemyApplicationEventRepository(session),
@@ -117,7 +136,7 @@ def _browser_registry() -> dict[TaskKind, TaskHandler]:
             profiles=SqlAlchemyCandidateProfileRepository(session),
             opportunities=SqlAlchemyOpportunityRepository(session),
             documents=SqlAlchemyCandidateDocumentRepository(session),
-            registry=registry)
+            registry=registry, metering=metering)
 
     return build_browser_handlers(application_service=application_factory)
 

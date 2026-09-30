@@ -35,6 +35,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.billing.errors import BillingError, BillingErrorCode
 from backend.app.domain.application_failure import ApplicationError, ApplicationFailureCode
 from backend.app.domain.identifiers import AccountExportId, ApplicationId, UserId
 from backend.app.domain.task import TaskKind, TaskRun
@@ -61,6 +62,7 @@ MALFORMED_PAYLOAD: str = "TASK_PAYLOAD_MALFORMED"
 NOT_ACTIONABLE: str = "APPLICATION_NOT_ACTIONABLE"
 APPLICATION_ABSENT: str = "APPLICATION_NOT_FOUND"
 SUBMISSION_REFUSED: str = "APPLICATION_SUBMISSION_REFUSED"
+QUOTA_EXCEEDED: str = "APPLICATION_SUBMISSION_QUOTA_EXCEEDED"
 RATE_LIMITED: str = "APPLICATION_RATE_LIMITED"
 RETENTION_INCOMPLETE: str = "RETENTION_SWEEP_INCOMPLETE"
 
@@ -138,6 +140,14 @@ def build_application_submission_handler(
     *permanent* (re-running finds the same state), so a stale task never forces a submission. A
     rate-limit refusal is *transient* (the budget may free up); an ambiguous send is resolved to
     `STATE_UNKNOWN` inside the service, never a blind retry that could double-submit (§40).
+
+    When metering is wired the service also enforces the commercial `APPLICATION_SUBMISSIONS`
+    quota, which refuses an exhausted plan with `BillingError(QUOTA_EXCEEDED)` *before* the
+    irreversible send (the browser adapter's `submit` is never reached). That is *permanent* here,
+    not transient: a plan ceiling is resolved by an upgrade or the billing window resetting, not by
+    a short retry (the same reasoning `backend.app.billing.errors` gives for mapping it to 402, not
+    429), so a bounded retry would only burn attempts before dead-lettering anyway. The application
+    stays APPROVED, so the user can re-queue once the window resets or the plan is upgraded (§4).
     """
 
     async def handle(task: TaskRun, session: AsyncSession) -> None:
@@ -146,6 +156,10 @@ def build_application_submission_handler(
         service: ApplicationService = application_service(session)
         try:
             await service.submit(user_id, application_id, now=clock())
+        except BillingError as error:
+            if error.code is BillingErrorCode.QUOTA_EXCEEDED:
+                raise TaskFailure.permanent(QUOTA_EXCEEDED, detail=error.detail) from error
+            raise TaskFailure.permanent(SUBMISSION_REFUSED, detail=error.detail) from error
         except ApplicationError as error:
             if error.code is ApplicationFailureCode.APPLICATION_RATE_LIMITED:
                 raise TaskFailure.transient(RATE_LIMITED, detail=error.detail) from error

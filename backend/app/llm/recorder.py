@@ -70,6 +70,46 @@ _STATUS_BY_CODE: dict[LLMFailureCode, LLMRunStatus] = {
 }
 
 
+# A deliberately coarse bytes-per-token divisor for the pre-call reservation. It is not a
+# tokenizer and does not claim to be: real tokenization is provider- and model-specific and
+# unknowable here, so the reservation rounds a character count up through this divisor to a
+# deterministic, provider-neutral estimate. Four characters per token is the common rough average
+# for English prose; the number only has to size a good-faith budget, which the provider's measured
+# total then reconciles (§5, §58).
+_CHARS_PER_TOKEN: int = 4
+
+# The output budget reserved when a request pins no `max_output_tokens`. A deliberately generous
+# single-completion budget: the platform's tailoring, chat and interview outputs sit well under it,
+# so a real call reserves close to what it spends and overshoots by nothing, while it stays far
+# below any seeded tier's LLM_TOKENS allowance, so the reservation itself never becomes the thing
+# that refuses a call. A request that pins its own bound is honoured exactly instead.
+_DEFAULT_OUTPUT_TOKEN_RESERVATION: int = 2048
+
+
+def _token_reservation(request: LLMRequest) -> int:
+    """A deterministic pre-call `LLM_TOKENS` budget for one request (§5, §8).
+
+    The commercial spine reserves *before* a provider runs, but the exact token cost is not known
+    until the provider reports it — and a CLI or local provider may report nothing at all. So the
+    reservation is a good-faith estimate, never a claim of exact input tokens: every message's and
+    the system prompt's characters, rounded up through a coarse bytes-per-token divisor, plus an
+    output budget — the request's own `max_output_tokens` when it pinned one, else a generous
+    default. Reserving the estimated *total* (input + output) mirrors what `record` later writes
+    (the provider's measured `total_tokens`), so the two are the same currency. It is reconciled
+    afterward: `record` writes the measured actual, so an over-estimate releases its unused
+    remainder simply by never being written, and an unmeasurable call (`None` total) meters nothing
+    — never a fabricated zero (§58). The floor of 1 keeps a reservation a real check even for an
+    empty request, which `authorize` would otherwise treat as a no-op.
+    """
+    input_chars = sum(len(message.content) for message in request.messages)
+    if request.system is not None:
+        input_chars += len(request.system)
+    input_tokens = -(-input_chars // _CHARS_PER_TOKEN)  # ceil, integer-only
+    output_tokens = (request.max_output_tokens if request.max_output_tokens is not None
+                     else _DEFAULT_OUTPUT_TOKEN_RESERVATION)
+    return max(1, input_tokens + output_tokens)
+
+
 class LLMTelemetryRecorder:
     """Runs a request through the router and writes one `LLMRun` for the call (§12).
 
@@ -104,12 +144,17 @@ class LLMTelemetryRecorder:
         unchanged. A refusal with no eligible provider writes nothing.
 
         When metering is wired and the call is attributed to a user, the `LLM_TOKENS`
-        commercial quota is reserved before the provider is asked — an account with an
-        exhausted period is refused here with `QUOTA_EXCEEDED` and no provider is spent — and
-        the *measured* token total is recorded against the written run afterward (§5-9). Tokens
-        the provider did not report stay unknown: `record` writes no event for a `None` total, so
-        an unmeasurable call meters nothing rather than a fabricated zero, and a failed call
-        (which carries no usage) likewise consumes no allowance.
+        commercial quota is reserved before the provider is asked — a deterministic pre-call
+        budget (`_token_reservation`: an estimate of this request's input plus its output bound),
+        so an account without room for the call's *estimated* cost is refused here with
+        `QUOTA_EXCEEDED` and no provider is spent, rather than the old flat one-unit reservation
+        that could authorize a call and only discover the overshoot after it had spent the tokens.
+        Afterward the *measured* token total is recorded against the written run (§5-9): the
+        reservation was only a gate, and recording the actual reconciles it — an over-estimate
+        releases its unused remainder by never being written. Tokens the provider did not report
+        stay unknown: `record` writes no event for a `None` total, so an unmeasurable call meters
+        nothing rather than a fabricated zero, and a failed call (which carries no usage) likewise
+        consumes no allowance.
         """
         candidates = router.candidates(request, policy)
         primary_key = candidates[0].metadata.provider_key if candidates else None
@@ -118,7 +163,8 @@ class LLMTelemetryRecorder:
         resolved = None
         if self._metering is not None and user_id is not None:
             resolved = await self._metering.authorize(
-                user_id, EntitlementKey.LLM_TOKENS, quantity=1, as_of=started_at)
+                user_id, EntitlementKey.LLM_TOKENS,
+                quantity=_token_reservation(request), as_of=started_at)
         try:
             outcome = await router.route(request, policy)
         except LLMError as error:
@@ -301,9 +347,11 @@ class RecordedStream:
         raised by the first `__anext__` below and propagates out un-recorded.
 
         When metering is wired and the stream is attributed to a user, `LLM_TOKENS` is
-        reserved before the provider streams — an exhausted account is refused with
-        `QUOTA_EXCEEDED` out of the first `__anext__`, having spent no provider — and the
-        terminal run's measured token total is recorded when the stream ends. An unknown total
+        reserved before the provider streams — a deterministic pre-call budget
+        (`_token_reservation`, the same estimate `route` uses), so an account without room for the
+        call's estimated cost is refused with `QUOTA_EXCEEDED` out of the first `__anext__`, having
+        spent no provider — and the terminal run's *measured* token total is recorded when the
+        stream ends, reconciling the reservation to what was actually consumed. An unknown total
         (a provider that streamed no usage) or a failed stream meters nothing (§5-9).
         """
         metering = self._recorder._metering
@@ -314,7 +362,8 @@ class RecordedStream:
         resolved = None
         if metering is not None and self._user_id is not None:
             resolved = await metering.authorize(
-                self._user_id, EntitlementKey.LLM_TOKENS, quantity=1, as_of=started_at)
+                self._user_id, EntitlementKey.LLM_TOKENS,
+                quantity=_token_reservation(self._request), as_of=started_at)
         parts: list[str] = []
         usage = TokenUsage()
         response: LLMResponse | None = None

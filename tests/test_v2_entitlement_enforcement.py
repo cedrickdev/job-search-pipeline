@@ -119,7 +119,7 @@ def _draft(name, *, active=True):
         name=name, is_active=active, areas=(CountrySearchArea(country="CH"),))
 
 
-def _wire_applications(metering):
+def _wire_applications(metering, *, adapter=None):
     """The Phase 12 lifecycle wired so the safety gate PERMITS an unattended submission,
     plus the `metering` under test — so the commercial clause is the only thing left that can
     refuse a submit the gate would otherwise allow.
@@ -128,7 +128,8 @@ def _wire_applications(metering):
     decision, a high-fit evaluation, an ELIGIBLE result and a FULLY_SUPPORTED adapter that
     scripts a SUBMITTED result), the exact shape that reaches APPROVED then SUBMITTED — the
     difference here being the `metering` argument, which a paid plan could never use to loosen
-    any of those gates (§4, §9).
+    any of those gates (§4, §9). `adapter` overrides the scripted FULLY_SUPPORTED adapter when a
+    test needs to observe whether the irreversible send was reached (the browser-lane regression).
     """
     apps = FakeApplicationRepository()
     events = FakeApplicationEventRepository(apps)
@@ -154,7 +155,7 @@ def _wire_applications(metering):
     eligs.results[eligibility.id] = eligibility
 
     registry = ApplicationAdapterRegistry(fallback=GenericManualAdapter())
-    registry.register(_FullyAutomatedAdapter(_submitted()))
+    registry.register(adapter if adapter is not None else _FullyAutomatedAdapter(_submitted()))
 
     service = ApplicationService(
         applications=apps, events=events, attempts=attempts, decisions=decisions,

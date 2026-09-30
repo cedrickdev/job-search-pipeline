@@ -20,6 +20,7 @@ import pytest
 
 from backend.app.domain.application import ApplicationState
 from backend.app.domain.application_failure import ApplicationError, ApplicationFailureCode
+from backend.app.domain.entitlement import EntitlementKey
 from backend.app.domain.identifiers import new_user_id
 from backend.app.domain.task import (
     TaskFailureClass,
@@ -34,6 +35,7 @@ from backend.app.tasks.handlers import (
     MALFORMED_PAYLOAD,
     MISSING_USER,
     NOT_ACTIONABLE,
+    QUOTA_EXCEEDED,
     RATE_LIMITED,
     RETENTION_INCOMPLETE,
     SUBMISSION_REFUSED,
@@ -41,6 +43,14 @@ from backend.app.tasks.handlers import (
     build_application_submission_handler,
     build_general_handlers,
     build_retention_handler,
+)
+from tests.test_v2_entitlement_enforcement import _free_tier, _wire_applications
+from tests.v2_builders import (
+    NOW as BUILDERS_NOW,
+    OPPORTUNITY,
+    USER,
+    a_usage_event,
+    an_entitlement,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -222,6 +232,81 @@ async def test_submission_handler_dead_letters_a_missing_application() -> None:
         await _handler_that_submits(submit)(_submission_task(), SESSION)
     assert caught.value.failure_class is TaskFailureClass.PERMANENT
     assert caught.value.reason == APPLICATION_ABSENT
+
+
+# ------------------------------------------- browser-lane metering (Fix #1: §4-9, §35-36)
+
+
+class _RecordingBrowserAdapter:
+    """A FULLY_SUPPORTED browser adapter that records whether its irreversible `submit` ran.
+
+    The same shape as the application-engine tests' scripted adapter (so the safety gate PERMITS
+    an unattended submission), but it counts `submit` calls — the one fact the browser-lane
+    regression needs: that a submission on a spent plan is refused *before* the send, never after.
+    """
+
+    def __init__(self) -> None:
+        self.submit_calls = 0
+
+    @property
+    def capabilities(self):
+        from backend.app.application_engine.contracts import (
+            AdapterCapabilities,
+            AdapterSafetyLevel,
+        )
+        from backend.app.domain.application import ApplicationChannel
+        return AdapterCapabilities(
+            key="test-auto/1", channel=ApplicationChannel.BROWSER,
+            safety_level=AdapterSafetyLevel.FULLY_SUPPORTED, can_prepare=True, can_submit=True)
+
+    async def prepare(self, context: Any) -> Any:
+        from backend.app.application_engine.contracts import AdapterPreparation
+        return AdapterPreparation(form_fingerprint="stable-form-1")
+
+    async def submit(self, context: Any) -> Any:
+        self.submit_calls += 1
+        from backend.app.domain.application import SubmissionOutcome, SubmissionResult
+        return SubmissionResult(outcome=SubmissionOutcome.SUBMITTED)
+
+
+async def test_browser_handler_refuses_a_spent_plan_before_the_adapter_ever_submits() -> None:
+    """Fix #1: a queued browser submission on a spent plan is refused before the irreversible send.
+
+    Wired exactly as `run_worker._browser_registry` composes the browser lane — the *real*
+    `build_application_submission_handler` over a `(session) -> ApplicationService` factory whose
+    service carries the same authoritative `MeteringService` the API uses — so this drives the real
+    browser task path, not a direct `ApplicationService` call. The account's APPLICATION_SUBMISSIONS
+    period is pre-spent (used == the ceiling), so `submit` evaluates the safety gate first (which
+    permits: FULLY_SUPPORTED adapter, AUTOPILOT policy, ELIGIBLE) and only then the commercial
+    quota, which refuses with `QUOTA_EXCEEDED` before the SUBMITTING transition.
+
+    The invariant: the browser adapter's `submit` is never reached, so no irreversible send happens
+    on a plan with no room; the application stays APPROVED (re-queueable when the window resets);
+    and the handler translates the refusal into a *permanent* dead-letter, not a raw exception.
+    """
+    adapter = _RecordingBrowserAdapter()
+    metering = _free_tier(
+        an_entitlement(key=EntitlementKey.APPLICATION_SUBMISSIONS, limit=5),
+        used=(a_usage_event(quantity=5),))
+    service, store = _wire_applications(metering, adapter=adapter)
+    app = await service.create(USER, OPPORTUNITY, now=BUILDERS_NOW)
+    prepared = await service.prepare(USER, app.id, now=BUILDERS_NOW)
+    assert prepared.state is ApplicationState.APPROVED  # the gate would permit the send
+
+    handler = build_application_submission_handler(lambda _s: service, clock=lambda: BUILDERS_NOW)
+    task = TaskSpec(
+        kind=TaskKind.APPLICATION_SUBMISSION, idempotency_key="browser-quota-1", user_id=USER,
+        payload={"application_id": str(app.id)}).to_queued_run(as_of=BUILDERS_NOW)
+
+    with pytest.raises(TaskFailure) as caught:
+        await handler(task, SESSION)
+
+    assert caught.value.failure_class is TaskFailureClass.PERMANENT
+    assert caught.value.reason == QUOTA_EXCEEDED
+    assert adapter.submit_calls == 0  # the irreversible send was never reached
+    # The plan refused before SUBMITTING: the application is untouched, APPROVED and re-queueable.
+    assert (await service.get(USER, app.id)).state is ApplicationState.APPROVED
+    assert await store.attempts.list_for_application(USER, app.id) == ()
 
 
 # --------------------------------------------------------------------------- registries

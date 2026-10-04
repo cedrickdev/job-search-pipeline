@@ -1,0 +1,51 @@
+"""Pure decisions for matching a collected opportunity to a saved search."""
+
+from urllib.parse import urlsplit, urlunsplit
+
+from backend.app.domain.opportunity import Opportunity
+from backend.app.domain.search import SearchProfile
+
+
+def matches_search(profile: SearchProfile, opportunity: Opportunity) -> bool:
+    """Whether a collected opportunity passes non-geographic profile filters."""
+    if not profile.is_active:
+        return False
+    if profile.opportunity_types and opportunity.opportunity_type not in profile.opportunity_types:
+        return False
+    if profile.contract_types and opportunity.contract_type not in profile.contract_types:
+        return False
+    if profile.workplace_modes and opportunity.workplace_mode not in profile.workplace_modes:
+        return False
+    if profile.posting_languages and opportunity.posting_language not in profile.posting_languages:
+        return False
+    text = f"{opportunity.title} {opportunity.description or ''}".casefold()
+    if any(word.casefold() in text for word in profile.excluded_keywords):
+        return False
+    return not profile.title_keywords or any(
+        word.casefold() in opportunity.title.casefold()
+        for word in profile.title_keywords
+    )
+
+
+def canonical_target(opportunity: Opportunity) -> str | None:
+    """Return a known ATS job-detail URL, never a title/company guess."""
+    for candidate in (opportunity.application_url, opportunity.source.source_url):
+        if candidate is None:
+            continue
+        parsed = urlsplit(candidate)
+        host = parsed.hostname
+        parts = parsed.path.strip("/").split("/")
+        if parsed.scheme != "https" or host is None:
+            continue
+        if host in {"boards.greenhouse.io", "job-boards.greenhouse.io"}:
+            if len(parts) != 3 or parts[1] != "jobs":
+                continue
+        elif host in {"jobs.lever.co", "jobs.ashbyhq.com"}:
+            if len(parts) != 2:
+                continue
+        else:
+            continue
+        if not all(parts):
+            continue
+        return urlunsplit(("https", host, parsed.path.rstrip("/"), "", ""))
+    return None

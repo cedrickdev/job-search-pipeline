@@ -79,6 +79,7 @@ sources:
       not the result set.
 
   - source_key: linkedin
+    enabled: false
     priority: 60
     expects_capabilities: [KEYWORD_SEARCH, LOCATION_SEARCH, INCREMENTAL_DISCOVERY]
     notes: >-

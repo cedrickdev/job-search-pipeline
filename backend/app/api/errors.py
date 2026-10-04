@@ -58,6 +58,10 @@ from backend.app.interview.service import (
     TranscriptReviewRequired,
 )
 from backend.app.llm.failures import LLMError, LLMFailureCode
+from backend.app.services.application_queue import (
+    BrowserSubmissionDisabled,
+    BrowserSubmissionNotPermitted,
+)
 from backend.app.services.applications import (
     ApplicationDecisionMissing,
     ApplicationNotActionable,
@@ -517,6 +521,18 @@ def install_v2_error_handlers(app: FastAPI) -> None:
         return _json(status.HTTP_409_CONFLICT, "application_not_actionable",
                      f"cannot {exc.operation} an application in state {exc.state.value}",
                      state=exc.state.value, operation=exc.operation)
+
+    @app.exception_handler(BrowserSubmissionDisabled)
+    async def _browser_disabled(request: Request,
+                                exc: BrowserSubmissionDisabled) -> JSONResponse:
+        return _json(status.HTTP_409_CONFLICT, "application_browser_disabled",
+                     "live browser submissions are disabled on this deployment")
+
+    @app.exception_handler(BrowserSubmissionNotPermitted)
+    async def _browser_not_permitted(request: Request,
+                                     exc: BrowserSubmissionNotPermitted) -> JSONResponse:
+        return _json(status.HTTP_409_CONFLICT, "application_browser_not_permitted",
+                     "this application cannot be queued for browser submission")
 
     @app.exception_handler(ApplicationError)
     async def _application_error(request: Request,

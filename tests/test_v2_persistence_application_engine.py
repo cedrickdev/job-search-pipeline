@@ -30,6 +30,7 @@ from backend.app.application_engine.contracts import (
     ApplicationContext,
 )
 from backend.app.application_engine.registry import ApplicationAdapterRegistry
+from backend.app.api.dependencies import application_queue_service
 from backend.app.domain.application import (
     Application,
     ApplicationState,
@@ -55,9 +56,11 @@ from backend.app.domain.identifiers import (
     ApplicationDecisionId,
     EligibilityResultId,
     application_id,
+    default_candidate_profile_id,
     new_application_event_id,
     submission_attempt_id,
 )
+from backend.app.domain.task import TaskKind, TaskSpec
 from backend.app.infrastructure.database.engine import (
     create_session_factory,
     session_scope,
@@ -74,8 +77,13 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
     SqlAlchemySubmissionAttemptRepository,
+    SqlAlchemyTaskRunRepository,
 )
-from backend.app.services.applications import ApplicationService
+from backend.app.services.application_queue import ApplicationQueueService
+from backend.app.services.applications import ApplicationNotActionable, ApplicationService
+from backend.app.tasks.dispatcher import PersistedTaskDispatcher
+from backend.app.tasks.failures import TaskFailure
+from backend.app.tasks.handlers import build_application_submission_handler
 from tests.v2_builders import (
     DECISION,
     ELIGIBILITY,
@@ -91,6 +99,7 @@ from tests.v2_builders import (
     an_eligibility_result,
     an_opportunity,
 )
+from tests.v2_api import api_harness
 from tests.v2_rows import a_candidate_profile_row, a_user_row
 
 
@@ -232,6 +241,7 @@ async def test_count_active_submissions_counts_every_slot_consuming_state(
         await repo.upsert(_an_application(
             decision, channel=channel, state=state, updated_at=NOW))
     assert await repo.count_active_submissions_since(USER, NOW - timedelta(days=1)) == 3
+    assert await repo.count_pending_submissions_since(USER, NOW - timedelta(days=1)) == 2
     assert await repo.count_active_submissions_since(USER, NOW + timedelta(days=1)) == 0
 
 
@@ -418,6 +428,215 @@ async def _submit_in_own_unit_of_work(factory, registry, app_id):
         return await _service(session, registry).submit(USER, app_id, now=_SUBMIT_AT)
 
 
+@pytest.mark.asyncio
+async def test_crash_after_click_preserves_committed_attempt_and_blocks_redelivery(
+        committed_world):
+    app_id, _ = await _seed_two_approved_browser_applications(
+        committed_world, an_autopilot_policy())
+    adapter = _CountingBrowserAdapter()
+    registry = ApplicationAdapterRegistry(fallback=GenericManualAdapter())
+    registry.register(adapter)
+
+    async with session_scope(committed_world) as session:
+        reservation = await _service(session, registry).reserve_submission(
+            USER, app_id, now=_SUBMIT_AT)
+    async with session_scope(committed_world, commit=False) as session:
+        app = await SqlAlchemyApplicationRepository(session).get(USER, app_id)
+        attempts = await SqlAlchemySubmissionAttemptRepository(session).list_for_application(
+            USER, app_id)
+        assert app.state is ApplicationState.SUBMITTING
+        assert len(attempts) == 1
+        assert attempts[0].id == reservation.attempt_id
+        assert attempts[0].is_in_flight
+
+    # Browser action may have happened, but the worker dies before finalization.
+    async with session_scope(committed_world) as session:
+        recovered = await _service(session, registry).recover_in_flight(now=LATER)
+    assert any(app.id == app_id and app.state is ApplicationState.SUBMISSION_STATE_UNKNOWN
+               for app in recovered)
+    async with session_scope(committed_world, commit=False) as session:
+        attempts = await SqlAlchemySubmissionAttemptRepository(session).list_for_application(
+            USER, app_id)
+        assert attempts[0].outcome is SubmissionOutcome.STATE_UNKNOWN
+        assert not attempts[0].is_in_flight
+    async with session_scope(committed_world) as session:
+        with pytest.raises(ApplicationNotActionable):
+            await _service(session, registry).reserve_submission(USER, app_id, now=LATER)
+    assert adapter.submit_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reservations_cannot_spend_one_daily_slot_twice(committed_world):
+    first, second = await _seed_two_approved_browser_applications(
+        committed_world, an_autopilot_policy(max_applications_per_day=1))
+    registry = ApplicationAdapterRegistry(fallback=GenericManualAdapter())
+    registry.register(_CountingBrowserAdapter())
+
+    async def reserve(app_id):
+        async with session_scope(committed_world) as session:
+            return await _service(session, registry).reserve_submission(
+                USER, app_id, now=_SUBMIT_AT)
+
+    results = await asyncio.gather(reserve(first), reserve(second), return_exceptions=True)
+    assert sum(not isinstance(item, Exception) for item in results) == 1
+    assert sum(isinstance(item, ApplicationError) and
+               item.code is ApplicationFailureCode.APPLICATION_RATE_LIMITED
+               for item in results) == 1
+
+
+@pytest.mark.asyncio
+async def test_recovered_unknown_holds_its_original_billing_period_not_a_new_one(
+        committed_world):
+    app_id, _ = await _seed_two_approved_browser_applications(
+        committed_world, an_autopilot_policy())
+    registry = ApplicationAdapterRegistry(fallback=GenericManualAdapter())
+    registry.register(_CountingBrowserAdapter())
+    async with session_scope(committed_world) as session:
+        await _service(session, registry).reserve_submission(USER, app_id, now=_SUBMIT_AT)
+    recovered_at = _SUBMIT_AT + timedelta(days=40)
+    async with session_scope(committed_world) as session:
+        await _service(session, registry).recover_in_flight(now=recovered_at)
+    async with session_scope(committed_world, commit=False) as session:
+        repo = SqlAlchemyApplicationRepository(session)
+        assert await repo.count_pending_submissions_since(
+            USER, _SUBMIT_AT - timedelta(days=1)) == 1
+        assert await repo.count_pending_submissions_since(
+            USER, recovered_at - timedelta(days=1)) == 0
+
+
+@pytest.mark.asyncio
+async def test_browser_handler_commits_reservation_before_adapter_submit(committed_world):
+    app_id, _ = await _seed_two_approved_browser_applications(
+        committed_world, an_autopilot_policy())
+    observed = []
+
+    class ObservingAdapter(_CountingBrowserAdapter):
+        async def submit(self, context):
+            async with session_scope(committed_world, commit=False) as session:
+                app = await SqlAlchemyApplicationRepository(session).get(USER, app_id)
+                attempts = await SqlAlchemySubmissionAttemptRepository(
+                    session).list_for_application(USER, app_id)
+                observed.append((app.state, len(attempts), attempts[0].is_in_flight))
+            return await super().submit(context)
+
+    adapter = ObservingAdapter()
+    registry = ApplicationAdapterRegistry(fallback=GenericManualAdapter())
+    registry.register(adapter)
+    handler = build_application_submission_handler(
+        lambda session: _service(session, registry),
+        session_factory=committed_world, live_submissions_enabled=True,
+        clock=lambda: _SUBMIT_AT)
+    task = TaskSpec(
+        kind=TaskKind.APPLICATION_SUBMISSION, idempotency_key="durable-handler-test",
+        user_id=USER, payload={"application_id": str(app_id)},
+    ).to_queued_run(as_of=_SUBMIT_AT)
+    await handler(task, None)
+
+    assert observed == [(ApplicationState.SUBMITTING, 1, True)]
+    assert adapter.submit_calls == 1
+    async with session_scope(committed_world, commit=False) as session:
+        app = await SqlAlchemyApplicationRepository(session).get(USER, app_id)
+        assert app.state is ApplicationState.SUBMITTED
+
+
+@pytest.mark.asyncio
+async def test_persisted_browser_queue_reaches_worker_once(committed_world):
+    app_id, _ = await _seed_two_approved_browser_applications(
+        committed_world, an_autopilot_policy())
+    adapter = _CountingBrowserAdapter()
+    registry = ApplicationAdapterRegistry(fallback=GenericManualAdapter())
+    registry.register(adapter)
+
+    async with session_scope(committed_world) as session:
+        queue = ApplicationQueueService(
+            SqlAlchemyApplicationRepository(session),
+            SqlAlchemyApplicationPolicyRepository(session),
+            SqlAlchemyOpportunityRepository(session),
+            PersistedTaskDispatcher(SqlAlchemyTaskRunRepository(session),
+                                    clock=lambda: _SUBMIT_AT),
+            live_enabled=True)
+        task_id = await queue.enqueue_approved(USER, app_id)
+        assert await queue.enqueue_approved(USER, app_id) == task_id
+
+    async with session_scope(committed_world, commit=False) as session:
+        task = await SqlAlchemyTaskRunRepository(session).get_by_id(task_id)
+    assert task is not None
+    assert task.user_id == USER
+    assert task.kind is TaskKind.APPLICATION_SUBMISSION
+    assert task.max_attempts == 1
+    assert task.payload == {"application_id": str(app_id)}
+
+    handler = build_application_submission_handler(
+        lambda session: _service(session, registry),
+        session_factory=committed_world, live_submissions_enabled=True,
+        clock=lambda: _SUBMIT_AT)
+    await handler(task, None)
+    with pytest.raises(TaskFailure):
+        await handler(task, None)
+    assert adapter.submit_calls == 1
+    async with session_scope(committed_world, commit=False) as session:
+        app = await SqlAlchemyApplicationRepository(session).get(USER, app_id)
+        assert app.state is ApplicationState.SUBMITTED
+
+
+@pytest.mark.asyncio
+async def test_authenticated_api_queue_persists_task_and_worker_finishes_it(
+        committed_world, tmp_path):
+    adapter = _CountingBrowserAdapter()
+    registry = ApplicationAdapterRegistry(fallback=GenericManualAdapter())
+    registry.register(adapter)
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        owner = next(iter(api.users.users))
+        profile_id = default_candidate_profile_id(owner)
+        async with session_scope(committed_world) as session:
+            session.add(a_user_row(id=owner, display_name="owner"))
+            await session.flush()
+            await SqlAlchemyCandidateProfileRepository(session).upsert(
+                a_candidate_profile(id=profile_id, user_id=owner))
+            await SqlAlchemyOpportunityRepository(session).upsert(an_opportunity())
+            policy = await SqlAlchemyApplicationPolicyRepository(session).upsert(
+                an_autopilot_policy(user_id=owner))
+            decision = await SqlAlchemyApplicationDecisionRepository(session).upsert(
+                a_decision(user_id=owner, candidate_profile_id=profile_id,
+                           policy_id=policy.id))
+            await SqlAlchemyEligibilityResultRepository(session).upsert(
+                an_eligibility_result(user_id=owner,
+                                      candidate_profile_id=profile_id))
+            approved = await SqlAlchemyApplicationRepository(session).upsert(
+                _an_application(decision, state=ApplicationState.APPROVED,
+                                user_id=owner))
+
+        async def persisted_queue():
+            async with session_scope(committed_world) as session:
+                yield ApplicationQueueService(
+                    SqlAlchemyApplicationRepository(session),
+                    SqlAlchemyApplicationPolicyRepository(session),
+                    SqlAlchemyOpportunityRepository(session),
+                    PersistedTaskDispatcher(SqlAlchemyTaskRunRepository(session),
+                                            clock=lambda: _SUBMIT_AT),
+                    live_enabled=True)
+
+        api.app.dependency_overrides[application_queue_service] = persisted_queue
+        response = await api.write("POST", f"/applications/{approved.id}/queue")
+        assert response.status_code == 202, response.text
+        task_id = UUID(response.json()["task_id"])
+        async with session_scope(committed_world, commit=False) as session:
+            task = await SqlAlchemyTaskRunRepository(session).get_by_id(task_id)
+        assert task is not None
+        assert task.user_id == owner
+
+        handler = build_application_submission_handler(
+            lambda session: _service(session, registry),
+            session_factory=committed_world, live_submissions_enabled=True,
+            clock=lambda: _SUBMIT_AT)
+        await handler(task, None)
+        assert adapter.submit_calls == 1
+        async with session_scope(committed_world, commit=False) as session:
+            stored = await SqlAlchemyApplicationRepository(session).get(owner, approved.id)
+            assert stored.state is ApplicationState.SUBMITTED
+
+
 async def _assert_last_slot_is_won_exactly_once(factory, policy):
     """Race two submissions for a budget of one, and assert one — only one — landed."""
     app_a, app_b = await _seed_two_approved_browser_applications(factory, policy)
@@ -463,6 +682,3 @@ async def test_two_workers_racing_the_last_daily_slot_submit_once(committed_worl
 async def test_two_workers_racing_the_last_weekly_slot_submit_once(committed_world):
     await _assert_last_slot_is_won_exactly_once(
         committed_world, an_autopilot_policy(max_applications_per_week=1))
-
-
-

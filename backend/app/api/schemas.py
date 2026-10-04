@@ -206,6 +206,7 @@ from backend.app.domain.identifiers import (
     SearchProfileId,
     StrategyChangeExecutionId,
     StrategyChangeProposalId,
+    TaskRunId,
     UserId,
 )
 from backend.app.domain.interview import (
@@ -1776,6 +1777,12 @@ class PinnedDocumentResponse(ApiModel):
     def of(cls, pinned: PinnedDocument) -> "PinnedDocumentResponse":
         return cls(document_id=pinned.document_id, version_id=pinned.version_id,
                    version=pinned.version, document_type=pinned.document_type)
+
+
+class QueuedApplicationResponse(ApiModel):
+    """Receipt for one idempotent browser-lane queue operation."""
+
+    task_id: TaskRunId
 
 
 class ApplicationResponse(ApiModel):

@@ -1081,6 +1081,11 @@ class ApplicationRepository(Protocol):
         """
         ...
 
+    async def count_pending_submissions_since(self, user_id: UserId,
+                                              since: datetime) -> int:
+        """Reserved or uncertain sends holding a commercial slot, not yet metered."""
+        ...
+
     async def list_in_flight(self, *,
                              limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
         """Every application stuck mid-flight, across all accounts, for recovery.
@@ -2017,6 +2022,5 @@ class TaskRunRepository(Protocol):
         user row goes. Idempotent: a retried deletion finds nothing left to cancel and returns 0.
         """
         ...
-
 
 

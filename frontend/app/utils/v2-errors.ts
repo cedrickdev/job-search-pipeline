@@ -29,6 +29,8 @@ const MESSAGES: Record<V2ErrorCode, string> = {
   // required field, an operation the state forbids, an unknown id, a duplicate, an
   // exhausted budget, or a send whose outcome could not be confirmed.
   application_adapter_error: 'This application could not be completed automatically. Try again or apply manually.',
+  application_browser_disabled: 'Browser submissions are disabled on this deployment. No application was sent.',
+  application_browser_not_permitted: 'This browser application is not eligible for queueing under the current policy or country.',
   application_channel_unsupported: 'This posting has no automated application path. Apply to it yourself.',
   application_decision_missing: 'Decide on this opportunity before opening an application for it.',
   application_document_not_ready: 'A required document is not a finished version yet. Generate one first.',

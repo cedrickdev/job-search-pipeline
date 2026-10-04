@@ -95,6 +95,7 @@ one-shot jobs run in the same image and environment as the application.
 | `frontend` | the Nuxt dev server (dev only; production is the SPA the API serves) | — (core) |
 | `worker` | the general lane: discovery, export, retention (§34-35) | `workers` |
 | `browser-worker` | the browser lane: Playwright submissions only (§35) | `workers` |
+| `browser-tests` | mandatory local Chromium fixture checks; no live ATS | `tools` |
 | `migrate` | `alembic upgrade head`, the explicit schema step (§58) | `tools` |
 | `import-v1` | the V1 SQLite importer | `tools` |
 | `backup` | write a PostgreSQL dump (§45) | `tools` |
@@ -106,6 +107,9 @@ Two profiles keep dev ergonomics: `docker compose up` starts db + Redis + API + 
 effect. The two lanes are **separate containers** so a wedged browser submission can never consume a
 general-lane worker (§35). Generated artifacts (exports, document renders, dumps) live on a shared
 `app_var` volume so a file the worker writes is the file the API streams back.
+The browser worker also mounts the API's `api_data` volume for the shared V1/V2 browser lock and
+private, account-scoped V2 Chromium profiles, and `app_var` to read the exact rendered document versions it
+uploads. Both images use uid/gid 10001 so these volumes remain writable without root.
 
 ## Image model (§57)
 
@@ -117,14 +121,29 @@ Three images, each carrying only what its job needs:
 - **`docker/backend.Dockerfile`, `tools` stage** — a superset built *only* by `backup` and
   `restore-check`, adding the PostgreSQL 17 client (`pg_dump`/`pg_restore`/`psql`) that matches the
   server. A `pg_dump` binary is therefore never shipped in the request-serving image.
-- **`docker/browser-worker.Dockerfile`** — Microsoft's Playwright image plus the app, for the
-  browser lane only. Browsers are large and belong solely on the lane that drives them; `playwright
-  install chromium` re-fetches the browser matching the pinned `playwright` version. Non-root
-  (`pwuser`).
+- **`docker/browser-worker.Dockerfile`** — Python Bookworm with the version-matched
+  Playwright Chromium and system dependencies, for the browser lane only. The
+  `browser-tests` target adds pytest for local fixture checks. Non-root (uid 10001).
 
 All three are non-root, install runtime dependencies only (no pytest, no linters), and carry no
 source secret. Health checks are defined in the composition rather than baked into the image, so the
 same image serves under any orchestrator.
+
+## Phase 12.1 browser activation boundary
+
+`JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED` defaults to `false` in settings, the
+example environment and Compose. A disabled switch refuses new queue requests and
+the worker checks it again before sending. The HTTP `/submit` route cannot bypass
+the committed reservation for an approved browser application. Only CH opportunities
+with an active supervised/autopilot policy can enter that lane; unknown forms,
+authentication challenges and ambiguous confirmation require human review. Do not
+turn the switch on solely because local fixtures pass: real ATS hosts, policy-pause
+race handling and an operational security review remain unverified. To halt new
+browser sends, keep or return the switch to `false` on API and browser-worker and
+restart those services; investigate any in-flight or unknown attempts before
+considering another send. Apply migration `rev_0021` before deploying this worker;
+rollback requires stopping the worker first and reconciling any rows with the new
+reason values before downgrading the database.
 
 ## Migrations stay explicit (§58)
 
@@ -141,4 +160,3 @@ it has been run against a fresh database.
 password reaches the libpq child through its environment, never a command line or any output. See
 `docs/BACKUP_RECOVERY.md` for the full backup contract and `docs/OBSERVABILITY.md` for the health,
 metrics and alerting surface a production deployment monitors.
-

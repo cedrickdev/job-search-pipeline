@@ -113,6 +113,20 @@ def _free_tier(*entitlements, used=()):
     return MeteringService(EntitlementResolver(plans, FakeSubscriptionRepository()), usage)
 
 
+async def test_pending_application_reservation_holds_the_last_commercial_slot():
+    metering = _free_tier(
+        an_entitlement(key=EntitlementKey.APPLICATION_SUBMISSIONS, limit=1))
+
+    async def one_pending(_since):
+        return 1
+
+    with pytest.raises(BillingError) as caught:
+        await metering.authorize(
+            USER, EntitlementKey.APPLICATION_SUBMISSIONS, quantity=1,
+            as_of=NOW, pending_count=one_pending)
+    assert caught.value.code is BillingErrorCode.QUOTA_EXCEEDED
+
+
 def _draft(name, *, active=True):
     """A saved-search draft over one Swiss country area — active unless paused."""
     return SearchProfileDraft(
@@ -279,6 +293,25 @@ async def test_application_submission_is_blocked_after_the_gate_permits_it():
     assert await store.attempts.list_for_application(USER, app.id) == ()
 
 
+async def test_confirmed_reserved_submission_is_metered_once():
+    metering = _free_tier(
+        an_entitlement(key=EntitlementKey.APPLICATION_SUBMISSIONS, limit=1))
+    service, _ = _wire_applications(metering)
+    app = await service.create(USER, OPPORTUNITY, now=NOW)
+    await service.prepare(USER, app.id, now=NOW)
+
+    reservation = await service.reserve_submission(USER, app.id, now=NOW)
+    adapter, context = await service.load_reserved_execution(reservation, now=NOW)
+    result = await adapter.submit(context)
+    submitted = await service.finalize_submission(reservation, result, now=NOW)
+    assert submitted.state is ApplicationState.SUBMITTED
+
+    with pytest.raises(BillingError) as caught:
+        await metering.authorize(
+            USER, EntitlementKey.APPLICATION_SUBMISSIONS, quantity=1, as_of=NOW)
+    assert caught.value.code is BillingErrorCode.QUOTA_EXCEEDED
+
+
 async def test_recommendation_generation_is_blocked_when_the_period_is_spent():
     """RECOMMENDATION_GENERATIONS is reserved before the funnel is even read (§4-9).
 
@@ -329,4 +362,3 @@ async def test_llm_call_is_blocked_and_unrouted_when_tokens_are_spent():
     # No provider was asked and no run was recorded — the refusal is ahead of both.
     assert provider.calls == 0
     assert runs.runs == {}
-

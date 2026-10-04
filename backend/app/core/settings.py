@@ -52,6 +52,23 @@ from backend.app.ratelimit import RateLimitCategory, RateLimitRule
 # reason `CURRENT_SECRET_VERSION` is imported above, not copied).
 from backend.app.tasks.settings import LOCAL_DEV_REDIS_URL
 
+
+class BrowserSubmissionSettings(BaseModel):
+    """Explicit deployment permission for real browser submissions, off by default."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    live_enabled: bool = False
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
+        source = environ if env is None else env
+        raw = source.get("JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED", "").strip()
+        if raw not in ("", "false", "true"):
+            raise ValueError(
+                "JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED must be true or false")
+        return cls(live_enabled=raw == "true")
+
 # Matches docker-compose.yml. Not a secret: the port is bound to 127.0.0.1 and
 # the credentials exist only in that file, which is why it is safe to write here
 # and why `docs/PERSISTENCE.md` tells deployments to override it.

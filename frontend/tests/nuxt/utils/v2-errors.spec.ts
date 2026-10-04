@@ -20,6 +20,8 @@ const CODES = [
   'account_locked',
   'answer_out_of_order',
   'application_adapter_error',
+  'application_browser_disabled',
+  'application_browser_not_permitted',
   'application_channel_unsupported',
   'application_decision_missing',
   'application_document_not_ready',

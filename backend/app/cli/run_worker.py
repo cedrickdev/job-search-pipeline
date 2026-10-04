@@ -37,7 +37,12 @@ from backend.app.application_engine.task_dispatcher import SubprocessTaskDispatc
 from backend.app.billing.entitlements import EntitlementResolver
 from backend.app.billing.metering import MeteringService
 from backend.app.core.production import validate_production_readiness
-from backend.app.core.settings import DatabaseSettings, ExportSettings, RetentionSettings
+from backend.app.core.settings import (
+    BrowserSubmissionSettings,
+    DatabaseSettings,
+    ExportSettings,
+    RetentionSettings,
+)
 from backend.app.domain.task import TaskKind, TaskLane
 from backend.app.exports.store import LocalAccountExportStore
 from backend.app.infrastructure.database.engine import (
@@ -99,7 +104,9 @@ def _general_registry(
         retention_service=retention_factory, export_service=export_factory)
 
 
-def _browser_registry() -> dict[TaskKind, TaskHandler]:
+def _browser_registry(
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        ) -> dict[TaskKind, TaskHandler]:
     """The browser lane's handler registry: exactly `APPLICATION_SUBMISSION` (§35-36).
 
     The one difference from the API's fallback-only `application_service` is the registry: a worker
@@ -138,13 +145,19 @@ def _browser_registry() -> dict[TaskKind, TaskHandler]:
             documents=SqlAlchemyCandidateDocumentRepository(session),
             registry=registry, metering=metering)
 
-    return build_browser_handlers(application_service=application_factory)
+    live_enabled = BrowserSubmissionSettings.from_env().live_enabled
+    return build_browser_handlers(
+        application_service=application_factory,
+        session_factory=session_factory,
+        live_submissions_enabled=live_enabled)
 
 
-def _registry_for(lane: TaskLane) -> dict[TaskKind, TaskHandler]:
+def _registry_for(lane: TaskLane, *,
+                  session_factory: async_sessionmaker[AsyncSession] | None = None,
+                  ) -> dict[TaskKind, TaskHandler]:
     """The handler registry a `lane`'s workers dispatch on — never the other lane's (§35)."""
     if lane is TaskLane.BROWSER:
-        return _browser_registry()
+        return _browser_registry(session_factory)
     return _general_registry(ExportSettings.from_env(), RetentionSettings.from_env())
 
 
@@ -189,7 +202,7 @@ async def _run(lane: TaskLane, *, once: bool) -> int:  # pragma: no cover
     settings = TaskQueueSettings.from_env()
     engine = create_async_database_engine(DatabaseSettings.from_env())
     session_factory = create_session_factory(engine)
-    handlers = _registry_for(lane)
+    handlers = _registry_for(lane, session_factory=session_factory)
     try:
         if once:
             return await _drain_once(
@@ -210,7 +223,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         prog="python -m backend.app.cli.run_worker",
         description="Run one lane's background worker pool (Phase 16 §34-35).")
     parser.add_argument(
-        "--lane", required=True, choices=[lane.value for lane in TaskLane],
+        "--lane", required=True, type=str.upper,
+        choices=[lane.value for lane in TaskLane],
         help="which lane this process serves; 'browser' runs only application submissions (§35)")
     parser.add_argument(
         "--once", action="store_true",

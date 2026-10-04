@@ -17,12 +17,11 @@ Three workflows are moved to background execution here, the ones that are safe a
 - **`ACCOUNT_EXPORT`** — produce a requested account export off the queue (§23-25). Idempotent by
   the service's own contract: `produce` on an already-produced (or already-failed) export is a
   no-op, so an at-least-once redelivery repeats no work (§37).
-- **`APPLICATION_SUBMISSION`** — the browser-lane job, and the one §36 is written about: the
-  handler calls Phase 12's `ApplicationService.submit`, which *re-checks every authority*
-  (ownership, policy, eligibility, approval, quota, duplicate, fingerprint, CAPTCHA/MFA) before the
-  irreversible act. A queued task carries no authority of its own; this handler adds none. An
-  ambiguous send resolves to Phase 12's `STATE_UNKNOWN`, never a blind retry that could double-
-  submit (§40).
+- **`APPLICATION_SUBMISSION`** — the browser-lane job: the production handler
+  commits a reservation, reloads current authority in a separate read, then invokes
+  the browser adapter and finalizes in a new transaction. A queued task carries no
+  authority of its own. An ambiguous send resolves to `STATE_UNKNOWN`, never a blind
+  retry that could double-submit (§40).
 
 A payload that does not carry the ids its kind needs is a *permanent* misconfiguration — re-running
 finds the same broken payload — so it dead-letters rather than retrying (§38).
@@ -33,18 +32,20 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.billing.errors import BillingError, BillingErrorCode
+from backend.app.domain.application import SubmissionOutcome, SubmissionResult
+from backend.app.domain.application_channel import HumanRequiredReason
 from backend.app.domain.application_failure import ApplicationError, ApplicationFailureCode
 from backend.app.domain.identifiers import AccountExportId, ApplicationId, UserId
 from backend.app.domain.task import TaskKind, TaskRun
 from backend.app.exports.service import AccountExportService
+from backend.app.infrastructure.database.engine import session_scope
 from backend.app.retention.service import RetentionService
 from backend.app.services.applications import (
     ApplicationNotActionable,
     ApplicationNotFound,
-    ApplicationService,
 )
 from backend.app.tasks.clock import Clock, utc_now
 from backend.app.tasks.failures import TaskFailure
@@ -130,16 +131,16 @@ def build_account_export_handler(
 
 
 def build_application_submission_handler(
-        application_service: ServiceFactory, *, clock: Clock = utc_now) -> TaskHandler:
+        application_service: ServiceFactory, *, clock: Clock = utc_now,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        live_submissions_enabled: bool = False) -> TaskHandler:
     """The browser-lane handler that submits an application through Phase 12 (§36, §40).
 
-    §36 made physical: the handler adds no authority. It calls `ApplicationService.submit`, which
-    re-checks ownership, policy, eligibility, approval, quota, duplicate, fingerprint and
-    CAPTCHA/MFA against freshly loaded state before the irreversible send. A queued task is not
-    approval — an application no longer `APPROVED` raises `ApplicationNotActionable`, which is
-    *permanent* (re-running finds the same state), so a stale task never forces a submission. A
-    rate-limit refusal is *transient* (the budget may free up); an ambiguous send is resolved to
-    `STATE_UNKNOWN` inside the service, never a blind retry that could double-submit (§40).
+    §36 made physical: the handler adds no authority. In the production lane it
+    commits `reserve_submission`, reloads policy and pinned context, and finalizes
+    the typed result after execution. A queued task is not approval — an application
+    no longer `APPROVED` raises `ApplicationNotActionable`, which is permanent.
+    An ambiguous send is `STATE_UNKNOWN`, never a blind retry (§40).
 
     When metering is wired the service also enforces the commercial `APPLICATION_SUBMISSIONS`
     quota, which refuses an exhausted plan with `BillingError(QUOTA_EXCEEDED)` *before* the
@@ -153,9 +154,36 @@ def build_application_submission_handler(
     async def handle(task: TaskRun, session: AsyncSession) -> None:
         user_id = _require_user(task)
         application_id = ApplicationId(_require_uuid(task.payload, "application_id", task.kind))
-        service: ApplicationService = application_service(session)
         try:
-            await service.submit(user_id, application_id, now=clock())
+            if session_factory is None:
+                # Legacy in-process seam. The production lane always supplies a factory.
+                await application_service(session).submit(user_id, application_id, now=clock())
+                return
+            async with session_scope(session_factory) as reservation_session:
+                reservation = await application_service(
+                    reservation_session).reserve_submission(user_id, application_id, now=clock())
+            # No write transaction remains open across the irreversible browser call.
+            async with session_scope(session_factory, commit=False) as read_session:
+                prepared = await application_service(read_session).load_reserved_execution(
+                    reservation, now=clock())
+            if isinstance(prepared, SubmissionResult):
+                result = prepared
+            elif not live_submissions_enabled:
+                result = SubmissionResult(
+                    outcome=SubmissionOutcome.REQUIRES_HUMAN,
+                    human_required_reason=HumanRequiredReason.AUTOMATION_DISABLED,
+                    detail="live browser submissions are disabled on this deployment")
+            else:
+                adapter, context = prepared
+                try:
+                    result = await adapter.submit(context)
+                except Exception:
+                    result = SubmissionResult(
+                        outcome=SubmissionOutcome.STATE_UNKNOWN,
+                        detail="the adapter stopped during submission; outcome is unknown")
+            async with session_scope(session_factory) as final_session:
+                await application_service(final_session).finalize_submission(
+                    reservation, result, now=clock())
         except BillingError as error:
             if error.code is BillingErrorCode.QUOTA_EXCEEDED:
                 raise TaskFailure.permanent(QUOTA_EXCEEDED, detail=error.detail) from error
@@ -187,7 +215,9 @@ def build_general_handlers(*, retention_service: ServiceFactory, export_service:
 
 
 def build_browser_handlers(*, application_service: ServiceFactory,
-                           clock: Clock = utc_now) -> dict[TaskKind, TaskHandler]:
+                           clock: Clock = utc_now,
+                           session_factory: async_sessionmaker[AsyncSession] | None = None,
+                           live_submissions_enabled: bool = False) -> dict[TaskKind, TaskHandler]:
     """The `TaskKind -> handler` registry the browser-lane worker dispatches on (§35-36).
 
     Exactly one kind: `APPLICATION_SUBMISSION`, the only browser-lane work. Kept a separate
@@ -197,8 +227,7 @@ def build_browser_handlers(*, application_service: ServiceFactory,
     """
     return {
         TaskKind.APPLICATION_SUBMISSION: build_application_submission_handler(
-            application_service, clock=clock),
+            application_service, clock=clock, session_factory=session_factory,
+            live_submissions_enabled=live_submissions_enabled),
     }
-
-
 

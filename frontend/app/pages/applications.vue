@@ -5,16 +5,17 @@
   This screen operates the lifecycle; it never overrides it. Each row shows the state
   the server returned and offers the one action that state allows — prepare a planned
   one, approve and submit a reviewed one, submit an approved one, cancel anything not
-  yet sent. The safety rule the whole engine exists for lives on the server (nothing is
+  yet sent. Browser applications separate approval from durable queueing. The safety
+  rule the whole engine exists for lives on the server (nothing is
   submitted that was not cleared, and the gate is re-checked at submission time,
   docs/APPLICATION_ENGINE.md §1, §5); the UI's job is to make the current state and its
   one next step legible.
 
   Two things are deliberate.
 
-  **"Approve & submit" is one button, two audited acts.** A reviewed application is
-  approved and then submitted in sequence, because that is the single decision a person
-  makes on the review screen (§89). Each step is still its own event in the trail.
+  **"Approve & submit" remains for non-browser channels.** A reviewed browser
+  application is only approved; a separate action queues it for the browser worker.
+  Queue acceptance is not a submitted receipt.
 
   **The trail is shown on demand.** A row shows its state; expanding it fetches that
   application's append-only history — created, prepared, gate-evaluated, submitted — so
@@ -38,7 +39,7 @@ definePageMeta({ middleware: 'auth' })
 useHead({ title: 'Applications · Command Center' })
 
 const { data, status, error, refresh } = useApplicationsQuery()
-const { prepare, approve, submit, cancel } = useApplicationActions()
+const { prepare, approve, submit, queue, cancel } = useApplicationActions()
 
 const loading = computed(() => status.value === 'pending' && !data.value)
 const applications = computed<Application[]>(() => data.value?.applications ?? [])
@@ -47,6 +48,7 @@ const applications = computed<Application[]>(() => data.value?.applications ?? [
 const openTrailId = ref<string | null>(null)
 // The last action error per application, so a refusal shows on the row that caused it.
 const rowErrors = reactive<Record<string, string>>({})
+const queuedIds = reactive<Record<string, string>>({})
 // Which application is mid-action, so only its buttons show a pending state.
 const busyId = ref<string | null>(null)
 
@@ -58,10 +60,16 @@ function canPrepare(app: Application): boolean {
   return CAN_PREPARE.has(app.state)
 }
 function canApproveAndSubmit(app: Application): boolean {
-  return app.state === 'READY_FOR_REVIEW'
+  return app.state === 'READY_FOR_REVIEW' && app.channel !== 'BROWSER'
+}
+function canApproveBrowser(app: Application): boolean {
+  return app.state === 'READY_FOR_REVIEW' && app.channel === 'BROWSER'
 }
 function canSubmit(app: Application): boolean {
-  return app.state === 'APPROVED'
+  return app.state === 'APPROVED' && app.channel !== 'BROWSER'
+}
+function canQueue(app: Application): boolean {
+  return app.state === 'APPROVED' && app.channel === 'BROWSER'
 }
 function canCancel(app: Application): boolean {
   return !TERMINAL.has(app.state) && app.state !== 'SUBMITTED'
@@ -102,6 +110,21 @@ async function approveAndSubmit(app: Application): Promise<void> {
   try {
     await approve.mutateAsync(app.id)
     await submit.mutateAsync(app.id)
+  }
+  catch (caught) {
+    rowErrors[app.id] = errorMessage(caught)
+  }
+  finally {
+    busyId.value = null
+  }
+}
+
+async function queueBrowser(app: Application): Promise<void> {
+  delete rowErrors[app.id]
+  busyId.value = app.id
+  try {
+    const result = await queue.mutateAsync(app.id)
+    queuedIds[app.id] = result.task_id
   }
   catch (caught) {
     rowErrors[app.id] = errorMessage(caught)
@@ -177,6 +200,15 @@ function toggleTrail(applicationId: string): void {
               Approve &amp; submit
             </UButton>
             <UButton
+              v-if="canApproveBrowser(app)"
+              size="xs"
+              :loading="busyId === app.id"
+              :disabled="busyId !== null"
+              @click="() => run(app, approve)"
+            >
+              Approve
+            </UButton>
+            <UButton
               v-if="canSubmit(app)"
               size="xs"
               color="success"
@@ -185,6 +217,16 @@ function toggleTrail(applicationId: string): void {
               @click="() => run(app, submit)"
             >
               Submit
+            </UButton>
+            <UButton
+              v-if="canQueue(app)"
+              size="xs"
+              color="success"
+              :loading="busyId === app.id"
+              :disabled="busyId !== null || Boolean(queuedIds[app.id])"
+              @click="() => queueBrowser(app)"
+            >
+              Queue browser submission
             </UButton>
             <UButton
               v-if="canCancel(app)"
@@ -208,6 +250,9 @@ function toggleTrail(applicationId: string): void {
 
         <p v-if="rowErrors[app.id]" class="application__error" role="alert">
           {{ rowErrors[app.id] }}
+        </p>
+        <p v-if="queuedIds[app.id]" role="status">
+          Queued for browser processing. Refresh to see the resulting application state.
         </p>
 
         <div v-if="openTrailId === app.id" class="application__expanded">

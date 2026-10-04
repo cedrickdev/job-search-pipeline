@@ -1305,6 +1305,14 @@ class FakeApplicationRepository:
                    and app.state in active
                    and app.updated_at >= since)
 
+    async def count_pending_submissions_since(self, user_id: UserId,
+                                              since: datetime) -> int:
+        return sum(1 for app in self.applications.values()
+                   if app.user_id == user_id
+                   and app.state in (ApplicationState.SUBMITTING,
+                                     ApplicationState.SUBMISSION_STATE_UNKNOWN)
+                   and app.updated_at >= since)
+
     async def list_in_flight(self, *,
                              limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
         in_flight = [app.model_copy(deep=True) for app in self.applications.values()
@@ -2327,7 +2335,6 @@ class FakeBillingProvider:
         self.cancel_subscription_calls.append(external_subscription_id)
         if self.cancel_error is not None:
             raise self.cancel_error
-
 
 
 

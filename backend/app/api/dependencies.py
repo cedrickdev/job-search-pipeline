@@ -65,6 +65,7 @@ from backend.app.companies.providers.manual_seed import (
 )
 from backend.app.core.settings import (
     AuthSettings,
+    BrowserSubmissionSettings,
     DatabaseSettings,
     DocumentSettings,
     ExportSettings,
@@ -140,6 +141,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyUserRepository,
 )
 from backend.app.services.application_policy import ApplicationPolicyService
+from backend.app.services.application_queue import ApplicationQueueService
 from backend.app.services.applications import ApplicationService
 from backend.app.services.assessment import AssessmentService
 from backend.app.services.authentication import (
@@ -157,6 +159,7 @@ from backend.app.services.evidence import CandidateEvidenceService
 from backend.app.services.geo_search import GeoSearchService
 from backend.app.services.llm_connections import LLMConnectionService
 from backend.app.services.onboarding import OnboardingService
+from backend.app.tasks.dispatcher import PersistedTaskDispatcher
 from country_packs.registry import CountryPackRegistry
 
 # The header the client copies the CSRF cookie into. Named here rather than
@@ -657,6 +660,19 @@ def application_service(
         metering=_metering(session))
 
 
+def application_queue_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        instant: Annotated[datetime, Depends(now)],
+) -> ApplicationQueueService:
+    return ApplicationQueueService(
+        applications=SqlAlchemyApplicationRepository(session),
+        policies=SqlAlchemyApplicationPolicyRepository(session),
+        opportunities=SqlAlchemyOpportunityRepository(session),
+        dispatcher=PersistedTaskDispatcher(
+            SqlAlchemyTaskRunRepository(session), clock=lambda: instant),
+        live_enabled=BrowserSubmissionSettings.from_env().live_enabled)
+
+
 async def chat_conversation_service(
         session: Annotated[AsyncSession, Depends(database_session)],
         current: Annotated[AuthenticatedSession, Depends(current_session)],
@@ -1140,6 +1156,7 @@ Evidence = Annotated[CandidateEvidenceService, Depends(evidence_service)]
 Documents = Annotated[DocumentService, Depends(document_service)]
 LLMConnections = Annotated[LLMConnectionService, Depends(llm_connection_service)]
 Applications = Annotated[ApplicationService, Depends(application_service)]
+BrowserLaneTasks = Annotated[ApplicationQueueService, Depends(application_queue_service)]
 ChatConversations = Annotated[ChatConversationService,
                               Depends(chat_conversation_service)]
 ChatActions = Annotated[ChatActionExecutor, Depends(chat_action_executor)]

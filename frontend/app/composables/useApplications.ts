@@ -33,6 +33,7 @@ import type {
   ApplicationEventList,
   ApplicationList,
   CreateApplicationRequest,
+  QueuedApplication,
 } from '~/types/v2'
 import { apiGet, apiPost } from '~/utils/api-client'
 import { V2_ENDPOINTS, application } from '~/utils/endpoints'
@@ -68,7 +69,7 @@ export function useApplicationEventsQuery(
 }
 
 /**
- * The six lifecycle writes, grouped so one call site holds them with separate pending
+ * Lifecycle writes, grouped so one call site holds them with separate pending
  * flags — a submit in flight must not disable the cancel button on another row.
  *
  * Each transition refreshes both the list and the acted-on application's trail, so a
@@ -100,6 +101,11 @@ export function useApplicationActions() {
       applicationId => apiPost<Application>(
         application(V2_ENDPOINTS.applicationSubmit, applicationId)),
       { onSuccess: result => refresh(result.id) },
+    ),
+    queue: useMutation<string, QueuedApplication>(
+      applicationId => apiPost<QueuedApplication>(
+        application(V2_ENDPOINTS.applicationQueue, applicationId)),
+      { onSuccess: () => refresh() },
     ),
     cancel: useMutation<string, Application>(
       applicationId => apiPost<Application>(

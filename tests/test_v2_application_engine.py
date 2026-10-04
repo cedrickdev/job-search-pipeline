@@ -15,7 +15,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.app.application_engine.adapters.browser import BrowserApplicationAdapter
+from backend.app.application_engine.adapters.browser import (
+    BrowserApplicationAdapter,
+    _to_submission_result,
+)
 from backend.app.application_engine.adapters.email import (
     EmailApplicationAdapter,
     FakeEmailSender,
@@ -27,7 +30,11 @@ from backend.app.application_engine.task_dispatcher import (
     BrowserTaskResult,
     FakeTaskDispatcher,
 )
-from backend.app.domain.application import ApplicationState, build_idempotency_key
+from backend.app.domain.application import (
+    ApplicationState,
+    SubmissionOutcome,
+    build_idempotency_key,
+)
 from backend.app.domain.application_channel import (
     AdapterSafetyLevel,
     ApplicationChannel,
@@ -82,6 +89,12 @@ from tests.v2_fakes import (
 # ---------------------------------------------------------------------------
 # The execution gate — the deterministic safety mechanism (§4-7, §59).
 # ---------------------------------------------------------------------------
+
+
+def test_unconfirmed_browser_completion_is_not_submitted():
+    result = BrowserTaskResult(outcome=BrowserTaskOutcome.COMPLETED)
+    mapped = _to_submission_result(result)
+    assert mapped.outcome is SubmissionOutcome.STATE_UNKNOWN
 
 
 def _eligible():
@@ -396,7 +409,7 @@ async def test_a_fully_supported_adapter_auto_approves_and_submits():
 @pytest.mark.asyncio
 async def test_supervised_prepare_waits_for_review_then_approve_and_submit():
     dispatcher = FakeTaskDispatcher(default=BrowserTaskResult(
-        outcome=BrowserTaskOutcome.COMPLETED))
+        outcome=BrowserTaskOutcome.COMPLETED, submission_confirmed=True))
     service, _ = _wire(
         policy=a_policy(mode=AutomationMode.SUPERVISED), decision=a_decision(),
         match=an_evaluation(), eligibility=_eligible(), dispatcher=dispatcher)

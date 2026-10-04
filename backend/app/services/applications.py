@@ -29,9 +29,11 @@ from datetime import UTC, datetime, timedelta
 
 from backend.app.application_engine.contracts import (
     AdapterPreparation,
+    ApplicationAdapter,
     ApplicationContext,
 )
 from backend.app.application_engine.registry import ApplicationAdapterRegistry
+from backend.app.application_engine.submission_reservation import SubmissionReservation
 from backend.app.billing.metering import MeteringService
 from backend.app.domain.application import (
     Application,
@@ -330,6 +332,81 @@ class ApplicationService:
 
     # -- submit --------------------------------------------------------------
 
+    async def reserve_submission(self, user_id: UserId, app_id: ApplicationId, *,
+                                 now: datetime) -> SubmissionReservation:
+        """Reserve one attempt; caller MUST commit this unit before any browser work."""
+        await self._applications.lock_submission_budget(user_id)
+        app = await self.get(user_id, app_id)
+        if app.state is not ApplicationState.APPROVED:
+            raise ApplicationNotActionable(app.state, "reserve submission")
+        adapter = self._registry.resolve(app.channel)
+        authorization = await self._evaluate_gate(
+            app, adapter_safety=adapter.capabilities.safety_level, now=now)
+        stopped = await self._stop_if_gate_refuses(app, authorization, now=now)
+        if stopped is not None:
+            raise ApplicationNotActionable(stopped.state, "reserve submission")
+        if self._metering is not None:
+            await self._metering.authorize(
+                user_id, EntitlementKey.APPLICATION_SUBMISSIONS, quantity=1, as_of=now,
+                pending_count=lambda since: self._applications.count_pending_submissions_since(
+                    user_id, since))
+        context = await self._build_context(app)
+        if _first_unready_pin(app.pinned_documents, context.documents) is not None:
+            raise ApplicationError(ApplicationFailureCode.APPLICATION_DOCUMENT_NOT_READY)
+        app = app.transition_to(ApplicationState.SUBMITTING, at=now)
+        app = app.with_next_attempt(at=now)
+        app = await self._applications.upsert(app)
+        await self._append(app, ApplicationEventType.SUBMISSION_STARTED, now=now,
+                           actor=ApplicationEventActor.WORKER)
+        attempt = await self._open_attempt(app, adapter.capabilities.key, now=now)
+        return SubmissionReservation(user_id=user_id, application_id=app.id,
+                                     attempt_id=attempt.id)
+
+    async def finalize_submission(self, reservation: SubmissionReservation,
+                                  result: SubmissionResult, *, now: datetime) -> Application:
+        """Settle only the exact in-flight attempt; never create a second send."""
+        app = await self.get(reservation.user_id, reservation.application_id)
+        if app.state is not ApplicationState.SUBMITTING:
+            raise ApplicationNotActionable(app.state, "finalize submission")
+        attempt = await self._attempts.get(app.id, app.attempt_count)
+        if attempt is None or attempt.id != reservation.attempt_id or not attempt.is_in_flight:
+            raise ApplicationError(ApplicationFailureCode.APPLICATION_SUBMISSION_UNKNOWN)
+        finished = await self._finish(app, attempt, result, now=now)
+        if self._metering is not None and result.outcome is SubmissionOutcome.SUBMITTED:
+            await self._metering.record_pre_authorized(
+                reservation.user_id, EntitlementKey.APPLICATION_SUBMISSIONS,
+                source_type=UsageSourceType.APPLICATION_SUBMISSION,
+                source_id=str(app.id), quantity=1, occurred_at=attempt.started_at)
+        return finished
+
+    async def load_reserved_execution(
+            self, reservation: SubmissionReservation, *, now: datetime,
+            ) -> tuple[ApplicationAdapter, ApplicationContext] | SubmissionResult:
+        """Read and recheck a committed attempt; caller closes the session before sending."""
+        app = await self.get(reservation.user_id, reservation.application_id)
+        if app.state is not ApplicationState.SUBMITTING:
+            raise ApplicationNotActionable(app.state, "execute reservation")
+        attempt = await self._attempts.get(app.id, app.attempt_count)
+        if attempt is None or attempt.id != reservation.attempt_id or not attempt.is_in_flight:
+            raise ApplicationError(ApplicationFailureCode.APPLICATION_SUBMISSION_UNKNOWN)
+        adapter = self._registry.resolve(app.channel)
+        authorization = await self._evaluate_gate(
+            app, adapter_safety=adapter.capabilities.safety_level,
+            now=now, exclude_reserved=True)
+        if authorization.outcome not in (
+                ExecutionOutcome.PERMITTED, ExecutionOutcome.REQUIRES_APPROVAL):
+            return SubmissionResult(
+                outcome=SubmissionOutcome.REQUIRES_HUMAN,
+                human_required_reason=HumanRequiredReason.POLICY_CHANGED,
+                detail="the submission policy or eligibility changed after reservation")
+        context = await self._build_context(app)
+        if _first_unready_pin(app.pinned_documents, context.documents) is not None:
+            return SubmissionResult(
+                outcome=SubmissionOutcome.REQUIRES_HUMAN,
+                human_required_reason=HumanRequiredReason.UPLOAD_UNRESOLVED,
+                detail="a pinned document is no longer ready")
+        return adapter, context
+
     async def submit(self, user_id: UserId, app_id: ApplicationId, *,
                      now: datetime) -> Application:
         """Submit an approved application — the irreversible boundary (§1, §80-88).
@@ -486,6 +563,13 @@ class ApplicationService:
             if app.state is ApplicationState.SUBMITTING:
                 target = ApplicationState.SUBMISSION_STATE_UNKNOWN
                 event = ApplicationEventType.SUBMISSION_STATE_UNKNOWN
+                attempt = await self._attempts.get(app.id, app.attempt_count)
+                if attempt is not None and attempt.is_in_flight:
+                    await self._attempts.upsert(attempt.model_copy(update={
+                        "outcome": SubmissionOutcome.STATE_UNKNOWN,
+                        "detail": "recovered from an interrupted submission",
+                        "finished_at": now,
+                    }))
             elif app.state is ApplicationState.PREPARING:
                 target, event = ApplicationState.FAILED, ApplicationEventType.FAILED
             else:
@@ -501,6 +585,7 @@ class ApplicationService:
 
     async def _evaluate_gate(self, app: Application, *,
                             adapter_safety: AdapterSafetyLevel, now: datetime,
+                            exclude_reserved: bool = False,
                             ) -> ExecutionAuthorization:
         """Load the pair's current policy/eligibility/match and evaluate the gate.
 
@@ -522,6 +607,14 @@ class ApplicationService:
             opportunity_type = (opportunity.opportunity_type
                                if opportunity is not None else None)
         today, week = await self._rate_counts(app.user_id, now)
+        if exclude_reserved:
+            instant = now.astimezone(UTC)
+            start_day = instant.replace(hour=0, minute=0, second=0, microsecond=0)
+            start_week = start_day - timedelta(days=instant.weekday())
+            if app.updated_at >= start_day:
+                today = max(0, today - 1)
+            if app.updated_at >= start_week:
+                week = max(0, week - 1)
         # A missing decision at gate time is itself a block: there is no intent left.
         if decision is None or policy is None:
             return _no_authority(decision)
@@ -542,7 +635,7 @@ class ApplicationService:
         return today, week
 
     async def _build_context(self, app: Application) -> ApplicationContext:
-        profile = await self._profiles.get_default(app.user_id)
+        profile = await self._profiles.get(app.user_id, app.candidate_profile_id)
         if profile is None:
             raise CandidateProfileNotFound(str(app.user_id))
         decision = await self._decisions.get(app.user_id, app.decision_id)

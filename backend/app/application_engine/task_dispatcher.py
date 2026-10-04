@@ -32,9 +32,13 @@ from typing import Protocol, Self, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from backend.app.domain.application_answer import (
+    ApplicationAnswerProposal,
+    ApplicationQuestion,
+)
 from backend.app.domain.application_channel import HumanRequiredReason
 from backend.app.domain.base import HttpUrlStr, NonEmptyStr
-from backend.app.domain.identifiers import ApplicationId
+from backend.app.domain.identifiers import ApplicationId, UserId
 
 # The exact lock file V1's `pipeline.apply_one` uses, and the child-env scrubber the
 # rest of the platform spawns workers with, imported rather than re-derived so the
@@ -67,13 +71,15 @@ class BrowserTaskKind(StrEnum):
 class BrowserTask(DispatcherValue):
     """One unit of browser work, described without naming a browser.
 
-    Deliberately thin: it names the application, the phase and the target, and
-    carries a `correlation_id` so the worker's own log lines thread onto the same
-    audit story (§43). It carries no answers or documents inline — the worker reads
-    those from the persisted application it is given the id of, so a task never puts
-    candidate content on a command line where it could leak into a process list.
+    Deliberately thin: it names the account (`user_id`, so the worker authorization-scopes
+    every read of persisted domain state, §6-7), the application, the phase and the target,
+    and carries a `correlation_id` so the worker's own log lines thread onto the same audit
+    story (§43). It carries no answers, documents, credentials or candidate content inline
+    (§6): the worker loads the authoritative context from PostgreSQL by these ids, so a task
+    never puts candidate data on a command line where it could leak into a process list.
     """
 
+    user_id: UserId
     application_id: ApplicationId
     kind: BrowserTaskKind
     target_url: HttpUrlStr | None = None
@@ -104,12 +110,27 @@ class BrowserTaskResult(DispatcherValue):
     outcome is `REQUIRES_HUMAN` and forbidden otherwise, so an adapter can trust the
     shape. `form_fingerprint` is what a `PREPARE` task captured, for the submit-time
     re-check (§34).
+
+    A `PREPARE` result carries what the driver read from the form — `questions` and the
+    profile-backed `answer_proposals` — so the service resolves them through the one
+    deterministic bridge (`resolve_answer`) exactly as any adapter's preparation is
+    resolved (§8-9, §12). It never carries raw HTML (§8, §24). A `SUBMIT` result adds
+    safe provenance for the audit trail (§24): the `driver_key` and `platform` that ran
+    it, the employer's own `confirmation_reference` when one was read, and
+    `submission_confirmed` — positive confirmation, never the mere absence of an error
+    (§21). None of these is a secret, a cookie, an auth header or a candidate form dump.
     """
 
     outcome: BrowserTaskOutcome
     detail: NonEmptyStr | None = None
     human_required_reason: HumanRequiredReason | None = None
     form_fingerprint: NonEmptyStr | None = None
+    questions: tuple[ApplicationQuestion, ...] = ()
+    answer_proposals: tuple[ApplicationAnswerProposal, ...] = ()
+    driver_key: NonEmptyStr | None = None
+    platform: NonEmptyStr | None = None
+    confirmation_reference: NonEmptyStr | None = None
+    submission_confirmed: bool = False
 
     @model_validator(mode="after")
     def _human_reason_matches_outcome(self) -> Self:
@@ -121,6 +142,13 @@ class BrowserTaskResult(DispatcherValue):
                 and self.human_required_reason is not None:
             raise ValueError(
                 "only a REQUIRES_HUMAN browser result may carry a human_required_reason")
+        if self.confirmation_reference is not None \
+                and self.outcome is not BrowserTaskOutcome.COMPLETED:
+            raise ValueError(
+                "only a COMPLETED browser result may carry a confirmation_reference")
+        if self.submission_confirmed and self.outcome is not BrowserTaskOutcome.COMPLETED:
+            raise ValueError(
+                "only a COMPLETED browser result may report submission_confirmed")
         return self
 
 

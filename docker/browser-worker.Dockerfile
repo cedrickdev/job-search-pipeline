@@ -7,11 +7,9 @@
 # A wedged submission can never consume a general-lane worker because it is a different
 # container built from a different image (§35).
 #
-# Based on Microsoft's Playwright image, which ships the browser system libraries and a
-# non-root `pwuser`. The `playwright install chromium` step below re-fetches the browser
-# that matches whatever `playwright` version pip resolves, so the image is correct even
-# when the pinned dependency drifts ahead of the base tag; bump the tag to keep it small.
-FROM mcr.microsoft.com/playwright/python:v1.48.0-noble
+# Install Chromium and its system dependencies for exactly the Python Playwright
+# package resolved in this build. This avoids an image/package browser revision drift.
+FROM python:3.12-bookworm AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -19,11 +17,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     # A path both root (which installs) and pwuser (which runs) can reach.
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-
-# A virtualenv keeps the install off Ubuntu's externally-managed system Python (PEP 668)
-# without reaching for --break-system-packages.
-RUN python3 -m venv /opt/venv
-ENV PATH=/opt/venv/bin:$PATH
 
 WORKDIR /app
 
@@ -35,13 +28,26 @@ COPY . .
 # Runtime dependencies only (no linters, no pytest), then the matching browser. Chromium
 # alone: ATS submission drives Chromium, and Firefox/WebKit would only add weight.
 RUN pip install -e . \
-    && playwright install chromium \
+    && playwright install --with-deps chromium \
     && chmod -R a+rx /ms-playwright
 
-# Non-root, as the base image intends: pwuser (uid 1000) owns nothing it must write to —
-# it reads the venv, the source and the browsers, all world-readable above.
-USER pwuser
+# Match the API's uid/gid so both processes can use the shared named volumes:
+# /app/data contains the V1/V2 lock and browser profile, and /app/var holds the
+# rendered documents the browser uploads. Fresh volumes inherit this ownership.
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /app app \
+    && mkdir -p /app/data /app/var \
+    && chown 10001:10001 /app/data /app/var
+ENV XDG_CACHE_HOME=/tmp/jobsearch-browser-cache
+USER 10001:10001
 
 # A default, not a policy: docker-compose.yml's `browser-worker` states the full command.
 # The lane is fixed to `browser`, so this image never serves the general lane (§35).
 CMD ["python", "-m", "backend.app.cli.run_worker", "--lane", "browser"]
+
+# Fixture-only image: the test dependency and Chromium stay out of the API image.
+FROM runtime AS browser-tests
+USER root
+RUN pip install -e ".[dev]"
+USER 10001:10001
+CMD ["python", "-m", "pytest", "tests/test_v2_browser_automation.py", "-q", "-rs"]

@@ -1778,6 +1778,22 @@ class SqlAlchemyApplicationRepository:
                    ApplicationRow.updated_at >= since))
         return int(result.scalar_one())
 
+    async def count_pending_submissions_since(self, user_id: UserId,
+                                              since: datetime) -> int:
+        result = await self._session.execute(
+            select(func.count()).select_from(ApplicationRow)
+            .outerjoin(SubmissionAttemptRow, and_(
+                SubmissionAttemptRow.application_id == ApplicationRow.id,
+                SubmissionAttemptRow.attempt_number == ApplicationRow.attempt_count))
+            .where(
+                ApplicationRow.user_id == user_id,
+                ApplicationRow.state.in_((
+                    ApplicationState.SUBMITTING.value,
+                    ApplicationState.SUBMISSION_STATE_UNKNOWN.value)),
+                func.coalesce(SubmissionAttemptRow.started_at,
+                              ApplicationRow.updated_at) >= since))
+        return int(result.scalar_one())
+
     async def list_in_flight(self, *,
                              limit: int = DEFAULT_LIMIT) -> tuple[Application, ...]:
         result = await self._session.execute(
@@ -3012,5 +3028,3 @@ class SqlAlchemyTaskRunRepository:
                 TaskRunRow.user_id == user_id,
                 TaskRunRow.status == TaskStatus.QUEUED))
         return _rows_affected(result)
-
-

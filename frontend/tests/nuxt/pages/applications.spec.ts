@@ -59,6 +59,31 @@ describe('applications page', () => {
     expect(labels.some(t => t.includes('Approve'))).toBe(true)
   })
 
+  it('approves a reviewed browser application without submitting it', async () => {
+    const { http, wrapper } = await mountWith(
+      applicationList([application({ state: 'READY_FOR_REVIEW', channel: 'BROWSER' })]),
+      [{ match: `${APPLICATIONS}/${APPLICATION_ID}/approve`, method: 'POST',
+         json: application({ state: 'APPROVED', channel: 'BROWSER' }) }])
+    const approve = wrapper.findAll('button').find(b => b.text().includes('Approve'))
+    await approve!.trigger('click')
+    await flushPromises()
+    expect(http.callsTo(`${APPLICATIONS}/${APPLICATION_ID}/approve`)).toHaveLength(1)
+    expect(http.callsTo(`${APPLICATIONS}/${APPLICATION_ID}/submit`)).toHaveLength(0)
+  })
+
+  it('queues an approved browser application instead of direct submit', async () => {
+    const queuePath = `${APPLICATIONS}/${APPLICATION_ID}/queue`
+    const { http, wrapper } = await mountWith(
+      applicationList([application({ state: 'APPROVED', channel: 'BROWSER' })]),
+      [{ match: queuePath, method: 'POST', json: { task_id: APPLICATION_ID } }])
+    const queue = wrapper.findAll('button').find(b => b.text().includes('Queue'))
+    await queue!.trigger('click')
+    await flushPromises()
+    expect(http.callsTo(queuePath)).toHaveLength(1)
+    expect(http.callsTo(`${APPLICATIONS}/${APPLICATION_ID}/submit`)).toHaveLength(0)
+    expect(wrapper.text()).toContain('Queued')
+  })
+
   it('offers no lifecycle action once submitted', async () => {
     const { wrapper } = await mountWith(
       applicationList([application({ state: 'SUBMITTED' })]))

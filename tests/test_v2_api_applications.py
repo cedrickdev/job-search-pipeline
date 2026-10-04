@@ -12,12 +12,17 @@ from uuid import UUID
 
 import pytest
 
+from backend.app.api.dependencies import application_queue_service
+from backend.app.domain.application import ApplicationState
+from backend.app.domain.policy import AutomationMode
 from backend.app.domain.identifiers import (
     OpportunityId,
     default_candidate_profile_id,
 )
+from backend.app.services.application_queue import ApplicationQueueService
 from tests.v2_api import OTHER_EMAIL, api_harness
-from tests.v2_builders import a_decision, an_opportunity
+from tests.v2_builders import a_decision, a_policy, an_opportunity
+from tests.v2_fakes import FakeTaskDispatcher
 
 PLACEHOLDER = "00000000-0000-4000-8000-0000000000ff"
 POSTING = OpportunityId(UUID("00000000-0000-4000-8000-0000000002ff"))
@@ -33,6 +38,17 @@ async def _seed_pair(api):
     await api.application_decisions.upsert(a_decision(
         user_id=user_id, candidate_profile_id=profile_id, opportunity_id=POSTING))
     return user_id, POSTING
+
+
+async def _allow_fixture_queue(api, *, live_enabled=True):
+    owner = next(iter(api.users.users))
+    await api.application_policies.upsert(a_policy(
+        user_id=owner, mode=AutomationMode.SUPERVISED))
+    dispatcher = FakeTaskDispatcher()
+    api.app.dependency_overrides[application_queue_service] = lambda: ApplicationQueueService(
+        api.applications, api.application_policies, api.postings, dispatcher,
+        live_enabled=live_enabled)
+    return dispatcher
 
 
 @pytest.mark.asyncio
@@ -99,6 +115,102 @@ async def test_submit_before_approval_is_a_conflict(tmp_path):
         response = await api.write("POST", f"/applications/{app_id}/submit")
         assert response.status_code == 409
         assert response.json()["error"] == "application_not_actionable"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_queue_returns_one_browser_task(tmp_path):
+    async with api_harness(tmp_path) as api:
+        _, posting_id = await _seed_pair(api)
+        created = await api.write("POST", "/applications",
+                                  json={"opportunity_id": str(posting_id)})
+        app_id = UUID(created.json()["id"])
+        app = api.applications.applications[app_id]
+        await api.applications.upsert(app.model_copy(update={
+            "state": ApplicationState.APPROVED}))
+        dispatcher = await _allow_fixture_queue(api)
+
+        first = await api.write("POST", f"/applications/{app_id}/queue")
+        second = await api.write("POST", f"/applications/{app_id}/queue")
+
+        assert first.status_code == second.status_code == 202
+        assert first.json()["task_id"] == second.json()["task_id"]
+        assert len(dispatcher.enqueued) == 1
+        assert dispatcher.enqueued[0].max_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_queue_is_disabled_without_live_switch(tmp_path):
+    async with api_harness(tmp_path) as api:
+        _, posting_id = await _seed_pair(api)
+        created = await api.write("POST", "/applications",
+                                  json={"opportunity_id": str(posting_id)})
+        app_id = UUID(created.json()["id"])
+        app = api.applications.applications[app_id]
+        await api.applications.upsert(app.model_copy(update={
+            "state": ApplicationState.APPROVED}))
+        dispatcher = await _allow_fixture_queue(api, live_enabled=False)
+
+        response = await api.write("POST", f"/applications/{app_id}/queue")
+
+        assert response.status_code == 409
+        assert response.json()["error"] == "application_browser_disabled"
+        assert dispatcher.enqueued == []
+
+
+@pytest.mark.asyncio
+async def test_queue_cannot_use_another_accounts_application(tmp_path):
+    async with api_harness(tmp_path) as api:
+        _, posting_id = await _seed_pair(api)
+        created = await api.write("POST", "/applications",
+                                  json={"opportunity_id": str(posting_id)})
+        app_id = created.json()["id"]
+        dispatcher = await _allow_fixture_queue(api)
+        await api.register(email=OTHER_EMAIL, display_name="Intruder")
+        await api.log_in(email=OTHER_EMAIL)
+
+        response = await api.write("POST", f"/applications/{app_id}/queue")
+
+        assert response.status_code == 404
+        assert dispatcher.enqueued == []
+
+
+@pytest.mark.asyncio
+async def test_paused_policy_cannot_queue_live_submission(tmp_path):
+    async with api_harness(tmp_path) as api:
+        owner, posting_id = await _seed_pair(api)
+        created = await api.write("POST", "/applications",
+                                  json={"opportunity_id": str(posting_id)})
+        app_id = UUID(created.json()["id"])
+        app = api.applications.applications[app_id]
+        await api.applications.upsert(app.model_copy(update={
+            "state": ApplicationState.APPROVED}))
+        dispatcher = await _allow_fixture_queue(api)
+        policy = await api.application_policies.get_default(owner)
+        await api.application_policies.upsert(policy.model_copy(update={
+            "is_active": False}))
+
+        response = await api.write("POST", f"/applications/{app_id}/queue")
+
+        assert response.status_code == 409
+        assert response.json()["error"] == "application_browser_not_permitted"
+        assert dispatcher.enqueued == []
+
+
+@pytest.mark.asyncio
+async def test_approved_browser_application_cannot_submit_directly(tmp_path):
+    async with api_harness(tmp_path) as api:
+        _, posting_id = await _seed_pair(api)
+        created = await api.write("POST", "/applications",
+                                  json={"opportunity_id": str(posting_id)})
+        app_id = UUID(created.json()["id"])
+        app = api.applications.applications[app_id]
+        await api.applications.upsert(app.model_copy(update={
+            "state": ApplicationState.APPROVED}))
+
+        response = await api.write("POST", f"/applications/{app_id}/submit")
+
+        assert response.status_code == 409
+        assert response.json()["error"] == "application_browser_not_permitted"
 
 
 @pytest.mark.asyncio

@@ -121,6 +121,7 @@ services:
       # guarded request. Pointing it at the `redis` service makes the limit real in the
       # composition and matches how a deployment wires it (docs/PRODUCTION_DEPLOYMENT.md).
       JOBSEARCH_REDIS_URL: redis://redis:6379/0
+      JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED: ${JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED:-false}
     volumes:
       # A named volume, NOT a bind mount of ./data. That directory holds the
       # operator's real tracker, job-board logins and answers.yaml; a container
@@ -261,16 +262,39 @@ services:
     build:
       context: .
       dockerfile: docker/browser-worker.Dockerfile
+      target: runtime
     command: ["python", "-m", "backend.app.cli.run_worker", "--lane", "browser"]
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobsearch}:${POSTGRES_PASSWORD:-jobsearch_dev_only}@postgres:5432/${POSTGRES_DB:-jobsearch_dev}
       JOBSEARCH_REDIS_URL: redis://redis:6379/0
+      JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED: ${JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED:-false}
+    volumes:
+      # The API's container-side browser state holds the shared V1/V2 lock and the
+      # persistent Chromium profile. Rendered documents live on the same artifact
+      # volume the API writes, so the browser can upload the exact pinned version.
+      - api_data:/app/data
+      - app_var:/app/var
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_started
     restart: unless-stopped
+
+  browser-tests:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: docker/browser-worker.Dockerfile
+      target: browser-tests
+    environment:
+      JOBSEARCH_REQUIRE_BROWSER_TESTS: "1"
+      JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED: "false"
+    volumes:
+      # Tests are excluded from image builds; mount only the synthetic fixture
+      # suite at run time, read-only, and never any operator data.
+      - ./tests:/app/tests:ro
+    command: ["python", "-m", "pytest", "-p", "no:cacheprovider", "tests/test_v2_browser_automation.py", "-q", "-rs"]
 
   migrate:
     profiles: ["tools"]

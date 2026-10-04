@@ -15,14 +15,17 @@ window and timestamps agree.
 """
 from fastapi import APIRouter
 
-from backend.app.api.dependencies import Applications, CurrentSession, Now
+from backend.app.api.dependencies import Applications, BrowserLaneTasks, CurrentSession, Now
 from backend.app.api.schemas import (
     ApplicationEventListResponse,
     ApplicationListResponse,
     ApplicationResponse,
     CreateApplicationRequest,
+    QueuedApplicationResponse,
 )
+from backend.app.domain.application_channel import ApplicationChannel
 from backend.app.domain.identifiers import ApplicationId
+from backend.app.services.application_queue import BrowserSubmissionNotPermitted
 
 router = APIRouter(tags=["v2-applications"])
 
@@ -97,8 +100,22 @@ async def submit_application(application_id: ApplicationId, current: CurrentSess
     exhausted rate budget is a 429; a duplicate is a 409; an ambiguous send comes back
     as SUBMISSION_STATE_UNKNOWN rather than a false success.
     """
+    application = await service.get(current.user.id, application_id)
+    if application.channel is ApplicationChannel.BROWSER \
+            and application.state.value == "APPROVED":
+        # A browser send must cross the committed queue reservation, never this
+        # request's single uncommitted ApplicationService.submit transaction.
+        raise BrowserSubmissionNotPermitted()
     application = await service.submit(current.user.id, application_id, now=instant)
     return ApplicationResponse.of(application)
+
+
+@router.post("/applications/{application_id}/queue", status_code=202,
+             response_model=QueuedApplicationResponse)
+async def queue_application(application_id: ApplicationId, current: CurrentSession,
+                            queue: BrowserLaneTasks) -> QueuedApplicationResponse:
+    task_id = await queue.enqueue_approved(current.user.id, application_id)
+    return QueuedApplicationResponse(task_id=task_id)
 
 
 @router.post("/applications/{application_id}/cancel",

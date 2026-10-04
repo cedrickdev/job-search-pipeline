@@ -79,6 +79,14 @@ describe('useApplicationActions', () => {
 
     expect(http.callsTo(path).filter(c => c.method === 'POST')).toHaveLength(1)
   })
+
+  it('queues a browser application through its dedicated route', async () => {
+    const path = `${APPLICATIONS}/${APPLICATION_ID}/queue`
+    const http = stubFetch([{ match: path, method: 'POST', json: { task_id: APPLICATION_ID } }])
+    const actions = await run(() => useApplicationActions())
+    expect(await actions.queue.mutateAsync(APPLICATION_ID)).toEqual({ task_id: APPLICATION_ID })
+    expect(http.callsTo(path).filter(c => c.method === 'POST')).toHaveLength(1)
+  })
 })
 
 describe('useApplicationEventsQuery', () => {

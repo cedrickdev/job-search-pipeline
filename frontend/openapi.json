@@ -6352,6 +6352,22 @@
         "title": "ProviderHealthStatus",
         "type": "string"
       },
+      "QueuedApplicationResponse": {
+        "additionalProperties": false,
+        "description": "Receipt for one idempotent browser-lane queue operation.",
+        "properties": {
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "QueuedApplicationResponse",
+        "type": "object"
+      },
       "RadiusSearchArea": {
         "additionalProperties": false,
         "description": "Everything within `radius_km` of `center`.\n\nNo country field, and that is the point: a 30 km radius around Geneva covers\ntwo countries, and a search that silently added a country filter would drop\nthe French side of a commute the candidate would happily make. Right-to-work\nis an eligibility question (`WorkAuthorization`), not a discovery filter.",
@@ -10535,6 +10551,49 @@
           }
         },
         "summary": "Prepare Application",
+        "tags": [
+          "v2-applications"
+        ]
+      }
+    },
+    "/api/v2/applications/{application_id}/queue": {
+      "post": {
+        "operationId": "queue_application_api_v2_applications__application_id__queue_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueuedApplicationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Application",
         "tags": [
           "v2-applications"
         ]

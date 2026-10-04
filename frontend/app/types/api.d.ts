@@ -665,6 +665,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/applications/{application_id}/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Queue Application */
+        post: operations["queue_application_api_v2_applications__application_id__queue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/applications/{application_id}/submit": {
         parameters: {
             query?: never;
@@ -5869,6 +5886,17 @@ export interface components {
          */
         ProviderHealthStatus: "UNKNOWN" | "HEALTHY" | "DEGRADED" | "UNAVAILABLE" | "AUTH_REQUIRED" | "MISCONFIGURED";
         /**
+         * QueuedApplicationResponse
+         * @description Receipt for one idempotent browser-lane queue operation.
+         */
+        QueuedApplicationResponse: {
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+        };
+        /**
          * RadiusSearchArea
          * @description Everything within `radius_km` of `center`.
          *
@@ -8494,6 +8522,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApplicationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    queue_application_api_v2_applications__application_id__queue_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueuedApplicationResponse"];
                 };
             };
             /** @description Validation Error */

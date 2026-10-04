@@ -85,6 +85,18 @@ jobs:
       - name: Tests (pytest)
         run: python -m pytest -q
 
+      # The full suite may skip browser-dependent fixtures before Chromium is
+      # installed; this second run makes those skips a hard failure. Fixtures are
+      # local HTTP servers only, never employer sites or external submission URLs.
+      - name: Install Chromium for ATS fixture tests
+        run: python -m playwright install --with-deps chromium
+
+      - name: ATS browser fixture tests (Chromium required)
+        env:
+          JOBSEARCH_REQUIRE_BROWSER_TESTS: "1"
+          JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED: "false"
+        run: python -m pytest tests/test_v2_browser_automation.py -q -rs
+
   # Added in Phase 2. Additive on purpose: the `backend` job above still runs the
   # whole suite with no database, where the V2 persistence tests skip themselves
   # (tests/v2_database.py). This job is the one that has no excuse — it provides

@@ -24,8 +24,10 @@ ApplicationDecision (intent)
          → adapter.prepare(context)          (reversible; reads the form)
             → resolve answers deterministically; pin exact document versions
                → human checkpoint if REQUIRES_HUMAN / REQUIRES_APPROVAL
-                  → adapter.submit(context)   (the one irreversible act)
-                     → ApplicationEvent + SubmissionAttempt (audit)
+                  → queue approved browser application (durable, owner-scoped)
+                     → commit SUBMITTING + SubmissionAttempt reservation
+                        → adapter.submit(context) (the one irreversible act)
+                           → finalize outcome in a separate transaction
 ```
 
 ## Layers
@@ -93,7 +95,8 @@ submit-time re-evaluation reads the policy *as it is now*.
   generic fallback so an unserved channel degrades to a human hand-off (§12-13).
 - **`task_dispatcher`** — the `TaskDispatcher` Protocol that keeps the browser worker
   behind an interface (§44-48). The V1 `flock` browser lock is *reused* (`browser_lock`
-  on `data/browser_state/.lock`), so V1 and V2 serialize on the shared profile. A
+  on `data/browser_state/.lock`), so V1 and V2 serialize, but V2 uses a private
+  Chromium profile per account rather than V1's shared profile. A
   crashed SUBMIT worker resolves to `STATE_UNKNOWN`, never a retryable failure (§88).
   `SubprocessTaskDispatcher` runs the isolated worker; `FakeTaskDispatcher` is the test
   double.
@@ -106,8 +109,13 @@ submit-time re-evaluation reads the policy *as it is now*.
   named. The API composes a fallback-only registry (safe by default); a worker
   deployment composes one with a dispatcher and a mail sender.
 - **`browser_worker`** — the isolated worker entrypoint the subprocess dispatcher
-  spawns. It takes the shared browser lock and, until Playwright page-driving lands,
-  reports a `REQUIRES_HUMAN` hand-off rather than claim a submission it did not make.
+  spawns. Under the shared browser lock, it loads the account-scoped application and
+  pinned documents from PostgreSQL and the artifact store, then drives a standard
+  Playwright Chromium through the Greenhouse, Lever or Ashby driver. Unsupported
+  hosts, changed forms, unknown required fields, CAPTCHA, MFA and login walls hand
+  off safely. A click without positive confirmation is `STATE_UNKNOWN`.
+  It verifies the persisted target URL and pinned candidate profile before navigation;
+  an unprepared fingerprint or unknown required upload blocks submission.
 
 ### Services (`backend/app/services/`)
 
@@ -120,14 +128,20 @@ submit-time re-evaluation reads the policy *as it is now*.
   `approve` (§52), `submit` (re-evaluates the gate, re-checks pinned documents, writes
   an in-flight attempt before the irreversible act, records the typed outcome), `cancel`
   and `recover_in_flight` (§88). It holds no clock; each method takes `now`.
+  The browser lane uses `reserve_submission` (committed before browser execution),
+  a separate read-only preflight, then `finalize_submission` in a fresh transaction.
+  Recovery turns a stranded in-flight attempt into `SUBMISSION_STATE_UNKNOWN`; it
+  never retries an uncertain click.
 
-### Persistence (migration `rev_0009`)
+### Persistence (migrations `rev_0009`, `rev_0021`)
 
 Five tables: `application_policies`, `application_decisions`, `applications`,
 `application_events`, `submission_attempts`. `applications` has a UNIQUE
 `idempotency_key` (§36); `submission_attempts` a UNIQUE `(application_id,
 attempt_number)`. Every CHECK restates a domain validator, so a row written by a
 migration or by psql cannot assert a state the engine could never have produced.
+`rev_0021` extends the closed human-required reason constraint with
+`POLICY_CHANGED` and `AUTOMATION_DISABLED`; apply it before deploying the new worker.
 
 ### API (`/api/v2/applications`)
 
@@ -140,7 +154,8 @@ Idempotent, session-scoped (the owner is never in the path or body):
 | GET | `/applications/{id}` | one application (404 if not yours) |
 | POST | `/applications/{id}/prepare` | prepare and route by the gate |
 | POST | `/applications/{id}/approve` | a human's approval |
-| POST | `/applications/{id}/submit` | the irreversible submission |
+| POST | `/applications/{id}/submit` | legacy non-browser submission; approved browser applications are refused |
+| POST | `/applications/{id}/queue` | enqueue an approved CH browser application; returns 202 and task id |
 | POST | `/applications/{id}/cancel` | abandon before sending |
 | GET | `/applications/{id}/events` | the append-only trail |
 
@@ -152,9 +167,11 @@ vocabulary the engine branches on.
 ### Frontend (`/applications`)
 
 A list operating the lifecycle: each row shows the server's state and offers the one
-action it allows — Prepare a planned one, "Approve & submit" a reviewed one (the
-review screen's single decision, two audited acts, §89), Submit an approved one,
-Cancel anything not yet sent. An application's append-only trail is shown on demand.
+action it allows — Prepare a planned one, approve a reviewed browser application,
+then queue it separately, or use the existing approve/submit flow for other channels.
+The queue result means *waiting*, not submitted; refresh and inspect the audit trail
+for the actual outcome. The live-send switch is off by default, so queueing normally
+returns a typed refusal in local development.
 There is no "ignore safeguards" control, and the default policy is MANUAL.
 
 ## Security invariants
@@ -175,7 +192,11 @@ There is no "ignore safeguards" control, and the default policy is MANUAL.
 
 ## Tests
 
-No live boards, LLMs, browsers or CAPTCHAs (CLAUDE.md §Testing). The gate, the
+No live boards, LLMs or CAPTCHAs (CLAUDE.md §Testing). Local fixture pages are
+driven by Chromium in `tests/test_v2_browser_automation.py`. Local installs may skip
+browser cases if Chromium is absent, but CI and the `browser-tests` Compose service
+set `JOBSEARCH_REQUIRE_BROWSER_TESTS=1` and fail instead of silently skipping. Fixture
+coverage does not verify real ATS behavior. The gate, the
 decision service and the full lifecycle are pinned over in-memory fakes
 (`tests/test_v2_application_engine.py`); the five tables are exercised on real
 PostgreSQL (`tests/test_v2_persistence_application_engine.py`); the HTTP contract,

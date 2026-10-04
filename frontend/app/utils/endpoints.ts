@@ -145,6 +145,7 @@ export const V2_ENDPOINTS = {
   applicationPrepare: '/api/v2/applications/{application_id}/prepare',
   applicationApprove: '/api/v2/applications/{application_id}/approve',
   applicationSubmit: '/api/v2/applications/{application_id}/submit',
+  applicationQueue: '/api/v2/applications/{application_id}/queue',
   applicationCancel: '/api/v2/applications/{application_id}/cancel',
   applicationEvents: '/api/v2/applications/{application_id}/events',
   chatConversations: '/api/v2/chat/conversations',

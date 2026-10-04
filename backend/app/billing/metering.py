@@ -58,7 +58,9 @@ class MeteringService:
         self._usage = usage
 
     async def authorize(self, user_id: UserId, key: EntitlementKey, *, quantity: int,
-                        as_of: datetime) -> ResolvedEntitlements:
+                        as_of: datetime,
+                        pending_count: Callable[[datetime], Awaitable[int]] | None = None,
+                        ) -> ResolvedEntitlements:
         """Reserve commercial room for `quantity` more of a per-period `key`, or raise (§8).
 
         Takes the transaction-scoped usage-budget lock, resolves the account's effective plan and
@@ -76,9 +78,22 @@ class MeteringService:
         await self._usage.lock_usage_budget(user_id)
         resolved = await self._resolver.resolve(user_id, as_of=as_of)
         used = await self._usage.sum_for_period(user_id, key, resolved.period.label)
+        if pending_count is not None:
+            used += await pending_count(resolved.period.start)
         self._require_room(resolved.entitlement_for(key), key,
                            already_used=used, quantity=quantity, period=resolved.period)
         return resolved
+
+    async def record_pre_authorized(self, user_id: UserId, key: EntitlementKey, *,
+                                    source_type: UsageSourceType, source_id: str,
+                                    quantity: int, occurred_at: datetime) -> UsageEvent | None:
+        """Meter a confirmed action whose committed in-flight row held its quota slot."""
+        await self._usage.lock_usage_budget(user_id)
+        resolved = await self._resolver.resolve(user_id, as_of=occurred_at)
+        return await self.record(
+            user_id, key, source_type=source_type, source_id=source_id,
+            quantity=quantity, occurred_at=occurred_at,
+            billing_period=resolved.period.label)
 
     def authorize_concurrent(self, resolved: ResolvedEntitlements, key: EntitlementKey, *,
                              active_count: int, quantity: int = 1) -> None:

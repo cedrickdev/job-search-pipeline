@@ -72,6 +72,7 @@ class BrowserApplicationAdapter:
         service can surface it and the run can be retried later without any risk.
         """
         task = BrowserTask(
+            user_id=context.application.user_id,
             application_id=context.application.id,
             kind=BrowserTaskKind.PREPARE,
             target_url=self._target_url(context),
@@ -85,7 +86,12 @@ class BrowserApplicationAdapter:
                 detail="the browser is in use; preparation could not run yet")
 
         if result.outcome is BrowserTaskOutcome.COMPLETED:
+            # The driver read the form: hand the questions and the profile-backed
+            # proposals up so the service resolves each through `resolve_answer`, the
+            # one deterministic bridge (§9, §12). The adapter invents nothing.
             return AdapterPreparation(
+                questions=result.questions,
+                answer_proposals=result.answer_proposals,
                 form_fingerprint=result.form_fingerprint, detail=result.detail)
         if result.outcome is BrowserTaskOutcome.REQUIRES_HUMAN \
                 and result.human_required_reason is not None:
@@ -101,6 +107,7 @@ class BrowserApplicationAdapter:
     async def submit(self, context: ApplicationContext) -> SubmissionResult:
         """Submit through a SUBMIT task; the one irreversible act, mapped safely."""
         task = BrowserTask(
+            user_id=context.application.user_id,
             application_id=context.application.id,
             kind=BrowserTaskKind.SUBMIT,
             target_url=self._target_url(context),
@@ -121,9 +128,16 @@ class BrowserApplicationAdapter:
 
 def _to_submission_result(result: BrowserTaskResult) -> SubmissionResult:
     """Translate a browser task result into a submission result, outcome for outcome."""
+    if result.outcome is BrowserTaskOutcome.COMPLETED and result.submission_confirmed:
+        # The employer's own reference is provenance for the audit trail (§24), carried
+        # through only for a confirmed submission — never a secret or a page dump.
+        return SubmissionResult(
+            outcome=SubmissionOutcome.SUBMITTED, detail=result.detail,
+            confirmation_reference=result.confirmation_reference)
     if result.outcome is BrowserTaskOutcome.COMPLETED:
         return SubmissionResult(
-            outcome=SubmissionOutcome.SUBMITTED, detail=result.detail)
+            outcome=SubmissionOutcome.STATE_UNKNOWN,
+            detail="the browser did not positively confirm submission")
     if result.outcome is BrowserTaskOutcome.REQUIRES_HUMAN:
         return SubmissionResult(
             outcome=SubmissionOutcome.REQUIRES_HUMAN,

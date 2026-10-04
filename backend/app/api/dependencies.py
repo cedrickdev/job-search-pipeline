@@ -74,7 +74,8 @@ from backend.app.core.settings import (
     SiteSettings,
     StripeSettings,
 )
-from backend.app.discovery.bootstrap import build_country_packs
+from backend.app.discovery.bootstrap import build_country_packs, build_discovery
+from backend.app.discovery.orchestrator import DiscoveryOrchestrator
 from backend.app.documents import (
     DeterministicDocumentGenerator,
     LocalDocumentArtifactStore,
@@ -154,6 +155,10 @@ from backend.app.services.company_discovery import (
     CompanyDiscoveryService,
     CompanyResolutionService,
 )
+from backend.app.services.discovery_catalog import (
+    DiscoveryCatalogService,
+    DiscoveryEnqueueService,
+)
 from backend.app.services.documents import DocumentService
 from backend.app.services.evidence import CandidateEvidenceService
 from backend.app.services.geo_search import GeoSearchService
@@ -182,6 +187,7 @@ LLM_CIPHER_ATTRIBUTE: Final[str] = "v2_llm_cipher"
 SESSION_FACTORY_ATTRIBUTE: Final[str] = "v2_session_factory"
 ENGINE_ATTRIBUTE: Final[str] = "v2_engine"
 COUNTRY_PACKS_ATTRIBUTE: Final[str] = "v2_country_packs"
+DISCOVERY_ATTRIBUTE: Final[str] = "v2_discovery_orchestrator"
 STRIPE_SETTINGS_ATTRIBUTE: Final[str] = "v2_stripe_settings"
 SITE_SETTINGS_ATTRIBUTE: Final[str] = "v2_site_settings"
 RATE_LIMIT_SETTINGS_ATTRIBUTE: Final[str] = "v2_rate_limit_settings"
@@ -243,6 +249,23 @@ def session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
     return factory
 
 
+def discovery_orchestrator(request: Request) -> DiscoveryOrchestrator:
+    """Compose reviewed CH sources once; construction never launches a sweep."""
+    existing = getattr(request.app.state, DISCOVERY_ATTRIBUTE, None)
+    if isinstance(existing, DiscoveryOrchestrator):
+        return existing
+    composed = build_discovery().orchestrator
+    setattr(request.app.state, DISCOVERY_ATTRIBUTE, composed)
+    return composed
+
+
+def discovery_catalog_service(
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(session_factory)],
+        orchestrator: Annotated[DiscoveryOrchestrator, Depends(discovery_orchestrator)],
+) -> DiscoveryCatalogService:
+    return DiscoveryCatalogService(factory, orchestrator)
+
+
 async def database_session(
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(session_factory)],
 ) -> AsyncIterator[AsyncSession]:
@@ -255,6 +278,17 @@ async def database_session(
     """
     async with session_scope(factory) as session:
         yield session
+
+
+def discovery_enqueue_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        instant: Annotated[datetime, Depends(now)],
+) -> DiscoveryEnqueueService:
+    return DiscoveryEnqueueService(
+        SqlAlchemySearchProfileRepository(session),
+        PersistedTaskDispatcher(SqlAlchemyTaskRunRepository(session), clock=lambda: instant),
+        clock=lambda: instant,
+    )
 
 
 def authentication_service(

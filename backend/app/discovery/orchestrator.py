@@ -94,6 +94,8 @@ def _describe(radius: RadiusConstraint) -> str:
 # blast radius of a sweep, and it is a knob rather than a constant so a test can
 # pin concurrency to 1 and get a deterministic order of arrival.
 MAX_CONCURRENT_SOURCES: Final = 4
+MAX_SOURCE_SECONDS: Final = 20.0
+MAX_PLAN_ITEMS: Final = 32
 
 # Which status a sweep should report when one source answered twice — once per
 # request — with two different conditions. Ordered by how much it should worry an
@@ -224,13 +226,21 @@ class DiscoveryOrchestrator:
 
     def __init__(self, *, registry: SourceRegistry, packs: CountryPackRegistry,
                  clock: Clock = utc_now,
-                 max_concurrency: int = MAX_CONCURRENT_SOURCES) -> None:
-        if max_concurrency < 1:
-            raise ValueError("max_concurrency must be at least 1")
+                 max_concurrency: int = MAX_CONCURRENT_SOURCES,
+                 max_source_seconds: float = MAX_SOURCE_SECONDS,
+                 max_plan_items: int = MAX_PLAN_ITEMS) -> None:
+        if not 1 <= max_concurrency <= MAX_CONCURRENT_SOURCES:
+            raise ValueError("max_concurrency must be between 1 and 4")
+        if not 0 < max_source_seconds <= MAX_SOURCE_SECONDS:
+            raise ValueError("max_source_seconds must be between 0 and 20")
+        if not 1 <= max_plan_items <= MAX_PLAN_ITEMS:
+            raise ValueError("max_plan_items must be between 1 and 32")
         self._registry = registry
         self._packs = packs
         self._clock = clock
         self._max_concurrency = max_concurrency
+        self._max_source_seconds = max_source_seconds
+        self._max_plan_items = max_plan_items
 
     async def sweep(
         self,
@@ -274,6 +284,11 @@ class DiscoveryOrchestrator:
                 f"no source is both registered and enabled for {country}"
                 + (" within the profile's allow-list" if restricted else "")))
 
+        if len(plan) > self._max_plan_items:
+            warnings.append(self._warn(
+                DiscoveryWarningCode.REQUEST_PLAN_TRUNCATED,
+                "source request limit reached; discovery coverage is incomplete"))
+            plan = plan[:self._max_plan_items]
         outcomes = await self._run(plan)
         for outcome in outcomes:
             self._registry.record_health(outcome.result.health)
@@ -301,7 +316,8 @@ class DiscoveryOrchestrator:
             async with limiter:
                 started = perf_counter()
                 try:
-                    return await source.healthcheck()
+                    return await asyncio.wait_for(
+                        source.healthcheck(), timeout=self._max_source_seconds)
                 except Exception as exc:
                     # Same argument as `_discover`: a probe that raises is a bug in
                     # one adapter and must not cost the other eleven their answer.
@@ -365,7 +381,8 @@ class DiscoveryOrchestrator:
         """
         started = perf_counter()
         try:
-            result = await source.discover(request)
+            result = await asyncio.wait_for(
+                source.discover(request), timeout=self._max_source_seconds)
         except Exception as exc:
             latency_ms = _elapsed_ms(started)
             result = DiscoveryResult(

@@ -10,17 +10,25 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.discovery.contracts import SourceHealthStatus
+from backend.app.cli.run_discovery import enqueue_for_user
 from backend.app.discovery.orchestrator import DiscoveryOrchestrator
 from backend.app.discovery.registry import SourceRegistry
 from backend.app.domain.discovery_run import DiscoveryRunStatus
-from backend.app.domain.identifiers import OpportunityId
+from backend.app.domain.identifiers import DiscoveryRunId, OpportunityId
+from backend.app.domain.task import TaskKind, TaskLane
+from backend.app.infrastructure.database.engine import session_scope
 from backend.app.repositories.sqlalchemy_repositories import SqlAlchemySearchProfileRepository
-from backend.app.services.discovery_catalog import DiscoveryCatalogService
+from backend.app.repositories.sqlalchemy_repositories import SqlAlchemyTaskRunRepository
+from backend.app.services.discovery_catalog import (
+    DiscoveryCatalogService,
+    DiscoveryEnqueueService,
+)
 from backend.app.infrastructure.database.models import (
     DiscoveryMembershipRow,
     DiscoveryRunRow,
     OpportunityRow,
     SearchProfileRow,
+    TaskRunRow,
     UserRow,
 )
 from country_packs.contracts import SourceBinding
@@ -31,6 +39,7 @@ from tests.v2_builders import (
 )
 from tests.v2_discovery import NOW, FakeSource, a_metadata, a_pack, a_result
 from tests.v2_rows import a_user_row
+from backend.app.tasks.dispatcher import PersistedTaskDispatcher
 
 pytestmark = pytest.mark.asyncio
 
@@ -205,3 +214,47 @@ async def test_run_write_cap_reports_partial_coverage(catalog_database):
     assert run.matched_count == 1
     assert "CATALOG_LIMIT_TRUNCATED" in run.warning_codes
     assert await service.list_members(USER, SEARCH_PROFILE, limit=10, offset=0) == (first.id,)
+
+
+async def test_duplicate_manual_enqueues_share_one_general_lane_task(catalog_database):
+    task_ids = []
+    for _ in range(2):
+        async with session_scope(catalog_database) as session:
+            enqueue = DiscoveryEnqueueService(
+                SqlAlchemySearchProfileRepository(session),
+                PersistedTaskDispatcher(SqlAlchemyTaskRunRepository(session), clock=lambda: NOW),
+                clock=lambda: NOW)
+            task_ids.append(await enqueue.enqueue_discovery(
+                USER, SEARCH_PROFILE, trigger="MANUAL"))
+    assert task_ids[0] == task_ids[1]
+    async with catalog_database() as session:
+        rows = (await session.execute(select(TaskRunRow))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].kind is TaskKind.OPPORTUNITY_DISCOVERY
+    assert rows[0].lane is TaskLane.GENERAL
+    assert rows[0].payload == {"search_profile_id": str(SEARCH_PROFILE),
+                               "trigger": "MANUAL"}
+
+
+async def test_local_morning_dry_run_queues_nothing(catalog_database):
+    count = await enqueue_for_user(catalog_database, USER, dry_run=True,
+                                   trigger="MORNING", clock=lambda: NOW)
+    assert count == 1
+    async with catalog_database() as session:
+        assert (await session.execute(select(TaskRunRow))).scalars().all() == []
+
+
+async def test_redelivered_task_does_not_repeat_a_finished_sweep(catalog_database):
+    source = FakeSource(a_metadata("fake_board"), result=a_result("fake_board"))
+    service = DiscoveryCatalogService(catalog_database, orchestrator(source), clock=lambda: NOW)
+    task_run_id = DiscoveryRunId(UUID("99999999-9999-4999-8999-999999999999"))
+
+    first = await service.run_profile(USER, SEARCH_PROFILE, trigger="MANUAL",
+                                      run_id=task_run_id)
+    second = await service.run_profile(USER, SEARCH_PROFILE, trigger="MANUAL",
+                                       run_id=task_run_id)
+
+    assert first == second == task_run_id
+    assert len(source.requests) == 1
+    async with catalog_database() as session:
+        assert len((await session.execute(select(DiscoveryRunRow))).scalars().all()) == 1

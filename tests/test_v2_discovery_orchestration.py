@@ -154,6 +154,46 @@ def an_orchestrator(registry: SourceRegistry, *,
                                  max_concurrency=max_concurrency)
 
 
+@pytest.mark.asyncio
+async def test_timed_out_source_cannot_erase_healthy_neighbour():
+    async def never_answers(_source):
+        await asyncio.Event().wait()
+
+    healthy_posting = an_opportunity("fast", "https://example.ch/fast/1")
+    registry = a_registry(
+        FakeSource(a_metadata("fast"), result=a_result("fast", healthy_posting)),
+        FakeSource(a_metadata("stuck"), on_discover=never_answers),
+    )
+    packs = CountryPackRegistry((a_pack(
+        "CH", SourceBinding(source_key="fast"), SourceBinding(source_key="stuck")),))
+    engine = DiscoveryOrchestrator(registry=registry, packs=packs,
+                                   clock=frozen_clock(), max_source_seconds=0.01)
+
+    report = await asyncio.wait_for(engine.sweep(a_search_profile(), country="CH"), 1)
+
+    assert report.opportunities == (healthy_posting,)
+    assert {health.source_key: health.reason for health in report.health}["stuck"] == \
+        SourceFailureCode.SOURCE_TIMEOUT
+    assert not report.is_complete
+
+
+@pytest.mark.asyncio
+async def test_source_request_plan_cap_is_reported_as_incomplete():
+    registry = a_registry(FakeSource(a_metadata("first")),
+                          FakeSource(a_metadata("second")))
+    packs = CountryPackRegistry((a_pack(
+        "CH", SourceBinding(source_key="first"), SourceBinding(source_key="second")),))
+    engine = DiscoveryOrchestrator(registry=registry, packs=packs,
+                                   clock=frozen_clock(), max_plan_items=1)
+
+    report = await engine.sweep(a_search_profile(), country="CH")
+
+    assert len(report.outcomes) == 1
+    assert {warning.code for warning in report.warnings} == {
+        DiscoveryWarningCode.REQUEST_PLAN_TRUNCATED}
+    assert not report.is_complete
+
+
 def a_profile(*areas: SearchArea, **overrides: object) -> SearchProfile:
     """A profile over the areas given, or over Switzerland when none is."""
     if areas:
@@ -754,9 +794,6 @@ async def test_a_healthcheck_of_no_country_in_particular_probes_them_all():
     swiss = await orchestrator.healthcheck(country="CH")
     assert tuple(r.source_key for r in everywhere) == ("indeed", "jobup")
     assert tuple(r.source_key for r in swiss) == ("jobup",)
-
-
-
 
 
 

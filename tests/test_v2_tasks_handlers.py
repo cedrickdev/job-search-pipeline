@@ -42,6 +42,7 @@ from backend.app.tasks.handlers import (
     build_account_export_handler,
     build_application_submission_handler,
     build_general_handlers,
+    build_opportunity_discovery_handler,
     build_retention_handler,
 )
 from tests.test_v2_entitlement_enforcement import _free_tier, _wire_applications
@@ -319,3 +320,32 @@ async def test_general_registry_carries_only_the_safe_general_kinds() -> None:
         export_service=lambda _s: SimpleNamespace())
     assert set(handlers) == {TaskKind.RETENTION_SWEEP, TaskKind.ACCOUNT_EXPORT}
     assert TaskKind.APPLICATION_SUBMISSION not in handlers  # never on the general lane (§35)
+
+
+async def test_discovery_handler_uses_one_service_for_manual_and_morning() -> None:
+    calls: list[tuple[Any, Any, str]] = []
+
+    async def run_profile(owner: Any, search_id: Any, *, trigger: str,
+                          run_id: Any) -> None:
+        calls.append((owner, search_id, trigger))
+
+    handler = build_opportunity_discovery_handler(
+        lambda _session: SimpleNamespace(run_profile=run_profile))
+    search_id = "11111111-1111-4111-8111-111111111111"
+    for trigger in ("MANUAL", "MORNING"):
+        await handler(_queued(TaskKind.OPPORTUNITY_DISCOVERY,
+                              key=f"discovery-{trigger}", user_id=USER,
+                              payload={"search_profile_id": search_id,
+                                       "trigger": trigger}), SESSION)
+    assert [(owner, str(search), trigger) for owner, search, trigger in calls] == [
+        (USER, search_id, "MANUAL"), (USER, search_id, "MORNING")]
+
+
+async def test_discovery_handler_rejects_untyped_trigger_without_calling_service() -> None:
+    handler = build_opportunity_discovery_handler(lambda _session: SimpleNamespace())
+    with pytest.raises(TaskFailure) as caught:
+        await handler(_queued(
+            TaskKind.OPPORTUNITY_DISCOVERY, key="invalid-discovery", user_id=USER,
+            payload={"search_profile_id": "11111111-1111-4111-8111-111111111111",
+                     "trigger": "UNKNOWN"}), SESSION)
+    assert caught.value.failure_class is TaskFailureClass.PERMANENT

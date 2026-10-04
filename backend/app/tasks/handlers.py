@@ -38,7 +38,13 @@ from backend.app.billing.errors import BillingError, BillingErrorCode
 from backend.app.domain.application import SubmissionOutcome, SubmissionResult
 from backend.app.domain.application_channel import HumanRequiredReason
 from backend.app.domain.application_failure import ApplicationError, ApplicationFailureCode
-from backend.app.domain.identifiers import AccountExportId, ApplicationId, UserId
+from backend.app.domain.identifiers import (
+    AccountExportId,
+    ApplicationId,
+    DiscoveryRunId,
+    SearchProfileId,
+    UserId,
+)
 from backend.app.domain.task import TaskKind, TaskRun
 from backend.app.exports.service import AccountExportService
 from backend.app.infrastructure.database.engine import session_scope
@@ -66,6 +72,7 @@ SUBMISSION_REFUSED: str = "APPLICATION_SUBMISSION_REFUSED"
 QUOTA_EXCEEDED: str = "APPLICATION_SUBMISSION_QUOTA_EXCEEDED"
 RATE_LIMITED: str = "APPLICATION_RATE_LIMITED"
 RETENTION_INCOMPLETE: str = "RETENTION_SWEEP_INCOMPLETE"
+DISCOVERY_SEARCH_ABSENT: str = "DISCOVERY_SEARCH_NOT_FOUND"
 
 
 def _require_user(task: TaskRun) -> UserId:
@@ -126,6 +133,29 @@ def build_account_export_handler(
         export_id = AccountExportId(_require_uuid(task.payload, "export_id", task.kind))
         service: AccountExportService = export_service(session)
         await service.produce(user_id, export_id, now=clock())
+
+    return handle
+
+
+def build_opportunity_discovery_handler(service_factory: ServiceFactory) -> TaskHandler:
+    """Run a queued Swiss search through the same service as manual execution."""
+
+    async def handle(task: TaskRun, session: AsyncSession) -> None:
+        user_id = _require_user(task)
+        search_id = SearchProfileId(_require_uuid(
+            task.payload, "search_profile_id", task.kind))
+        trigger = task.payload.get("trigger")
+        if trigger not in {"MANUAL", "MORNING"}:
+            raise TaskFailure.permanent(
+                MALFORMED_PAYLOAD, detail="discovery trigger must be MANUAL or MORNING")
+        try:
+            await service_factory(session).run_profile(
+                user_id, search_id, trigger=trigger,
+                run_id=DiscoveryRunId(task.id))
+        except LookupError as error:
+            raise TaskFailure.permanent(
+                DISCOVERY_SEARCH_ABSENT,
+                detail="active Swiss saved search is unavailable") from error
 
     return handle
 
@@ -201,6 +231,7 @@ def build_application_submission_handler(
 
 
 def build_general_handlers(*, retention_service: ServiceFactory, export_service: ServiceFactory,
+                           discovery_service: ServiceFactory | None = None,
                            clock: Clock = utc_now) -> dict[TaskKind, TaskHandler]:
     """The `TaskKind -> handler` registry the general-lane worker dispatches on (§34).
 
@@ -208,10 +239,14 @@ def build_general_handlers(*, retention_service: ServiceFactory, export_service:
     and account export. A kind absent here dead-letters permanently at the worker if enqueued, so a
     workflow is *added* to the registry when it is moved to the background, never implied.
     """
-    return {
+    handlers = {
         TaskKind.RETENTION_SWEEP: build_retention_handler(retention_service, clock=clock),
         TaskKind.ACCOUNT_EXPORT: build_account_export_handler(export_service, clock=clock),
     }
+    if discovery_service is not None:
+        handlers[TaskKind.OPPORTUNITY_DISCOVERY] = build_opportunity_discovery_handler(
+            discovery_service)
+    return handlers
 
 
 def build_browser_handlers(*, application_service: ServiceFactory,
@@ -230,4 +265,3 @@ def build_browser_handlers(*, application_service: ServiceFactory,
             application_service, clock=clock, session_factory=session_factory,
             live_submissions_enabled=live_submissions_enabled),
     }
-

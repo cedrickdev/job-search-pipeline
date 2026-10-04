@@ -308,6 +308,7 @@ class DiscoveryWarningCode(StrEnum):
     CURSOR_IGNORED = "CURSOR_IGNORED"
     # More postings were available than `limit` allowed through.
     LIMIT_TRUNCATED = "LIMIT_TRUNCATED"
+    REQUEST_PLAN_TRUNCATED = "REQUEST_PLAN_TRUNCATED"
     # Some of the source's own sub-fetches failed; what came back is incomplete.
     PARTIAL_RESULTS = "PARTIAL_RESULTS"
     # One posting could not be normalized (no title, no company, no URL). Dropping
@@ -463,7 +464,6 @@ class OpportunitySource(Protocol):
     async def discover(self, request: DiscoveryRequest) -> DiscoveryResult: ...
 
     async def healthcheck(self) -> SourceHealth: ...
-
 
 
 

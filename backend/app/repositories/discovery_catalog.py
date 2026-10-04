@@ -196,6 +196,26 @@ class DiscoveryRunStore:
         ))
         await self._session.flush()
 
+    async def restart_failed_run(self, run: DiscoveryRun) -> None:
+        row = (await self._session.execute(
+            select(DiscoveryRunRow).where(
+                DiscoveryRunRow.id == run.id,
+                DiscoveryRunRow.user_id == run.user_id,
+                DiscoveryRunRow.search_profile_id == run.search_profile_id,
+                DiscoveryRunRow.status == DiscoveryRunStatus.FAILED,
+            ).with_for_update()
+        )).scalar_one_or_none()
+        if row is None:
+            raise LookupError("Failed discovery run not found")
+        row.status = DiscoveryRunStatus.RUNNING
+        row.started_at = run.started_at
+        row.finished_at = None
+        row.seen_count = 0
+        row.matched_count = 0
+        row.source_health = []
+        row.warning_codes = []
+        await self._session.flush()
+
     async def get_run(
         self, user_id: UserId, run_id: DiscoveryRunId,
     ) -> DiscoveryRun | None:

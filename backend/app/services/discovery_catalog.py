@@ -4,6 +4,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -16,16 +17,53 @@ from backend.app.domain.discovery_run import (
     DiscoveryTrigger,
     SourceHealthSummary,
 )
-from backend.app.domain.identifiers import DiscoveryRunId, OpportunityId, SearchProfileId, UserId
+from backend.app.domain.identifiers import (
+    DiscoveryRunId,
+    OpportunityId,
+    SearchProfileId,
+    TaskRunId,
+    UserId,
+)
+from backend.app.domain.task import TaskKind, TaskSpec
 from backend.app.infrastructure.database.engine import session_scope
+from backend.app.repositories.contracts import SearchProfileRepository
 from backend.app.repositories.discovery_catalog import (
     CatalogOpportunityStore,
     DiscoveryRunStore,
 )
 from backend.app.repositories.sqlalchemy_repositories import SqlAlchemySearchProfileRepository
+from backend.app.tasks.dispatcher import TaskDispatcher
 
 Clock = Callable[[], datetime]
 MAX_OBSERVATIONS_PER_RUN = 1000
+SWISS_TIME = ZoneInfo("Europe/Zurich")
+
+
+class DiscoveryEnqueueService:
+    """Authorize a CH search and enqueue one durable task per intended time window."""
+
+    def __init__(self, searches: SearchProfileRepository, dispatcher: TaskDispatcher,
+                 *, clock: Clock = lambda: datetime.now(UTC)) -> None:
+        self._searches = searches
+        self._dispatcher = dispatcher
+        self._clock = clock
+
+    async def enqueue_discovery(
+        self, user_id: UserId, search_profile_id: SearchProfileId, *,
+        trigger: Literal["MANUAL", "MORNING"],
+    ) -> TaskRunId:
+        profile = await self._searches.get(user_id, search_profile_id)
+        if profile is None or not profile.is_active or "CH" not in countries_in_scope(profile):
+            raise LookupError("Active Swiss saved search not found")
+        local = self._clock().astimezone(SWISS_TIME)
+        window = (local.strftime("%Y-%m-%d") if trigger == "MORNING"
+                  else f"{local:%Y-%m-%dT%H}:{local.minute // 15 * 15:02d}")
+        return await self._dispatcher.enqueue(TaskSpec(
+            kind=TaskKind.OPPORTUNITY_DISCOVERY, user_id=user_id,
+            idempotency_key=(f"discovery:CH:{user_id}:{search_profile_id}:"
+                             f"{trigger}:{window}"),
+            payload={"search_profile_id": str(search_profile_id), "trigger": trigger},
+        ))
 
 
 class DiscoveryCatalogService:
@@ -47,20 +85,34 @@ class DiscoveryCatalogService:
     async def run_profile(
         self, user_id: UserId, search_profile_id: SearchProfileId, *,
         trigger: Literal["MANUAL", "MORNING"],
+        run_id: DiscoveryRunId | None = None,
     ) -> DiscoveryRunId:
         started = self._clock()
-        run_id = DiscoveryRunId(uuid4())
+        run_id = run_id or DiscoveryRunId(uuid4())
         async with session_scope(self._session_factory) as session:
             profile = await SqlAlchemySearchProfileRepository(session).get(
                 user_id, search_profile_id)
             if profile is None or not profile.is_active or "CH" not in countries_in_scope(profile):
                 raise LookupError("Active Swiss saved search not found")
-            await DiscoveryRunStore(session).create_run(DiscoveryRun(
+            runs = DiscoveryRunStore(session)
+            existing = await runs.get_run(user_id, run_id)
+            if existing is not None:
+                if existing.search_profile_id != search_profile_id or \
+                        existing.trigger != DiscoveryTrigger(trigger):
+                    raise ValueError("Discovery run id belongs to another request")
+                if existing.status in {DiscoveryRunStatus.SUCCEEDED,
+                                       DiscoveryRunStatus.PARTIAL}:
+                    return run_id
+            new_run = DiscoveryRun(
                 id=run_id, user_id=user_id, search_profile_id=search_profile_id,
                 country="CH", trigger=DiscoveryTrigger(trigger),
                 status=DiscoveryRunStatus.RUNNING, started_at=started,
                 seen_count=0, matched_count=0,
-            ))
+            )
+            if existing is None:
+                await runs.create_run(new_run)
+            elif existing.status is DiscoveryRunStatus.FAILED:
+                await runs.restart_failed_run(new_run)
 
         try:
             report = await self._orchestrator.sweep(profile, country="CH")

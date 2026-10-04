@@ -43,6 +43,7 @@ from backend.app.core.settings import (
     ExportSettings,
     RetentionSettings,
 )
+from backend.app.discovery.bootstrap import build_discovery
 from backend.app.domain.task import TaskKind, TaskLane
 from backend.app.exports.store import LocalAccountExportStore
 from backend.app.infrastructure.database.engine import (
@@ -69,6 +70,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
 )
 from backend.app.retention.service import RetentionService
 from backend.app.services.applications import ApplicationService
+from backend.app.services.discovery_catalog import DiscoveryCatalogService
 from backend.app.tasks.handlers import build_browser_handlers, build_general_handlers
 from backend.app.tasks.settings import TaskQueueSettings
 from backend.app.tasks.worker import TaskHandler, TaskWorker, run_lane
@@ -78,7 +80,9 @@ logger = logging.getLogger("jobsearch.tasks.run_worker")
 
 def _general_registry(
         export_settings: ExportSettings,
-        retention_settings: RetentionSettings) -> dict[TaskKind, TaskHandler]:
+        retention_settings: RetentionSettings,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        ) -> dict[TaskKind, TaskHandler]:
     """The general lane's handler registry, wired from the same services the API uses (§34).
 
     Each entry is a `(session) -> service` factory: the worker opens the unit of work, the factory
@@ -100,8 +104,18 @@ def _general_registry(
         gatherer = dependencies.account_export_gatherer(session)
         return dependencies.account_export_service(session, gatherer, export_settings)
 
+    if session_factory is None:
+        return build_general_handlers(
+            retention_service=retention_factory, export_service=export_factory)
+
+    orchestrator = build_discovery().orchestrator
+
+    def discovery_factory(_session: AsyncSession) -> DiscoveryCatalogService:
+        return DiscoveryCatalogService(session_factory, orchestrator)
+
     return build_general_handlers(
-        retention_service=retention_factory, export_service=export_factory)
+        retention_service=retention_factory, export_service=export_factory,
+        discovery_service=discovery_factory)
 
 
 def _browser_registry(
@@ -158,7 +172,8 @@ def _registry_for(lane: TaskLane, *,
     """The handler registry a `lane`'s workers dispatch on — never the other lane's (§35)."""
     if lane is TaskLane.BROWSER:
         return _browser_registry(session_factory)
-    return _general_registry(ExportSettings.from_env(), RetentionSettings.from_env())
+    return _general_registry(ExportSettings.from_env(), RetentionSettings.from_env(),
+                             session_factory)
 
 
 async def _drain_once(lane: TaskLane, *, session_factory: async_sessionmaker[AsyncSession],

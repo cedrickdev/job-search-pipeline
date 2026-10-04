@@ -41,6 +41,9 @@ import type { RadiusCircle } from '~/utils/geo-circle'
 import { defaultMapFilterForm } from '~/types/map'
 import type { CompanyGeoItem, OpportunityGeoItem } from '~/types/v2'
 import { errorMessage } from '~/utils/v2-errors'
+import { useDiscoveryRun } from '~/composables/useDiscovery'
+import { discoveryLabels, discoveryMessage, sourceHealthMessage } from '~/utils/discovery-messages'
+import type { DiscoveryLocale } from '~/utils/discovery-messages'
 
 definePageMeta({ middleware: 'auth' })
 useHead({ title: 'Map · Command Center' })
@@ -111,11 +114,19 @@ const savedFilters = computed<SavedGeoFilters>(() => ({
   bounds: activeBounds.value,
   limit: GEO_PAGE_SIZE,
   offset: 0,
+  catalog: true,
 }))
 
 // A saved search scopes the map only in opportunities mode; the id is what enables the read.
 const savedProfileId = computed(() =>
   store.mode === 'opportunities' ? store.selectedSearchProfileId : null)
+const locale = useCookie<DiscoveryLocale>('discovery_locale', {
+  default: () => 'fr', sameSite: 'lax', path: '/',
+})
+const activeLocale = computed<DiscoveryLocale>(() => locale.value === 'en' ? 'en' : 'fr')
+const discovery = useDiscoveryRun(savedProfileId)
+const labels = computed(() => discoveryLabels[activeLocale.value])
+const discoveryStatus = computed(() => discoveryMessage(activeLocale.value, discovery.status.value))
 
 // All three reads are declared; `enabled` keeps only the active one fetching.
 const openOpps = useGeoOpportunitiesQuery(openFilters, {
@@ -262,6 +273,26 @@ watch(mobileView, async (view) => {
 
     <MapFilters v-model="form" :mode="store.mode" @apply="applyFilters" />
 
+    <section v-if="savedProfileId" class="discovery-panel" aria-live="polite">
+      <label>
+        {{ labels.language }}
+        <select v-model="locale" aria-label="Discovery language">
+          <option value="fr">Français</option>
+          <option value="en">English</option>
+        </select>
+      </label>
+      <button type="button" class="btn-primary" :disabled="discovery.busy.value || discovery.status.value === 'RUNNING'" @click="discovery.refresh">
+        {{ labels.refresh }}
+      </button>
+      <p class="discovery-status" role="status">{{ discoveryStatus }}</p>
+      <p v-if="discovery.lastUpdated.value">{{ labels.updated }} : {{ discovery.lastUpdated.value }}</p>
+      <ul v-if="discovery.sourceHealth.value.length" class="discovery-health">
+        <li v-for="source in discovery.sourceHealth.value" :key="source.source_key">
+          {{ labels.source }} {{ source.source_key }} : {{ sourceHealthMessage(activeLocale, source.status, source.reason ?? null) }}
+        </li>
+      </ul>
+    </section>
+
     <div class="map-mobile-toggle" role="tablist" aria-label="View">
       <button
         type="button"
@@ -295,7 +326,7 @@ watch(mobileView, async (view) => {
           {{ errorText }}
         </p>
         <p v-else-if="isEmpty" class="ov-empty">
-          No results in this view. Try widening the filters or searching a larger area.
+          {{ savedProfileId ? labels.empty : 'No results in this view. Try widening the filters or searching a larger area.' }}
         </p>
         <MapList
           v-else
@@ -366,6 +397,19 @@ watch(mobileView, async (view) => {
   gap: var(--space-4);
   flex-wrap: wrap;
 }
+.discovery-panel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 13px;
+}
+.discovery-panel p { margin: 0; }
+.discovery-health { display: flex; gap: var(--space-3); margin: 0; padding-left: var(--space-4); }
 .map-head h1 {
   font-size: 22px;
   margin: 0;

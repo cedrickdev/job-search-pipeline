@@ -192,10 +192,58 @@ describe('map page', () => {
     }]), `/map?profile=${PROFILE_ID}`)
 
     expect(http.callsTo(SAVED)).toHaveLength(1)
+    expect(lastUrl(http, SAVED)).toContain('catalog=true')
     // The open read is silenced while a saved search scopes the map.
     expect(http.callsTo(OPPS)).toHaveLength(0)
     expect(wrapper.text()).toContain('Scoped to a saved search')
     expect(rowTexts(wrapper).join(' ')).toContain('Saved Role')
+  })
+
+  it('refreshes a Swiss catalog, explains partial source coverage in both languages', async () => {
+    const runId = '55555555-5555-4555-8555-555555555555'
+    const start = `/api/v2/me/search-profiles/${PROFILE_ID}/discovery-runs`
+    const status = `/api/v2/me/discovery-runs/${runId}`
+    const { http, wrapper } = await mountMap(routes([
+      { match: start, method: 'POST', status: 202,
+        json: { run_id: runId, status: 'QUEUED' } },
+      { match: status, method: 'GET', json: {
+        run_id: runId, search_profile_id: PROFILE_ID, country: 'CH', trigger: 'MANUAL',
+        status: 'PARTIAL', started_at: '2026-10-04T09:00:00Z',
+        finished_at: '2026-10-04T09:01:00Z', seen_count: 5, matched_count: 1,
+        source_health: [{ source_key: 'swiss_board', status: 'UNAVAILABLE', reason: 'SOURCE_TIMEOUT' }],
+        warning_codes: ['SOURCE_TIMEOUT'],
+      } },
+      { match: SAVED, method: 'GET', json: opportunityGeoResponse([
+        opportunityGeoItem({ id: 'old', title: 'Previously collected role' }),
+      ]) },
+    ]), `/map?profile=${PROFILE_ID}`)
+
+    await wrapper.get('.discovery-panel button').trigger('click')
+    await flushPromises()
+    expect(http.callsTo(start).map(call => call.method)).toEqual(['POST'])
+    expect(wrapper.get('.discovery-status').text()).toContain('incomplète')
+    expect(wrapper.get('.discovery-health').text()).toContain('délai dépassé')
+    expect(rowTexts(wrapper).join(' ')).toContain('Previously collected role')
+
+    await wrapper.get('.discovery-panel select').setValue('en')
+    expect(wrapper.get('.discovery-status').text()).toContain('incomplete')
+    expect(wrapper.get('.discovery-health').text()).toContain('timed out')
+  })
+
+  it('keeps prior catalog results visible when a refresh request fails', async () => {
+    const start = `/api/v2/me/search-profiles/${PROFILE_ID}/discovery-runs`
+    const { wrapper } = await mountMap(routes([
+      { match: start, method: 'POST', status: 503,
+        json: { error: 'database_unavailable', detail: 'temporary outage' } },
+      { match: SAVED, method: 'GET', json: opportunityGeoResponse([
+        opportunityGeoItem({ id: 'old', title: 'Earlier role' }),
+      ]) },
+    ]), `/map?profile=${PROFILE_ID}`)
+    await wrapper.get('.discovery-panel select').setValue('fr')
+    await wrapper.get('.discovery-panel button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.discovery-status').text()).toContain('indisponible')
+    expect(rowTexts(wrapper).join(' ')).toContain('Earlier role')
   })
 
   // §20: a pan never re-queries; the explicit button sends the current bounds.

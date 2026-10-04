@@ -83,6 +83,10 @@ describe('savedGeoQuery', () => {
     expect(savedGeoQuery({})).toBe(`limit=${GEO_PAGE_SIZE}&offset=0`)
     expect(savedGeoQuery({ bounds: '47,46,8,6' })).toContain('bounds=47%2C46%2C8%2C6')
   })
+
+  it('keeps the collected catalog opt-in in the cache and request query', () => {
+    expect(savedGeoQuery({ catalog: true })).toBe('catalog=true&limit=50&offset=0')
+  })
 })
 
 /** A component that holds one geo query open, like the page would. */

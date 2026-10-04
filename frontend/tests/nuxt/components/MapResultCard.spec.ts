@@ -63,6 +63,17 @@ describe('MapResultCard · opportunity', () => {
     await wrapper.get('.map-card-close').trigger('click')
     expect(wrapper.emitted('close')).toHaveLength(1)
   })
+
+  it('does not turn a hostile application URL into a clickable link', async () => {
+    const wrapper = await mountSuspended(MapResultCard, {
+      props: { opportunity: opportunityGeoItem({
+        title: '<img src=x onerror=alert(1)>',
+        application_url: 'javascript:alert(1)',
+      }) },
+    })
+    expect(wrapper.find('.map-card-apply').exists()).toBe(false)
+    expect(wrapper.html()).not.toContain('<img src=x')
+  })
 })
 
 describe('MapResultCard · company', () => {

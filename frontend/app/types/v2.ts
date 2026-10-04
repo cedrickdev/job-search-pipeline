@@ -82,6 +82,9 @@ export type SearchArea = SearchProfileDraft['areas'][number]
 
 /** One page of opportunities placed in space: `{ opportunities, limit, offset }`. No `total`. */
 export type OpportunityGeoResponse = Schemas['OpportunityGeoResponse']
+export type DiscoveryQueued = Schemas['DiscoveryQueuedResponse']
+export type DiscoveryRun = Schemas['DiscoveryRunResponse']
+export type DiscoverySourceHealth = Schemas['DiscoverySourceHealthResponse']
 
 /** One opportunity as the geo read returns it: its `location` (and `point`) may be null. */
 export type OpportunityGeoItem = Schemas['OpportunityGeoItemResponse']

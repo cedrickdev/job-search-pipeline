@@ -128,6 +128,8 @@ export const V2_ENDPOINTS = {
   geoOpportunities: '/api/v2/geo/opportunities',
   geoCompanies: '/api/v2/geo/companies',
   searchProfileOpportunities: '/api/v2/me/search-profiles/{search_profile_id}/opportunities',
+  discoveryStart: '/api/v2/me/search-profiles/{search_profile_id}/discovery-runs',
+  discoveryRun: '/api/v2/me/discovery-runs/{run_id}',
   evidence: '/api/v2/me/evidence',
   claims: '/api/v2/me/claims',
   documents: '/api/v2/documents',
@@ -218,6 +220,15 @@ export function company(companyId: string): string {
  */
 export function searchProfileOpportunities(searchProfileId: string): string {
   return V2_ENDPOINTS.searchProfileOpportunities.replace('{search_profile_id}', searchProfileId)
+}
+
+/** Resolve only backend-owned discovery URLs; the account comes from the session. */
+export function discoveryStart(searchProfileId: string): string {
+  return V2_ENDPOINTS.discoveryStart.replace('{search_profile_id}', searchProfileId)
+}
+
+export function discoveryRun(runId: string): string {
+  return V2_ENDPOINTS.discoveryRun.replace('{run_id}', runId)
 }
 
 /** Every V2 endpoint whose template contains `{document_id}`. */

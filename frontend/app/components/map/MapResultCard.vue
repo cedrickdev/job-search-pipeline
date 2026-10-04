@@ -11,14 +11,17 @@
   words (§7); a remote one shows its scope and a distance of "—" (§9).
 -->
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { CompanyGeoItem, OpportunityGeoItem } from '~/types/v2'
 import { distanceLabel, remoteLabel, statusLabel } from '~/utils/geo-format'
+import { safeJobUrl } from '~/utils/safe-job-url'
 
 const props = defineProps<{
   opportunity?: OpportunityGeoItem | null
   company?: CompanyGeoItem | null
 }>()
 const emit = defineEmits<{ close: [] }>()
+const postingUrl = computed(() => safeJobUrl(props.opportunity?.application_url))
 </script>
 
 <template>
@@ -59,9 +62,9 @@ const emit = defineEmits<{ close: [] }>()
     </p>
 
     <a
-      v-if="opportunity.application_url"
+      v-if="postingUrl"
       class="btn-primary map-card-apply"
-      :href="opportunity.application_url"
+      :href="postingUrl"
       target="_blank"
       rel="noopener noreferrer"
     >

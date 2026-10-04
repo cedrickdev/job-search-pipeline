@@ -110,12 +110,14 @@ export interface SavedGeoFilters {
   bounds?: string | null
   limit?: number
   offset?: number
+  catalog?: boolean
 }
 
 /** The saved-search query string. Narrow on purpose — the scope is the saved search's. */
 export function savedGeoQuery(filters: SavedGeoFilters): string {
   const params = new URLSearchParams()
   if (filters.bounds) params.set('bounds', filters.bounds)
+  if (filters.catalog) params.set('catalog', 'true')
   params.set('limit', String(filters.limit ?? GEO_PAGE_SIZE))
   params.set('offset', String(filters.offset ?? 0))
   return params.toString()

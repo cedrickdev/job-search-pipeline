@@ -73,6 +73,7 @@ SubscriptionEventId = NewType("SubscriptionEventId", UUID)
 UsageEventId = NewType("UsageEventId", UUID)
 AccountExportId = NewType("AccountExportId", UUID)
 TaskRunId = NewType("TaskRunId", UUID)
+DiscoveryRunId = NewType("DiscoveryRunId", UUID)
 
 
 def new_user_id() -> UserId:

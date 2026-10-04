@@ -29,7 +29,7 @@ COMPAT_DIR = REPO_ROOT / "backend" / "app" / "compat"
 # `eligibility` from growing into `matching`.
 DEPENDENCY_ORDER = (
     "base", "identifiers", "user", "common", "opportunity", "company", "candidate",
-    "documents", "search", "geo", "matching", "eligibility", "policy", "decision",
+    "documents", "search", "discovery_run", "geo", "matching", "eligibility", "policy", "decision",
     "application_channel", "application_failure", "application_answer", "application",
     "application_event", "execution_gate", "chat", "interview",
     "outcome", "role", "analytics", "recommendation", "strategy_change",

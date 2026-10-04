@@ -1,9 +1,11 @@
 """Durable, conservative opportunity identity for Swiss discovery."""
 
+from datetime import datetime
 from hashlib import sha256
 from uuid import uuid5
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -13,7 +15,18 @@ from backend.app.discovery.catalog import (
 from backend.app.discovery.catalog import (
     normalize_source_url,
 )
-from backend.app.domain.identifiers import SURROGATE_KEY_NAMESPACE, OpportunityId
+from backend.app.domain.discovery_run import (
+    DiscoveryRun,
+    DiscoveryRunStatus,
+    SourceHealthSummary,
+)
+from backend.app.domain.identifiers import (
+    SURROGATE_KEY_NAMESPACE,
+    DiscoveryRunId,
+    OpportunityId,
+    SearchProfileId,
+    UserId,
+)
 from backend.app.domain.opportunity import Opportunity, OpportunitySourceRecord
 from backend.app.infrastructure.database.mappers import (
     opportunity_to_row,
@@ -21,8 +34,11 @@ from backend.app.infrastructure.database.mappers import (
     source_record_to_row,
 )
 from backend.app.infrastructure.database.models import (
+    DiscoveryMembershipRow,
+    DiscoveryRunRow,
     OpportunityRow,
     OpportunitySourceRecordRow,
+    SearchProfileRow,
 )
 
 
@@ -147,3 +163,105 @@ class CatalogOpportunityStore:
                       OpportunitySourceRecordRow.id)
         )).scalars().all()
         return tuple(source_record_to_domain(row) for row in rows)
+
+
+def _run_to_domain(row: DiscoveryRunRow) -> DiscoveryRun:
+    return DiscoveryRun(
+        id=DiscoveryRunId(row.id), user_id=UserId(row.user_id),
+        search_profile_id=SearchProfileId(row.search_profile_id),
+        country=row.country, trigger=row.trigger, status=row.status,
+        started_at=row.started_at, finished_at=row.finished_at,
+        seen_count=row.seen_count, matched_count=row.matched_count,
+        source_health=tuple(SourceHealthSummary.model_validate(item)
+                            for item in row.source_health),
+        warning_codes=tuple(row.warning_codes),
+    )
+
+
+class DiscoveryRunStore:
+    """Every query and mutation is scoped to the owning candidate."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create_run(self, run: DiscoveryRun) -> None:
+        self._session.add(DiscoveryRunRow(
+            id=run.id, user_id=run.user_id,
+            search_profile_id=run.search_profile_id, country=run.country,
+            trigger=run.trigger, status=run.status, started_at=run.started_at,
+            finished_at=run.finished_at, seen_count=run.seen_count,
+            matched_count=run.matched_count,
+            source_health=[item.model_dump(mode="json") for item in run.source_health],
+            warning_codes=list(run.warning_codes),
+        ))
+        await self._session.flush()
+
+    async def get_run(
+        self, user_id: UserId, run_id: DiscoveryRunId,
+    ) -> DiscoveryRun | None:
+        row = (await self._session.execute(
+            select(DiscoveryRunRow).join(
+                SearchProfileRow, SearchProfileRow.id == DiscoveryRunRow.search_profile_id
+            ).where(
+                DiscoveryRunRow.id == run_id,
+                DiscoveryRunRow.user_id == user_id,
+                SearchProfileRow.user_id == user_id,
+            )
+        )).scalar_one_or_none()
+        return None if row is None else _run_to_domain(row)
+
+    async def finish_run(self, run: DiscoveryRun) -> None:
+        row = (await self._session.execute(
+            select(DiscoveryRunRow).where(
+                DiscoveryRunRow.id == run.id, DiscoveryRunRow.user_id == run.user_id,
+                DiscoveryRunRow.search_profile_id == run.search_profile_id,
+            ).with_for_update()
+        )).scalar_one_or_none()
+        if row is None:
+            raise LookupError("Discovery run no longer belongs to this user")
+        if row.status is not DiscoveryRunStatus.RUNNING:
+            raise ValueError("Discovery run is already terminal")
+        row.status = run.status
+        row.finished_at = run.finished_at
+        row.seen_count = run.seen_count
+        row.matched_count = run.matched_count
+        row.source_health = [item.model_dump(mode="json") for item in run.source_health]
+        row.warning_codes = list(run.warning_codes)
+        await self._session.flush()
+
+    async def add_member(
+        self, user_id: UserId, search_profile_id: SearchProfileId,
+        opportunity_id: OpportunityId, *, run_id: DiscoveryRunId,
+        seen_at: datetime,
+    ) -> None:
+        statement = pg_insert(DiscoveryMembershipRow).values(
+            id=uuid5(SURROGATE_KEY_NAMESPACE,
+                     f"discovery_member:{user_id}:{search_profile_id}:{opportunity_id}"),
+            user_id=user_id, search_profile_id=search_profile_id,
+            opportunity_id=opportunity_id, first_seen_at=seen_at,
+            last_seen_at=seen_at, last_run_id=run_id,
+        )
+        await self._session.execute(statement.on_conflict_do_update(
+            index_elements=["user_id", "search_profile_id", "opportunity_id"],
+            set_={"last_seen_at": seen_at, "last_run_id": run_id,
+                  "updated_at": func.now()},
+        ))
+
+    async def list_members(
+        self, user_id: UserId, search_profile_id: SearchProfileId,
+        *, limit: int, offset: int,
+    ) -> tuple[OpportunityId, ...]:
+        if not 1 <= limit <= 200 or offset < 0:
+            raise ValueError("Invalid discovery membership page")
+        ids = (await self._session.execute(
+            select(DiscoveryMembershipRow.opportunity_id)
+            .join(SearchProfileRow,
+                  SearchProfileRow.id == DiscoveryMembershipRow.search_profile_id)
+            .where(DiscoveryMembershipRow.user_id == user_id,
+                   DiscoveryMembershipRow.search_profile_id == search_profile_id,
+                   SearchProfileRow.user_id == user_id)
+            .order_by(DiscoveryMembershipRow.last_seen_at.desc(),
+                      DiscoveryMembershipRow.opportunity_id)
+            .limit(limit).offset(offset)
+        )).scalars().all()
+        return tuple(OpportunityId(item) for item in ids)

@@ -39,6 +39,7 @@ from sqlalchemy import (
     CheckConstraint,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -95,6 +96,7 @@ from backend.app.domain.company import (
     SpontaneousApplicationSupport,
 )
 from backend.app.domain.decision import ApplicationDecisionKind
+from backend.app.domain.discovery_run import DiscoveryRunStatus, DiscoveryTrigger
 from backend.app.domain.documents import (
     CandidateDocumentType,
     DocumentStatus,
@@ -776,6 +778,7 @@ class SearchProfileRow(TimestampedMixin, Base):
 
     __tablename__ = "search_profiles"
     __table_args__ = (
+        UniqueConstraint("user_id", "id"),
         CheckConstraint("workload_min_percent <= workload_max_percent",
                         name="workload_percent_ordered"),
         CheckConstraint("workload_min_weekly_hours <= workload_max_weekly_hours",
@@ -1381,6 +1384,70 @@ class OpportunitySourceRecordRow(TimestampedMixin, Base):
 
     opportunity: Mapped["OpportunityRow"] = relationship(
         back_populates="sources", lazy="raise")
+
+
+class DiscoveryRunRow(TimestampedMixin, Base):
+    """One candidate's sweep report, never a shared opportunity fact."""
+
+    __tablename__ = "discovery_runs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "search_profile_id"],
+            ["search_profiles.user_id", "search_profiles.id"],
+            ondelete="CASCADE", name="fk_discovery_runs_owner_search"),
+        CheckConstraint("seen_count >= 0", name="seen_count_non_negative"),
+        CheckConstraint("matched_count >= 0", name="matched_count_non_negative"),
+        CheckConstraint(
+            "(status = 'RUNNING' AND finished_at IS NULL) OR "
+            "(status <> 'RUNNING' AND finished_at IS NOT NULL)",
+            name="finish_matches_status"),
+        Index("ix_discovery_runs_user_id_search_profile_id_started_at",
+              "user_id", "search_profile_id", "started_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    search_profile_id: Mapped[UUID]
+    country: Mapped[str] = mapped_column(String(2))
+    trigger: Mapped[DiscoveryTrigger] = mapped_column(
+        enum_column(DiscoveryTrigger, "discovery_trigger"))
+    status: Mapped[DiscoveryRunStatus] = mapped_column(
+        enum_column(DiscoveryRunStatus, "discovery_run_status"))
+    started_at: Mapped[datetime]
+    finished_at: Mapped[datetime | None]
+    seen_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    matched_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    source_health: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    warning_codes: Mapped[list[str]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+
+
+class DiscoveryMembershipRow(TimestampedMixin, Base):
+    """A visible catalog offer belongs to a user and one saved search."""
+
+    __tablename__ = "discovery_memberships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "search_profile_id", "opportunity_id",
+                         name="uq_discovery_memberships_owner_search_opportunity"),
+        ForeignKeyConstraint(
+            ["user_id", "search_profile_id"],
+            ["search_profiles.user_id", "search_profiles.id"],
+            ondelete="CASCADE", name="fk_discovery_memberships_owner_search"),
+        Index("ix_discovery_memberships_user_search_seen", "user_id",
+              "search_profile_id", "last_seen_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    search_profile_id: Mapped[UUID]
+    opportunity_id: Mapped[UUID] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"))
+    first_seen_at: Mapped[datetime]
+    last_seen_at: Mapped[datetime]
+    last_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("discovery_runs.id", ondelete="SET NULL"))
 
 
 class MatchEvaluationRow(TimestampedMixin, Base):
@@ -3443,5 +3510,3 @@ class TaskRunRow(TimestampedMixin, Base):
     enqueued_at: Mapped[datetime]
     started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
-
-

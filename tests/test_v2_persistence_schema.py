@@ -114,6 +114,7 @@ SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
 USER_OWNED_TABLES = ("account_exports", "application_decisions", "application_outcomes",
                      "application_policies", "applications",
                      "candidate_documents", "candidate_profiles",
+                     "discovery_runs", "discovery_memberships",
                      "career_recommendations",
                      "chat_action_executions", "chat_action_proposals",
                      "chat_messages", "conversations", "eligibility_results",
@@ -221,7 +222,7 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_fifty_four_v2_tables():
+def test_the_metadata_holds_exactly_the_fifty_six_v2_tables():
     """A tripwire on the shape of the schema itself.
 
     `models.py` is the only place a V2 table may be declared, so the six ownership
@@ -232,7 +233,7 @@ def test_the_metadata_holds_exactly_the_fifty_four_v2_tables():
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
         PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | set(AUDIT_TABLES) | set(
         WORK_TABLES) | {"users"}
-    assert len(TABLES) == 54
+    assert len(TABLES) == 56
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
@@ -492,6 +493,7 @@ def test_free_text_columns_are_text_not_varchar():
                      ("candidate_profiles", "location_country"),
                      ("candidate_work_authorizations", "country"),
                      ("document_versions", "language"),
+                     ("discovery_runs", "country"),
                      ("companies", "country"),
                      ("companies", "ats_detected_by"),
                      ("companies", "spontaneous_observed_by"),

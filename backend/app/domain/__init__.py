@@ -19,6 +19,7 @@ The modules, in dependency order:
 - `candidate` — profile, evidence and claims;
 - `documents` — the ATS résumé and cover letter, their versions and truth guard;
 - `search` — saved searches and geographic areas;
+- `discovery_run` — owner-scoped, sanitized collection lifecycle and source state;
 - `geo` — geographic search, geocoding and remote semantics;
 - `matching` — multidimensional compatibility scoring;
 - `eligibility` — binary gates, kept apart from scoring on purpose;

@@ -46,11 +46,13 @@ def test_ch_pack_converts_an_activity_rate_into_weekly_hours(ch):
     assert ch.metadata.weekly_hours_for_percent(80) == pytest.approx(33.6)
 
 
-def test_ch_pack_enables_the_twelve_v1_sources_in_priority_order(ch):
-    """V1's twelve boards, and the order is the pack's judgement, not the code's."""
+def test_ch_pack_enables_eleven_sources_in_priority_order(ch):
+    """The approved CH sources retain the pack's priority order."""
     assert ch.enabled_source_keys == (
         "jobup", "indeed_ch", "jobscout24", "migros", "coop", "manpower", "wtj",
-        "linkedin", "jooble", "greenhouse", "lever", "ashby")
+        "jooble", "greenhouse", "lever", "ashby")
+    assert ch.binding_for("linkedin") is not None
+    assert not ch.binding_for("linkedin").enabled
     priorities = [binding.priority for binding in ch.enabled_bindings]
     assert priorities == sorted(p for p in priorities if p is not None)
 

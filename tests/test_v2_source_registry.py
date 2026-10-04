@@ -286,7 +286,7 @@ def _packs(*bindings: SourceBinding, country: str = "CH") -> CountryPackRegistry
     return CountryPackRegistry((a_pack(country, *bindings),))
 
 
-def test_the_swiss_composition_registers_thirteen_and_sweeps_twelve():
+def test_the_swiss_composition_registers_thirteen_and_selects_eleven():
     """Acceptance criterion 1, end to end and offline.
 
     Pack load → adapter build → expectation check → priority-ordered selection.
@@ -294,12 +294,13 @@ def test_the_swiss_composition_registers_thirteen_and_sweeps_twelve():
     """
     discovery = build_discovery(boards={})
     assert len(discovery.registry) == 13
+    assert "linkedin" in discovery.registry
     assert discovery.packs.countries == ("CH",)
     pack = discovery.packs.get("CH")
     selected = discovery.registry.sources_for(country="CH", pack=pack)
     assert tuple(s.metadata.source_key for s in selected) == (
         "jobup", "indeed_ch", "jobscout24", "migros", "coop", "manpower", "wtj",
-        "linkedin", "jooble", "greenhouse", "lever", "ashby")
+        "jooble", "greenhouse", "lever", "ashby")
 
 
 def test_the_french_indeed_is_registered_and_never_swept_for_switzerland():

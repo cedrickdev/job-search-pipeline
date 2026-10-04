@@ -2,6 +2,7 @@
 
 from urllib.parse import urlsplit, urlunsplit
 
+from backend.app.discovery.orchestrator import SweepReport
 from backend.app.domain.opportunity import Opportunity
 from backend.app.domain.search import SearchProfile
 
@@ -10,13 +11,16 @@ def matches_search(profile: SearchProfile, opportunity: Opportunity) -> bool:
     """Whether a collected opportunity passes non-geographic profile filters."""
     if not profile.is_active:
         return False
-    if profile.opportunity_types and opportunity.opportunity_type not in profile.opportunity_types:
+    if not profile.allows_opportunity_type(opportunity.opportunity_type):
         return False
-    if profile.contract_types and opportunity.contract_type not in profile.contract_types:
+    if profile.contract_types and opportunity.contract_type is not None \
+            and opportunity.contract_type not in profile.contract_types:
         return False
-    if profile.workplace_modes and opportunity.workplace_mode not in profile.workplace_modes:
+    if profile.workplace_modes and opportunity.workplace_mode is not None \
+            and opportunity.workplace_mode not in profile.workplace_modes:
         return False
-    if profile.posting_languages and opportunity.posting_language not in profile.posting_languages:
+    if profile.posting_languages and opportunity.posting_language is not None \
+            and opportunity.posting_language not in profile.posting_languages:
         return False
     text = f"{opportunity.title} {opportunity.description or ''}".casefold()
     if any(word.casefold() in text for word in profile.excluded_keywords):
@@ -24,6 +28,16 @@ def matches_search(profile: SearchProfile, opportunity: Opportunity) -> bool:
     return not profile.title_keywords or any(
         word.casefold() in opportunity.title.casefold()
         for word in profile.title_keywords
+    )
+
+
+def matching_opportunities(
+    profile: SearchProfile, report: SweepReport
+) -> tuple[Opportunity, ...]:
+    """Select a profile's visible postings from a source-neutral sweep report."""
+    return tuple(
+        opportunity for opportunity in report.opportunities
+        if matches_search(profile, opportunity)
     )
 
 

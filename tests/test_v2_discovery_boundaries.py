@@ -19,8 +19,8 @@ skips docstrings. Comments never reach the AST at all.
 
 The layering (§13) it pins:
 
-    capabilities → contracts → {catalog, failures, normalization, registry, requests}
-                 → orchestrator → bootstrap → [adapters] → pipeline (V1)
+    capabilities → contracts → {failures, normalization, registry, requests}
+                 → orchestrator → catalog → bootstrap → [adapters] → pipeline (V1)
 
 `bootstrap` is the only module allowed to know which adapters exist and which
 country packs are shipped; the adapters are the only ones allowed to import V1;
@@ -46,10 +46,10 @@ DISCOVERY_PACKAGE = "backend.app.discovery"
 # layering is checked edge by edge: every import inside `backend/app/discovery`
 # has to point backwards in this tuple, which is what keeps `registry` from
 # growing into `orchestrator` and keeps both out of `bootstrap`.
-FRAMEWORK_ORDER = ("capabilities", "contracts", "catalog", "failures", "normalization",
-                   "registry", "requests", "orchestrator", "bootstrap")
+FRAMEWORK_ORDER = ("capabilities", "contracts", "failures", "normalization",
+                   "registry", "requests", "orchestrator", "catalog", "bootstrap")
 
-# Everything but the composition module. These nine files are what "core
+# Everything but the composition module. These eight files are what "core
 # orchestration" means in criterion 2, and none of them may name a source.
 CORE_MODULES = tuple(module for module in FRAMEWORK_ORDER if module != "bootstrap")
 
@@ -90,6 +90,10 @@ CORE_ALLOWED_ROOTS = frozenset(sys.stdlib_module_names) | {
 PACK_ALLOWED_ROOTS = CORE_ALLOWED_ROOTS | {"yaml"}
 
 _WORD = re.compile(r"[a-z][a-z0-9_]*")
+_VERIFIED_ATS_TARGET_HOSTS = frozenset({
+    "boards.greenhouse.io", "job-boards.greenhouse.io",
+    "jobs.lever.co", "jobs.ashbyhq.com",
+})
 
 
 def _tree(path: Path) -> ast.Module:
@@ -127,9 +131,10 @@ def _executable_words(path: Path) -> set[str]:
             case ast.keyword(arg=str() as text) | ast.alias(name=text):
                 pass
             case ast.Constant(value=str() as text) if id(node) not in prose:
-                # A verified ATS hostname is a URL target, not a source key.
-                # Keep checking identifiers and bare source-key literals.
-                if re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", text.lower()):
+                # The catalog verifies these exact ATS job-detail hosts.
+                # Other hostnames and bare source-key literals still count.
+                if path == _framework_path("catalog") \
+                        and text in _VERIFIED_ATS_TARGET_HOSTS:
                     continue
             case _:
                 continue
@@ -191,6 +196,13 @@ def test_the_framework_is_the_modules_the_layering_lists():
     present = tuple(sorted(path.stem for path in DISCOVERY_DIR.glob("*.py")
                            if path.stem != "__init__"))
     assert present == tuple(sorted(FRAMEWORK_ORDER))
+
+
+def test_source_key_scanner_catches_an_unapproved_hostname(tmp_path):
+    module = tmp_path / "example.py"
+    module.write_text('HOST = "linkedin.com"\n', encoding="utf-8")
+
+    assert "linkedin" in _executable_words(module)
 
 
 @pytest.mark.parametrize("module", CORE_MODULES)
@@ -257,7 +269,7 @@ def test_no_core_module_knows_that_switzerland_is_the_first_country(module):
     """Criterion 8, in the only form a test can check before France exists.
 
     Adding a country means writing `country_packs/fr/` and one line in
-    `bootstrap` — which §8 explicitly allows — and touching none of these nine
+    `bootstrap` — which §8 explicitly allows — and touching none of these eight
     files. A core module importing `country_packs.ch` is what would break that,
     and importing the pack *contracts* is how it is avoided.
     """

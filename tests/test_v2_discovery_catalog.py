@@ -13,8 +13,12 @@ from backend.app.domain.opportunity import (
 from backend.app.domain.search import CountrySearchArea
 from backend.app.discovery.requests import discovery_requests_for
 from backend.app.discovery.registry import SourceRegistry
+from backend.app.discovery.orchestrator import DiscoveryOrchestrator
 from country_packs.ch import pack as ch_pack
-from tests.v2_discovery import NOW, FakeSource, a_metadata, a_search_profile
+from country_packs.registry import CountryPackRegistry
+from tests.v2_discovery import (
+    NOW, FakeSource, a_metadata, a_result, a_search_profile, frozen_clock,
+)
 
 
 def an_opportunity(**overrides) -> Opportunity:
@@ -81,6 +85,51 @@ def test_saved_search_filters_collected_opportunities(
     assert matches_search(
         a_search_profile(**profile_fields), an_opportunity(**opportunity_fields)
     ) is expected
+
+
+@pytest.mark.parametrize("profile_fields", [
+    {"opportunity_types": (OpportunityType.INTERNSHIP,)},
+    {"contract_types": (ContractType.FIXED_TERM,)},
+    {"workplace_modes": (WorkplaceMode.REMOTE,)},
+    {"posting_languages": ("fr",)},
+])
+def test_unclassified_fields_remain_visible_in_discovery(profile_fields):
+    from backend.app.discovery.catalog import matches_search
+
+    assert matches_search(a_search_profile(**profile_fields), an_opportunity())
+
+
+@pytest.mark.asyncio
+async def test_catalog_matches_a_ch_sweep_without_filtering_the_raw_report():
+    from backend.app.discovery.catalog import matching_opportunities
+
+    known = an_opportunity(title="Python intern", opportunity_type=OpportunityType.INTERNSHIP)
+    unknown = an_opportunity(title="Python apprentice")
+    wrong_type = an_opportunity(title="Python engineer", opportunity_type=OpportunityType.FULL_TIME)
+    excluded = an_opportunity(title="Senior Python intern", opportunity_type=OpportunityType.INTERNSHIP)
+    linkedin_offer = an_opportunity(title="Python intern", opportunity_type=OpportunityType.INTERNSHIP)
+    jobup = FakeSource(a_metadata("jobup"), result=a_result(
+        "jobup", known, unknown, wrong_type, excluded,
+    ))
+    linkedin = FakeSource(a_metadata("linkedin"), result=a_result("linkedin", linkedin_offer))
+    registry = SourceRegistry()
+    registry.register(jobup)
+    registry.register(linkedin)
+    packs = CountryPackRegistry((ch_pack.load(),))
+    profile = a_search_profile(
+        queries=("java",), title_keywords=("python",),
+        opportunity_types=(OpportunityType.INTERNSHIP,),
+        excluded_keywords=("senior",),
+    )
+
+    report = await DiscoveryOrchestrator(
+        registry=registry, packs=packs, clock=frozen_clock(),
+    ).sweep(profile, country="CH")
+
+    assert jobup.requests[0].keywords == ("java",)
+    assert not linkedin.requests
+    assert report.opportunities == (known, unknown, wrong_type, excluded)
+    assert matching_opportunities(profile, report) == (known, unknown)
 
 
 def test_same_title_roles_with_different_verified_targets_remain_distinct():

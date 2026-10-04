@@ -32,7 +32,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Final
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from sqlalchemy import (
     BigInteger,
@@ -107,6 +107,7 @@ from backend.app.domain.eligibility import (
 )
 from backend.app.domain.entitlement import BillingInterval, EntitlementKey
 from backend.app.domain.geo import GeocodingOutcome
+from backend.app.domain.identifiers import SURROGATE_KEY_NAMESPACE
 from backend.app.domain.interview import (
     InterviewAnswerFormat,
     InterviewDifficulty,
@@ -1306,9 +1307,33 @@ class OpportunityRow(LocationColumnsMixin, TimestampedMixin, Base):
     # a fingerprint coexist freely.
     dedup_fingerprint: Mapped[str | None] = mapped_column(unique=True)
 
-    source: Mapped["OpportunitySourceRecordRow"] = relationship(
+    # Only a verified job-detail target may populate this identity. The legacy
+    # company/title fingerprint remains unique for V1 imports.
+    canonical_target: Mapped[str | None] = mapped_column(unique=True)
+
+    sources: Mapped[list["OpportunitySourceRecordRow"]] = relationship(
         back_populates="opportunity", cascade="all, delete-orphan",
-        passive_deletes=True, lazy="raise", uselist=False)
+        passive_deletes=True, lazy="raise",
+        order_by=lambda: (OpportunitySourceRecordRow.created_at,
+                          OpportunitySourceRecordRow.id))
+
+    @property
+    def source(self) -> "OpportunitySourceRecordRow":
+        """V1-compatible preferred source; never discard the other observations."""
+        if not self.sources:
+            raise ValueError("Opportunity has no source observation")
+        preferred_id = uuid5(
+            SURROGATE_KEY_NAMESPACE, f"opportunity_source_record:{self.id}")
+        return next((item for item in self.sources if item.id == preferred_id),
+                    self.sources[0])
+
+    @source.setter
+    def source(self, record: "OpportunitySourceRecordRow") -> None:
+        if self.sources:
+            current = self.source
+            self.sources[self.sources.index(current)] = record
+        else:
+            self.sources.append(record)
 
 
 class OpportunitySourceRecordRow(TimestampedMixin, Base):
@@ -1326,9 +1351,8 @@ class OpportunitySourceRecordRow(TimestampedMixin, Base):
     the behaviour wanted here — a source that publishes no stable id cannot claim
     two postings are the same.
 
-    `UNIQUE (opportunity_id)` holds the one-to-one the domain models today. It is
-    the constraint to drop, not a table to create, if a posting later needs to be
-    traceable to several boards.
+    Multiple boards may reference the same opportunity. Each source identity is
+    unique, but the parent opportunity is not.
     """
 
     __tablename__ = "opportunity_source_records"
@@ -1336,8 +1360,8 @@ class OpportunitySourceRecordRow(TimestampedMixin, Base):
         # Unnamed on purpose: the `uq` naming convention derives
         # `uq_opportunity_source_records_source_key_external_id` from the columns,
         # so the name in a migration is predictable from the definition here.
-        UniqueConstraint("opportunity_id"),
         UniqueConstraint("source_key", "external_id"),
+        UniqueConstraint("source_key", "normalized_url"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -1346,6 +1370,7 @@ class OpportunitySourceRecordRow(TimestampedMixin, Base):
     source_key: Mapped[str]
     external_id: Mapped[str | None]
     source_url: Mapped[str | None]
+    normalized_url: Mapped[str | None]
     fetched_at: Mapped[datetime]
     # Public posting metadata only. Credentials, cookies and session tokens must
     # never reach this column (docs/ENGINEERING_STANDARDS.md §Security); the
@@ -1355,7 +1380,7 @@ class OpportunitySourceRecordRow(TimestampedMixin, Base):
         JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT)
 
     opportunity: Mapped["OpportunityRow"] = relationship(
-        back_populates="source", lazy="raise")
+        back_populates="sources", lazy="raise")
 
 
 class MatchEvaluationRow(TimestampedMixin, Base):
@@ -3418,7 +3443,5 @@ class TaskRunRow(TimestampedMixin, Base):
     enqueued_at: Mapped[datetime]
     started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
-
-
 
 

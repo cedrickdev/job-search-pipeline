@@ -959,22 +959,19 @@ async def test_deleting_a_posting_deletes_its_provenance(db_session):
     assert await _count(db_session, OpportunitySourceRecordRow) == 0
 
 
-async def test_a_posting_may_not_carry_two_source_records(db_session):
-    """The one-to-one the domain models today, held by the database.
-
-    `UNIQUE (opportunity_id)` is the constraint a later phase drops if a posting
-    has to be traceable to several boards — a decision, not a schema accident.
-    """
+async def test_a_posting_may_carry_two_distinct_source_records(db_session):
+    """A canonical opportunity may be cited by two independent boards."""
     db_session.add(an_opportunity_row())
     await db_session.flush()
     db_session.add(OpportunitySourceRecordRow(
         id=COMPANY_LOCATION, opportunity_id=OPPORTUNITY, source_key="test_board",
         external_id="posting-1", fetched_at=NOW))
     await db_session.flush()
-    await refuses(db_session, OpportunitySourceRecordRow(
+    db_session.add(OpportunitySourceRecordRow(
         id=SECOND_SOURCE_RECORD, opportunity_id=OPPORTUNITY,
-        source_key="other_board", external_id="posting-9", fetched_at=NOW),
-        "uq_opportunity_source_records_opportunity_id")
+        source_key="other_board", external_id="posting-9", fetched_at=NOW))
+    await db_session.flush()
+    assert await _count(db_session, OpportunitySourceRecordRow) == 2
 
 
 # --- Phase 13 career chat ---------------------------------------------------

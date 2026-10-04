@@ -1,6 +1,6 @@
 """Pure decisions for matching a collected opportunity to a saved search."""
 
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from backend.app.discovery.orchestrator import SweepReport
 from backend.app.domain.opportunity import Opportunity
@@ -63,3 +63,20 @@ def canonical_target(opportunity: Opportunity) -> str | None:
             continue
         return urlunsplit(("https", host, parsed.path.rstrip("/"), "", ""))
     return None
+
+
+def normalize_source_url(url: str) -> str:
+    """Remove fragments/tracking without conflating distinct job-detail queries."""
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("A source URL must be HTTP or HTTPS")
+    host = parsed.hostname.lower()
+    port = parsed.port
+    if port and (parsed.scheme, port) not in {("http", 80), ("https", 443)}:
+        host = f"{host}:{port}"
+    query = urlencode(sorted(
+        (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.casefold().startswith("utm_")
+    ))
+    return urlunsplit((parsed.scheme.lower(), host, parsed.path.rstrip("/") or "/",
+                       query, ""))

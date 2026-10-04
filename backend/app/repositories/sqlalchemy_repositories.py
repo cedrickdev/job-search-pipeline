@@ -744,7 +744,7 @@ class SqlAlchemyOpportunityRepository:
         self._session = session
 
     def _base_select(self) -> Select[tuple[OpportunityRow]]:
-        return select(OpportunityRow).options(selectinload(OpportunityRow.source))
+        return select(OpportunityRow).options(selectinload(OpportunityRow.sources))
 
     async def _one(self, statement: Select[tuple[OpportunityRow]]) -> Opportunity | None:
         result = await self._session.execute(statement)
@@ -764,7 +764,7 @@ class SqlAlchemyOpportunityRepository:
                             external_id: str) -> Opportunity | None:
         return await self._one(
             self._base_select()
-            .join(OpportunityRow.source.of_type(OpportunitySourceRecordRow))
+            .join(OpportunityRow.sources.of_type(OpportunitySourceRecordRow))
             .where(OpportunitySourceRecordRow.source_key == source_key,
                    OpportunitySourceRecordRow.external_id == external_id))
 
@@ -796,7 +796,7 @@ class SqlAlchemyOpportunityRepository:
         distance = distance_meters(OpportunityRow.location_point, center)
         result = await self._session.execute(
             select(OpportunityRow, distance.label("distance_meters"))
-            .options(selectinload(OpportunityRow.source))
+            .options(selectinload(OpportunityRow.sources))
             # `ST_DWithin` is NULL for a row with no point and `WHERE` keeps only
             # TRUE, so unlocated postings drop out without a second predicate —
             # and the GiST index still does the work.
@@ -890,7 +890,7 @@ class SqlAlchemyOpportunityRepository:
         result = await self._session.execute(
             select(OpportunityRow, CompanyLocationRow,
                    distance.label("distance_meters"), *selected_matches)
-            .options(selectinload(OpportunityRow.source))
+            .options(selectinload(OpportunityRow.sources))
             .outerjoin(
                 CompanyLocationRow,
                 and_(CompanyLocationRow.company_id == OpportunityRow.company_id,

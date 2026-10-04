@@ -70,7 +70,7 @@ V2_TABLES = frozenset({
 
 # The revision `alembic upgrade head` is expected to stop at. A revision added
 # without updating this line is a revision nobody decided to ship.
-HEAD_REVISION = "0021"
+HEAD_REVISION = "0022"
 
 # Every `geography(Point,4326)` column, by the table that holds it. One radius
 # query has to run against any of them, so they are declared identically and
@@ -132,6 +132,45 @@ def test_an_empty_database_becomes_the_whole_schema(schema_engine):
             text("SELECT version_num FROM alembic_version")).scalar_one()
     assert V2_TABLES <= tables
     assert version == HEAD_REVISION
+
+
+def test_catalog_revision_keeps_legacy_provenance_and_allows_second_source(schema_engine):
+    """A pre-catalog opportunity survives upgrade; a second board may cite it."""
+    reset_schema(schema_engine)
+    with schema_engine.begin() as connection:
+        command.downgrade(alembic_config(connection), "0021")
+        connection.execute(text(
+            "INSERT INTO opportunities (id, company_name, title, discovered_at) "
+            "VALUES ('11111111-1111-4111-8111-111111111111', 'Example AG', "
+            "'Engineer', now())"))
+        connection.execute(text(
+            "INSERT INTO opportunity_source_records "
+            "(id, opportunity_id, source_key, external_id, source_url, fetched_at) "
+            "VALUES ('22222222-2222-4222-8222-222222222222', "
+            "'11111111-1111-4111-8111-111111111111', 'legacy', 'one', "
+            "'https://EXAMPLE.ch/jobs/one/?utm_source=legacy#part', now())"))
+    with schema_engine.begin() as connection:
+        command.upgrade(alembic_config(connection), "0022")
+        connection.execute(text(
+            "INSERT INTO opportunity_source_records "
+            "(id, opportunity_id, source_key, external_id, fetched_at) "
+            "VALUES ('33333333-3333-4333-8333-333333333333', "
+            "'11111111-1111-4111-8111-111111111111', 'other', 'two', now())"))
+    with schema_engine.connect() as connection:
+        records = connection.execute(text(
+            "SELECT source_key, external_id, normalized_url FROM opportunity_source_records "
+            "ORDER BY source_key")).all()
+    assert records == [
+        ("legacy", "one", "https://example.ch/jobs/one"),
+        ("other", "two", None),
+    ]
+    with schema_engine.begin() as connection:
+        connection.execute(text(
+            "DELETE FROM opportunity_source_records WHERE source_key = 'other'"))
+        command.downgrade(alembic_config(connection), "0021")
+    with schema_engine.connect() as connection:
+        assert connection.execute(text(
+            "SELECT source_key FROM opportunity_source_records")).scalar_one() == "legacy"
 
 
 def test_the_migrated_schema_and_the_models_describe_the_same_database(schema_engine):

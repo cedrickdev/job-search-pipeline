@@ -381,7 +381,9 @@ class OpportunityRepository(Protocol):
         ...
 
     async def search_geo(
-            self, query: GeoSearchQuery) -> tuple[OpportunityGeoResult, ...]:
+            self, query: GeoSearchQuery, *,
+            catalog_scope: tuple[UserId, SearchProfileId] | None = None,
+    ) -> tuple[OpportunityGeoResult, ...]:
         """Postings admitted by one typed geographic/remote query."""
         ...
 
@@ -2022,5 +2024,4 @@ class TaskRunRepository(Protocol):
         user row goes. Idempotent: a retried deletion finds nothing left to cancel and returns 0.
         """
         ...
-
 

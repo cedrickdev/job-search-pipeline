@@ -3455,6 +3455,177 @@
         "title": "DimensionScoreResponse",
         "type": "object"
       },
+      "DiscoveryQueuedResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "QUEUED",
+            "default": "QUEUED",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "title": "DiscoveryQueuedResponse",
+        "type": "object"
+      },
+      "DiscoveryRunResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "country": {
+            "pattern": "^[A-Z]{2}$",
+            "title": "Country",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "matched_count": {
+            "minimum": 0.0,
+            "title": "Matched Count",
+            "type": "integer"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "search_profile_id": {
+            "format": "uuid",
+            "title": "Search Profile Id",
+            "type": "string"
+          },
+          "seen_count": {
+            "minimum": 0.0,
+            "title": "Seen Count",
+            "type": "integer"
+          },
+          "source_health": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DiscoverySourceHealthResponse"
+            },
+            "title": "Source Health",
+            "type": "array"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiscoveryRunStatus"
+              },
+              {
+                "const": "QUEUED",
+                "type": "string"
+              }
+            ],
+            "title": "Status"
+          },
+          "trigger": {
+            "$ref": "#/components/schemas/DiscoveryTrigger"
+          },
+          "warning_codes": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warning Codes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "search_profile_id",
+          "country",
+          "trigger",
+          "status",
+          "seen_count",
+          "matched_count"
+        ],
+        "title": "DiscoveryRunResponse",
+        "type": "object"
+      },
+      "DiscoveryRunStatus": {
+        "enum": [
+          "RUNNING",
+          "SUCCEEDED",
+          "PARTIAL",
+          "FAILED"
+        ],
+        "title": "DiscoveryRunStatus",
+        "type": "string"
+      },
+      "DiscoverySourceHealthResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "source_key": {
+            "title": "Source Key",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "HEALTHY",
+              "DEGRADED",
+              "MISCONFIGURED",
+              "UNAVAILABLE"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_key",
+          "status"
+        ],
+        "title": "DiscoverySourceHealthResponse",
+        "type": "object"
+      },
+      "DiscoveryTrigger": {
+        "enum": [
+          "MANUAL",
+          "MORNING"
+        ],
+        "title": "DiscoveryTrigger",
+        "type": "string"
+      },
       "DocumentArtifactResponse": {
         "additionalProperties": false,
         "description": "Where a rendered PDF lives, as much of it as a download UI needs.\n\nThe opaque `storage_key` is deliberately absent: a client downloads through the\ndocument id, and a storage locator in a response body is an internal path a UI\nhas no use for and an attacker might. `byte_size` and `page_count` let a list\nshow \"2 pages, 48 KB\" without fetching the file.",
@@ -12866,6 +13037,49 @@
         ]
       }
     },
+    "/api/v2/me/discovery-runs/{run_id}": {
+      "get": {
+        "operationId": "read_discovery_api_v2_me_discovery_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Discovery",
+        "tags": [
+          "v2-discovery"
+        ]
+      }
+    },
     "/api/v2/me/evidence": {
       "get": {
         "description": "The account's whole attested record: its evidence and its claims.\n\nRead through the document service's profile view so one dependency answers the\nprofile-backed reads. 404 when onboarding has not saved a profile — the same\nstate `GET /me/profile` reports, so a client sends the user to onboarding.",
@@ -13291,6 +13505,49 @@
         ]
       }
     },
+    "/api/v2/me/search-profiles/{search_profile_id}/discovery-runs": {
+      "post": {
+        "operationId": "enqueue_discovery_api_v2_me_search_profiles__search_profile_id__discovery_runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "search_profile_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Search Profile Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryQueuedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enqueue Discovery",
+        "tags": [
+          "v2-discovery"
+        ]
+      }
+    },
     "/api/v2/me/search-profiles/{search_profile_id}/opportunities": {
       "get": {
         "description": "Run one of this account's saved searches as a geo query.\n\nThe scope is the profile's saved areas; the only query parameters are the optional\nmap `bounds` Phase 8 sends when the user pans, and the page window. A profile that\nis not this account's is the same 404 as one that does not exist — the service\nloads it scoped by the session user and never says which of the two it was.",
@@ -13343,6 +13600,16 @@
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "catalog",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Catalog",
+              "type": "boolean"
             }
           }
         ],

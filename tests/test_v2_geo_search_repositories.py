@@ -10,11 +10,18 @@ from backend.app.domain.identifiers import (
     CompanyLocationId,
     OpportunityId,
 )
+from backend.app.domain.discovery_run import DiscoveryRun, DiscoveryRunStatus, DiscoveryTrigger
+from backend.app.domain.identifiers import DiscoveryRunId
+from backend.app.repositories.discovery_catalog import DiscoveryRunStore
 from backend.app.domain.opportunity import OpportunityType, WorkplaceMode
 from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyCompanyRepository,
     SqlAlchemyOpportunityRepository,
+    SqlAlchemySearchProfileRepository,
 )
+from tests.v2_builders import OTHER_USER, SEARCH_PROFILE, USER, a_search_profile
+from tests.v2_discovery import NOW
+from tests.v2_rows import a_user_row
 from tests.v2_builders import (
     GENEVA,
     LAUSANNE,
@@ -93,6 +100,51 @@ async def test_country_search_returns_unresolved_rows_without_inventing_distance
     assert found[0].status is GeoStatus.RESOLVED
     assert found[1].status is GeoStatus.UNRESOLVED
     assert [result.distance_meters for result in found] == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_collected_saved_search_filters_before_pagination_and_keeps_unlocated_list_item(
+    db_session,
+):
+    db_session.add(a_user_row(id=USER))
+    await db_session.flush()
+    await SqlAlchemySearchProfileRepository(db_session).upsert(a_search_profile())
+    repo = SqlAlchemyOpportunityRepository(db_session)
+    collected = a_geo_posting(31, LAUSANNE, "Lausanne")
+    unlocated = a_geo_posting(32, None, "Suisse romande")
+    public_only = a_geo_posting(33, GENEVA, "Geneve")
+    for item in (collected, unlocated, public_only):
+        await repo.upsert(item)
+    run_id = DiscoveryRunId(UUID("00000000-0000-4000-8000-000000000d55"))
+    runs = DiscoveryRunStore(db_session)
+    await runs.create_run(DiscoveryRun(
+        id=run_id, user_id=USER, search_profile_id=SEARCH_PROFILE,
+        country="CH", trigger=DiscoveryTrigger.MANUAL,
+        status=DiscoveryRunStatus.RUNNING, started_at=NOW,
+        seen_count=0, matched_count=0,
+    ))
+    for item in (collected, unlocated):
+        await runs.add_member(USER, SEARCH_PROFILE, item.id, run_id=run_id, seen_at=NOW)
+
+    first = await repo.search_geo(
+        GeoSearchQuery(countries=("CH",), limit=1),
+        catalog_scope=(USER, SEARCH_PROFILE))
+    second = await repo.search_geo(
+        GeoSearchQuery(countries=("CH",), limit=1, offset=1),
+        catalog_scope=(USER, SEARCH_PROFILE))
+    public = await repo.search_geo(GeoSearchQuery(countries=("CH",)))
+    foreign = await repo.search_geo(
+        GeoSearchQuery(countries=("CH",)),
+        catalog_scope=(OTHER_USER, SEARCH_PROFILE))
+
+    assert {result.opportunity.id for result in (*first, *second)} == {
+        collected.id, unlocated.id}
+    assert public_only.id not in {result.opportunity.id for result in (*first, *second)}
+    assert unlocated.id in {result.opportunity.id for result in (*first, *second)
+                            if result.status is GeoStatus.UNRESOLVED}
+    assert {result.opportunity.id for result in public} == {
+        collected.id, unlocated.id, public_only.id}
+    assert foreign == ()
 
 
 @pytest.mark.asyncio

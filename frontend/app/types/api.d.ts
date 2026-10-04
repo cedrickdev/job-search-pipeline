@@ -1886,6 +1886,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/me/discovery-runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Discovery */
+        get: operations["read_discovery_api_v2_me_discovery_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/me/evidence": {
         parameters: {
             query?: never;
@@ -2077,6 +2094,23 @@ export interface paths {
          *     so is more useful than pretending the second call did something.
          */
         delete: operations["delete_search_profile_api_v2_me_search_profiles__search_profile_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/search-profiles/{search_profile_id}/discovery-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Enqueue Discovery */
+        post: operations["enqueue_discovery_api_v2_me_search_profiles__search_profile_id__discovery_runs_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4320,6 +4354,78 @@ export interface components {
             /** Weight */
             weight: number;
         };
+        /** DiscoveryQueuedResponse */
+        DiscoveryQueuedResponse: {
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Status
+             * @default QUEUED
+             * @constant
+             */
+            status: "QUEUED";
+        };
+        /** DiscoveryRunResponse */
+        DiscoveryRunResponse: {
+            /** Country */
+            country: string;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Matched Count */
+            matched_count: number;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Search Profile Id
+             * Format: uuid
+             */
+            search_profile_id: string;
+            /** Seen Count */
+            seen_count: number;
+            /**
+             * Source Health
+             * @default []
+             */
+            source_health: components["schemas"]["DiscoverySourceHealthResponse"][];
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status: components["schemas"]["DiscoveryRunStatus"] | "QUEUED";
+            trigger: components["schemas"]["DiscoveryTrigger"];
+            /**
+             * Warning Codes
+             * @default []
+             */
+            warning_codes: string[];
+        };
+        /**
+         * DiscoveryRunStatus
+         * @enum {string}
+         */
+        DiscoveryRunStatus: "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED";
+        /** DiscoverySourceHealthResponse */
+        DiscoverySourceHealthResponse: {
+            /** Reason */
+            reason?: string | null;
+            /** Source Key */
+            source_key: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "HEALTHY" | "DEGRADED" | "MISCONFIGURED" | "UNAVAILABLE";
+        };
+        /**
+         * DiscoveryTrigger
+         * @enum {string}
+         */
+        DiscoveryTrigger: "MANUAL" | "MORNING";
         /**
          * DocumentArtifactResponse
          * @description Where a rendered PDF lives, as much of it as a download UI needs.
@@ -10059,6 +10165,37 @@ export interface operations {
             };
         };
     };
+    read_discovery_api_v2_me_discovery_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscoveryRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_evidence_api_v2_me_evidence_get: {
         parameters: {
             query?: never;
@@ -10396,12 +10533,44 @@ export interface operations {
             };
         };
     };
+    enqueue_discovery_api_v2_me_search_profiles__search_profile_id__discovery_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                search_profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscoveryQueuedResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     search_saved_profile_api_v2_me_search_profiles__search_profile_id__opportunities_get: {
         parameters: {
             query?: {
                 bounds?: string | null;
                 limit?: number;
                 offset?: number;
+                catalog?: boolean;
             };
             header?: never;
             path: {

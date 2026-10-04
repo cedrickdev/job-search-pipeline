@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -24,14 +24,17 @@ from backend.app.domain.identifiers import (
     TaskRunId,
     UserId,
 )
-from backend.app.domain.task import TaskKind, TaskSpec
+from backend.app.domain.task import TaskKind, TaskRun, TaskSpec
 from backend.app.infrastructure.database.engine import session_scope
 from backend.app.repositories.contracts import SearchProfileRepository
 from backend.app.repositories.discovery_catalog import (
     CatalogOpportunityStore,
     DiscoveryRunStore,
 )
-from backend.app.repositories.sqlalchemy_repositories import SqlAlchemySearchProfileRepository
+from backend.app.repositories.sqlalchemy_repositories import (
+    SqlAlchemySearchProfileRepository,
+    SqlAlchemyTaskRunRepository,
+)
 from backend.app.tasks.dispatcher import TaskDispatcher
 
 Clock = Callable[[], datetime]
@@ -174,6 +177,26 @@ class DiscoveryCatalogService:
     ) -> DiscoveryRun | None:
         async with session_scope(self._session_factory, commit=False) as session:
             return await DiscoveryRunStore(session).get_run(user_id, run_id)
+
+    async def get_queued_task(
+        self, user_id: UserId, run_id: DiscoveryRunId,
+    ) -> TaskRun | None:
+        """Read a pending/failed task without exposing another owner's payload."""
+        async with session_scope(self._session_factory, commit=False) as session:
+            task = await SqlAlchemyTaskRunRepository(session).get_by_id(TaskRunId(run_id))
+            if task is None or task.user_id != user_id or \
+                    task.kind is not TaskKind.OPPORTUNITY_DISCOVERY:
+                return None
+            raw_profile_id = task.payload.get("search_profile_id")
+            if not isinstance(raw_profile_id, str):
+                return None
+            try:
+                profile_id = SearchProfileId(UUID(raw_profile_id))
+            except ValueError:
+                return None
+            profile = await SqlAlchemySearchProfileRepository(session).get(
+                user_id, profile_id)
+            return task if profile is not None else None
 
     async def list_members(
         self, user_id: UserId, search_profile_id: SearchProfileId, *,

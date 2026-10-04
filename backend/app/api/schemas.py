@@ -28,7 +28,7 @@ field for it, which is a stronger guarantee than a filter somebody has to rememb
 """
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Self, cast
+from typing import Literal, Self, cast
 from uuid import UUID
 
 from pydantic import (
@@ -144,6 +144,12 @@ from backend.app.domain.company import (
     Evidence,
     SpontaneousApplicationChannel,
     SpontaneousApplicationSupport,
+)
+from backend.app.domain.discovery_run import (
+    DiscoveryRun,
+    DiscoveryRunStatus,
+    DiscoveryTrigger,
+    SourceHealthSummary,
 )
 from backend.app.domain.documents import (
     CandidateDocument,
@@ -1002,6 +1008,46 @@ class OpportunityGeoResponse(ApiModel):
                    limit=limit, offset=offset)
 
 
+class DiscoveryQueuedResponse(ApiModel):
+    run_id: UUID
+    status: Literal["QUEUED"] = "QUEUED"
+
+
+class DiscoverySourceHealthResponse(ApiModel):
+    source_key: str
+    status: Literal["HEALTHY", "DEGRADED", "MISCONFIGURED", "UNAVAILABLE"]
+    reason: str | None = None
+
+    @classmethod
+    def of(cls, health: SourceHealthSummary) -> "DiscoverySourceHealthResponse":
+        return cls(source_key=health.source_key, status=health.status,
+                   reason=health.reason)
+
+
+class DiscoveryRunResponse(ApiModel):
+    run_id: UUID
+    search_profile_id: UUID
+    country: CountryCode
+    trigger: DiscoveryTrigger
+    status: DiscoveryRunStatus | Literal["QUEUED"]
+    started_at: UtcDatetime | None = None
+    finished_at: UtcDatetime | None = None
+    seen_count: int = Field(ge=0)
+    matched_count: int = Field(ge=0)
+    source_health: tuple[DiscoverySourceHealthResponse, ...] = ()
+    warning_codes: tuple[str, ...] = ()
+
+    @classmethod
+    def of(cls, run: DiscoveryRun) -> "DiscoveryRunResponse":
+        return cls(run_id=run.id, search_profile_id=run.search_profile_id,
+                   country=run.country, trigger=run.trigger, status=run.status,
+                   started_at=run.started_at, finished_at=run.finished_at,
+                   seen_count=run.seen_count, matched_count=run.matched_count,
+                   source_health=tuple(DiscoverySourceHealthResponse.of(item)
+                                       for item in run.source_health),
+                   warning_codes=run.warning_codes)
+
+
 class CompanyGeoItemResponse(ApiModel):
     """One employer on the map, at its nearest matching site.
 
@@ -1164,6 +1210,7 @@ class GeoSavedSearchParams(ApiModel):
     bounds: str | None = None
     limit: int = Field(default=DEFAULT_GEO_LIMIT, ge=1, le=MAX_GEO_LIMIT)
     offset: int = Field(default=0, ge=0)
+    catalog: bool = False
 
     _bounds: GeoBounds | None = PrivateAttr(default=None)
 

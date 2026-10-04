@@ -61,7 +61,8 @@ class GeoSearchService:
     async def opportunities_for_search_profile(
             self, user_id: UserId, search_profile_id: SearchProfileId, *,
             bounds: GeoBounds | None = None, limit: int = DEFAULT_GEO_LIMIT,
-            offset: int = 0) -> tuple[OpportunityGeoResult, ...]:
+            offset: int = 0, catalog: bool = False,
+    ) -> tuple[OpportunityGeoResult, ...]:
         """Run one of a user's saved searches as a geo query.
 
         The scope is the profile's areas; `bounds` is the optional viewport Phase 8
@@ -76,4 +77,7 @@ class GeoSearchService:
             profile.areas, opportunity_types=profile.opportunity_types,
             workplace_modes=profile.workplace_modes, bounds=bounds,
             limit=limit, offset=offset)
+        if catalog:
+            return await self._opportunities.search_geo(
+                query, catalog_scope=(user_id, search_profile_id))
         return await self._opportunities.search_geo(query)

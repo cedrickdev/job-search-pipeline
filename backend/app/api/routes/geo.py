@@ -81,5 +81,5 @@ async def search_saved_profile(
     """
     results = await service.opportunities_for_search_profile(
         current.user.id, search_profile_id, bounds=params.bounds_box,
-        limit=params.limit, offset=params.offset)
+        limit=params.limit, offset=params.offset, catalog=params.catalog)
     return OpportunityGeoResponse.of(results, limit=params.limit, offset=params.offset)

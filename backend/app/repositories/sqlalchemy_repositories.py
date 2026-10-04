@@ -221,6 +221,7 @@ from backend.app.infrastructure.database.models import (
     CompanyLocationRow,
     CompanyRow,
     ConversationRow,
+    DiscoveryMembershipRow,
     DocumentVersionRow,
     EligibilityResultRow,
     InterviewAnswerEvaluationRow,
@@ -807,7 +808,9 @@ class SqlAlchemyOpportunityRepository:
                      for row, meters in result.all())
 
     async def search_geo(
-            self, query: GeoSearchQuery) -> tuple[OpportunityGeoResult, ...]:
+            self, query: GeoSearchQuery, *,
+            catalog_scope: tuple[UserId, SearchProfileId] | None = None,
+    ) -> tuple[OpportunityGeoResult, ...]:
         """Run the typed Phase 7 query, leaving distance arithmetic to PostGIS."""
         opportunity_radius_matches = _matched_radius_columns(
             OpportunityRow.location_point, query)
@@ -851,6 +854,14 @@ class SqlAlchemyOpportunityRepository:
                 and_(~resolved_point,
                      within_bounds(CompanyLocationRow.location_point,
                                    query.bounds))))
+        if catalog_scope is not None:
+            owner_id, search_id = catalog_scope
+            predicates.append(exists(
+                select(1).select_from(DiscoveryMembershipRow)
+                .where(DiscoveryMembershipRow.opportunity_id == OpportunityRow.id,
+                       DiscoveryMembershipRow.user_id == owner_id,
+                       DiscoveryMembershipRow.search_profile_id == search_id)
+            ))
 
         opportunity_distance = _nearest_distance(
             OpportunityRow.location_point, query)

@@ -82,6 +82,8 @@ from datetime import timedelta
 import pytest
 
 from backend.app.api import API_V2_PREFIX
+from backend.app.api.dependencies import discovery_catalog_service
+from backend.app.domain.discovery_run import DiscoveryRun, DiscoveryRunStatus, DiscoveryTrigger
 from backend.app.documents import LocalDocumentArtifactStore
 from backend.app.exports import LocalAccountExportStore
 from backend.app.domain.application import Application, build_idempotency_key
@@ -159,6 +161,7 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/interview-sessions/{session_id}/detail"),
     ("GET", "/api/v2/interview-sessions/{session_id}/readiness"),
     ("GET", "/api/v2/matches"),
+    ("GET", "/api/v2/me/discovery-runs/{run_id}"),
     ("GET", "/api/v2/me/evidence"),
     ("GET", "/api/v2/me/exports"),
     ("GET", "/api/v2/me/exports/{export_id}"),
@@ -208,6 +211,7 @@ V2_OPERATIONS = (
     ("POST", "/api/v2/me/evidence"),
     ("POST", "/api/v2/me/exports"),
     ("POST", "/api/v2/me/search-profiles"),
+    ("POST", "/api/v2/me/search-profiles/{search_profile_id}/discovery-runs"),
     ("POST", "/api/v2/onboarding/complete"),
     ("POST", "/api/v2/opportunities/{opportunity_id}/cover-letter"),
     ("POST", "/api/v2/opportunities/{opportunity_id}/resume"),
@@ -280,7 +284,7 @@ async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_de
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 77
+        assert len({path for _, path in published}) == 79
 
 
 @pytest.mark.asyncio
@@ -352,6 +356,7 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/me/exports/{export_id}",
             "/api/v2/me/exports/{export_id}/download",
             "/api/v2/me/profile",
+            "/api/v2/me/discovery-runs/{run_id}",
             "/api/v2/me/search-profiles",
             "/api/v2/me/search-profiles/{search_profile_id}/opportunities",
             "/api/v2/onboarding",
@@ -391,6 +396,18 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                                              locations=()))
         await api.searches.upsert(a_search_profile(
             id=SearchProfileId(PLACEHOLDER_ID), user_id=user_id))
+        class ReadOnlyDiscovery:
+            async def get_run(self, owner, run_id):
+                return DiscoveryRun(
+                    id=run_id, user_id=owner,
+                    search_profile_id=SearchProfileId(PLACEHOLDER_ID),
+                    country="CH", trigger=DiscoveryTrigger.MANUAL,
+                    status=DiscoveryRunStatus.SUCCEEDED,
+                    started_at=api.clock.instant, finished_at=api.clock.instant,
+                    seen_count=0, matched_count=0,
+                )
+
+        api.app.dependency_overrides[discovery_catalog_service] = lambda: ReadOnlyDiscovery()
         # `GET /opportunities/{id}/match` reads a stored verdict, so the sweep only
         # exercises its 200 path when the pair has one: a posting under the
         # placeholder id and an eligibility keyed on this account's default profile
@@ -575,7 +592,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
             api.app, under=API_V2_PREFIX)
             if (method, path) not in PUBLIC_OPERATIONS | PROVIDER_OPERATIONS]
 
-        assert len(protected) == 91
+        assert len(protected) == 93
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 
@@ -662,7 +679,4 @@ async def test_v1_still_answers_exactly_as_it_did_beside_the_v2_router(tmp_path)
                                              "loc": ["body", "status"],
                                              "msg": "Field required",
                                              "input": {}}]}
-
-
-
 

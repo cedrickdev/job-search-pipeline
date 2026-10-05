@@ -85,6 +85,7 @@ export type OpportunityGeoResponse = Schemas['OpportunityGeoResponse']
 export type DiscoveryQueued = Schemas['DiscoveryQueuedResponse']
 export type DiscoveryRun = Schemas['DiscoveryRunResponse']
 export type DiscoverySourceHealth = Schemas['DiscoverySourceHealthResponse']
+export type LocalAutopilotReport = Schemas['LocalAutopilotResponse']
 
 /** One opportunity as the geo read returns it: its `location` (and `point`) may be null. */
 export type OpportunityGeoItem = Schemas['OpportunityGeoItemResponse']

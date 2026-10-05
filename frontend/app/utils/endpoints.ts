@@ -131,6 +131,7 @@ export const V2_ENDPOINTS = {
   discoveryStart: '/api/v2/me/search-profiles/{search_profile_id}/discovery-runs',
   discoveryLatest: '/api/v2/me/search-profiles/{search_profile_id}/discovery-runs/latest',
   discoveryRun: '/api/v2/me/discovery-runs/{run_id}',
+  localAutopilot: '/api/v2/me/opportunities/{opportunity_id}/local-autopilot',
   evidence: '/api/v2/me/evidence',
   claims: '/api/v2/me/claims',
   documents: '/api/v2/documents',
@@ -234,6 +235,10 @@ export function discoveryLatest(searchProfileId: string): string {
 
 export function discoveryRun(runId: string): string {
   return V2_ENDPOINTS.discoveryRun.replace('{run_id}', runId)
+}
+
+export function localAutopilot(opportunityId: string): string {
+  return V2_ENDPOINTS.localAutopilot.replace('{opportunity_id}', opportunityId)
 }
 
 /** Every V2 endpoint whose template contains `{document_id}`. */

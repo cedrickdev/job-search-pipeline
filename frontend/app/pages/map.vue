@@ -44,6 +44,7 @@ import { errorMessage } from '~/utils/v2-errors'
 import { useDiscoveryRun } from '~/composables/useDiscovery'
 import { discoveryLabels, discoveryMessage, sourceHealthMessage } from '~/utils/discovery-messages'
 import type { DiscoveryLocale } from '~/utils/discovery-messages'
+import { useLocalAutopilot } from '~/composables/useLocalAutopilot'
 
 definePageMeta({ middleware: 'auth' })
 useHead({ title: 'Map · Command Center' })
@@ -125,6 +126,7 @@ const locale = useCookie<DiscoveryLocale>('discovery_locale', {
 })
 const activeLocale = computed<DiscoveryLocale>(() => locale.value === 'en' ? 'en' : 'fr')
 const discovery = useDiscoveryRun(savedProfileId)
+const localAutopilot = useLocalAutopilot()
 const labels = computed(() => discoveryLabels[activeLocale.value])
 const discoveryStatus = computed(() => discoveryMessage(activeLocale.value, discovery.status.value))
 
@@ -221,6 +223,11 @@ function onSelect(id: string | null) {
 }
 function onCardClose() {
   store.clearSelection()
+}
+
+async function runLocalAutopilot() {
+  if (!selectedOpportunity.value) return
+  await localAutopilot.mutateAsync(selectedOpportunity.value.id)
 }
 
 // --- mode & scope ---
@@ -377,7 +384,10 @@ watch(mobileView, async (view) => {
           class="map-overlay map-overlay--card"
           :opportunity="selectedOpportunity"
           :company="selectedCompany"
+          :autopilot-busy="localAutopilot.isPending"
+          :autopilot-report="localAutopilot.data"
           @close="onCardClose"
+          @run-autopilot="runLocalAutopilot"
         />
       </section>
     </div>

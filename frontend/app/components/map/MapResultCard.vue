@@ -20,8 +20,10 @@ const props = defineProps<{
   opportunity?: OpportunityGeoItem | null
   company?: CompanyGeoItem | null
   discoveryLocale?: 'fr' | 'en'
+  autopilotBusy?: boolean
+  autopilotReport?: { next_action: string, stop_reason?: string | null } | null
 }>()
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: [], 'run-autopilot': [] }>()
 const postingUrl = computed(() => safeJobUrl(props.opportunity?.application_url))
 const provenance = computed(() => (props.opportunity?.source_records ?? []).map(source => ({
   ...source,
@@ -105,6 +107,17 @@ function displayDate(value: string | null | undefined): string {
     </a>
 
     <DocumentGenerateActions :opportunity-id="opportunity.id" />
+    <button
+      type="button"
+      class="btn-primary map-card-autopilot"
+      :disabled="props.autopilotBusy"
+      @click="emit('run-autopilot')"
+    >
+      {{ props.autopilotBusy ? (french ? 'Préparation…' : 'Preparing…') : (french ? 'Évaluer et préparer' : 'Evaluate and prepare') }}
+    </button>
+    <p v-if="props.autopilotReport" class="map-card-autopilot-status" role="status">
+      {{ props.autopilotReport.stop_reason ?? props.autopilotReport.next_action }}
+    </p>
   </article>
 
   <article v-else-if="company" class="map-card" data-testid="map-card">

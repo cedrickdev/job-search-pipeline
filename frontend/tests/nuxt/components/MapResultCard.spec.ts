@@ -111,6 +111,15 @@ describe('MapResultCard · opportunity', () => {
     expect(english.text()).toContain('Updated opportunity')
     expect(english.text()).not.toContain('Seen before')
   })
+
+  it('offers the local reversible preparation action without submitting', async () => {
+    const wrapper = await mountSuspended(MapResultCard, {
+      props: { opportunity: opportunityGeoItem() },
+    })
+    await wrapper.get('.map-card-autopilot').trigger('click')
+    expect(wrapper.emitted('run-autopilot')).toHaveLength(1)
+    expect(wrapper.text()).not.toContain('Submitted')
+  })
 })
 
 describe('MapResultCard · company', () => {

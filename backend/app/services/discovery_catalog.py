@@ -132,11 +132,11 @@ class DiscoveryCatalogService:
                 selected = matching_opportunities(current, report)
                 truncated = len(selected) > self._max_observations
                 for opportunity in selected[:self._max_observations]:
-                    opportunity_id = await opportunities.observe(
+                    opportunity_id, changed = await opportunities.observe_with_change(
                         opportunity, canonical_target=canonical_target(opportunity))
                     await runs.add_member(
                         user_id, search_profile_id, opportunity_id,
-                        run_id=run_id, seen_at=started)
+                        run_id=run_id, seen_at=started, changed=changed)
                     matched.add(opportunity_id)
                 warning_codes = sorted({
                     str(warning.code.value)
@@ -180,6 +180,13 @@ class DiscoveryCatalogService:
     ) -> DiscoveryRun | None:
         async with session_scope(self._session_factory, commit=False) as session:
             return await DiscoveryRunStore(session).get_run(user_id, run_id)
+
+    async def get_latest_run(
+        self, user_id: UserId, search_profile_id: SearchProfileId,
+    ) -> DiscoveryRun | None:
+        async with session_scope(self._session_factory, commit=False) as session:
+            return await DiscoveryRunStore(session).get_latest_run(
+                user_id, search_profile_id)
 
     async def get_queued_task(
         self, user_id: UserId, run_id: DiscoveryRunId,

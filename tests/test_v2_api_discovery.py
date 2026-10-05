@@ -36,6 +36,10 @@ class Catalog:
     async def get_run(self, user_id, run_id):
         return self.run if self.run and self.run.user_id == user_id and run_id == RUN_ID else None
 
+    async def get_latest_run(self, user_id, search_profile_id):
+        return (self.run if self.run and self.run.user_id == user_id
+                and self.run.search_profile_id == search_profile_id else None)
+
     async def get_queued_task(self, user_id, run_id):
         return self.task if self.task and self.task.user_id == user_id and run_id == self.task.id else None
 
@@ -99,6 +103,27 @@ async def test_run_status_exposes_only_sanitized_owner_report(tmp_path):
         assert response.json()["warning_codes"] == ["SOURCE_TIMEOUT"]
         assert "user_id" not in response.json()
         assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_latest_run_is_recovered_by_owned_search_after_reload(tmp_path):
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        user_id = next(iter(api.users.users))
+        run = DiscoveryRun(
+            id=RUN_ID, user_id=user_id, search_profile_id=MINE, country="CH",
+            trigger=DiscoveryTrigger.MORNING, status=DiscoveryRunStatus.PARTIAL,
+            started_at=api.clock(), finished_at=api.clock(), seen_count=2,
+            matched_count=1, warning_codes=("SOURCE_TIMEOUT",),
+            source_health=(),
+        )
+        api.app.dependency_overrides[discovery_catalog_service] = lambda: Catalog(run)
+        response = await api.read(f"/me/search-profiles/{MINE}/discovery-runs/latest")
+        foreign = await api.read(f"/me/search-profiles/{THEIRS}/discovery-runs/latest")
+        assert response.status_code == 200, response.text
+        assert response.json()["run_id"] == str(RUN_ID)
+        assert response.json()["warning_codes"] == ["SOURCE_TIMEOUT"]
+        assert foreign.status_code == 404
 
 
 @pytest.mark.asyncio

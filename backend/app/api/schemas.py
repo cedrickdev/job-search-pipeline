@@ -247,6 +247,7 @@ from backend.app.domain.matching import (
 from backend.app.domain.opportunity import (
     ContractType,
     Opportunity,
+    OpportunitySourceRecord,
     OpportunityType,
     WorkplaceMode,
 )
@@ -939,6 +940,19 @@ class MatchedRadiusResponse(ApiModel):
         return cls(radius_index=matched.radius_index, label=matched.label)
 
 
+class OpportunitySourceSummaryResponse(ApiModel):
+    """Public posting provenance without the untrusted raw source payload."""
+
+    source_key: str
+    source_url: str | None
+    fetched_at: datetime
+
+    @classmethod
+    def of(cls, source: OpportunitySourceRecord) -> "OpportunitySourceSummaryResponse":
+        return cls(source_key=source.source_key, source_url=source.source_url,
+                   fetched_at=source.fetched_at)
+
+
 class OpportunityGeoItemResponse(ApiModel):
     """One posting on the map: enough to place a pin and render a list card.
 
@@ -966,6 +980,10 @@ class OpportunityGeoItemResponse(ApiModel):
     status: GeoStatus
     remote_scope: RemoteScope | None
     matched_radii: tuple[MatchedRadiusResponse, ...]
+    source_records: tuple[OpportunitySourceSummaryResponse, ...] = ()
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    last_changed_at: datetime | None = None
 
     @classmethod
     def of(cls, result: OpportunityGeoResult) -> "OpportunityGeoItemResponse":
@@ -984,7 +1002,12 @@ class OpportunityGeoItemResponse(ApiModel):
             distance_meters=result.distance_meters, status=result.status,
             remote_scope=result.remote_scope,
             matched_radii=tuple(MatchedRadiusResponse.of(radius)
-                                for radius in result.matched_radii))
+                                for radius in result.matched_radii),
+            source_records=tuple(OpportunitySourceSummaryResponse.of(source)
+                                 for source in result.source_records),
+            first_seen_at=result.first_seen_at,
+            last_seen_at=result.last_seen_at,
+            last_changed_at=result.last_changed_at)
 
 
 class OpportunityGeoResponse(ApiModel):

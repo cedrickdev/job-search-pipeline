@@ -220,7 +220,7 @@ describe('map page', () => {
 
     await wrapper.get('.discovery-panel button').trigger('click')
     await flushPromises()
-    expect(http.callsTo(start).map(call => call.method)).toEqual(['POST'])
+    expect(http.callsTo(start).filter(call => call.method === 'POST')).toHaveLength(1)
     expect(wrapper.get('.discovery-status').text()).toContain('incomplète')
     expect(wrapper.get('.discovery-health').text()).toContain('délai dépassé')
     expect(rowTexts(wrapper).join(' ')).toContain('Previously collected role')

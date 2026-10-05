@@ -96,6 +96,8 @@ async def test_owner_run_is_persisted_and_foreign_user_cannot_read_it(catalog_da
     assert await restarted.list_members(USER, SEARCH_PROFILE, limit=10, offset=0) == (item.id,)
     assert await restarted.get_run(OTHER_USER, run_id) is None
     assert await restarted.list_members(OTHER_USER, SEARCH_PROFILE, limit=10, offset=0) == ()
+    assert (await restarted.get_latest_run(USER, SEARCH_PROFILE)).id == run_id
+    assert await restarted.get_latest_run(OTHER_USER, SEARCH_PROFILE) is None
 
 
 async def test_inactive_or_foreign_search_never_starts_a_sweep(catalog_database):
@@ -143,6 +145,7 @@ async def test_partial_failure_preserves_previous_membership_and_last_seen(catal
     run_id = await second.run_profile(USER, SEARCH_PROFILE, trigger="MORNING")
     run = await second.get_run(USER, run_id)
     assert run is not None and run.status is DiscoveryRunStatus.PARTIAL
+    assert (await second.get_latest_run(USER, SEARCH_PROFILE)).id == run_id
     assert run.source_health[0].status == SourceHealthStatus.UNAVAILABLE
     assert await second.list_members(USER, SEARCH_PROFILE, limit=10, offset=0) == (item.id,)
     async with catalog_database() as session:
@@ -166,6 +169,21 @@ async def test_repeated_run_refreshes_existing_membership_without_duplication(ca
     assert len(memberships) == 1
     assert memberships[0].first_seen_at == NOW
     assert memberships[0].last_seen_at == later
+    assert memberships[0].last_changed_at is None
+
+    changed = posting(23, source_key="fake_board", external_id="role-23",
+                      source_url="https://example.ch/jobs/23", title="Senior Engineer")
+    third_at = NOW + timedelta(days=2)
+    changed_source = FakeSource(a_metadata("fake_board"),
+                                result=a_result("fake_board", changed))
+    await DiscoveryCatalogService(catalog_database, orchestrator(changed_source),
+                                  clock=lambda: third_at).run_profile(
+        USER, SEARCH_PROFILE, trigger="MORNING")
+    async with catalog_database() as session:
+        membership = (await session.execute(select(DiscoveryMembershipRow))).scalar_one()
+    assert membership.first_seen_at == NOW
+    assert membership.last_seen_at == third_at
+    assert membership.last_changed_at == third_at
 
 
 async def test_deleting_profile_cascades_runs_and_memberships(catalog_database):

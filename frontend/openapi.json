@@ -5972,10 +5972,46 @@
             ],
             "title": "Distance Meters"
           },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "last_changed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Changed At"
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At"
           },
           "location": {
             "anyOf": [
@@ -6037,6 +6073,14 @@
                 "type": "null"
               }
             ]
+          },
+          "source_records": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/OpportunitySourceSummaryResponse"
+            },
+            "title": "Source Records",
+            "type": "array"
           },
           "status": {
             "$ref": "#/components/schemas/GeoStatus"
@@ -6133,6 +6177,39 @@
           "unresolved"
         ],
         "title": "OpportunityLinkResponse",
+        "type": "object"
+      },
+      "OpportunitySourceSummaryResponse": {
+        "additionalProperties": false,
+        "description": "Public posting provenance without the untrusted raw source payload.",
+        "properties": {
+          "fetched_at": {
+            "format": "date-time",
+            "title": "Fetched At",
+            "type": "string"
+          },
+          "source_key": {
+            "title": "Source Key",
+            "type": "string"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          }
+        },
+        "required": [
+          "source_key",
+          "source_url",
+          "fetched_at"
+        ],
+        "title": "OpportunitySourceSummaryResponse",
         "type": "object"
       },
       "OpportunityType": {
@@ -13543,6 +13620,49 @@
           }
         },
         "summary": "Enqueue Discovery",
+        "tags": [
+          "v2-discovery"
+        ]
+      }
+    },
+    "/api/v2/me/search-profiles/{search_profile_id}/discovery-runs/latest": {
+      "get": {
+        "operationId": "read_latest_discovery_api_v2_me_search_profiles__search_profile_id__discovery_runs_latest_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "search_profile_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Search Profile Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Latest Discovery",
         "tags": [
           "v2-discovery"
         ]

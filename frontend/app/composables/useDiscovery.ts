@@ -3,8 +3,8 @@ import type { MaybeRefOrGetter } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import type { DiscoveryQueued, DiscoveryRun } from '~/types/v2'
 import type { DiscoveryState } from '~/utils/discovery-messages'
-import { apiGet, apiPost } from '~/utils/api-client'
-import { discoveryRun, discoveryStart } from '~/utils/endpoints'
+import { ApiError, apiGet, apiPost } from '~/utils/api-client'
+import { discoveryLatest, discoveryRun, discoveryStart } from '~/utils/endpoints'
 import { invalidate } from './useApiQuery'
 
 const POLL_INTERVAL_MS = 3000
@@ -76,14 +76,32 @@ export function useDiscoveryRun(profileId: MaybeRefOrGetter<string | null>) {
     }
   }
 
-  watch(() => toValue(profileId), () => {
+  async function hydrate(id: string, currentGeneration: number) {
+    try {
+      const latest = await apiGet<DiscoveryRun>(discoveryLatest(id))
+      if (currentGeneration !== generation) return
+      report.value = latest
+      if (!TERMINAL.has(latest.status)) {
+        queued.value = { run_id: latest.run_id, status: 'QUEUED' }
+        polls = 0
+        timer.resume()
+      }
+    }
+    catch (cause) {
+      if (currentGeneration === generation && !(cause instanceof ApiError && cause.status === 404))
+        error.value = true
+    }
+  }
+
+  watch(() => toValue(profileId), (id) => {
     generation++
     timer.pause()
     queued.value = null
     report.value = null
     error.value = false
     busy.value = false
-  })
+    if (id) void hydrate(id, generation)
+  }, { immediate: true })
   onScopeDispose(() => timer.pause())
   return { refresh, status, sourceHealth, lastUpdated, report, busy, error }
 }

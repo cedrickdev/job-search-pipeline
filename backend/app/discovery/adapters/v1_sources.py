@@ -30,6 +30,7 @@ import asyncio
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
+from threading import Event
 from time import perf_counter
 from typing import Any, Final, Protocol
 
@@ -54,7 +55,7 @@ from backend.app.domain.base import CountryCode
 from backend.app.domain.opportunity import Opportunity
 from country_packs.contracts import CountryPack
 from pipeline import paths
-from pipeline.http_fetch import FetchError
+from pipeline.http_fetch import SOURCE_STOP, FetchError
 
 Clock = Callable[[], datetime]
 PackResolver = Callable[[CountryCode], CountryPack]
@@ -219,7 +220,17 @@ class V1SourceAdapter:
                 f"{MAX_REQUESTS_PER_SWEEP} were made"))
             plan = plan[:MAX_REQUESTS_PER_SWEEP]
 
-        postings, errors = await asyncio.to_thread(self._run, plan)
+        stop = Event()
+        worker = asyncio.create_task(asyncio.to_thread(self._run, plan, stop))
+        try:
+            postings, errors = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # A synchronous HTTP call cannot be cancelled by cancelling its
+            # asyncio waiter. Stop the remaining plan and wait for that one call
+            # before the orchestrator reports a terminal timeout.
+            stop.set()
+            await asyncio.shield(worker)
+            raise
         latency_ms = _elapsed_ms(started)
         observed_at = self._clock()
         return self._result(request, pack, postings, errors, warnings,
@@ -281,7 +292,8 @@ class V1SourceAdapter:
         except FetchError as exc:
             raise failures.SourceFetchError(str(exc)) from exc
 
-    def _run(self, plan: Sequence[Callable[[], list[dict[str, Any]]]]) -> tuple[
+    def _run(self, plan: Sequence[Callable[[], list[dict[str, Any]]]],
+             stop: Event | None = None) -> tuple[
             list[Posting], list[Exception]]:
         """Every call in the plan, sequentially, in one worker thread.
 
@@ -295,11 +307,17 @@ class V1SourceAdapter:
         """
         postings: list[Posting] = []
         errors: list[Exception] = []
-        for call in plan:
-            try:
-                postings.extend(self._guarded(call))
-            except Exception as exc:
-                errors.append(exc)
+        token = SOURCE_STOP.set(stop)
+        try:
+            for call in plan:
+                if stop is not None and stop.is_set():
+                    break
+                try:
+                    postings.extend(self._guarded(call))
+                except Exception as exc:
+                    errors.append(exc)
+        finally:
+            SOURCE_STOP.reset(token)
         return postings, errors
 
     def _warn(self, code: DiscoveryWarningCode, detail: str,

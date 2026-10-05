@@ -74,6 +74,43 @@ describe('MapResultCard · opportunity', () => {
     expect(wrapper.find('.map-card-apply').exists()).toBe(false)
     expect(wrapper.html()).not.toContain('<img src=x')
   })
+
+  it('shows collected provenance and freshness in French without exposing unsafe links', async () => {
+    const wrapper = await mountSuspended(MapResultCard, {
+      props: { discoveryLocale: 'fr', opportunity: opportunityGeoItem({
+        first_seen_at: '2026-10-03T09:00:00Z',
+        last_seen_at: '2026-10-04T09:00:00Z',
+        source_records: [
+          { source_key: 'jobup', source_url: 'https://example.ch/jobs/1', fetched_at: '2026-10-04T09:00:00Z' },
+          { source_key: 'unsafe', source_url: 'javascript:alert(1)', fetched_at: '2026-10-04T09:00:00Z' },
+        ],
+      }) },
+    })
+    expect(wrapper.text()).toContain('Première découverte')
+    expect(wrapper.text()).toContain('Dernière observation')
+    expect(wrapper.get('a[href="https://example.ch/jobs/1"]').text()).toContain('jobup')
+    expect(wrapper.find('a[href^="javascript:"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Déjà observée')
+    expect(wrapper.text()).not.toContain('Offre mise à jour')
+  })
+
+  it('distinguishes a changed offer from one merely seen again in both languages', async () => {
+    const offer = opportunityGeoItem({
+      first_seen_at: '2026-10-03T09:00:00Z',
+      last_seen_at: '2026-10-05T09:00:00Z',
+      last_changed_at: '2026-10-04T09:00:00Z',
+    })
+    const french = await mountSuspended(MapResultCard, {
+      props: { discoveryLocale: 'fr', opportunity: offer },
+    })
+    expect(french.text()).toContain('Offre mise à jour')
+    expect(french.text()).not.toContain('Déjà observée')
+    const english = await mountSuspended(MapResultCard, {
+      props: { discoveryLocale: 'en', opportunity: offer },
+    })
+    expect(english.text()).toContain('Updated opportunity')
+    expect(english.text()).not.toContain('Seen before')
+  })
 })
 
 describe('MapResultCard · company', () => {

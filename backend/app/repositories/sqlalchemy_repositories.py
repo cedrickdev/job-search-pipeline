@@ -183,6 +183,7 @@ from backend.app.infrastructure.database.mappers import (
     role_classification_to_row,
     search_profile_to_domain,
     search_profile_to_row,
+    source_record_to_domain,
     strategy_change_execution_to_domain,
     strategy_change_execution_to_row,
     strategy_change_proposal_to_domain,
@@ -829,19 +830,34 @@ class SqlAlchemyOpportunityRepository:
                 OpportunityRow.location_country.in_(query.countries),
                 and_(OpportunityRow.location_country.is_(None),
                      CompanyLocationRow.location_country.in_(query.countries))))
+        unknown_catalog_location = and_(
+            OpportunityRow.location_country.is_(None),
+            OpportunityRow.location_point.is_(None),
+            CompanyLocationRow.location_country.is_(None),
+            CompanyLocationRow.location_point.is_(None),
+        ) if catalog_scope is not None else None
         remote = OpportunityRow.workplace_mode == WorkplaceMode.REMOTE
         predicates: list[ColumnElement[bool]] = []
         if query.remote_policy is RemotePolicy.REMOTE_ONLY:
             predicates.append(remote)
         elif query.remote_policy is RemotePolicy.INCLUDE_REMOTE:
-            predicates.append(or_(*geographic_predicates, remote))
+            predicates.append(or_(*geographic_predicates, remote,
+                                  unknown_catalog_location)
+                              if unknown_catalog_location is not None
+                              else or_(*geographic_predicates, remote))
         else:
-            predicates.extend((or_(*geographic_predicates), ~remote))
+            geographic = or_(*geographic_predicates)
+            if unknown_catalog_location is not None:
+                geographic = or_(geographic, unknown_catalog_location)
+            predicates.extend((geographic, ~remote))
 
         if query.remote_countries:
-            predicates.append(or_(~remote,
-                                  OpportunityRow.location_country.in_(
-                                      query.remote_countries)))
+            remote_country = or_(~remote,
+                                 OpportunityRow.location_country.in_(
+                                     query.remote_countries))
+            if unknown_catalog_location is not None:
+                remote_country = or_(remote_country, unknown_catalog_location)
+            predicates.append(remote_country)
         if query.opportunity_types:
             predicates.append(
                 OpportunityRow.opportunity_type.in_(query.opportunity_types))
@@ -849,11 +865,13 @@ class SqlAlchemyOpportunityRepository:
             predicates.append(
                 OpportunityRow.workplace_mode.in_(query.workplace_modes))
         if query.bounds is not None:
-            predicates.append(or_(
+            bounded = or_(
                 within_bounds(OpportunityRow.location_point, query.bounds),
                 and_(~resolved_point,
                      within_bounds(CompanyLocationRow.location_point,
-                                   query.bounds))))
+                                   query.bounds)))
+            predicates.append(or_(bounded, unknown_catalog_location)
+                              if unknown_catalog_location is not None else bounded)
         if catalog_scope is not None:
             owner_id, search_id = catalog_scope
             predicates.append(exists(
@@ -909,9 +927,24 @@ class SqlAlchemyOpportunityRepository:
             .where(*predicates)
             .order_by(*ordering)
             .limit(query.limit).offset(query.offset))
+        records = result.all()
+        membership_by_opportunity: dict[Any, DiscoveryMembershipRow] = {}
+        if catalog_scope is not None and records:
+            owner_id, search_id = catalog_scope
+            memberships = (await self._session.execute(
+                select(DiscoveryMembershipRow).where(
+                    DiscoveryMembershipRow.user_id == owner_id,
+                    DiscoveryMembershipRow.search_profile_id == search_id,
+                    DiscoveryMembershipRow.opportunity_id.in_(
+                        row.id for row, *_ in records),
+                )
+            )).scalars().all()
+            membership_by_opportunity = {
+                membership.opportunity_id: membership for membership in memberships}
         found: list[OpportunityGeoResult] = []
-        for values in result.all():
+        for values in records:
             row, company_location_row, meters, *matches = values
+            membership = membership_by_opportunity.get(row.id)
             opportunity = opportunity_to_domain(row)
             matched = _matched_radii(matches, query)
             is_remote = opportunity.is_remote
@@ -934,7 +967,13 @@ class SqlAlchemyOpportunityRepository:
                 remote_scope=remote_scope_of(opportunity.workplace_mode,
                                              opportunity.location),
                 matched_radii=matched,
-                company_location=company_location))
+                company_location=company_location,
+                source_records=(tuple(source_record_to_domain(source)
+                                      for source in row.sources)
+                                if membership is not None else ()),
+                first_seen_at=(membership.first_seen_at if membership else None),
+                last_seen_at=(membership.last_seen_at if membership else None),
+                last_changed_at=(membership.last_changed_at if membership else None)))
         return tuple(found)
 
     async def list_unlinked(self, *,

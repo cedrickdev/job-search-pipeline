@@ -4,7 +4,7 @@ export type DiscoveryState = 'IDLE' | 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'PART
 
 const messages: Record<DiscoveryLocale, Record<DiscoveryState, string>> = {
   fr: {
-    IDLE: 'Aucune collecte lancée pendant cette session.',
+    IDLE: 'Aucune collecte disponible pour cette recherche.',
     QUEUED: 'Recherche en attente de démarrage…',
     RUNNING: 'Recherche des offres en cours…',
     SUCCEEDED: 'Recherche terminée.',
@@ -13,7 +13,7 @@ const messages: Record<DiscoveryLocale, Record<DiscoveryState, string>> = {
     ERROR: 'Statut indisponible. Les offres précédentes restent visibles.',
   },
   en: {
-    IDLE: 'No collection started in this session.',
+    IDLE: 'No collection available for this search.',
     QUEUED: 'Discovery is waiting to start…',
     RUNNING: 'Searching for opportunities…',
     SUCCEEDED: 'Discovery completed.',

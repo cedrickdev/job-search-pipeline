@@ -71,3 +71,16 @@ async def read_discovery(
                 else DiscoveryRunStatus.RUNNING),
         started_at=task.started_at, seen_count=0, matched_count=0,
     )
+
+
+@router.get("/me/search-profiles/{search_profile_id}/discovery-runs/latest",
+            response_model=DiscoveryRunResponse)
+async def read_latest_discovery(
+    search_profile_id: SearchProfileId,
+    current: CurrentSession,
+    service: Annotated[DiscoveryCatalogService, Depends(discovery_catalog_service)],
+) -> DiscoveryRunResponse:
+    run = await service.get_latest_run(current.user.id, search_profile_id)
+    if run is None:
+        raise _not_found()
+    return DiscoveryRunResponse.of(run)

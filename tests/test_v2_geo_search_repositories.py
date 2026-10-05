@@ -4,6 +4,7 @@ from uuid import UUID
 import pytest
 
 from backend.app.domain.common import GeoBounds, GeoDistance, GeoPoint, Location
+from backend.app.api.schemas import OpportunityGeoItemResponse
 from backend.app.domain.geo import GeoSearchQuery, GeoStatus, RadiusFilter
 from backend.app.domain.identifiers import (
     CompanyId,
@@ -111,7 +112,7 @@ async def test_collected_saved_search_filters_before_pagination_and_keeps_unloca
     await SqlAlchemySearchProfileRepository(db_session).upsert(a_search_profile())
     repo = SqlAlchemyOpportunityRepository(db_session)
     collected = a_geo_posting(31, LAUSANNE, "Lausanne")
-    unlocated = a_geo_posting(32, None, "Suisse romande")
+    unlocated = a_geo_posting(32, None, "Unknown", location=None)
     public_only = a_geo_posting(33, GENEVA, "Geneve")
     for item in (collected, unlocated, public_only):
         await repo.upsert(item)
@@ -125,6 +126,10 @@ async def test_collected_saved_search_filters_before_pagination_and_keeps_unloca
     ))
     for item in (collected, unlocated):
         await runs.add_member(USER, SEARCH_PROFILE, item.id, run_id=run_id, seen_at=NOW)
+    from datetime import timedelta
+    changed_at = NOW + timedelta(days=1)
+    await runs.add_member(USER, SEARCH_PROFILE, collected.id, run_id=run_id,
+                          seen_at=changed_at, changed=True)
 
     first = await repo.search_geo(
         GeoSearchQuery(countries=("CH",), limit=1),
@@ -142,9 +147,52 @@ async def test_collected_saved_search_filters_before_pagination_and_keeps_unloca
     assert public_only.id not in {result.opportunity.id for result in (*first, *second)}
     assert unlocated.id in {result.opportunity.id for result in (*first, *second)
                             if result.status is GeoStatus.UNRESOLVED}
+    collected_result = next(result for result in (*first, *second)
+                            if result.opportunity.id == collected.id)
+    assert collected_result.first_seen_at == NOW
+    assert collected_result.last_seen_at == changed_at
+    assert collected_result.last_changed_at == changed_at
+    assert [(record.source_key, record.source_url)
+            for record in collected_result.source_records] == [
+                (collected.source.source_key, collected.source.source_url)]
+    rendered = OpportunityGeoItemResponse.of(collected_result).model_dump(mode="json")
+    assert rendered["first_seen_at"] == NOW.isoformat().replace("+00:00", "Z")
+    assert rendered["last_changed_at"] == changed_at.isoformat().replace("+00:00", "Z")
+    assert rendered["source_records"][0]["source_key"] == collected.source.source_key
+    assert "raw" not in rendered["source_records"][0]
     assert {result.opportunity.id for result in public} == {
-        collected.id, unlocated.id, public_only.id}
+        collected.id, public_only.id}
+    assert all(result.source_records == () for result in public)
+    assert all(result.last_changed_at is None for result in public)
     assert foreign == ()
+
+
+@pytest.mark.asyncio
+async def test_collected_remote_without_country_stays_list_only(db_session):
+    db_session.add(a_user_row(id=USER))
+    await db_session.flush()
+    await SqlAlchemySearchProfileRepository(db_session).upsert(a_search_profile())
+    remote = a_geo_posting(34, None, "Unknown", location=None,
+                           workplace_mode=WorkplaceMode.REMOTE)
+    await SqlAlchemyOpportunityRepository(db_session).upsert(remote)
+    run_id = DiscoveryRunId(UUID("00000000-0000-4000-8000-000000000d56"))
+    runs = DiscoveryRunStore(db_session)
+    await runs.create_run(DiscoveryRun(
+        id=run_id, user_id=USER, search_profile_id=SEARCH_PROFILE,
+        country="CH", trigger=DiscoveryTrigger.MANUAL,
+        status=DiscoveryRunStatus.RUNNING, started_at=NOW,
+        seen_count=0, matched_count=0,
+    ))
+    await runs.add_member(USER, SEARCH_PROFILE, remote.id, run_id=run_id, seen_at=NOW)
+    query = GeoSearchQuery(countries=("CH",), remote_policy="INCLUDE_REMOTE",
+                           remote_countries=("CH",))
+    scoped = await SqlAlchemyOpportunityRepository(db_session).search_geo(
+        query, catalog_scope=(USER, SEARCH_PROFILE))
+    public = await SqlAlchemyOpportunityRepository(db_session).search_geo(query)
+    assert [item.opportunity.id for item in scoped] == [remote.id]
+    assert scoped[0].status is GeoStatus.REMOTE
+    assert scoped[0].location is None
+    assert public == ()
 
 
 @pytest.mark.asyncio

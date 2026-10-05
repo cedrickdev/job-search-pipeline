@@ -87,6 +87,29 @@ async def test_missing_url_uses_stable_external_id(db_session):
     assert await count(db_session, OpportunitySourceRecordRow) == 1
 
 
+async def test_missing_url_on_refresh_keeps_last_valid_apply_link(db_session):
+    store = CatalogOpportunityStore(db_session)
+    first = posting(21, external_id="role-21", source_url="https://example.ch/jobs/21").model_copy(
+        update={"application_url": "https://example.ch/jobs/21"})
+    missing = posting(22, external_id="role-21", source_url=None).model_copy(
+        update={"application_url": None})
+    await store.observe(first, canonical_target=None)
+    await store.observe(missing, canonical_target=None)
+    row = await db_session.get(OpportunityRow, first.id)
+    assert row is not None
+    assert row.application_url == "https://example.ch/jobs/21"
+
+
+async def test_distinct_ids_sharing_generic_source_url_remain_distinct(db_session):
+    store = CatalogOpportunityStore(db_session)
+    first = posting(23, external_id="role-23", source_url="https://example.ch/jobs")
+    second = posting(24, external_id="role-24", source_url="https://example.ch/jobs")
+    assert await store.observe(first, canonical_target=None) == first.id
+    assert await store.observe(second, canonical_target=None) == second.id
+    assert await count(db_session, OpportunityRow) == 2
+    assert await count(db_session, OpportunitySourceRecordRow) == 2
+
+
 async def test_url_fallback_normalizes_tracking_and_fragment(db_session):
     store = CatalogOpportunityStore(db_session)
     first = posting(9, source_url="https://example.ch/jobs/9?utm_source=a#details")
@@ -116,11 +139,14 @@ async def test_concurrent_retries_create_one_opportunity(db_engine, second_exter
 
     try:
         ids = await asyncio.gather(insert(first), insert(second))
-        assert ids[0] == ids[1]
-        assert ids[0] in {first.id, second.id}
+        if second_external_id == "concurrent-12":
+            assert ids[0] == ids[1]
+        else:
+            assert set(ids) == {first.id, second.id}
         async with AsyncSession(db_engine) as session:
-            assert await count(session, OpportunityRow) == 1
-            assert await count(session, OpportunitySourceRecordRow) == 1
+            expected = 1 if second_external_id == "concurrent-12" else 2
+            assert await count(session, OpportunityRow) == expected
+            assert await count(session, OpportunitySourceRecordRow) == expected
     finally:
         async with AsyncSession(db_engine) as session:
             async with session.begin():

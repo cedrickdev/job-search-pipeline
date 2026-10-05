@@ -322,6 +322,9 @@ export function opportunityGeoItem(overrides: Partial<OpportunityGeoItem> = {}):
     posted_at: '2026-01-01T08:00:00Z',
     discovered_at: '2026-01-02T09:00:00Z',
     posting_language: 'en',
+    source_records: [],
+    first_seen_at: null,
+    last_seen_at: null,
     ...overrides,
   }
 }
@@ -1227,5 +1230,4 @@ export function usageSnapshot(overrides: Partial<UsageSnapshot> = {}): UsageSnap
     ...overrides,
   }
 }
-
 

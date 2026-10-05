@@ -19,9 +19,18 @@ import { safeJobUrl } from '~/utils/safe-job-url'
 const props = defineProps<{
   opportunity?: OpportunityGeoItem | null
   company?: CompanyGeoItem | null
+  discoveryLocale?: 'fr' | 'en'
 }>()
 const emit = defineEmits<{ close: [] }>()
 const postingUrl = computed(() => safeJobUrl(props.opportunity?.application_url))
+const provenance = computed(() => (props.opportunity?.source_records ?? []).map(source => ({
+  ...source,
+  safeUrl: safeJobUrl(source.source_url),
+})))
+const french = computed(() => props.discoveryLocale === 'fr')
+function displayDate(value: string | null | undefined): string {
+  return value ? new Date(value).toLocaleDateString(french.value ? 'fr-CH' : 'en-CH') : ''
+}
 </script>
 
 <template>
@@ -60,6 +69,30 @@ const postingUrl = computed(() => safeJobUrl(props.opportunity?.application_url)
     <p v-if="opportunity.status === 'COMPANY_FALLBACK'" class="map-card-note">
       Approximate location — the pin is the company office, not the role's own address.
     </p>
+
+    <div v-if="opportunity.first_seen_at" class="map-card-provenance">
+      <p>{{ french ? 'Première découverte' : 'First seen' }} : {{ displayDate(opportunity.first_seen_at) }}</p>
+      <p v-if="opportunity.last_seen_at">
+        {{ french ? 'Dernière observation' : 'Last seen' }} : {{ displayDate(opportunity.last_seen_at) }}
+      </p>
+      <p v-if="opportunity.last_changed_at">
+        {{ french ? 'Dernière mise à jour' : 'Last updated' }} : {{ displayDate(opportunity.last_changed_at) }}
+      </p>
+      <p v-if="opportunity.first_seen_at === opportunity.last_seen_at">
+        {{ french ? 'Nouvelle offre' : 'New opportunity' }}
+      </p>
+      <p v-else-if="opportunity.last_changed_at">{{ french ? 'Offre mise à jour' : 'Updated opportunity' }}</p>
+      <p v-else>{{ french ? 'Déjà observée' : 'Seen before' }}</p>
+    </div>
+    <div v-if="provenance.length" class="map-card-provenance">
+      <span>{{ french ? 'Sources' : 'Sources' }} :</span>
+      <ul>
+        <li v-for="source in provenance" :key="`${source.source_key}:${source.source_url ?? ''}`">
+          <a v-if="source.safeUrl" :href="source.safeUrl" target="_blank" rel="noopener noreferrer">{{ source.source_key }}</a>
+          <span v-else>{{ source.source_key }}</span>
+        </li>
+      </ul>
+    </div>
 
     <a
       v-if="postingUrl"
@@ -176,4 +209,10 @@ const postingUrl = computed(() => safeJobUrl(props.opportunity?.application_url)
   font-size: 13px;
   margin-top: var(--space-1);
 }
+.map-card-provenance {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.map-card-provenance p { margin: 0 0 var(--space-1); }
+.map-card-provenance ul { margin: var(--space-1) 0 0; padding-left: var(--space-3); }
 </style>

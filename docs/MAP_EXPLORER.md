@@ -15,6 +15,16 @@ collected opportunities visible, with source health and warning codes rather
 than a misleading claim of zero jobs. Unresolved or remote-only offers stay in
 the list and do not acquire invented coordinates.
 
+On load, the map reads the latest owner-scoped run for this saved search at
+`GET /api/v2/me/search-profiles/{id}/discovery-runs/latest`, including morning
+runs. A collected result's card shows public source links, first-seen and
+last-seen dates, plus the last material-change date when available. A later
+last-seen time alone means observed again; only a changed title, posting fields
+or source record marks the offer updated. This is a change in collected public
+data, not proof that the employer made it. The response omits raw source metadata. Offers whose country and
+coordinates remain unknown are listed but cannot be pinned; known nonmatching
+countries are still excluded.
+
 The new discovery status and control copy has an explicit French/English choice
 on this surface. Other V2 pages and their older map labels are not yet fully
 internationalized. The discovery control does not submit applications.

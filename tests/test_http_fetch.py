@@ -1,4 +1,5 @@
 import pytest
+from threading import Event
 
 from pipeline import http_fetch
 from pipeline.http_fetch import FetchError
@@ -37,4 +38,23 @@ def test_fetch_403_fails_without_retry(monkeypatch):
     monkeypatch.setattr(http_fetch.time, "sleep", lambda s: None)
     with pytest.raises(FetchError):
         http_fetch.fetch("https://x.test")
+    assert len(calls) == 1
+
+
+def test_cancelled_catalog_fetch_does_not_retry_a_failed_request(monkeypatch):
+    stop = Event()
+    calls = []
+
+    def fail_once(*args, **kwargs):
+        calls.append(1)
+        stop.set()
+        return FakeResp(status_code=500)
+
+    monkeypatch.setattr(http_fetch.requests, "request", fail_once)
+    token = http_fetch.SOURCE_STOP.set(stop)
+    try:
+        with pytest.raises(FetchError):
+            http_fetch.fetch("https://x.test")
+    finally:
+        http_fetch.SOURCE_STOP.reset(token)
     assert len(calls) == 1

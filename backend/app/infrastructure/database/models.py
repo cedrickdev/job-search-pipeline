@@ -1364,7 +1364,9 @@ class OpportunitySourceRecordRow(TimestampedMixin, Base):
         # `uq_opportunity_source_records_source_key_external_id` from the columns,
         # so the name in a migration is predictable from the definition here.
         UniqueConstraint("source_key", "external_id"),
-        UniqueConstraint("source_key", "normalized_url"),
+        Index("uq_opportunity_source_records_unkeyed_url", "source_key",
+              "normalized_url", unique=True,
+              postgresql_where=text("external_id IS NULL")),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -1446,6 +1448,7 @@ class DiscoveryMembershipRow(TimestampedMixin, Base):
         ForeignKey("opportunities.id", ondelete="CASCADE"))
     first_seen_at: Mapped[datetime]
     last_seen_at: Mapped[datetime]
+    last_changed_at: Mapped[datetime | None]
     last_run_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("discovery_runs.id", ondelete="SET NULL"))
 

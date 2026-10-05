@@ -70,7 +70,7 @@ V2_TABLES = frozenset({
 
 # The revision `alembic upgrade head` is expected to stop at. A revision added
 # without updating this line is a revision nobody decided to ship.
-HEAD_REVISION = "0023"
+HEAD_REVISION = "0025"
 
 # Every `geography(Point,4326)` column, by the table that holds it. One radius
 # query has to run against any of them, so they are declared identically and
@@ -139,6 +139,8 @@ def test_catalog_revision_keeps_legacy_provenance_and_allows_second_source(schem
     reset_schema(schema_engine)
     with schema_engine.begin() as connection:
         command.downgrade(alembic_config(connection), "0021")
+
+
         connection.execute(text(
             "INSERT INTO opportunities (id, company_name, title, discovered_at) "
             "VALUES ('11111111-1111-4111-8111-111111111111', 'Example AG', "
@@ -171,6 +173,53 @@ def test_catalog_revision_keeps_legacy_provenance_and_allows_second_source(schem
     with schema_engine.connect() as connection:
         assert connection.execute(text(
             "SELECT source_key FROM opportunity_source_records")).scalar_one() == "legacy"
+
+
+def test_catalog_shared_url_revision_is_reversible_after_distinct_rows_removed(schema_engine):
+    reset_schema(schema_engine)
+    with schema_engine.begin() as connection:
+        command.downgrade(alembic_config(connection), "0023")
+        command.upgrade(alembic_config(connection), "0024")
+        for number in (1, 2):
+            connection.execute(text(
+                "INSERT INTO opportunities (id, company_name, title, discovered_at) "
+                "VALUES (:id, 'Example AG', 'Engineer', now())"
+            ), {"id": f"00000000-0000-4000-8000-0000000001{number:02d}"})
+            connection.execute(text(
+                "INSERT INTO opportunity_source_records "
+                "(id, opportunity_id, source_key, external_id, source_url, "
+                "normalized_url, fetched_at) "
+                "VALUES (:source_id, :id, 'board', :external_id, "
+                "'https://example.ch/jobs', 'https://example.ch/jobs', now())"
+            ), {"source_id": f"00000000-0000-4000-8000-0000000002{number:02d}",
+                "id": f"00000000-0000-4000-8000-0000000001{number:02d}",
+                "external_id": f"role-{number}"})
+        assert connection.execute(text(
+            "SELECT count(*) FROM opportunity_source_records "
+            "WHERE normalized_url = 'https://example.ch/jobs'"
+        )).scalar_one() == 2
+        connection.execute(text(
+            "DELETE FROM opportunity_source_records WHERE external_id = 'role-2'"))
+        connection.execute(text(
+            "DELETE FROM opportunities WHERE id = "
+            "'00000000-0000-4000-8000-000000000102'"))
+        command.downgrade(alembic_config(connection), "0023")
+        command.upgrade(alembic_config(connection), "0024")
+
+
+def test_catalog_change_tracking_revision_is_reversible(schema_engine):
+    reset_schema(schema_engine)
+    with schema_engine.begin() as connection:
+        command.downgrade(alembic_config(connection), "0024")
+        assert "last_changed_at" not in {
+            column["name"] for column in inspect(connection).get_columns("discovery_memberships")}
+        command.upgrade(alembic_config(connection), "0025")
+        assert "last_changed_at" in {
+            column["name"] for column in inspect(connection).get_columns("discovery_memberships")}
+        command.downgrade(alembic_config(connection), "0024")
+        assert "last_changed_at" not in {
+            column["name"] for column in inspect(connection).get_columns("discovery_memberships")}
+        command.upgrade(alembic_config(connection), "head")
 
 
 def test_the_migrated_schema_and_the_models_describe_the_same_database(schema_engine):

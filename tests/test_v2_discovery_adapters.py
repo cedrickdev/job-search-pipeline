@@ -17,6 +17,10 @@ Nothing in this file opens a socket. `RecordingSearch` and `RecordingFetch` stan
 for `pipeline/sources/*.py`, and the one test that touches the real catalog only
 builds adapters — binding a callable makes no request.
 """
+import asyncio
+from threading import Event
+from time import sleep
+
 import pytest
 import yaml
 
@@ -51,6 +55,30 @@ PACK = a_pack("CH")
 # one that reads neither and returns its own listing whatever it is asked.
 SEARCHING = frozenset({Cap.KEYWORD_SEARCH, Cap.LOCATION_SEARCH})
 HARDCODED = frozenset({Cap.HEALTHCHECK})
+
+
+@pytest.mark.asyncio
+async def test_cancelled_v1_adapter_finishes_active_call_and_stops_its_plan():
+    started = Event()
+    finished = Event()
+    calls: list[str] = []
+
+    def slow_search(query: str, location: str, lookback_days: int = 3):
+        calls.append(query)
+        started.set()
+        sleep(0.06)
+        finished.set()
+        return []
+
+    adapter = V1QuerySourceAdapter(
+        metadata=a_metadata("fake_board", capabilities=SEARCHING),
+        search=slow_search, packs=lambda _: PACK, clock=frozen_clock())
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(adapter.discover(a_request(
+            keywords=("first", "second"))), timeout=0.02)
+    assert started.is_set()
+    assert finished.is_set(), "the sweep must not report timeout while network work continues"
+    assert calls == ["first"]
 
 
 def a_posting(**overrides) -> dict[str, object]:

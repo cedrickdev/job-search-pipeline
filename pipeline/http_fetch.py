@@ -1,4 +1,6 @@
 """One HTTP door for every source: browser headers, timeouts, retries, typed errors."""
+from contextvars import ContextVar
+from threading import Event
 import time
 
 import requests
@@ -9,6 +11,7 @@ DEFAULT_TIMEOUT = 20
 RETRIES = 2
 RETRY_WAIT = 3.0
 NO_RETRY_CODES = {401, 403, 404, 410}
+SOURCE_STOP: ContextVar[Event | None] = ContextVar("source_stop", default=None)
 
 
 class FetchError(Exception):
@@ -24,6 +27,9 @@ def fetch(url: str, *, method: str = "GET", params: dict | None = None,
         merged.update(headers)
     last_error = "unknown"
     for attempt in range(RETRIES + 1):
+        stop = SOURCE_STOP.get()
+        if stop is not None and stop.is_set():
+            raise FetchError(f"{url}: source cancelled")
         try:
             resp = requests.request(method, url, params=params, json=json_body,
                                     headers=merged, timeout=timeout)
@@ -35,7 +41,10 @@ def fetch(url: str, *, method: str = "GET", params: dict | None = None,
         except requests.RequestException as exc:
             last_error = str(exc)
         if attempt < RETRIES:
-            time.sleep(RETRY_WAIT)
+            if stop is None:
+                time.sleep(RETRY_WAIT)
+            else:
+                stop.wait(RETRY_WAIT)
     raise FetchError(f"{url}: {last_error}")
 
 

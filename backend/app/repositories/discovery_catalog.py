@@ -29,6 +29,7 @@ from backend.app.domain.identifiers import (
 )
 from backend.app.domain.opportunity import Opportunity, OpportunitySourceRecord
 from backend.app.infrastructure.database.mappers import (
+    opportunity_to_domain,
     opportunity_to_row,
     source_record_to_domain,
     source_record_to_row,
@@ -56,6 +57,13 @@ class CatalogOpportunityStore:
     async def observe(
         self, opportunity: Opportunity, *, canonical_target: str | None,
     ) -> OpportunityId:
+        opportunity_id, _ = await self.observe_with_change(
+            opportunity, canonical_target=canonical_target)
+        return opportunity_id
+
+    async def observe_with_change(
+        self, opportunity: Opportunity, *, canonical_target: str | None,
+    ) -> tuple[OpportunityId, bool]:
         source = opportunity.source
         if (canonical_target is not None
                 and canonical_target != verified_canonical_target(opportunity)):
@@ -71,7 +79,7 @@ class CatalogOpportunityStore:
             else f"url:{source.source_key}:{normalized_url}"
         )
         identities = [f"source:{source_identity}"]
-        if normalized_url:
+        if normalized_url and not source.external_id:
             identities.append(f"source:url:{source.source_key}:{normalized_url}")
         if canonical_target:
             identities.append(f"target:{canonical_target}")
@@ -90,11 +98,12 @@ class CatalogOpportunityStore:
                     OpportunitySourceRecordRow.external_id == source.external_id,
                 )
             )).scalar_one_or_none()
-        if observation is None and normalized_url:
+        if observation is None and normalized_url and not source.external_id:
             observation = (await self._session.execute(
                 select(OpportunitySourceRecordRow).where(
                     OpportunitySourceRecordRow.source_key == source.source_key,
                     OpportunitySourceRecordRow.normalized_url == normalized_url,
+                    OpportunitySourceRecordRow.external_id.is_(None),
                 )
             )).scalar_one_or_none()
 
@@ -108,6 +117,7 @@ class CatalogOpportunityStore:
                 .where(OpportunityRow.canonical_target == canonical_target)
             )).scalar_one_or_none()
 
+        changed = False
         if row is None:
             # A legacy fingerprint is company+title, not a catalog identity.
             catalog_opportunity = opportunity.model_copy(update={"dedup_fingerprint": None})
@@ -118,12 +128,24 @@ class CatalogOpportunityStore:
         else:
             # Refresh public fields while keeping the original preferred source,
             # its first-discovered timestamp, and V1's import fingerprint intact.
+            previous = opportunity_to_domain(row)
             preferred = source_record_to_domain(row.source)
             refreshed = opportunity.model_copy(update={
                 "id": OpportunityId(row.id), "source": preferred,
                 "discovered_at": min(row.discovered_at, opportunity.discovered_at),
                 "dedup_fingerprint": row.dedup_fingerprint,
+                "application_url": opportunity.application_url or row.application_url,
             })
+            ignored = {"id", "source", "discovered_at", "dedup_fingerprint"}
+            changed = (previous.model_dump(exclude=ignored)
+                       != refreshed.model_dump(exclude=ignored))
+            if observation is None:
+                changed = True
+            else:
+                changed = (changed or
+                           (bool(source.source_url) and
+                            source.source_url != observation.source_url) or
+                           dict(source.raw) != observation.raw)
             opportunity_to_row(refreshed, row)
             if canonical_target and row.canonical_target is None:
                 row.canonical_target = canonical_target
@@ -145,7 +167,7 @@ class CatalogOpportunityStore:
                 observation.raw = dict(source.raw)
 
         await self._session.flush()
-        return OpportunityId(row.id)
+        return OpportunityId(row.id), changed
 
     async def _get_row(self, opportunity_id: OpportunityId) -> OpportunityRow | None:
         return (await self._session.execute(
@@ -230,6 +252,21 @@ class DiscoveryRunStore:
         )).scalar_one_or_none()
         return None if row is None else _run_to_domain(row)
 
+    async def get_latest_run(
+        self, user_id: UserId, search_profile_id: SearchProfileId,
+    ) -> DiscoveryRun | None:
+        row = (await self._session.execute(
+            select(DiscoveryRunRow).join(
+                SearchProfileRow, SearchProfileRow.id == DiscoveryRunRow.search_profile_id
+            ).where(
+                DiscoveryRunRow.user_id == user_id,
+                DiscoveryRunRow.search_profile_id == search_profile_id,
+                SearchProfileRow.user_id == user_id,
+            ).order_by(DiscoveryRunRow.started_at.desc(), DiscoveryRunRow.id.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        return None if row is None else _run_to_domain(row)
+
     async def finish_run(self, run: DiscoveryRun) -> None:
         row = (await self._session.execute(
             select(DiscoveryRunRow).where(
@@ -252,18 +289,20 @@ class DiscoveryRunStore:
     async def add_member(
         self, user_id: UserId, search_profile_id: SearchProfileId,
         opportunity_id: OpportunityId, *, run_id: DiscoveryRunId,
-        seen_at: datetime,
+        seen_at: datetime, changed: bool = False,
     ) -> None:
         statement = pg_insert(DiscoveryMembershipRow).values(
             id=uuid5(SURROGATE_KEY_NAMESPACE,
                      f"discovery_member:{user_id}:{search_profile_id}:{opportunity_id}"),
             user_id=user_id, search_profile_id=search_profile_id,
             opportunity_id=opportunity_id, first_seen_at=seen_at,
-            last_seen_at=seen_at, last_run_id=run_id,
+            last_seen_at=seen_at, last_changed_at=None, last_run_id=run_id,
         )
+        changed_at = (seen_at if changed else DiscoveryMembershipRow.last_changed_at)
         await self._session.execute(statement.on_conflict_do_update(
             index_elements=["user_id", "search_profile_id", "opportunity_id"],
             set_={"last_seen_at": seen_at, "last_run_id": run_id,
+                  "last_changed_at": changed_at,
                   "updated_at": func.now()},
         ))
 

@@ -92,7 +92,7 @@ from backend.app.domain.interview import (
     InterviewSessionSummary,
 )
 from backend.app.domain.matching import MatchEvaluation
-from backend.app.domain.opportunity import Opportunity
+from backend.app.domain.opportunity import Opportunity, OpportunitySourceRecord
 from backend.app.domain.outcome import ApplicationOutcome
 from backend.app.domain.policy import ApplicationPolicy
 from backend.app.domain.recommendation import CareerRecommendation
@@ -146,6 +146,10 @@ class OpportunityGeoResult(NamedTuple):
     remote_scope: RemoteScope | None
     matched_radii: tuple[MatchedRadius, ...] = ()
     company_location: CompanyLocation | None = None
+    source_records: tuple[OpportunitySourceRecord, ...] = ()
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    last_changed_at: datetime | None = None
 
 
 class CompanyGeoResult(NamedTuple):
@@ -2024,4 +2028,3 @@ class TaskRunRepository(Protocol):
         user row goes. Idempotent: a retried deletion finds nothing left to cancel and returns 0.
         """
         ...
-

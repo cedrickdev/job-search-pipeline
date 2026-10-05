@@ -168,6 +168,7 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/me/exports/{export_id}/download"),
     ("GET", "/api/v2/me/profile"),
     ("GET", "/api/v2/me/search-profiles"),
+    ("GET", "/api/v2/me/search-profiles/{search_profile_id}/discovery-runs/latest"),
     ("GET", "/api/v2/me/search-profiles/{search_profile_id}/opportunities"),
     ("GET", "/api/v2/onboarding"),
     ("GET", "/api/v2/opportunities/{opportunity_id}/match"),
@@ -284,7 +285,7 @@ async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_de
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 79
+        assert len({path for _, path in published}) == 80
 
 
 @pytest.mark.asyncio
@@ -358,6 +359,7 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/me/profile",
             "/api/v2/me/discovery-runs/{run_id}",
             "/api/v2/me/search-profiles",
+            "/api/v2/me/search-profiles/{search_profile_id}/discovery-runs/latest",
             "/api/v2/me/search-profiles/{search_profile_id}/opportunities",
             "/api/v2/onboarding",
             "/api/v2/opportunities/{opportunity_id}/match",
@@ -406,6 +408,9 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                     started_at=api.clock.instant, finished_at=api.clock.instant,
                     seen_count=0, matched_count=0,
                 )
+
+            async def get_latest_run(self, owner, search_profile_id):
+                return await self.get_run(owner, PLACEHOLDER_ID)
 
         api.app.dependency_overrides[discovery_catalog_service] = lambda: ReadOnlyDiscovery()
         # `GET /opportunities/{id}/match` reads a stored verdict, so the sweep only
@@ -592,7 +597,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
             api.app, under=API_V2_PREFIX)
             if (method, path) not in PUBLIC_OPERATIONS | PROVIDER_OPERATIONS]
 
-        assert len(protected) == 93
+        assert len(protected) == 94
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 
@@ -679,4 +684,3 @@ async def test_v1_still_answers_exactly_as_it_did_beside_the_v2_router(tmp_path)
                                              "loc": ["body", "status"],
                                              "msg": "Field required",
                                              "input": {}}]}
-

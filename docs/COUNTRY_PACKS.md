@@ -607,11 +607,12 @@ Identity is derived, not random: `discovered_opportunity_id` is a `uuid5` of
 `opportunity:{source_key}:{external_key}`, where `external_key` is the source's own
 id when it publishes one and the URL otherwise. A sweep that runs twice an hour
 therefore meets the same posting and produces the same id, instead of turning one
-vacancy into twelve rows a day. Cross-source deduplication is a different question
-answered by `dedup_fingerprint` (company + title), which V1 already computes; Phase 6
-left it untouched and answered the *company* half separately, by resolving a posting's
-company name to a canonical employer (`Opportunity.company_id`) without ever
-overwriting the string the board published. See
+vacancy into twelve rows a day. V1 also computes `dedup_fingerprint` from company
+and title, but the Swiss catalog does **not** use that weak signal to merge roles.
+Catalog identity is a stable source ID or URL when no ID exists, with a verified
+job-detail target for cross-source grouping. Phase 6 answered the *company* half
+separately by resolving a posting's company name to a canonical employer
+(`Opportunity.company_id`) without ever overwriting the string the board published. See
 [Company Discovery](./COMPANY_DISCOVERY.md).
 
 A posting that cannot be normalized is skipped with a `POSTING_SKIPPED` warning and

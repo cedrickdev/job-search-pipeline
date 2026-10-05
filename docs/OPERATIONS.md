@@ -75,6 +75,15 @@ Jooble needs its API key, and ATS sources need employer board identifiers.
 No live-source coverage or production-readiness guarantee follows from local
 fixture tests.
 
+Schema revision `0024` makes normalized URLs unique only for source records
+without an external ID. Distinct source IDs may share a generic listing URL
+without losing a role. A downgrade from `0024` to `0023` deliberately refuses
+data containing such duplicates; clean them up explicitly before rollback.
+The V1 synchronous fetch adapter stops its remaining request plan after an
+orchestrator timeout and waits for any request already in flight before marking
+the source unavailable. A single blocking HTTP request can therefore extend the
+reported run beyond the nominal 20-second async timeout; monitor slow sources.
+
 Work is a durable, DB-as-truth queue: the PostgreSQL task table is the source of truth and Redis
 only signals that work is ready. Delivery is at-least-once with leases, retry and a dead-letter
 lane, so a worker that dies mid-task never loses or double-commits it — handlers are idempotent

@@ -92,6 +92,7 @@ function companyItem(over: Record<string, unknown> = {}) {
 const OPPS = '/api/v2/geo/opportunities'
 const COMPANIES = '/api/v2/geo/companies'
 const SAVED = `/api/v2/me/search-profiles/${PROFILE_ID}/opportunities`
+const LATEST = `/api/v2/me/search-profiles/${PROFILE_ID}/discovery-runs/latest`
 
 /**
  * A signed-in account and the geo reads, plus the V1 shell reads the app makes on any
@@ -103,6 +104,7 @@ function routes(...first: MockRoute[]): MockRoute[] {
     ...first,
     { match: '/api/v2/auth/session', method: 'GET', json: { account: ACCOUNT, session: SESSION_WINDOW } },
     { match: SAVED, method: 'GET', json: oppResponse([opportunity({ id: 'saved-1', title: 'Saved Role' })]) },
+    { match: LATEST, method: 'GET', status: 404, json: { error: 'discovery_not_found' } },
     { match: OPPS, method: 'GET', json: oppResponse([opportunity()]) },
     { match: COMPANIES, method: 'GET', json: { companies: [companyItem()], limit: 50, offset: 0 } },
     { match: '/api/overview', json: overview() },
@@ -242,7 +244,7 @@ test('refreshes a saved Swiss catalog and keeps unplaced results through partial
   await expect(page.getByRole('status')).toContainText('incomplète')
   await expect(page.locator('.discovery-health')).toContainText('délai dépassé')
   await expect(page.locator('.map-row', { hasText: 'Unplaced apprenticeship' })).toBeVisible()
-  expect(api.callsTo(start).map(call => call.method)).toEqual(['POST'])
+  expect(api.callsTo(start).filter(call => call.method === 'POST')).toHaveLength(1)
   expect(api.unmatched).toEqual([])
   expect(unexpectedHosts).toEqual([])
 })

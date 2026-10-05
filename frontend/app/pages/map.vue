@@ -372,6 +372,7 @@ watch(mobileView, async (view) => {
           {{ mapError }} The list still works.
         </p>
         <MapResultCard
+          :discovery-locale="activeLocale"
           v-if="selectedOpportunity || selectedCompany"
           class="map-overlay map-overlay--card"
           :opportunity="selectedOpportunity"

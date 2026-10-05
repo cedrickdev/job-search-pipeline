@@ -2116,6 +2116,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/me/search-profiles/{search_profile_id}/discovery-runs/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Latest Discovery */
+        get: operations["read_latest_discovery_api_v2_me_search_profiles__search_profile_id__discovery_runs_latest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/me/search-profiles/{search_profile_id}/opportunities": {
         parameters: {
             query?: never;
@@ -5712,11 +5729,17 @@ export interface components {
             discovered_at: string;
             /** Distance Meters */
             distance_meters: number | null;
+            /** First Seen At */
+            first_seen_at?: string | null;
             /**
              * Id
              * Format: uuid
              */
             id: string;
+            /** Last Changed At */
+            last_changed_at?: string | null;
+            /** Last Seen At */
+            last_seen_at?: string | null;
             location: components["schemas"]["GeoLocationResponse"] | null;
             /** Matched Radii */
             matched_radii: components["schemas"]["MatchedRadiusResponse"][];
@@ -5726,6 +5749,11 @@ export interface components {
             /** Posting Language */
             posting_language: string | null;
             remote_scope: components["schemas"]["RemoteScope"] | null;
+            /**
+             * Source Records
+             * @default []
+             */
+            source_records: components["schemas"]["OpportunitySourceSummaryResponse"][];
             status: components["schemas"]["GeoStatus"];
             /** Title */
             title: string;
@@ -5764,6 +5792,21 @@ export interface components {
             linked: number;
             /** Unresolved */
             unresolved: number;
+        };
+        /**
+         * OpportunitySourceSummaryResponse
+         * @description Public posting provenance without the untrusted raw source payload.
+         */
+        OpportunitySourceSummaryResponse: {
+            /**
+             * Fetched At
+             * Format: date-time
+             */
+            fetched_at: string;
+            /** Source Key */
+            source_key: string;
+            /** Source Url */
+            source_url: string | null;
         };
         /**
          * OpportunityType
@@ -10551,6 +10594,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DiscoveryQueuedResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_latest_discovery_api_v2_me_search_profiles__search_profile_id__discovery_runs_latest_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                search_profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscoveryRunResponse"];
                 };
             };
             /** @description Validation Error */

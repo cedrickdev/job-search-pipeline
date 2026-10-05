@@ -50,6 +50,31 @@ then the catalogue the entitlement resolver reads exists, then the API and worke
 
 ## Background workers and lanes (§32–40)
 
+### Explicit Swiss catalog morning run
+
+First create an active CH saved search for the candidate. The local command
+below queues discovery for **one account's** eligible searches; it never
+submits applications and never starts an implicit schedule. Use a disposable
+test database for rehearsals. `--dry-run` counts eligible searches while
+rolling back queued tasks; omit it only when you intend to enqueue work:
+
+```
+python -m backend.app.cli.run_discovery --user-id <UUID> --dry-run
+python -m backend.app.cli.run_discovery --user-id <UUID>
+python -m backend.app.cli.run_worker --lane general --once
+```
+
+The general worker must run to execute queued discovery; the browser worker is
+not needed for collection. The default trigger is `MORNING`, with one run per
+local Swiss calendar day coalesced for a saved search. Schedule the CLI
+explicitly for each user/deployment if desired; there is no built-in morning
+timer. Review run status, source health and warning codes in the map before
+interpreting the result count. Partial coverage never means the Swiss market
+has no matching vacancies. LinkedIn is disabled, jobs.ch is not integrated,
+Jooble needs its API key, and ATS sources need employer board identifiers.
+No live-source coverage or production-readiness guarantee follows from local
+fixture tests.
+
 Work is a durable, DB-as-truth queue: the PostgreSQL task table is the source of truth and Redis
 only signals that work is ready. Delivery is at-least-once with leases, retry and a dead-letter
 lane, so a worker that dies mid-task never loses or double-commits it — handlers are idempotent
@@ -188,4 +213,3 @@ above); a non-positive window is rejected rather than making every artifact born
 Account export and deletion are user-initiated and owner-scoped; see
 [data lifecycle](./DATA_LIFECYCLE.md) for the export/deletion contract. Note the platform provides
 **GDPR-aware lifecycle controls**, not a claim of GDPR compliance (§29).
-

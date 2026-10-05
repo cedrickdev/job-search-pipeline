@@ -143,6 +143,9 @@ class DiscoveryCatalogService:
                     for warning in (*report.warnings, *(
                         warning for outcome in report.outcomes
                         for warning in outcome.result.warnings))
+                } | {
+                    str(health.reason.value) for health in report.health
+                    if health.reason is not None
                 })
                 if truncated:
                     warning_codes.append("CATALOG_LIMIT_TRUNCATED")

@@ -203,6 +203,50 @@ test('honours a saved-search scope named in the URL, reading the saved endpoint 
   expect(api.callsTo(OPPS)).toHaveLength(0)
 })
 
+test('refreshes a saved Swiss catalog and keeps unplaced results through partial source failure', async ({ page }) => {
+  const unexpectedHosts: string[] = []
+  await page.route('**/*', async route => {
+    const url = new URL(route.request().url())
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      if (!['localhost', '127.0.0.1'].includes(url.hostname)) {
+        unexpectedHosts.push(url.hostname)
+        await route.abort()
+        return
+      }
+    }
+    await route.continue()
+  })
+  const runId = '55555555-5555-4555-8555-555555555555'
+  const start = `/api/v2/me/search-profiles/${PROFILE_ID}/discovery-runs`
+  const status = `/api/v2/me/discovery-runs/${runId}`
+  const api = await openMap(page, [
+    { match: start, method: 'POST', status: 202,
+      json: { run_id: runId, status: 'QUEUED' } },
+    { match: status, method: 'GET', json: {
+      run_id: runId, search_profile_id: PROFILE_ID, country: 'CH', trigger: 'MANUAL',
+      status: 'PARTIAL', started_at: '2026-10-04T09:00:00Z',
+      finished_at: '2026-10-04T09:01:00Z', seen_count: 2, matched_count: 2,
+      source_health: [{ source_key: 'synthetic_board', status: 'UNAVAILABLE', reason: 'SOURCE_TIMEOUT' }],
+      warning_codes: ['SOURCE_TIMEOUT'],
+    } },
+    { match: SAVED, method: 'GET', json: oppResponse([
+      opportunity({ id: 'placed', title: 'Placed internship' }),
+      opportunity({ id: 'unplaced', title: 'Unplaced apprenticeship', status: 'UNRESOLVED',
+        location: null, distance_meters: null }),
+    ]) },
+  ], `/map?profile=${PROFILE_ID}`)
+
+  await expect(page.locator('.map-row', { hasText: 'Unplaced apprenticeship' })).toBeVisible()
+  expect(api.callsTo(SAVED)[0]?.url).toContain('catalog=true')
+  await page.getByRole('button', { name: 'Actualiser les offres' }).click()
+  await expect(page.getByRole('status')).toContainText('incomplète')
+  await expect(page.locator('.discovery-health')).toContainText('délai dépassé')
+  await expect(page.locator('.map-row', { hasText: 'Unplaced apprenticeship' })).toBeVisible()
+  expect(api.callsTo(start).map(call => call.method)).toEqual(['POST'])
+  expect(api.unmatched).toEqual([])
+  expect(unexpectedHosts).toEqual([])
+})
+
 test('re-reads with a committed filter, and only on Apply (§23)', async ({ page }) => {
   const api = await openMap(page)
   await expectHealthyMap(page)

@@ -4,6 +4,21 @@ Built in Phase 8. This document describes the frontend that turns the Phase 7 ge
 API into a *place you can look at*: a MapLibre view and a list, side by side, over
 the same three reads.
 
+The subsequent Swiss discovery catalog adds an opt-in collected view for an
+owned saved search. Opening `/map?profile=<search-profile-uuid>` now requests
+`GET /api/v2/me/search-profiles/{id}/opportunities?catalog=true` and shows only
+collected members of that search. The endpoint without `catalog=true` keeps its
+older saved-search behavior; the open geo read remains unchanged. The map's
+manual refresh queues `POST /api/v2/me/search-profiles/{id}/discovery-runs`, then
+reads the owner-scoped run status. A partial or failed sweep keeps previously
+collected opportunities visible, with source health and warning codes rather
+than a misleading claim of zero jobs. Unresolved or remote-only offers stay in
+the list and do not acquire invented coordinates.
+
+The new discovery status and control copy has an explicit French/English choice
+on this surface. Other V2 pages and their older map labels are not yet fully
+internationalized. The discovery control does not submit applications.
+
 ```
 /map ─> mapExplorer store (mode · selectedId · scope)
      ├─> useGeoExplorer ─> GET /api/v2/geo/opportunities        ┐
@@ -121,7 +136,7 @@ live; `useApiQuery`'s `enabled` keeps exactly one fetching at a time:
 | --- | --- | --- |
 | opportunities, no scope | `GET /api/v2/geo/opportunities` | no — shared corpus |
 | companies | `GET /api/v2/geo/companies` | no — shared corpus |
-| opportunities, saved-search scope | `GET /api/v2/me/search-profiles/{id}/opportunities` | yes — a profile is user-owned |
+| opportunities, saved-search scope | `GET /api/v2/me/search-profiles/{id}/opportunities?catalog=true` | yes — a profile is user-owned |
 
 The open reads are over the shared corpus, like the company directory: guarded
 because the surface is, but not per-user. The saved-search read *is* owner-scoped,

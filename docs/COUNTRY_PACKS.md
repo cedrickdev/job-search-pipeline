@@ -180,6 +180,22 @@ loosely; declaring `LOCATION_SEARCH` advisory keeps the adapter passing the valu
 (so V1's results do not change) while `CAPABILITY_ADVISORY_ONLY` tells the caller
 the answer was not filtered.
 
+### Swiss discovery catalog scope (October 2026)
+
+The CH pack currently enables `jobup`, `indeed_ch`, `jobscout24`, `migros`,
+`coop`, `manpower`, `wtj`, `jooble`, `greenhouse`, `lever`, and `ashby`.
+`linkedin` is explicitly disabled; there is no LinkedIn login, credential store,
+or authenticated crawl. `jobs.ch` has no reviewed source adapter or CH binding.
+`jooble` requires `JOOBLE_API_KEY`; the three ATS adapters need employer board
+identifiers in `config/companies.yaml` and return no jobs by default. Enabling a
+source does not guarantee that it responds, honors every filter, or covers all
+Swiss vacancies: inspect each run's source health and warning codes.
+
+The persisted catalog collects jobs, internships, apprenticeships, and other
+employment opportunities matching an active CH saved search. Courses and
+standalone training programs are outside this catalog. Other country packs
+require separate validation before use; this delivery does not enable them.
+
 ### The 13 wrapped sources
 
 Generated from `adapters/v1_catalog.source_metadata()`. `*` marks an advisory
@@ -237,10 +253,10 @@ other countries (`COUNTRY_NOT_SERVED`) or that expects a capability the
 implementation does not claim (`CAPABILITY_NOT_CLAIMED`). Both would otherwise look
 like a binding that had taken effect.
 
-The registry also holds the sweep's health view: `record_health`, `health_for`,
-`health` and `unusable_source_keys`, all in deterministic key order. This is
-**in-process only**, last-write-wins — Phase 5 adds no table, and a stale row would
-be worse than no row.
+The registry also holds the sweep's in-process health view: `record_health`,
+`health_for`, `health` and `unusable_source_keys`, all in deterministic key order.
+The later Swiss catalog persists per-run health separately; the registry's
+last-write-wins view is not the durable run history.
 
 ## Composition
 

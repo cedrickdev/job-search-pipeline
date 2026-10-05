@@ -45,6 +45,7 @@ import { useDiscoveryRun } from '~/composables/useDiscovery'
 import { discoveryLabels, discoveryMessage, sourceHealthMessage } from '~/utils/discovery-messages'
 import type { DiscoveryLocale } from '~/utils/discovery-messages'
 import { useLocalAutopilot } from '~/composables/useLocalAutopilot'
+import { useApplicationActions } from '~/composables/useApplications'
 
 definePageMeta({ middleware: 'auth' })
 useHead({ title: 'Map · Command Center' })
@@ -127,6 +128,7 @@ const locale = useCookie<DiscoveryLocale>('discovery_locale', {
 const activeLocale = computed<DiscoveryLocale>(() => locale.value === 'en' ? 'en' : 'fr')
 const discovery = useDiscoveryRun(savedProfileId)
 const localAutopilot = useLocalAutopilot()
+const applicationActions = useApplicationActions()
 const labels = computed(() => discoveryLabels[activeLocale.value])
 const discoveryStatus = computed(() => discoveryMessage(activeLocale.value, discovery.status.value))
 
@@ -228,6 +230,11 @@ function onCardClose() {
 async function runLocalAutopilot() {
   if (!selectedOpportunity.value) return
   await localAutopilot.mutateAsync(selectedOpportunity.value.id)
+}
+
+async function queueLocalAutopilot() {
+  const applicationId = localAutopilot.data?.application?.id
+  if (applicationId) await applicationActions.queue.mutateAsync(applicationId)
 }
 
 // --- mode & scope ---
@@ -386,8 +393,10 @@ watch(mobileView, async (view) => {
           :company="selectedCompany"
           :autopilot-busy="localAutopilot.isPending"
           :autopilot-report="localAutopilot.data"
+          :queue-busy="applicationActions.queue.isPending"
           @close="onCardClose"
           @run-autopilot="runLocalAutopilot"
+          @queue-autopilot="queueLocalAutopilot"
         />
       </section>
     </div>

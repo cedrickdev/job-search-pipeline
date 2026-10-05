@@ -120,6 +120,20 @@ describe('MapResultCard · opportunity', () => {
     expect(wrapper.emitted('run-autopilot')).toHaveLength(1)
     expect(wrapper.text()).not.toContain('Submitted')
   })
+
+  it('offers Playwright queueing only after the server returns APPROVED', async () => {
+    const wrapper = await mountSuspended(MapResultCard, {
+      props: {
+        opportunity: opportunityGeoItem(),
+        autopilotReport: {
+          next_action: 'QUEUE_BROWSER_SUBMISSION',
+          application: { id: 'app-1', state: 'APPROVED' },
+        },
+      },
+    })
+    await wrapper.findAll('.map-card-autopilot').at(1)!.trigger('click')
+    expect(wrapper.emitted('queue-autopilot')).toHaveLength(1)
+  })
 })
 
 describe('MapResultCard · company', () => {

@@ -21,9 +21,14 @@ const props = defineProps<{
   company?: CompanyGeoItem | null
   discoveryLocale?: 'fr' | 'en'
   autopilotBusy?: boolean
-  autopilotReport?: { next_action: string, stop_reason?: string | null } | null
+  autopilotReport?: {
+    next_action: string
+    stop_reason?: string | null
+    application?: { id: string, state: string } | null
+  } | null
+  queueBusy?: boolean
 }>()
-const emit = defineEmits<{ close: [], 'run-autopilot': [] }>()
+const emit = defineEmits<{ close: [], 'run-autopilot': [], 'queue-autopilot': [] }>()
 const postingUrl = computed(() => safeJobUrl(props.opportunity?.application_url))
 const provenance = computed(() => (props.opportunity?.source_records ?? []).map(source => ({
   ...source,
@@ -118,6 +123,15 @@ function displayDate(value: string | null | undefined): string {
     <p v-if="props.autopilotReport" class="map-card-autopilot-status" role="status">
       {{ props.autopilotReport.stop_reason ?? props.autopilotReport.next_action }}
     </p>
+    <button
+      v-if="props.autopilotReport?.application?.state === 'APPROVED'"
+      type="button"
+      class="btn-primary map-card-autopilot"
+      :disabled="props.queueBusy"
+      @click="emit('queue-autopilot')"
+    >
+      {{ props.queueBusy ? (french ? 'Mise en file…' : 'Queueing…') : (french ? 'Lancer Playwright' : 'Queue Playwright') }}
+    </button>
   </article>
 
   <article v-else-if="company" class="map-card" data-testid="map-card">

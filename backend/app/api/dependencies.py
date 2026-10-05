@@ -141,6 +141,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyUsageEventRepository,
     SqlAlchemyUserRepository,
 )
+from backend.app.services.application_decisions import ApplicationDecisionService
 from backend.app.services.application_policy import ApplicationPolicyService
 from backend.app.services.application_queue import ApplicationQueueService
 from backend.app.services.applications import ApplicationService
@@ -163,6 +164,7 @@ from backend.app.services.documents import DocumentService
 from backend.app.services.evidence import CandidateEvidenceService
 from backend.app.services.geo_search import GeoSearchService
 from backend.app.services.llm_connections import LLMConnectionService
+from backend.app.services.local_autopilot import LocalAutopilotService
 from backend.app.services.onboarding import OnboardingService
 from backend.app.tasks.dispatcher import PersistedTaskDispatcher
 from country_packs.registry import CountryPackRegistry
@@ -577,6 +579,19 @@ def assessment_service(
         packs)
 
 
+def application_decision_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> ApplicationDecisionService:
+    return ApplicationDecisionService(
+        profiles=SqlAlchemyCandidateProfileRepository(session),
+        opportunities=SqlAlchemyOpportunityRepository(session),
+        matches=SqlAlchemyMatchEvaluationRepository(session),
+        eligibilities=SqlAlchemyEligibilityResultRepository(session),
+        policies=SqlAlchemyApplicationPolicyRepository(session),
+        decisions=SqlAlchemyApplicationDecisionRepository(session),
+    )
+
+
 def company_discovery_service(
         session: Annotated[AsyncSession, Depends(database_session)],
         packs: Annotated[CountryPackRegistry, Depends(country_packs)],
@@ -692,6 +707,18 @@ def application_service(
         documents=SqlAlchemyCandidateDocumentRepository(session),
         registry=build_application_registry(),
         metering=_metering(session))
+
+
+def local_autopilot_service(
+        assessor: Annotated[AssessmentService, Depends(assessment_service)],
+        decider: Annotated[ApplicationDecisionService,
+                           Depends(application_decision_service)],
+        applications: Annotated[ApplicationService, Depends(application_service)],
+        documents: Annotated[DocumentService, Depends(document_service)],
+) -> LocalAutopilotService:
+    return LocalAutopilotService(
+        assessor=assessor, decider=decider,
+        applications=applications, documents=documents)
 
 
 def application_queue_service(
@@ -1188,6 +1215,7 @@ GeoSearch = Annotated[GeoSearchService, Depends(geo_search_service)]
 Assessment = Annotated[AssessmentService, Depends(assessment_service)]
 Evidence = Annotated[CandidateEvidenceService, Depends(evidence_service)]
 Documents = Annotated[DocumentService, Depends(document_service)]
+LocalAutopilot = Annotated[LocalAutopilotService, Depends(local_autopilot_service)]
 LLMConnections = Annotated[LLMConnectionService, Depends(llm_connection_service)]
 Applications = Annotated[ApplicationService, Depends(application_service)]
 BrowserLaneTasks = Annotated[ApplicationQueueService, Depends(application_queue_service)]

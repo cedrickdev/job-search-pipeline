@@ -211,6 +211,7 @@ V2_OPERATIONS = (
     ("POST", "/api/v2/me/deletion"),
     ("POST", "/api/v2/me/evidence"),
     ("POST", "/api/v2/me/exports"),
+    ("POST", "/api/v2/me/opportunities/{opportunity_id}/local-autopilot"),
     ("POST", "/api/v2/me/search-profiles"),
     ("POST", "/api/v2/me/search-profiles/{search_profile_id}/discovery-runs"),
     ("POST", "/api/v2/onboarding/complete"),
@@ -285,7 +286,7 @@ async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_de
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 80
+        assert len({path for _, path in published}) == 81
 
 
 @pytest.mark.asyncio
@@ -597,7 +598,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
             api.app, under=API_V2_PREFIX)
             if (method, path) not in PUBLIC_OPERATIONS | PROVIDER_OPERATIONS]
 
-        assert len(protected) == 94
+        assert len(protected) == 95
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

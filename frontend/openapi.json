@@ -412,6 +412,20 @@
         "title": "ApplicationChannel",
         "type": "string"
       },
+      "ApplicationDecisionKind": {
+        "description": "What the platform intends to do about one opportunity.\n\nOrdered from least to most committing:\n\n- `SKIP` — not worth pursuing, with reasons the user can inspect;\n- `SAVE` — keep it for the user to look at, do nothing else;\n- `PREPARE` — draft materials so the user can submit quickly;\n- `REQUIRE_REVIEW` — something is unresolved and a human must answer it;\n- `AUTO_APPLY` — submit through the posting's own channel;\n- `APPLY_AND_OUTREACH` — submit *and* contact a person about it;\n- `SPONTANEOUS_APPLICATION` — approach an employer that has no posting\n  (docs/V2_SPECIFICATION.md §6), which is why a decision can name a company\n  without naming an opportunity.",
+        "enum": [
+          "SKIP",
+          "SAVE",
+          "PREPARE",
+          "REQUIRE_REVIEW",
+          "AUTO_APPLY",
+          "APPLY_AND_OUTREACH",
+          "SPONTANEOUS_APPLICATION"
+        ],
+        "title": "ApplicationDecisionKind",
+        "type": "string"
+      },
       "ApplicationEventActor": {
         "description": "Who caused an event, which is itself an audit fact.\n\n- `SYSTEM` — the deterministic engine (a gate evaluation, an automatic transition);\n- `USER` — the account holder (an approval, a cancellation from the UI);\n- `WORKER` — the isolated browser/submission worker reporting an outcome.",
         "enum": [
@@ -5421,6 +5435,78 @@
           "level"
         ],
         "title": "LanguageProficiency",
+        "type": "object"
+      },
+      "LocalAutopilotResponse": {
+        "additionalProperties": false,
+        "description": "Reversible local workflow report; it never represents a submission receipt.",
+        "properties": {
+          "application": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApplicationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assessment": {
+            "$ref": "#/components/schemas/AssessmentResponse"
+          },
+          "cover_letter_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decision_kind": {
+            "$ref": "#/components/schemas/ApplicationDecisionKind"
+          },
+          "decision_reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ReasonResponse"
+            },
+            "title": "Decision Reasons",
+            "type": "array"
+          },
+          "next_action": {
+            "title": "Next Action",
+            "type": "string"
+          },
+          "resume_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Reason"
+          }
+        },
+        "required": [
+          "assessment",
+          "decision_kind",
+          "decision_reasons",
+          "next_action"
+        ],
+        "title": "LocalAutopilotResponse",
         "type": "object"
       },
       "Location": {
@@ -13344,6 +13430,50 @@
         "summary": "Download Export",
         "tags": [
           "v2-account-export"
+        ]
+      }
+    },
+    "/api/v2/me/opportunities/{opportunity_id}/local-autopilot": {
+      "post": {
+        "description": "Assess, document and prepare one opportunity without submitting it.",
+        "operationId": "run_local_autopilot_api_v2_me_opportunities__opportunity_id__local_autopilot_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocalAutopilotResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Local Autopilot",
+        "tags": [
+          "v2-local-autopilot"
         ]
       }
     },

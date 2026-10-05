@@ -2021,6 +2021,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/me/opportunities/{opportunity_id}/local-autopilot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Local Autopilot
+         * @description Assess, document and prepare one opportunity without submitting it.
+         */
+        post: operations["run_local_autopilot_api_v2_me_opportunities__opportunity_id__local_autopilot_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/me/profile": {
         parameters: {
             query?: never;
@@ -2819,6 +2839,24 @@ export interface components {
          * @enum {string}
          */
         ApplicationChannel: "ATS_API" | "ATS_FORM" | "DIRECT_FORM" | "BROWSER" | "EMAIL" | "MANUAL" | "UNSUPPORTED";
+        /**
+         * ApplicationDecisionKind
+         * @description What the platform intends to do about one opportunity.
+         *
+         *     Ordered from least to most committing:
+         *
+         *     - `SKIP` — not worth pursuing, with reasons the user can inspect;
+         *     - `SAVE` — keep it for the user to look at, do nothing else;
+         *     - `PREPARE` — draft materials so the user can submit quickly;
+         *     - `REQUIRE_REVIEW` — something is unresolved and a human must answer it;
+         *     - `AUTO_APPLY` — submit through the posting's own channel;
+         *     - `APPLY_AND_OUTREACH` — submit *and* contact a person about it;
+         *     - `SPONTANEOUS_APPLICATION` — approach an employer that has no posting
+         *       (docs/V2_SPECIFICATION.md §6), which is why a decision can name a company
+         *       without naming an opportunity.
+         * @enum {string}
+         */
+        ApplicationDecisionKind: "SKIP" | "SAVE" | "PREPARE" | "REQUIRE_REVIEW" | "AUTO_APPLY" | "APPLY_AND_OUTREACH" | "SPONTANEOUS_APPLICATION";
         /**
          * ApplicationEventActor
          * @description Who caused an event, which is itself an audit fact.
@@ -5448,6 +5486,23 @@ export interface components {
             /** Language */
             language: string;
             level: components["schemas"]["LanguageLevel"];
+        };
+        /**
+         * LocalAutopilotResponse
+         * @description Reversible local workflow report; it never represents a submission receipt.
+         */
+        LocalAutopilotResponse: {
+            application?: components["schemas"]["ApplicationResponse"] | null;
+            assessment: components["schemas"]["AssessmentResponse"];
+            cover_letter_status?: components["schemas"]["DocumentStatus"] | null;
+            decision_kind: components["schemas"]["ApplicationDecisionKind"];
+            /** Decision Reasons */
+            decision_reasons: components["schemas"]["ReasonResponse"][];
+            /** Next Action */
+            next_action: string;
+            resume_status?: components["schemas"]["DocumentStatus"] | null;
+            /** Stop Reason */
+            stop_reason?: string | null;
         };
         /**
          * Location
@@ -10381,6 +10436,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_local_autopilot_api_v2_me_opportunities__opportunity_id__local_autopilot_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocalAutopilotResponse"];
                 };
             };
             /** @description Validation Error */

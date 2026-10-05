@@ -93,6 +93,7 @@ from backend.app.domain.application_event import (
     ApplicationEventActor,
     ApplicationEventType,
 )
+from backend.app.domain.autopilot import LocalAutopilotReport
 from backend.app.domain.base import (
     CountryCode,
     CurrencyCode,
@@ -145,6 +146,7 @@ from backend.app.domain.company import (
     SpontaneousApplicationChannel,
     SpontaneousApplicationSupport,
 )
+from backend.app.domain.decision import ApplicationDecisionKind
 from backend.app.domain.discovery_run import (
     DiscoveryRun,
     DiscoveryRunStatus,
@@ -1885,6 +1887,37 @@ class ApplicationResponse(ApiModel):
                                    for pin in application.pinned_documents),
             attempt_count=application.attempt_count,
             created_at=application.created_at, updated_at=application.updated_at)
+
+
+class LocalAutopilotResponse(ApiModel):
+    """Reversible local workflow report; it never represents a submission receipt."""
+
+    assessment: AssessmentResponse
+    decision_kind: ApplicationDecisionKind
+    decision_reasons: tuple[ReasonResponse, ...]
+    resume_status: DocumentStatus | None = None
+    cover_letter_status: DocumentStatus | None = None
+    application: ApplicationResponse | None = None
+    next_action: str
+    stop_reason: str | None = None
+
+    @classmethod
+    def of(cls, report: "LocalAutopilotReport") -> "LocalAutopilotResponse":
+        def latest_status(document: object) -> DocumentStatus | None:
+            versions = getattr(document, "versions", ())
+            return None if not versions else versions[-1].status
+
+        return cls(
+            assessment=AssessmentResponse.of(report.assessment),
+            decision_kind=report.decision.kind,
+            decision_reasons=tuple(ReasonResponse.of(reason)
+                                   for reason in report.decision.reasons),
+            resume_status=latest_status(report.resume),
+            cover_letter_status=latest_status(report.cover_letter),
+            application=None if report.application is None
+            else ApplicationResponse.of(report.application),
+            next_action=report.next_action,
+            stop_reason=report.stop_reason)
 
 
 class ApplicationListResponse(ApiModel):

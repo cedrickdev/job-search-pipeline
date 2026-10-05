@@ -27,6 +27,7 @@ from backend.app.api.routes import (
     geo,
     interview,
     llm,
+    autopilot,
     matches,
     me,
     onboarding,
@@ -50,6 +51,7 @@ def create_v2_router() -> APIRouter:
     router.include_router(matches.router)
     router.include_router(documents.router)
     router.include_router(llm.router)
+    router.include_router(autopilot.router)
     router.include_router(applications.router)
     router.include_router(chat.router)
     router.include_router(interview.router)

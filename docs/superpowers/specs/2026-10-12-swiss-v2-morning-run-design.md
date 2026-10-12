@@ -86,6 +86,13 @@ reviewed CH discovery sources in the local acceptance evidence; merely having
 two names in YAML is insufficient. If fewer than two meet that bar, the UI says
 multi-source coverage is unverified and the V2 milestone is not approved.
 
+Fixtures prove orchestration, not live source availability. Before claiming
+multi-jobboard operation, a separate bounded local dry-run must record at least
+two reviewed CH job-board or aggregator sources returning valid Swiss listings.
+If current access conditions or source health prevent that, report the blocker
+and seek an authorized integration; do not quietly substitute two employer ATS
+boards for the promised multi-jobboard coverage.
+
 Discovery and application capabilities are separate. A listing URL is never
 promoted to a verified application URL. Only a supported ATS driver and current
 user policy can permit an irreversible submit later; all other targets retain a
@@ -112,8 +119,11 @@ before enabling live collection, with no anti-bot evasion.
    MORNING task per active CH search on its due day, and see no duplicate on a
    second tick. Another user cannot see or trigger that user's tasks or results.
 2. The general worker persists opportunities from at least two independent
-   reviewed CH source fixtures, preserves partial results when another source
-   fails, and exposes source health and warning codes in the API and UI.
+   CH source fixtures, preserves partial results when another source fails,
+   and exposes source health and warning codes in the API and UI. A separate
+   bounded, authorized dry-run records actual Swiss listings from at least two
+   reviewed job-board or aggregator sources before live multi-source operation
+   is claimed.
 3. The Settings trigger and schedule use V2 endpoints only. V1 controls, if
    retained, are visibly legacy. The map/list reflects the V2 persisted results.
 4. FR/EN desktop and mobile checks cover queued, running, empty, partial, failed,

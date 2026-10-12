@@ -42,10 +42,10 @@ sources:
     priority: 25
     expects_capabilities: [STRUCTURED_WORKLOAD]
     notes: >-
-      Independent of the JobCloud database, so it surfaces genuinely different
-      listings. The adapter fetches one per-city listing page that already
-      aggregates a radius around it; it accepts neither a keyword nor a location,
-      and says so with KEYWORD_IGNORED / LOCATION_IGNORED warnings.
+      JobCloud-operated platform; subject to the same source-access review as
+      jobup. The adapter fetches one per-city listing page that already
+      aggregates a radius around it; it accepts neither a keyword nor a
+      location, and says so with KEYWORD_IGNORED / LOCATION_IGNORED warnings.
 
   - source_key: migros
     priority: 30

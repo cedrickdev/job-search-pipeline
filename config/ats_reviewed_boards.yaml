@@ -1,0 +1,6 @@
+# V2 Swiss ATS boards. Empty until each employer/ATS feed is reviewed and the
+# durable per-board request budget is in place. Do not copy V1 companies.yaml.
+version: 1
+boards:
+  greenhouse: []
+  lever: []

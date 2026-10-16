@@ -48,6 +48,7 @@ from backend.app.domain.identifiers import (
 from backend.app.domain.task import TaskKind, TaskRun
 from backend.app.exports.service import AccountExportService
 from backend.app.infrastructure.database.engine import session_scope
+from backend.app.repositories.sqlalchemy_repositories import SqlAlchemyApplicationRepository
 from backend.app.retention.service import RetentionService
 from backend.app.services.applications import (
     ApplicationNotActionable,
@@ -192,25 +193,29 @@ def build_application_submission_handler(
             async with session_scope(session_factory) as reservation_session:
                 reservation = await application_service(
                     reservation_session).reserve_submission(user_id, application_id, now=clock())
-            # No write transaction remains open across the irreversible browser call.
+            # Serialize policy brakes with the final check and browser action. A
+            # pause/update must not commit and claim effect before this click ends.
+            # This read-only transaction is rolled back when the browser returns.
             async with session_scope(session_factory, commit=False) as read_session:
+                await SqlAlchemyApplicationRepository(
+                    read_session).lock_submission_budget(user_id)
                 prepared = await application_service(read_session).load_reserved_execution(
                     reservation, now=clock())
-            if isinstance(prepared, SubmissionResult):
-                result = prepared
-            elif not live_submissions_enabled:
-                result = SubmissionResult(
-                    outcome=SubmissionOutcome.REQUIRES_HUMAN,
-                    human_required_reason=HumanRequiredReason.AUTOMATION_DISABLED,
-                    detail="live browser submissions are disabled on this deployment")
-            else:
-                adapter, context = prepared
-                try:
-                    result = await adapter.submit(context)
-                except Exception:
+                if isinstance(prepared, SubmissionResult):
+                    result = prepared
+                elif not live_submissions_enabled:
                     result = SubmissionResult(
-                        outcome=SubmissionOutcome.STATE_UNKNOWN,
-                        detail="the adapter stopped during submission; outcome is unknown")
+                        outcome=SubmissionOutcome.REQUIRES_HUMAN,
+                        human_required_reason=HumanRequiredReason.AUTOMATION_DISABLED,
+                        detail="live browser submissions are disabled on this deployment")
+                else:
+                    adapter, context = prepared
+                    try:
+                        result = await adapter.submit(context)
+                    except Exception:
+                        result = SubmissionResult(
+                            outcome=SubmissionOutcome.STATE_UNKNOWN,
+                            detail="the adapter stopped during submission; outcome is unknown")
             async with session_scope(session_factory) as final_session:
                 await application_service(final_session).finalize_submission(
                     reservation, result, now=clock())

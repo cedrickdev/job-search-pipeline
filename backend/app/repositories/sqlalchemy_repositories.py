@@ -1676,6 +1676,10 @@ class SqlAlchemyApplicationPolicyRepository:
         return tuple(application_policy_to_domain(row) for row in result.scalars())
 
     async def upsert(self, policy: ApplicationPolicy) -> ApplicationPolicy:
+        # Policy brakes share the submission lock. A pause cannot commit while a
+        # worker is between its final authority check and the irreversible click.
+        await SqlAlchemyApplicationRepository(self._session).lock_submission_budget(
+            policy.user_id)
         row = application_policy_to_row(
             policy, await self._row(policy.user_id, policy.id))
         self._session.add(row)

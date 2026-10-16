@@ -540,6 +540,65 @@ async def test_browser_handler_commits_reservation_before_adapter_submit(committ
 
 
 @pytest.mark.asyncio
+async def test_policy_brake_waits_for_in_flight_browser_click(committed_world):
+    """A pause cannot be acknowledged between final authorization and the click."""
+    app_id, _ = await _seed_two_approved_browser_applications(
+        committed_world, an_autopilot_policy(max_applications_per_day=10))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    pause_done = asyncio.Event()
+
+    class PausedBrowserAdapter(_CountingBrowserAdapter):
+        async def submit(self, context):
+            entered.set()
+            await release.wait()
+            return await super().submit(context)
+
+    adapter = PausedBrowserAdapter()
+    registry = ApplicationAdapterRegistry(fallback=GenericManualAdapter())
+    registry.register(adapter)
+    handler = build_application_submission_handler(
+        lambda session: _service(session, registry),
+        session_factory=committed_world, live_submissions_enabled=True,
+        clock=lambda: _SUBMIT_AT)
+    task = TaskSpec(
+        kind=TaskKind.APPLICATION_SUBMISSION, idempotency_key="pause-barrier-fixture",
+        user_id=USER, payload={"application_id": str(app_id)},
+    ).to_queued_run(as_of=_SUBMIT_AT)
+
+    async def pause_policy() -> None:
+        async with session_scope(committed_world) as session:
+            policies = SqlAlchemyApplicationPolicyRepository(session)
+            policy = await policies.get_default(USER)
+            assert policy is not None
+            await policies.upsert(policy.model_copy(update={
+                "max_applications_per_day": 0, "updated_at": _SUBMIT_AT,
+            }))
+        pause_done.set()
+
+    sending = asyncio.create_task(handler(task, None))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        pausing = asyncio.create_task(pause_policy())
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(pause_done.wait(), timeout=0.25)
+        assert adapter.submit_calls == 0
+        release.set()
+        await asyncio.wait_for(sending, timeout=5)
+        await asyncio.wait_for(pausing, timeout=5)
+    finally:
+        release.set()
+        if not sending.done():
+            await sending
+
+    assert adapter.submit_calls == 1
+    async with session_scope(committed_world, commit=False) as session:
+        policy = await SqlAlchemyApplicationPolicyRepository(session).get_default(USER)
+        assert policy is not None
+        assert policy.max_applications_per_day == 0
+
+
+@pytest.mark.asyncio
 async def test_persisted_browser_queue_reaches_worker_once(committed_world):
     app_id, _ = await _seed_two_approved_browser_applications(
         committed_world, an_autopilot_policy())

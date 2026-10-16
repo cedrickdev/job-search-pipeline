@@ -78,12 +78,12 @@ _UPLOAD_PATTERNS: tuple[tuple[str, str], ...] = (
 
 
 def upload_slot(label: str, field_name: str | None) -> str:
-    """Which document a file input asks for — resume unless it clearly asks for a cover letter."""
+    """Recognize a document slot; an unknown upload never inherits CV authority."""
     haystack = f"{label} {field_name or ''}".lower()
     for slot, pattern in _UPLOAD_PATTERNS:
         if re.search(pattern, haystack):
             return slot
-    return RESUME_SLOT
+    return "unknown_upload_" + re.sub(r"[^a-z0-9]+", "_", haystack).strip("_")
 
 
 def canonical_key(label: str, field_name: str | None) -> str | None:

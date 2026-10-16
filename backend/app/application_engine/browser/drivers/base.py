@@ -23,6 +23,7 @@ required, label, options) — never raw HTML, never a value already on the page 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -361,14 +362,27 @@ class StructuredFormDriver:
 
     async def _upload_files(self, page: Page, context: DriverContext) -> None:
         """Attach the pinned files to their slots — exactly those, never "the latest" (§13)."""
-        resume = context.upload_for(CandidateDocumentType.RESUME)
-        cover = context.upload_for(CandidateDocumentType.COVER_LETTER)
-        file_inputs = page.locator("input[type='file']")
-        count = await file_inputs.count()
-        if resume is not None and count >= 1:
-            await file_inputs.nth(0).set_input_files(resume.path, timeout=ACTION_TIMEOUT_MS)
-        if cover is not None and count >= 2:
-            await file_inputs.nth(1).set_input_files(cover.path, timeout=ACTION_TIMEOUT_MS)
+        raw_fields = await page.evaluate(_EXTRACT_JS, self.FORM_SELECTOR)
+        fields = [field for field in raw_fields if field.get("type") == "file"]
+        inputs = page.locator(self.FORM_SELECTOR).first.locator("input[type='file']")
+        if await inputs.count() != len(fields):
+            raise ValueError("document upload form changed")
+        types = {
+            semantics.RESUME_SLOT: CandidateDocumentType.RESUME,
+            semantics.COVER_LETTER_SLOT: CandidateDocumentType.COVER_LETTER,
+        }
+        slots = [semantics.upload_slot(
+            str(field.get("label") or ""), field.get("name")) for field in fields]
+        if any(slots.count(slot) > 1 for slot in types):
+            raise ValueError("ambiguous document upload slots")
+        for index, slot in enumerate(slots):
+            document_type = types.get(slot)
+            upload = context.upload_for(document_type) if document_type is not None else None
+            if upload is not None:
+                await inputs.nth(index).set_input_files({
+                    "name": upload.filename, "mimeType": "application/pdf",
+                    "buffer": Path(upload.path).read_bytes(),
+                }, timeout=ACTION_TIMEOUT_MS)
 
     async def _submit_control(self, page: Page) -> Locator | None:
         """The one submit control, or `None` if the form has none."""

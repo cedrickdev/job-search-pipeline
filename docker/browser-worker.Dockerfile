@@ -50,4 +50,4 @@ FROM runtime AS browser-tests
 USER root
 RUN pip install -e ".[dev]"
 USER 10001:10001
-CMD ["python", "-m", "pytest", "tests/test_v2_browser_automation.py", "-q", "-rs"]
+CMD ["python", "-m", "pytest", "tests/test_v2_browser_automation.py", "tests/test_v2_browser_uploads.py", "tests/test_v2_browser_confirmation.py", "tests/test_v2_browser_final_gate.py", "tests/test_v2_browser_form_scope.py", "-q", "-rs"]

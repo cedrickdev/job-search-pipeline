@@ -22,6 +22,7 @@ required, label, options) — never raw HTML, never a value already on the page 
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -50,6 +51,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 NAV_TIMEOUT_MS = 30_000
 ACTION_TIMEOUT_MS = 8_000
 CONFIRM_TIMEOUT_MS = 15_000
+
+_APPLICATION_RECEIPT = re.compile(
+    r"\b(?:your application (?:has been |was |is )?(?:successfully )?"
+    r"(?:submitted|received|sent)|(?:we have|we['’]ve) received your application|"
+    r"votre candidature (?:a (?:bien )?été |est )?(?:envoyée|reçue|soumise))\b",
+    re.IGNORECASE,
+)
 
 # The one JS reader: it returns field *metadata* for the controls inside a form scope — never HTML,
 # never a filled value. Hidden inputs (CSRF tokens and the like) and buttons are skipped, so a
@@ -294,6 +302,12 @@ class StructuredFormDriver:
             return BrowserSubmissionEvidence(
                 detail="no submit control was found on the form; nothing was sent")
 
+        already_confirmed, _ = await self._confirmation_evidence(page)
+        if already_confirmed:
+            return BrowserSubmissionEvidence(
+                human_required_reason=HumanRequiredReason.AMBIGUOUS_FORM,
+                detail="the page already displays a receipt; review before another submission")
+
         # The one irreversible click. Past this point any error is STATE_UNKNOWN, never a retry
         # (§20, §22): we do not know whether the request left the platform.
         try:
@@ -393,18 +407,30 @@ class StructuredFormDriver:
         return None
 
     async def _read_confirmation(self, page: Page) -> tuple[bool, str | None]:
-        """Positive confirmation and an optional reference — never mere absence of error (§21)."""
-        url = (page.url or "").lower()
-        if any(keyword in url for keyword in self.CONFIRM_URL_KEYWORDS):
-            return True, await self._confirmation_reference(page)
+        """Wait a bounded time for a visible receipt, including asynchronous SPA responses."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CONFIRM_TIMEOUT_MS / 1000
+        while True:
+            evidence = await self._confirmation_evidence(page)
+            if evidence[0] or loop.time() >= deadline:
+                return evidence
+            await asyncio.sleep(min(0.1, max(0, deadline - loop.time())))
+
+    async def _confirmation_evidence(self, page: Page) -> tuple[bool, str | None]:
+        """URL substrings, hidden placeholders and generic prose are not receipts."""
         for selector in self.CONFIRM_SELECTORS:
-            if await page.locator(selector).count() > 0:
-                return True, await self._confirmation_reference(page)
+            for locator in await page.locator(selector).all():
+                if await locator.is_visible() and _APPLICATION_RECEIPT.search(
+                        await locator.inner_text(timeout=ACTION_TIMEOUT_MS)):
+                    return True, await self._confirmation_reference(page)
+        for form in await page.locator(self.FORM_SELECTOR).all():
+            if await form.is_visible():
+                return False, None
         try:
-            body = (await page.inner_text("body", timeout=ACTION_TIMEOUT_MS)).lower()
+            body = await page.inner_text("body", timeout=ACTION_TIMEOUT_MS)
         except Exception:  # best-effort: a page fault must not crash this
             return False, None
-        if any(keyword in body for keyword in self.CONFIRM_TEXT_KEYWORDS):
+        if _APPLICATION_RECEIPT.search(body):
             return True, None
         return False, None
 
@@ -412,7 +438,7 @@ class StructuredFormDriver:
         """A confirmation reference the ATS displays, when present (§24). Never a secret."""
         for selector in self.CONFIRM_SELECTORS:
             locator = page.locator(selector)
-            if await locator.count() > 0:
+            if await locator.count() > 0 and await locator.first.is_visible():
                 try:
                     text = (await locator.first.inner_text(timeout=ACTION_TIMEOUT_MS)).strip()
                 except Exception:  # best-effort: a page fault must not crash this

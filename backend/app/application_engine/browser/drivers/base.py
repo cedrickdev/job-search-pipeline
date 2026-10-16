@@ -63,8 +63,7 @@ _APPLICATION_RECEIPT = re.compile(
 # never a filled value. Hidden inputs (CSRF tokens and the like) and buttons are skipped, so a
 # volatile token never becomes a question and never perturbs the fingerprint (§14).
 _EXTRACT_JS = r"""
-(formSelector) => {
-  const root = document.querySelector(formSelector) || document.body;
+(root) => {
   const labelFor = (el) => {
     if (el.id) {
       const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
@@ -209,17 +208,34 @@ class StructuredFormDriver:
                 human_required_reason=HumanRequiredReason.AMBIGUOUS_FORM,
                 detail="the page did not match this ATS's application form")
 
-        questions = await self._extract_questions(page)
+        try:
+            questions = await self._extract_questions(page)
+        except ValueError:
+            return PreparedBrowserForm(
+                platform=self.PLATFORM,
+                human_required_reason=HumanRequiredReason.AMBIGUOUS_FORM,
+                detail="the application form could not be identified uniquely")
         fingerprint = compute_form_fingerprint(self.PLATFORM, questions)
         return PreparedBrowserForm(
             platform=self.PLATFORM, questions=questions, form_fingerprint=fingerprint,
             detail=f"read {len(questions)} field(s) from the {self.PLATFORM} form")
 
+    async def _form_root(self, page: Page) -> Locator:
+        """Prefer explicit ATS markers over a generic form, and reject ambiguity."""
+        for selector in self.FORM_SELECTOR.split(","):
+            candidates = page.locator(selector.strip())
+            count = await candidates.count()
+            if count > 1:
+                raise ValueError("ambiguous application form")
+            if count == 1:
+                return candidates.first
+        raise ValueError("application form is unavailable")
+
     async def _extract_questions(
             self, page: Page) -> tuple[ApplicationQuestion, ...]:
         """Read the form's controls into typed questions with stable keys (§9-10)."""
-        raw_fields: list[dict[str, Any]] = await page.evaluate(
-            _EXTRACT_JS, self.FORM_SELECTOR)
+        root = await self._form_root(page)
+        raw_fields: list[dict[str, Any]] = await root.evaluate(_EXTRACT_JS)
         questions: list[ApplicationQuestion] = []
         used_keys: set[str] = set()
         for raw in raw_fields:
@@ -371,28 +387,31 @@ class StructuredFormDriver:
                 await locator.uncheck(timeout=ACTION_TIMEOUT_MS)
             return
         if field_type == "radio":
-            await page.get_by_label(value).check(timeout=ACTION_TIMEOUT_MS)
+            root = await self._form_root(page)
+            await root.get_by_label(value).check(timeout=ACTION_TIMEOUT_MS)
             return
         await locator.fill(value, timeout=ACTION_TIMEOUT_MS)
 
     async def _locate(self, page: Page, key: str) -> Locator | None:
         """A locator for the field named `key`: its DOM name, else its canonical label (§18)."""
-        by_name = page.locator(
+        root = await self._form_root(page)
+        by_name = root.locator(
             f"input[name={key!r}], textarea[name={key!r}], select[name={key!r}]")
         if await by_name.count() > 0:
             return by_name.first
         pattern = semantics.LABEL_PATTERNS.get(key)
         if pattern is not None:
-            by_label = page.get_by_label(re.compile(pattern, re.IGNORECASE))
+            by_label = root.get_by_label(re.compile(pattern, re.IGNORECASE))
             if await by_label.count() > 0:
                 return by_label.first
         return None
 
     async def _upload_files(self, page: Page, context: DriverContext) -> None:
         """Attach the pinned files to their slots — exactly those, never "the latest" (§13)."""
-        raw_fields = await page.evaluate(_EXTRACT_JS, self.FORM_SELECTOR)
+        root = await self._form_root(page)
+        raw_fields = await root.evaluate(_EXTRACT_JS)
         fields = [field for field in raw_fields if field.get("type") == "file"]
-        inputs = page.locator(self.FORM_SELECTOR).first.locator("input[type='file']")
+        inputs = root.locator("input[type='file']")
         if await inputs.count() != len(fields):
             raise ValueError("document upload form changed")
         types = {
@@ -414,10 +433,16 @@ class StructuredFormDriver:
 
     async def _submit_control(self, page: Page) -> Locator | None:
         """The one submit control, or `None` if the form has none."""
+        root = await self._form_root(page)
         for selector in self.SUBMIT_SELECTORS:
-            locator = page.locator(selector)
-            if await locator.count() > 0:
-                return locator.first
+            controls = []
+            for locator in await root.locator(selector).all():
+                if await locator.is_visible() and await locator.is_enabled():
+                    controls.append(locator)
+            if len(controls) == 1:
+                return controls[0]
+            if len(controls) > 1:
+                return None
         return None
 
     async def _read_confirmation(self, page: Page) -> tuple[bool, str | None]:

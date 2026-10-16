@@ -308,6 +308,20 @@ class StructuredFormDriver:
                 human_required_reason=HumanRequiredReason.AMBIGUOUS_FORM,
                 detail="the page already displays a receipt; review before another submission")
 
+        # Filling can reveal a conditional question or an authentication challenge.
+        # Recheck the current DOM at the last reversible boundary, not only on load.
+        challenge = await detect_challenge(page)
+        if challenge is not None:
+            return BrowserSubmissionEvidence(
+                human_required_reason=challenge, detail=self._challenge_detail(challenge))
+        if context.expected_form_fingerprint is not None:
+            current = compute_form_fingerprint(
+                self.PLATFORM, await self._extract_questions(page))
+            if current != context.expected_form_fingerprint:
+                return BrowserSubmissionEvidence(
+                    human_required_reason=HumanRequiredReason.FORM_CHANGED,
+                    detail="the form changed while filling; review before submission")
+
         # The one irreversible click. Past this point any error is STATE_UNKNOWN, never a retry
         # (§20, §22): we do not know whether the request left the platform.
         try:

@@ -14,6 +14,7 @@
 // (still-open proposals), history is every status (what was done). Both are invalidated by an
 // approve or a dismiss, since either moves a proposal out of the open set and into the record.
 import type {
+  ProposeStrategyChangeRequest,
   StrategyChangeExecution,
   StrategyChangeProposal,
   StrategyChangeProposalList,
@@ -37,6 +38,15 @@ export function usePendingProposalsQuery() {
 export function useProposalHistoryQuery() {
   return useApiQuery<StrategyChangeProposalList>(HISTORY_KEY, () =>
     apiGet<StrategyChangeProposalList>(V2_ENDPOINTS.strategyProposalsHistory))
+}
+
+/** Draft one bounded change. The returned proposal still needs a separate explicit approval. */
+export function useProposeStrategyChange() {
+  const refresh = () => invalidate(PENDING_KEY, HISTORY_KEY)
+  return useMutation<ProposeStrategyChangeRequest, StrategyChangeProposal>(
+    request => apiPost<StrategyChangeProposal>(V2_ENDPOINTS.strategyProposals, request),
+    { onSuccess: refresh },
+  )
 }
 
 /** The argument to approve: which proposal, and whether the sensitive second gate is cleared. */

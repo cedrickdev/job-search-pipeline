@@ -42,12 +42,14 @@ from tests.v2_builders import (
     POLICY,
     SEARCH_PROFILE,
     USER,
+    a_career_recommendation,
     a_policy,
     a_search_profile,
 )
 from tests.v2_fakes import (
     FakeApplicationPolicyRepository,
     FakeCandidateProfileRepository,
+    FakeCareerRecommendationRepository,
     FakeSearchProfileRepository,
     FakeStrategyChangeExecutionRepository,
     FakeStrategyChangeProposalRepository,
@@ -71,11 +73,13 @@ def build_service() -> tuple[
     """
     searches = FakeSearchProfileRepository()
     policies = FakeApplicationPolicyRepository()
+    recommendations = FakeCareerRecommendationRepository()
     onboarding = OnboardingService(
         FakeCandidateProfileRepository(), searches, FakeUserRepository())
     service = StrategyProposalService(
         FakeStrategyChangeProposalRepository(),
         FakeStrategyChangeExecutionRepository(),
+        recommendations,
         onboarding,
         ApplicationPolicyService(policies))
     return service, searches, policies
@@ -128,6 +132,29 @@ async def test_propose_refuses_a_target_that_does_not_exist() -> None:
         await service.propose(
             USER, a_keywords_change(), summary="Cibler python.", now=NOW)
     assert err.value.code is CareerErrorCode.STRATEGY_TARGET_NOT_FOUND
+
+
+async def test_propose_refuses_a_source_recommendation_owned_by_another_account() -> None:
+    """A proposal cannot forge an audit link to another account's recommendation."""
+    searches = FakeSearchProfileRepository()
+    recommendations = FakeCareerRecommendationRepository()
+    onboarding = OnboardingService(
+        FakeCandidateProfileRepository(), searches, FakeUserRepository())
+    service = StrategyProposalService(
+        FakeStrategyChangeProposalRepository(),
+        FakeStrategyChangeExecutionRepository(),
+        recommendations,
+        onboarding,
+        ApplicationPolicyService(FakeApplicationPolicyRepository()))
+    await searches.upsert(a_search_profile(updated_at=NOW))
+    foreign = await recommendations.add(a_career_recommendation(user_id=OTHER_USER))
+
+    with pytest.raises(CareerError) as err:
+        await service.propose(
+            USER, a_keywords_change(), summary="Cibler python.", now=NOW,
+            source_recommendation_id=foreign.id)
+
+    assert err.value.code is CareerErrorCode.RECOMMENDATION_NOT_FOUND
 
 
 # --- approve: the happy paths through each owning service ------------------------------
@@ -315,6 +342,7 @@ async def test_approve_audits_a_failure_without_leaking_the_services_error() -> 
     service = StrategyProposalService(
         FakeStrategyChangeProposalRepository(),
         FakeStrategyChangeExecutionRepository(),
+        FakeCareerRecommendationRepository(),
         onboarding,
         ApplicationPolicyService(FakeApplicationPolicyRepository()))
     await searches.upsert(a_search_profile(updated_at=NOW))

@@ -49,6 +49,24 @@ describe('analytics page', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     clearNuxtData()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
+  })
+
+  it('translates the complete analytics chrome and empty state into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    stubFetch([{
+      match: '/api/analytics',
+      json: { ...ANALYTICS, applications_per_day: [] },
+    }])
+    const wrapper = await mountSuspended(AnalyticsPage)
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('30 derniers jours')
+    expect(text).toContain('Préparation à la présélection')
+    expect(text).toContain('Réponses des recruteurs par jour')
+    expect(text).toContain('Aucune activité sur cette période.')
+    expect(text).not.toContain('Applications per day')
   })
 
   it('renders KPI tiles and every trend section', async () => {

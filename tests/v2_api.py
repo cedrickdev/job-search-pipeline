@@ -701,7 +701,8 @@ async def api_harness(tmp_path: Path, *, settings: AuthSettings | None = None,
         analytics=analytics, recommendations=career_recommendations)
     policy_workflow = ApplicationPolicyService(application_policies)
     strategy_workflow = StrategyProposalService(
-        strategy_proposals, strategy_executions, onboarding, policy_workflow)
+        strategy_proposals, strategy_executions, career_recommendations,
+        onboarding, policy_workflow)
     app.dependency_overrides[outcome_service] = lambda: outcome_workflow
     app.dependency_overrides[role_classification_service] = lambda: role_workflow
     app.dependency_overrides[career_analytics_service] = lambda: analytics

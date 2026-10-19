@@ -15,6 +15,7 @@ import { computed } from 'vue'
 import type { DayPoint } from '~/types/domain'
 
 const props = defineProps<{ data: DayPoint[], accent?: boolean }>()
+const { localize: l } = useLocale()
 
 const max = computed(() => Math.max(1, ...props.data.map(d => d.count)))
 const total = computed(() => props.data.reduce((sum, d) => sum + d.count, 0))
@@ -22,9 +23,9 @@ const total = computed(() => props.data.reduce((sum, d) => sum + d.count, 0))
 
 <template>
   <p v-if="total === 0" class="ov-empty">
-    No activity in this window.
+    {{ l('No activity in this window.', 'Aucune activité sur cette période.') }}
   </p>
-  <div v-else class="an-cols" role="img" aria-label="daily counts">
+  <div v-else class="an-cols" role="img" :aria-label="l('daily counts', 'volumes quotidiens')">
     <div v-for="d in props.data" :key="d.date" class="an-col" :title="`${d.date}: ${d.count}`">
       <span
         class="an-col-fill"

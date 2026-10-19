@@ -43,7 +43,9 @@ async def propose_strategy_change(body: ProposeStrategyChangeRequest, current: C
     201, because it creates a proposal. The typed `change` is validated at the boundary, so a kind
     the platform does not offer is a 422. The live target is read once to capture its version as
     the approval precondition; a target that does not exist for this account is a 409
-    (`strategy_target_not_found`). The proposal is born open and touches nothing on the target.
+    (`strategy_target_not_found`). A linked recommendation is also owner-scoped; a foreign or
+    missing id is a 404 (`recommendation_not_found`). The proposal is born open and touches
+    nothing on the target.
     """
     proposal = await service.propose(
         current.user.id, body.change, summary=body.summary,

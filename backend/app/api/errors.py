@@ -166,7 +166,8 @@ _INTERVIEW_STATUS: Final[dict[InterviewErrorCode, int]] = {
 
 # Which HTTP status each career-loop refusal becomes (Phase 15, §54, §90). A user-owned
 # resource that is absent or foreign reads as a 404 — `APPLICATION_NOT_FOUND`,
-# `OUTCOME_NOT_FOUND`, `PROPOSAL_NOT_FOUND`, and `OPPORTUNITY_NOT_FOUND` (a posting is a shared
+# `OUTCOME_NOT_FOUND`, `RECOMMENDATION_NOT_FOUND`, `PROPOSAL_NOT_FOUND`, and
+# `OPPORTUNITY_NOT_FOUND` (a posting is a shared
 # fact, so there is no "not yours" to fold in) — so a caller cannot enumerate another account's
 # ids by probing. Everything else is a 409, a well-formed request the loop refused on a state
 # the caller must resolve: an outcome already superseded, a proposal no longer open or lapsed, a
@@ -179,6 +180,7 @@ _CAREER_STATUS: Final[dict[CareerErrorCode, int]] = {
     CareerErrorCode.APPLICATION_NOT_FOUND: status.HTTP_404_NOT_FOUND,
     CareerErrorCode.OUTCOME_NOT_FOUND: status.HTTP_404_NOT_FOUND,
     CareerErrorCode.OPPORTUNITY_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    CareerErrorCode.RECOMMENDATION_NOT_FOUND: status.HTTP_404_NOT_FOUND,
     CareerErrorCode.PROPOSAL_NOT_FOUND: status.HTTP_404_NOT_FOUND,
     CareerErrorCode.OUTCOME_NOT_EFFECTIVE: status.HTTP_409_CONFLICT,
     CareerErrorCode.PROPOSAL_NOT_OPEN: status.HTTP_409_CONFLICT,

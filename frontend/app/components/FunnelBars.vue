@@ -9,7 +9,7 @@
 import { computed } from 'vue'
 import type { Maybe } from '~/types/domain'
 
-const props = defineProps<{ rows: { stage: string, count: number, pct: Maybe<number> }[] }>()
+const props = defineProps<{ rows: { stage: string, label?: string, count: number, pct: Maybe<number> }[] }>()
 
 const max = computed(() => Math.max(1, ...props.rows.map(r => r.count)))
 </script>
@@ -17,7 +17,7 @@ const max = computed(() => Math.max(1, ...props.rows.map(r => r.count)))
 <template>
   <div class="ov-bars">
     <div v-for="f in props.rows" :key="f.stage" class="ov-bar-row">
-      <span class="ov-bar-label">{{ f.stage }}</span>
+      <span class="ov-bar-label">{{ f.label ?? f.stage }}</span>
       <span class="ov-bar-track">
         <span class="ov-bar-fill" :style="{ width: `${(f.count / max) * 100}%` }" />
       </span>

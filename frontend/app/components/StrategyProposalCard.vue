@@ -29,6 +29,7 @@ const props = defineProps<{
   approve: Mutation<ApproveArgs, StrategyChangeExecution>
   dismiss: Mutation<string, StrategyChangeProposal>
 }>()
+const { locale, localize: l } = useLocale()
 
 // Per-card state, so one card's in-flight action or refusal never shows on another.
 const busy = ref(false)
@@ -49,7 +50,25 @@ const STATUS_COLOR: Record<StrategyChangeProposalStatus, BadgeColor> = {
 }
 
 function label(value: string): string {
-  return value.replace(/_/g, ' ').toLowerCase()
+  const normalized = value.replace(/_/g, ' ').toLowerCase()
+  if (locale.value !== 'fr') return normalized
+  const labels: Record<string, string> = {
+    'set search radius': 'modifier le rayon',
+    'set search keywords': 'modifier les mots-clés',
+    'set search sources': 'modifier les sources',
+    'set search opportunity types': 'modifier les types d’offres',
+    'set policy opportunity types': 'modifier les types autorisés',
+    'set application volume': 'modifier le volume de candidatures',
+    'set minimum score': 'modifier le score minimum',
+    'search profile': 'recherche enregistrée',
+    'application policy': 'politique de candidature',
+    proposed: 'proposée', executed: 'appliquée', rejected: 'refusée', failed: 'échouée',
+    dismissed: 'écartée', expired: 'expirée', 'title keywords': 'mots-clés du titre',
+    'excluded keywords': 'mots-clés exclus', 'source keys': 'sources',
+    'opportunity types': 'types d’offres', 'radius km': 'rayon en km',
+    'minimum overall score': 'score global minimum',
+  }
+  return labels[normalized] ?? normalized
 }
 
 async function onApprove(confirmSensitive: boolean): Promise<void> {
@@ -92,9 +111,9 @@ async function onDismiss(): Promise<void> {
   <li class="proposal">
     <div class="proposal__head">
       <span class="proposal__kind">{{ label(proposal.change_kind) }}</span>
-      <span class="proposal__target">on {{ label(proposal.target) }}</span>
+      <span class="proposal__target">{{ l('on', 'sur') }} {{ label(proposal.target) }}</span>
       <UBadge :color="STATUS_COLOR[proposal.status]" variant="subtle" size="xs">
-        {{ proposal.status.toLowerCase() }}
+        {{ label(proposal.status) }}
       </UBadge>
       <UBadge
         v-if="proposal.is_sensitive"
@@ -103,7 +122,7 @@ async function onDismiss(): Promise<void> {
         size="xs"
         data-test="sensitive-badge"
       >
-        loosens a safety limit
+        {{ l('loosens a safety limit', 'assouplit une limite de sécurité') }}
       </UBadge>
     </div>
 
@@ -127,7 +146,7 @@ async function onDismiss(): Promise<void> {
     <!-- The second gate: shown only after the server refused a plain approval of a loosening change. -->
     <div v-if="awaitingSensitiveConfirm" class="proposal__confirm" role="alert">
       <p class="proposal__confirm-text">
-        This change loosens a safety limit. Confirm again to apply it.
+        {{ l('This change loosens a safety limit. Confirm again to apply it.', 'Cette modification assouplit une limite de sécurité. Confirmez une seconde fois pour l’appliquer.') }}
       </p>
       <div class="proposal__actions">
         <UButton
@@ -137,7 +156,7 @@ async function onDismiss(): Promise<void> {
           data-test="confirm-sensitive"
           @click="() => onApprove(true)"
         >
-          Confirm &amp; apply
+          {{ l('Confirm & apply', 'Confirmer et appliquer') }}
         </UButton>
         <UButton
           size="xs"
@@ -145,7 +164,7 @@ async function onDismiss(): Promise<void> {
           :disabled="busy"
           @click="() => (awaitingSensitiveConfirm = false)"
         >
-          Keep it as is
+          {{ l('Keep it as is', 'Conserver la configuration actuelle') }}
         </UButton>
       </div>
     </div>
@@ -158,7 +177,7 @@ async function onDismiss(): Promise<void> {
         data-test="approve"
         @click="() => onApprove(false)"
       >
-        Approve
+        {{ l('Approve', 'Approuver') }}
       </UButton>
       <UButton
         size="xs"
@@ -168,7 +187,7 @@ async function onDismiss(): Promise<void> {
         data-test="dismiss"
         @click="onDismiss"
       >
-        Dismiss
+        {{ l('Dismiss', 'Refuser') }}
       </UButton>
     </div>
   </li>
@@ -190,4 +209,11 @@ async function onDismiss(): Promise<void> {
 .proposal__error { color: var(--ui-error, #dc2626); font-size: 0.85rem; margin: 0; }
 .proposal__confirm { border: 1px solid var(--ui-warning, #f59e0b); border-radius: 0.4rem; padding: 0.5rem 0.75rem; display: flex; flex-direction: column; gap: 0.4rem; }
 .proposal__confirm-text { margin: 0; font-size: 0.85rem; }
+@media (max-width: 560px) {
+  .proposal { padding: 0.85rem; }
+  .proposal__field { display: grid; grid-template-columns: 1fr auto; align-items: center; }
+  .proposal__field-name { grid-column: 1 / -1; min-width: 0; }
+  .proposal__actions { align-items: stretch; flex-direction: column; }
+  .proposal__actions :deep(button) { width: 100%; min-height: 44px; }
+}
 </style>

@@ -950,6 +950,7 @@ def strategy_proposal_service(
     return StrategyProposalService(
         SqlAlchemyStrategyChangeProposalRepository(session),
         SqlAlchemyStrategyChangeExecutionRepository(session),
+        SqlAlchemyCareerRecommendationRepository(session),
         onboarding, policies)
 
 

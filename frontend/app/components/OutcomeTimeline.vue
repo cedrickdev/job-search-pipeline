@@ -22,6 +22,7 @@ import {
 import type { ApplicationOutcome, OutcomeKind, OutcomeStatus } from '~/types/v2'
 import { errorMessage } from '~/utils/v2-errors'
 
+const { localize: l } = useLocale()
 const props = defineProps<{ applicationId: string }>()
 
 const { data, status, error } = useApplicationOutcomesQuery(
@@ -56,9 +57,25 @@ const correctWhen = ref('')
 const correctDetail = ref('')
 const rowError = ref<string | null>(null)
 
-function label(value: string): string {
-  return value.replace(/_/g, ' ').toLowerCase()
+const KIND_LABELS: Record<OutcomeKind, [string, string]> = {
+  ACKNOWLEDGED: ['acknowledged', 'accusé de réception'],
+  SCREEN: ['screen', 'présélection'],
+  ASSESSMENT: ['assessment', 'évaluation'],
+  INTERVIEW: ['interview', 'entretien'],
+  OFFER_RECEIVED: ['offer received', 'offre reçue'],
+  OFFER_ACCEPTED: ['offer accepted', 'offre acceptée'],
+  OFFER_DECLINED: ['offer declined', 'offre refusée'],
+  REJECTED: ['rejected', 'refusée'],
+  WITHDRAWN: ['withdrawn', 'retirée'],
 }
+const STATUS_LABELS: Record<OutcomeStatus, [string, string]> = {
+  EFFECTIVE: ['effective', 'actif'],
+  SUPERSEDED: ['superseded', 'remplacé'],
+  RETRACTED: ['retracted', 'rétracté'],
+}
+
+function kindLabel(kind: OutcomeKind): string { return l(...KIND_LABELS[kind]) }
+function statusLabel(status: OutcomeStatus): string { return l(...STATUS_LABELS[status]) }
 
 function when(iso: string): string {
   return new Date(iso).toLocaleString()
@@ -130,51 +147,50 @@ async function onRetract(outcome: ApplicationOutcome): Promise<void> {
 <template>
   <div class="outcomes">
     <form class="outcomes__form" data-test="record-outcome" @submit.prevent="onRecord">
-      <select v-model="draftKind" aria-label="Outcome milestone" class="outcomes__select">
-        <option v-for="k in KINDS" :key="k" :value="k">{{ label(k) }}</option>
+      <select v-model="draftKind" :aria-label="l('Outcome milestone', 'Étape de recrutement')" class="outcomes__select">
+        <option v-for="k in KINDS" :key="k" :value="k">{{ kindLabel(k) }}</option>
       </select>
       <input
         v-model="draftWhen"
         type="datetime-local"
-        aria-label="When it happened"
+        :aria-label="l('When it happened', 'Date de l’événement')"
         class="outcomes__when"
       >
       <input
         v-model="draftDetail"
         type="text"
-        aria-label="Note (optional)"
-        placeholder="Note (optional)"
+        :aria-label="l('Note (optional)', 'Note (facultative)')"
+        :placeholder="l('Note (optional)', 'Note (facultative)')"
         class="outcomes__detail"
       >
       <UButton type="submit" size="xs" :loading="record.isPending" data-test="record-submit">
-        Record outcome
+        {{ l('Record outcome', 'Enregistrer le résultat') }}
       </UButton>
     </form>
     <p v-if="formError" class="outcomes__error" role="alert">{{ formError }}</p>
 
     <p v-if="error" class="outcomes__error" role="alert">{{ errorMessage(error) }}</p>
     <p v-else-if="status === 'pending' && outcomes.length === 0" class="outcomes__empty">
-      Loading outcomes…
+      {{ l('Loading outcomes…', 'Chargement des résultats…') }}
     </p>
     <p v-else-if="outcomes.length === 0" class="outcomes__empty">
-      No outcomes yet. A recruiter's reply — a screen, an interview, an offer, a rejection — is
-      recorded here, and never changes the application's own state.
+      {{ l('No outcomes yet. A recruiter’s reply — a screen, an interview, an offer, a rejection — is recorded here and never changes the application’s own state.', 'Aucun résultat pour le moment. Une réponse du recruteur — présélection, entretien, offre ou refus — sera consignée ici, sans modifier l’état de la candidature.') }}
     </p>
     <ol v-else class="outcomes__list">
       <li v-for="o in outcomes" :key="o.id" class="outcome" :data-status="o.status">
         <div class="outcome__row">
-          <span class="outcome__kind">{{ label(o.kind) }}</span>
+          <span class="outcome__kind">{{ kindLabel(o.kind) }}</span>
           <UBadge :color="STATUS_COLOR[o.status]" variant="subtle" size="xs">
-            {{ o.status.toLowerCase() }}
+            {{ statusLabel(o.status) }}
           </UBadge>
           <span class="outcome__when">{{ when(o.occurred_at) }}</span>
-          <span v-if="o.is_correction" class="outcome__tag">correction</span>
+          <span v-if="o.is_correction" class="outcome__tag">{{ l('correction', 'correction') }}</span>
         </div>
         <p v-if="o.detail" class="outcome__detail">{{ o.detail }}</p>
 
         <div v-if="o.is_effective && correctingId !== o.id" class="outcome__actions">
           <UButton size="xs" variant="ghost" data-test="correct" @click="() => openCorrection(o)">
-            Correct
+            {{ l('Correct', 'Corriger') }}
           </UButton>
           <UButton
             size="xs"
@@ -184,7 +200,7 @@ async function onRetract(outcome: ApplicationOutcome): Promise<void> {
             data-test="retract"
             @click="() => onRetract(o)"
           >
-            Retract
+            {{ l('Retract', 'Rétracter') }}
           </UButton>
         </div>
 
@@ -194,26 +210,26 @@ async function onRetract(outcome: ApplicationOutcome): Promise<void> {
           data-test="correct-form"
           @submit.prevent="onCorrect"
         >
-          <select v-model="correctKind" aria-label="Corrected milestone" class="outcomes__select">
-            <option v-for="k in KINDS" :key="k" :value="k">{{ label(k) }}</option>
+          <select v-model="correctKind" :aria-label="l('Corrected milestone', 'Étape corrigée')" class="outcomes__select">
+            <option v-for="k in KINDS" :key="k" :value="k">{{ kindLabel(k) }}</option>
           </select>
           <input
             v-model="correctWhen"
             type="datetime-local"
-            aria-label="Corrected date"
+            :aria-label="l('Corrected date', 'Date corrigée')"
             class="outcomes__when"
           >
           <input
             v-model="correctDetail"
             type="text"
-            aria-label="Corrected note"
+            :aria-label="l('Corrected note', 'Note corrigée')"
             class="outcomes__detail"
           >
           <UButton type="submit" size="xs" :loading="correct.isPending" data-test="correct-submit">
-            Save correction
+            {{ l('Save correction', 'Enregistrer la correction') }}
           </UButton>
           <UButton size="xs" variant="ghost" @click="() => (correctingId = null)">
-            Cancel
+            {{ l('Cancel', 'Annuler') }}
           </UButton>
         </form>
       </li>
@@ -238,4 +254,8 @@ async function onRetract(outcome: ApplicationOutcome): Promise<void> {
 .outcome__actions { display: flex; gap: 0.4rem; }
 .outcomes__empty { color: var(--ui-text-muted, #6b7280); font-size: 0.85rem; margin: 0; }
 .outcomes__error { color: var(--ui-error, #dc2626); font-size: 0.85rem; margin: 0; }
+@media (max-width: 560px) {
+  .outcomes__form > * { flex: 1 1 100%; min-height: 44px; }
+  .outcome__actions > * { min-height: 44px; }
+}
 </style>

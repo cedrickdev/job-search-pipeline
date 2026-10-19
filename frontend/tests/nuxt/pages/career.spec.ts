@@ -56,6 +56,7 @@ describe('career page', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     clearNuxtData()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
   })
 
   it('tells an account with nothing matured there is nothing to measure', async () => {
@@ -76,6 +77,15 @@ describe('career page', () => {
     })
     const { wrapper } = await mountWith({ analytics: empty })
     expect(wrapper.text()).toContain('No applications to measure yet')
+  })
+
+  it('translates the career report headings and actions into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const { wrapper } = await mountWith()
+
+    expect(wrapper.text()).toContain('Actualiser')
+    expect(wrapper.text()).toContain('Taux de conversion')
+    expect(wrapper.text()).toContain('Recommandations')
   })
 
   it('renders the funnel and its conversion rates', async () => {
@@ -104,6 +114,22 @@ describe('career page', () => {
     await wrapper.get('[data-test="generate"]').trigger('click')
     await flushPromises()
     expect(http.callsTo(RECOMMENDATIONS).filter(c => c.method === 'POST')).toHaveLength(1)
+    expect(wrapper.get('[data-test="generation-result"]').text()).toContain('1 recommendation generated')
+  })
+
+  it('explains when current evidence supports no recommendation', async () => {
+    const { wrapper } = await mountWith({
+      extra: [{
+        match: RECOMMENDATIONS,
+        method: 'POST',
+        json: careerRecommendationList([]),
+      }],
+    })
+    await wrapper.get('[data-test="generate"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="generation-result"]').text())
+      .toContain('No recommendation is supported by the current evidence')
   })
 
   it('points acting-on-advice at the strategy surface', async () => {

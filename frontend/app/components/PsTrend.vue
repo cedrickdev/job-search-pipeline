@@ -11,17 +11,18 @@
 import type { Analytics } from '~/types/domain'
 
 const props = defineProps<{ trend: Analytics['phone_screen_trend'] }>()
+const { localize: l } = useLocale()
 </script>
 
 <template>
   <p v-if="props.trend.points.length === 0" class="ov-empty">
-    No scored CVs in this window.
+    {{ l('No scored CVs in this window.', 'Aucun CV évalué sur cette période.') }}
   </p>
   <div
     v-else
     class="an-cols an-cols-tall"
     role="img"
-    aria-label="phone-screen readiness by day"
+    :aria-label="l('phone-screen readiness by day', 'préparation à la présélection par jour')"
   >
     <div
       v-for="p in props.trend.points"

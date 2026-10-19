@@ -19,7 +19,14 @@ from datetime import UTC, datetime
 import pytest
 
 from tests.v2_api import api_harness
-from tests.v2_builders import POLICY, SEARCH_PROFILE, a_policy, a_search_profile
+from tests.v2_builders import (
+    OTHER_USER,
+    POLICY,
+    SEARCH_PROFILE,
+    a_career_recommendation,
+    a_policy,
+    a_search_profile,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -95,6 +102,26 @@ async def test_proposing_against_a_missing_target_is_409(tmp_path):
         response = await _propose(api, _keywords_change(SEARCH_PROFILE))  # nothing seeded
         assert response.status_code == 409
         assert response.json()["error"] == "strategy_target_not_found"
+
+
+async def test_proposing_with_another_accounts_recommendation_is_404(tmp_path):
+    """A foreign evidence link reads as absent, so recommendation ids cannot be probed."""
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        search_id = await _seed_search(api)
+        foreign = await api.career_recommendations.add(
+            a_career_recommendation(user_id=OTHER_USER))
+
+        response = await api.write(
+            "POST", "/career/strategy-proposals",
+            json={
+                "change": _keywords_change(search_id),
+                "summary": "Cibler python.",
+                "source_recommendation_id": str(foreign.id),
+            })
+
+        assert response.status_code == 404
+        assert response.json()["error"] == "recommendation_not_found"
 
 async def test_an_unknown_change_kind_is_refused_at_the_boundary(tmp_path):
     """A `kind` the platform does not offer is a 422 at the union, never a silently widened match."""

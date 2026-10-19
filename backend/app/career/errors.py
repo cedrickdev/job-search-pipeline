@@ -38,6 +38,8 @@ class CareerErrorCode(StrEnum):
       corrected or retracted again (409);
     - `OPPORTUNITY_NOT_FOUND` — the opportunity to classify does not exist (404; a posting is a
       shared fact with no owner, so there is no "not yours" to fold in);
+    - `RECOMMENDATION_NOT_FOUND` — the recommendation linked as evidence is not this
+      account's (404);
     - `PROPOSAL_NOT_FOUND` — the strategy proposal is not this account's (404);
     - `PROPOSAL_NOT_OPEN` — the proposal is no longer `PROPOSED`, and nothing was executed for
       it, so a stale confirm or dismiss cannot act (409);
@@ -55,6 +57,7 @@ class CareerErrorCode(StrEnum):
     OUTCOME_NOT_FOUND = "OUTCOME_NOT_FOUND"
     OUTCOME_NOT_EFFECTIVE = "OUTCOME_NOT_EFFECTIVE"
     OPPORTUNITY_NOT_FOUND = "OPPORTUNITY_NOT_FOUND"
+    RECOMMENDATION_NOT_FOUND = "RECOMMENDATION_NOT_FOUND"
     PROPOSAL_NOT_FOUND = "PROPOSAL_NOT_FOUND"
     PROPOSAL_NOT_OPEN = "PROPOSAL_NOT_OPEN"
     PROPOSAL_EXPIRED = "PROPOSAL_EXPIRED"

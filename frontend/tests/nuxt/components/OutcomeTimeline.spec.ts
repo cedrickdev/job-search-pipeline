@@ -35,6 +35,18 @@ describe('OutcomeTimeline', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     clearNuxtData()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
+  })
+
+  it('translates outcome controls and milestones into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const { wrapper } = await mountWith(applicationOutcomeList([
+      applicationOutcome({ kind: 'REJECTED' }),
+    ]))
+
+    expect(wrapper.text()).toContain('Enregistrer le résultat')
+    expect(wrapper.text()).toContain('refusée')
+    expect(wrapper.text()).toContain('Corriger')
   })
 
   it('tells an application with no outcomes that none are recorded', async () => {

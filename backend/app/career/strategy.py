@@ -62,6 +62,7 @@ from backend.app.domain.strategy_change import (
 )
 from backend.app.repositories.contracts import (
     DEFAULT_LIMIT,
+    CareerRecommendationRepository,
     StrategyChangeExecutionRepository,
     StrategyChangeProposalRepository,
 )
@@ -85,8 +86,9 @@ _UNEXPECTED_FAILURE_DETAIL = (
 class StrategyProposalService:
     """Draft strategy proposals, and apply the approved ones through their owning service (§34-45).
 
-    Holds the proposal store and the execution-audit store it writes, and the two application
-    services an approved change routes to — `OnboardingService` for a search edit,
+    Holds the proposal store, its execution-audit store, the owner-scoped recommendation store,
+    and the two application services an approved change routes to — `OnboardingService` for a
+    search edit,
     `ApplicationPolicyService` for a policy edit. No clock in the constructor — every method
     takes `now` — the convention every V2 service keeps. The service has no other authority: it
     cannot touch an application, an outcome or a score, and it writes a search or policy only by
@@ -95,10 +97,12 @@ class StrategyProposalService:
 
     def __init__(self, proposals: StrategyChangeProposalRepository,
                  executions: StrategyChangeExecutionRepository,
+                 recommendations: CareerRecommendationRepository,
                  onboarding: OnboardingService,
                  policies: ApplicationPolicyService) -> None:
         self._proposals = proposals
         self._executions = executions
+        self._recommendations = recommendations
         self._onboarding = onboarding
         self._policies = policies
 
@@ -139,7 +143,9 @@ class StrategyProposalService:
         now, the precondition `approve` revalidates against — so a change drafted against numbers
         the user later edits can never silently overwrite the newer state. A target that does not
         exist for this account raises `STRATEGY_TARGET_NOT_FOUND`: there is nothing to draft
-        against. The proposal is born `PROPOSED` and writes nothing to the target; `expires_at`
+        against. A linked recommendation is loaded through the same owner-scoped rule and a
+        foreign or missing id raises `RECOMMENDATION_NOT_FOUND`. The proposal is born `PROPOSED`
+        and writes nothing to the target; `expires_at`
         follows `created_at` by `ttl` so an unacted suggestion lapses rather than lingering.
         """
         target_version = await self._load_target_version(user_id, change)
@@ -147,6 +153,12 @@ class StrategyProposalService:
             raise CareerError(
                 CareerErrorCode.STRATEGY_TARGET_NOT_FOUND,
                 f"no such {change.target.value} for this account")
+        if (source_recommendation_id is not None
+                and await self._recommendations.get(
+                    user_id, source_recommendation_id) is None):
+            raise CareerError(
+                CareerErrorCode.RECOMMENDATION_NOT_FOUND,
+                "no such recommendation for this account")
         return await self._proposals.upsert(StrategyChangeProposal(
             id=new_strategy_change_proposal_id(),
             user_id=user_id,

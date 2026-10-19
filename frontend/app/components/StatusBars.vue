@@ -6,7 +6,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-const props = defineProps<{ rows: { status: string, count: number }[] }>()
+const props = defineProps<{ rows: { status: string, label?: string, count: number }[] }>()
 
 const max = computed(() => Math.max(1, ...props.rows.map(r => r.count)))
 </script>
@@ -14,7 +14,7 @@ const max = computed(() => Math.max(1, ...props.rows.map(r => r.count)))
 <template>
   <div class="ov-bars">
     <div v-for="s in props.rows" :key="s.status" class="ov-bar-row">
-      <span class="ov-bar-label"><StatusBadge :status="s.status" /></span>
+      <span class="ov-bar-label"><StatusBadge :status="s.status" :label="s.label" /></span>
       <span class="ov-bar-track">
         <span
           class="ov-bar-fill ov-bar-accent"

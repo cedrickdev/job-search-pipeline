@@ -27,9 +27,11 @@ import type {
 } from '~/types/v2'
 import { errorMessage } from '~/utils/v2-errors'
 
+const { t, locale, localize: l } = useLocale()
+
 definePageMeta({ middleware: 'auth' })
 
-useHead({ title: 'Career intelligence · Command Center' })
+useHead({ title: () => `${l('Career intelligence', 'Analyse de carrière')} · Command Center` })
 
 const {
   data: analyticsData,
@@ -46,9 +48,23 @@ const recommendations = computed<CareerRecommendation[]>(
 
 const analyticsLoading = computed(
   () => analyticsStatus.value === 'pending' && !analyticsData.value)
+const matureApplications = computed(() => report.value?.funnel.censoring.mature_count ?? 0)
+const canGenerateRecommendations = computed(() => matureApplications.value >= 5)
 
 function label(value: string): string {
-  return value.replace(/_/g, ' ').toLowerCase()
+  const normalized = value.replace(/_/g, ' ').toLowerCase()
+  if (locale.value !== 'fr') return normalized
+  const french: Record<string, string> = {
+    submitted: 'envoyées', accepted: 'acceptées', rejected: 'refusées', interview: 'entretien',
+    response: 'réponse', offer: 'offre', 'role family': 'famille de métier', source: 'source',
+    'opportunity type': 'type d’offre', 'document strategy': 'type de document',
+    'interview conversion': 'conversion vers un entretien', 'offer conversion': 'conversion vers une offre',
+    acceptance: 'acceptation', 'time to first response': 'délai avant la première réponse',
+    'time to interview': 'délai avant l’entretien', 'time to offer': 'délai avant l’offre',
+    'time to decision': 'délai avant la décision', 'unclassified': 'non classé',
+    planned: 'planifiées', ready: 'prêtes', 'requires human': 'à vérifier',
+  }
+  return french[normalized] ?? normalized
 }
 
 /** A rate as a percent, or a dash when the matured sample was too thin to define one. */
@@ -80,7 +96,7 @@ function onGenerate(): void {
 <template>
   <section class="career">
     <header class="career__header">
-      <h1>Career intelligence</h1>
+      <h1>{{ t('page.career') }}</h1>
       <div class="career__header-actions">
         <UButton
           variant="ghost"
@@ -88,15 +104,16 @@ function onGenerate(): void {
           :loading="analyticsStatus === 'pending'"
           @click="() => refreshAnalytics()"
         >
-          Refresh
+          {{ l('Refresh', 'Actualiser') }}
         </UButton>
         <UButton
           color="primary"
           :loading="generate.isPending"
+          :disabled="!analyticsLoading && !canGenerateRecommendations"
           data-test="generate"
           @click="onGenerate"
         >
-          Generate recommendations
+          {{ l('Generate recommendations', 'Générer des recommandations') }}
         </UButton>
       </div>
     </header>
@@ -104,21 +121,21 @@ function onGenerate(): void {
     <p v-if="analyticsError" class="career__error" role="alert">
       {{ errorMessage(analyticsError) }}
     </p>
-    <p v-else-if="analyticsLoading" class="career__muted">Computing your funnel…</p>
+    <p v-else-if="analyticsLoading" class="career__muted">{{ l('Computing your funnel…', 'Calcul de votre parcours…') }}</p>
     <p v-else-if="report && report.funnel.window.is_empty" class="career__muted">
-      No applications to measure yet. Submit an application and record its outcomes to see your funnel.
+      {{ l('No applications to measure yet. Submit an application and record its outcomes to see your funnel.', 'Aucune candidature à mesurer. Envoyez-en une et consignez son résultat pour afficher votre parcours.') }}
     </p>
 
     <template v-else-if="report">
       <p class="career__muted">
         {{ report.funnel.censoring.mature_count }} of {{ report.funnel.censoring.total_count }}
-        applications mature enough to have resolved
-        ({{ report.funnel.censoring.observation_horizon_days }}-day horizon);
-        {{ report.funnel.censoring.censored_count }} still too recent to count.
+        {{ l('applications mature enough to have resolved', 'candidatures assez anciennes pour avoir reçu une réponse') }}
+        ({{ report.funnel.censoring.observation_horizon_days }}{{ l('-day horizon', ' jours d’observation') }});
+        {{ report.funnel.censoring.censored_count }} {{ l('still too recent to count.', 'sont encore trop récentes pour être comptabilisées.') }}
       </p>
 
       <div class="career__block" data-test="funnel">
-        <h2>Funnel</h2>
+        <h2>{{ l('Funnel', 'Parcours') }}</h2>
         <ul class="funnel">
           <li v-for="s in report.funnel.stages" :key="s.stage" class="funnel__row">
             <span class="funnel__stage">{{ label(s.stage) }}</span>
@@ -132,7 +149,7 @@ function onGenerate(): void {
       </div>
 
       <div class="career__block">
-        <h2>Conversion rates</h2>
+        <h2>{{ l('Conversion rates', 'Taux de conversion') }}</h2>
         <div class="rates">
           <div v-for="r in report.rates" :key="r.kind" class="rate">
             <div class="rate__value">{{ ratePercent(r) }}</div>
@@ -143,7 +160,7 @@ function onGenerate(): void {
       </div>
 
       <div class="career__block">
-        <h2>Timing</h2>
+        <h2>{{ l('Timing', 'Délais') }}</h2>
         <ul class="timings">
           <li v-for="t in report.timings" :key="t.kind">
             <span>{{ label(t.kind) }}</span>
@@ -153,13 +170,13 @@ function onGenerate(): void {
       </div>
 
       <div v-if="report.breakdowns.length > 0" class="career__block">
-        <h2>Breakdowns</h2>
+        <h2>{{ l('Breakdowns', 'Détails') }}</h2>
         <div v-for="b in report.breakdowns" :key="b.dimension" class="breakdown">
           <h3>{{ label(b.dimension) }}</h3>
           <div v-for="c in b.cells" :key="c.key ?? 'none'" class="breakdown__cell">
             <span class="breakdown__key">{{ cellKey(c.key) }}</span>
             <span class="breakdown__stat">
-              {{ c.applications }} app(s){{ cellRate(c) }}
+              {{ c.applications }} {{ l('application(s)', 'candidature(s)') }}{{ cellRate(c) }}
             </span>
           </div>
         </div>
@@ -167,12 +184,25 @@ function onGenerate(): void {
     </template>
 
     <div class="career__block" data-test="recommendations">
-      <h2>Recommendations</h2>
+      <h2>{{ l('Recommendations', 'Recommandations') }}</h2>
+      <p v-if="!analyticsLoading && !canGenerateRecommendations" class="career__muted" role="status">
+        {{ l(`Recommendations unlock after 5 mature applications. You currently have ${matureApplications} that are old enough to evaluate.`, `Les recommandations se débloquent après 5 candidatures arrivées à maturité. Vous en avez actuellement ${matureApplications} assez anciennes pour être évaluées.`) }}
+      </p>
       <p v-if="generate.error" class="career__error" role="alert">
         {{ errorMessage(generate.error) }}
       </p>
+      <p
+        v-else-if="generate.isSuccess && generate.data"
+        class="career__result"
+        role="status"
+        data-test="generation-result"
+      >
+        {{ generate.data.recommendations.length > 0
+          ? l(`${generate.data.recommendations.length} recommendation generated.`, `${generate.data.recommendations.length} recommandation(s) générée(s).`)
+          : l('No recommendation is supported by the current evidence. Add more resolved outcomes or diversify your applications before trying again.', 'Aucune recommandation n’est étayée par les données actuelles. Ajoutez des résultats définitifs ou diversifiez vos candidatures avant de réessayer.') }}
+      </p>
       <p v-if="recommendations.length === 0" class="career__muted">
-        No recommendations yet. Generate a set to see evidence-backed suggestions drawn from your funnel.
+        {{ l('No recommendations yet. Generate a set to see evidence-backed suggestions drawn from your funnel.', 'Aucune recommandation pour le moment. Générez-en pour obtenir des suggestions fondées sur les données de votre parcours.') }}
       </p>
       <ul v-else class="recs">
         <RecommendationCard
@@ -182,8 +212,8 @@ function onGenerate(): void {
         />
       </ul>
       <p class="career__pointer">
-        A recommendation is advice, never a change. Acting on one is a reviewed step on the
-        <NuxtLink to="/strategy">strategy</NuxtLink> surface.
+        {{ l('A recommendation is advice, never a change. Acting on one is a reviewed step on the', 'Une recommandation est un conseil, pas une modification. Son application nécessite votre validation dans la section') }}
+        <NuxtLink to="/strategy">{{ l('strategy', 'stratégie') }}</NuxtLink>{{ l(' surface.', '.') }}
       </p>
     </div>
   </section>
@@ -195,8 +225,9 @@ function onGenerate(): void {
 .career__header h1 { font-size: 1.25rem; font-weight: 600; margin: 0; }
 .career__header-actions { display: flex; align-items: center; gap: 0.5rem; }
 .career__error { color: var(--ui-error, #dc2626); margin: 0; }
+.career__result { color: var(--ui-success, #15803d); font-size: 0.85rem; margin: 0; }
 .career__muted { color: var(--ui-text-muted, #6b7280); font-size: 0.85rem; margin: 0; }
-.career__block { border: 1px solid var(--ui-border, #e5e7eb); border-radius: 0.5rem; padding: 0.85rem 1rem; display: flex; flex-direction: column; gap: 0.6rem; }
+.career__block { border: 1px solid var(--ui-border, #e5e7eb); border-radius: var(--radius); padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; background: var(--surface); }
 .career__block h2 { font-size: 0.95rem; font-weight: 600; margin: 0; }
 .funnel { display: flex; flex-direction: column; gap: 0.3rem; list-style: none; margin: 0; padding: 0; }
 .funnel__row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; }
@@ -217,4 +248,11 @@ function onGenerate(): void {
 .breakdown__stat { color: var(--ui-text-muted, #6b7280); font-variant-numeric: tabular-nums; }
 .recs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
 .career__pointer { font-size: 0.85rem; color: var(--ui-text-muted, #6b7280); }
+@media (max-width: 620px) {
+  .career__header, .career__header-actions { align-items: stretch; flex-direction: column; width: 100%; }
+  .career__header-actions :deep(button), .career__header-actions :deep(a) { width: 100%; min-height: 44px; }
+  .funnel__row { align-items: flex-start; flex-wrap: wrap; }
+  .funnel__stage { flex: 1 1 100%; min-width: 0; }
+  .funnel__bar { flex: 1 1 8rem; }
+}
 </style>

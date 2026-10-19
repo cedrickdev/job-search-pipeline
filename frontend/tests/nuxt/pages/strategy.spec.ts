@@ -15,6 +15,8 @@ import StrategyPage from '~/pages/strategy.vue'
 import { useSessionStore } from '~/stores/session'
 import { stubFetch } from '../support/http'
 import {
+  careerRecommendation,
+  search,
   signedIn,
   strategyExecution,
   strategyProposal,
@@ -25,16 +27,26 @@ import type { StrategyChangeProposalList } from '~/types/v2'
 
 const PENDING = '/api/v2/career/strategy-proposals'
 const HISTORY = '/api/v2/career/strategy-proposals/history'
+const SEARCHES = '/api/v2/me/search-profiles'
+const RECOMMENDATION_ID = careerRecommendation().id
 
 interface StrategyOpts {
   pending?: StrategyChangeProposalList
   history?: StrategyChangeProposalList
   extra?: Route[]
+  route?: string
 }
 
 function routes(opts: StrategyOpts = {}): Route[] {
   return [
     ...(opts.extra ?? []),
+    { match: SEARCHES, method: 'GET', json: { search_profiles: [search({
+      search: {
+        ...search().search,
+        title_keywords: ['backend'],
+        excluded_keywords: ['senior'],
+      },
+    })] } },
     // History precedes pending: the history URL contains the pending path as a
     // substring, and stubFetch takes the first route that matches.
     { match: HISTORY, method: 'GET', json: opts.history ?? strategyProposalList([]) },
@@ -46,7 +58,7 @@ function routes(opts: StrategyOpts = {}): Route[] {
 async function mountWith(opts: StrategyOpts = {}) {
   const http = stubFetch(routes(opts))
   await useSessionStore().ensure()
-  const wrapper = await mountSuspended(StrategyPage, { route: '/strategy' })
+  const wrapper = await mountSuspended(StrategyPage, { route: opts.route ?? '/strategy' })
   await flushPromises()
   return { http, wrapper }
 }
@@ -55,6 +67,7 @@ describe('strategy page', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     clearNuxtData()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
   })
 
   it('lists an open proposal with its two verbs', async () => {
@@ -71,11 +84,69 @@ describe('strategy page', () => {
     expect(link).toBeTruthy()
   })
 
+  it('translates the review and history headings into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const { wrapper } = await mountWith({
+      pending: strategyProposalList([strategyProposal()]),
+      history: strategyProposalList([strategyProposal({ status: 'DISMISSED', is_open: false })]),
+    })
+    expect(wrapper.text()).toContain('En attente de votre validation')
+    expect(wrapper.text()).toContain('Historique')
+    expect(wrapper.text()).toContain('Approuver')
+    expect(wrapper.text()).toContain('Refuser')
+    expect(wrapper.text()).not.toContain('Approve')
+  })
+
   it('shows settled proposals in the history', async () => {
     const dismissed = strategyProposal({ status: 'DISMISSED', is_open: false })
     const { wrapper } = await mountWith({ history: strategyProposalList([dismissed]) })
     expect(wrapper.find('[data-test="history"]').exists()).toBe(true)
     expect(wrapper.get('[data-test="history"]').text().toLowerCase()).toContain('dismissed')
+  })
+
+  it('refreshes both the review queue and the history', async () => {
+    const { http, wrapper } = await mountWith()
+    const before = http.callsTo(HISTORY).length
+    await wrapper.get('.strategy__header button').trigger('click')
+    await flushPromises()
+    expect(http.callsTo(HISTORY).length).toBeGreaterThan(before)
+  })
+
+  it('reports a history loading failure instead of silently hiding the history', async () => {
+    const { wrapper } = await mountWith({ extra: [
+      { match: HISTORY, method: 'GET', status: 503, json: { detail: 'Unavailable' } },
+    ] })
+    expect(wrapper.find('[data-test="history"] [role="alert"]').exists()).toBe(true)
+  })
+
+  it('creates a bounded keyword proposal linked to its recommendation without applying it', async () => {
+    const created = strategyProposal({ source_recommendation_id: RECOMMENDATION_ID })
+    const { http, wrapper } = await mountWith({
+      route: `/strategy?recommendation=${RECOMMENDATION_ID}`,
+      extra: [{ match: PENDING, method: 'POST', status: 201, json: created }],
+    })
+
+    await wrapper.get('[data-test="proposal-summary"]').setValue('Add platform roles to this search.')
+    await wrapper.get('[data-test="proposal-title-keywords"]').setValue('backend\nplatform engineer')
+    await wrapper.get('[data-test="proposal-form"]').trigger('submit')
+    await flushPromises()
+
+    const proposals = http.callsTo(PENDING).filter(c => c.method === 'POST')
+    expect(proposals).toHaveLength(1)
+    expect(JSON.parse(proposals[0]!.init!.body as string)).toEqual({
+      change: {
+        kind: 'SET_SEARCH_KEYWORDS',
+        search_profile_id: search().id,
+        before_title_keywords: ['backend'],
+        title_keywords: ['backend', 'platform engineer'],
+        before_excluded_keywords: ['senior'],
+        excluded_keywords: ['senior'],
+      },
+      summary: 'Add platform roles to this search.',
+      source_recommendation_id: RECOMMENDATION_ID,
+    })
+    expect(wrapper.get('[data-test="proposal-created"]').text()).toContain('Proposal created')
+    expect(http.callsTo('/approve').filter(c => c.method === 'POST')).toHaveLength(0)
   })
 
   it('approves a non-sensitive proposal without a second gate', async () => {

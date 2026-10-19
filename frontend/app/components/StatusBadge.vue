@@ -10,7 +10,7 @@
 import { computed } from 'vue'
 import { statusColor } from '~/utils/status'
 
-const props = defineProps<{ status: string }>()
+const props = defineProps<{ status: string, label?: string }>()
 
 const style = computed(() => ({ '--badge-color': statusColor(props.status) }))
 </script>
@@ -18,6 +18,6 @@ const style = computed(() => ({ '--badge-color': statusColor(props.status) }))
 <template>
   <span class="status-badge" :style="style">
     <span class="status-dot" />
-    {{ status }}
+    {{ label ?? status }}
   </span>
 </template>

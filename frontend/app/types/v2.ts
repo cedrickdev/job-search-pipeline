@@ -489,6 +489,12 @@ export type StrategyChangeProposalDetail = Schemas['StrategyChangeProposalDetail
 /** The record of one attempt to apply a confirmed proposal — the executor's audit. */
 export type StrategyChangeExecution = Schemas['StrategyChangeExecutionResponse']
 
+/** The only request that may draft a strategy change. It still applies nothing. */
+export type ProposeStrategyChangeRequest = Schemas['ProposeStrategyChangeRequest']
+
+/** The closed, discriminated union of strategy edits accepted by the backend. */
+export type StrategyChange = ProposeStrategyChangeRequest['change']
+
 /** One field a proposal moves, rendered before → after. */
 export type FieldChange = Schemas['FieldChangeResponse']
 

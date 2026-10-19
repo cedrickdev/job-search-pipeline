@@ -105,6 +105,9 @@ function routes(...first: MockRoute[]): MockRoute[] {
     { match: '/api/v2/auth/session', method: 'GET', json: { account: ACCOUNT, session: SESSION_WINDOW } },
     { match: SAVED, method: 'GET', json: oppResponse([opportunity({ id: 'saved-1', title: 'Saved Role' })]) },
     { match: LATEST, method: 'GET', status: 404, json: { error: 'discovery_not_found' } },
+    // The scope picker always reads active profiles, even when the map opens on the
+    // all-opportunities scope. It follows the more specific saved-search routes.
+    { match: '/api/v2/me/search-profiles', method: 'GET', json: { search_profiles: [] } },
     { match: OPPS, method: 'GET', json: oppResponse([opportunity()]) },
     { match: COMPANIES, method: 'GET', json: { companies: [companyItem()], limit: 50, offset: 0 } },
     { match: '/api/overview', json: overview() },
@@ -116,20 +119,17 @@ function routes(...first: MockRoute[]): MockRoute[] {
 /**
  * Intercept the map's own network so nothing leaves the machine.
  *
- * The runtime style URL (demotiles) is replaced with a minimal offline style: one
- * background layer, no sources, so no tiles are ever requested. A `glyphs` endpoint is
- * declared and answered with an empty 200 — a range MapLibre reads as "no glyphs here",
- * which is not the network failure that would trip the component's style-error path.
+ * The default OSM raster tile URL is replaced with a valid transparent image. The map
+ * therefore keeps a real raster source without the browser ever contacting OSM. A
+ * `glyphs` endpoint is also answered with an empty 200 for any provider-style test.
  */
 async function mockMapAssets(page: Page) {
-  const style = {
-    version: 8,
-    glyphs: 'https://glyphs.invalid/{fontstack}/{range}.pbf',
-    sources: {},
-    layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#0b1020' } }],
-  }
-  await page.route('**/demotiles.maplibre.org/**', route =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(style) }))
+  const transparentPng = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'base64',
+  )
+  await page.route('**/tile.openstreetmap.org/**', route =>
+    route.fulfill({ status: 200, contentType: 'image/png', body: transparentPng }))
   await page.route('**/*.pbf', route =>
     route.fulfill({ status: 200, contentType: 'application/x-protobuf', body: '' }))
 }
@@ -139,7 +139,7 @@ async function openMap(page: Page, extra: MockRoute[] = [], path = '/map'): Prom
   await mockMapAssets(page)
   const api = await mockApi(page, routes(...extra))
   await page.goto(path)
-  await expect(page.getByRole('heading', { name: 'Map' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^(Map|Carte)$/ })).toBeVisible()
   return api
 }
 
@@ -151,9 +151,15 @@ async function expectHealthyMap(page: Page) {
 }
 
 test('opens the explorer, brings up a live map, and lists what the open read returned', async ({ page }) => {
+  const workerResponses: number[] = []
+  page.on('response', response => {
+    if (response.url().includes('maplibre-gl-worker')) workerResponses.push(response.status())
+  })
   const api = await openMap(page)
 
   await expectHealthyMap(page)
+  await expect.poll(() => workerResponses.length).toBeGreaterThan(0)
+  expect(workerResponses.every(status => status === 200)).toBe(true)
   await expect(page.locator('.map-row', { hasText: 'Backend Engineer' })).toBeVisible()
   expect(api.callsTo(OPPS).length).toBeGreaterThan(0)
   // No saved read without a profile in the URL.
@@ -182,14 +188,32 @@ test('keeps an unplaceable role in the list, tagged, though it can carry no pin 
   // The unplaceable role is a real result: present in the list, tagged, distance a dash.
   const remote = page.locator('.map-row', { hasText: 'Remote Role' })
   await expect(remote).toBeVisible()
-  await expect(remote).toContainText('No location')
+  await expect(remote).toContainText(/(No location|Lieu non précisé)/)
   await expect(page.locator('.map-row', { hasText: 'On-site Role' })).toBeVisible()
+})
+
+test('keeps a Swiss textual location in the list without fabricating a map point', async ({ page }) => {
+  await openMap(page, [{
+    match: OPPS, method: 'GET', json: oppResponse([
+      opportunity({ id: 'placed', title: 'Placed role' }),
+      opportunity({
+        id: 'text-only', title: 'Swiss internship', status: 'UNRESOLVED',
+        location: { ...location(), point: null, raw: 'Zürich, Switzerland', precision: 'UNKNOWN', confidence: 'LOW' },
+        distance_meters: null,
+      }),
+    ]),
+  }])
+  await expectHealthyMap(page)
+  const unplaced = page.locator('.map-row', { hasText: 'Swiss internship' })
+  await expect(unplaced).toContainText('Zürich, Switzerland')
+  await expect(unplaced).toContainText(/No location|Lieu non précisé/)
+  await expect(page.locator('.map-row', { hasText: 'Placed role' })).toBeVisible()
 })
 
 test('switches to employers and reads the companies endpoint (§10)', async ({ page }) => {
   const api = await openMap(page)
 
-  await page.getByRole('tab', { name: 'Companies' }).click()
+  await page.getByRole('tab', { name: /^(Companies|Entreprises)$/ }).click()
 
   await expect(page.locator('.map-row', { hasText: 'Logitech' })).toBeVisible()
   await expect.poll(() => api.callsTo(COMPANIES).length).toBeGreaterThan(0)
@@ -198,7 +222,7 @@ test('switches to employers and reads the companies endpoint (§10)', async ({ p
 test('honours a saved-search scope named in the URL, reading the saved endpoint (§15)', async ({ page }) => {
   const api = await openMap(page, [], `/map?profile=${PROFILE_ID}`)
 
-  await expect(page.getByText('Scoped to a saved search')).toBeVisible()
+  await expect(page.getByText(/(Scoped to a saved search|Limitée à une recherche enregistrée)/)).toBeVisible()
   await expect(page.locator('.map-row', { hasText: 'Saved Role' })).toBeVisible()
   await expect.poll(() => api.callsTo(SAVED).length).toBeGreaterThan(0)
   // The open read is silenced while a saved search scopes the map.
@@ -240,9 +264,9 @@ test('refreshes a saved Swiss catalog and keeps unplaced results through partial
 
   await expect(page.locator('.map-row', { hasText: 'Unplaced apprenticeship' })).toBeVisible()
   expect(api.callsTo(SAVED)[0]?.url).toContain('catalog=true')
-  await page.getByRole('button', { name: 'Actualiser les offres' }).click()
-  await expect(page.getByRole('status')).toContainText('incomplète')
-  await expect(page.locator('.discovery-health')).toContainText('délai dépassé')
+  await page.getByRole('button', { name: /^(Actualiser les offres|Refresh opportunities)$/ }).click()
+  await expect(page.getByRole('status')).toContainText(/(incomplète|incomplete)/)
+  await expect(page.locator('.discovery-status')).toContainText(/(Recherche incomplète|Discovery is incomplete)/)
   await expect(page.locator('.map-row', { hasText: 'Unplaced apprenticeship' })).toBeVisible()
   expect(api.callsTo(start).filter(call => call.method === 'POST')).toHaveLength(1)
   expect(api.unmatched).toEqual([])
@@ -254,10 +278,11 @@ test('re-reads with a committed filter, and only on Apply (§23)', async ({ page
   await expectHealthyMap(page)
   const before = api.callsTo(OPPS).length
 
-  await page.getByLabel('Country').fill('ch')
+  await page.getByRole('button', { name: /^(Filter|Filtrer)$/ }).click()
+  await page.getByLabel(/^(Country|Pays)$/).selectOption('CH')
   // Typing alone does not fetch; the read waits for Apply.
   expect(api.callsTo('country=CH')).toHaveLength(0)
-  await page.getByRole('button', { name: 'Apply' }).click()
+  await page.getByRole('button', { name: /^(Apply filters|Appliquer les filtres)$/ }).click()
 
   await expect.poll(() => api.callsTo('country=CH').length).toBeGreaterThan(0)
   expect(api.callsTo(OPPS).length).toBeGreaterThan(before)
@@ -274,7 +299,7 @@ test('searches the current view only when the button is pressed (§20)', async (
   await page.waitForTimeout(400) // moveend is debounced 200ms
   const before = api.callsTo(OPPS).length
 
-  await page.getByRole('button', { name: 'Search this area' }).click()
+  await page.getByRole('button', { name: /^(Search this area|Rechercher dans cette zone)$/ }).click()
 
   await expect.poll(() => api.callsTo(OPPS).length).toBeGreaterThan(before)
   // The request carried the map's bounds, which only "Search this area" sends.
@@ -322,5 +347,5 @@ test('sends an anonymous visitor from the guarded map to the login form', async 
   await expect(page).toHaveURL('/login?redirect=/map')
   // Nothing of the map rendered on the way past, and the nav does not offer it.
   await expect(page.locator('[data-testid="opportunity-map"]')).toHaveCount(0)
-  await expect(page.getByRole('link', { name: 'Map' })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: /^(Map|Carte)$/ })).toHaveCount(0)
 })

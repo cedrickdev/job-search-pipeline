@@ -47,6 +47,11 @@ export interface CompanyFilters {
   offset?: number
 }
 
+/** The bounded subset of a company-discovery request exposed by the map. */
+export interface CompanyDiscoveryOptions {
+  country?: string
+}
+
 /**
  * The query string for one set of filters, with the empty ones left out.
  *
@@ -118,8 +123,10 @@ export function useCompanyQuery(companyId: MaybeRefOrGetter<string | null>) {
  * a mutation with a visible pending state rather than something a page does on mount.
  */
 export function useRunCompanyDiscovery() {
-  return useMutation<void, CompanyDiscoveryRun>(
-    () => apiPost<CompanyDiscoveryRun>(V2_ENDPOINTS.companyDiscoveryRun),
+  return useMutation<CompanyDiscoveryOptions, CompanyDiscoveryRun>(
+    options => options.country
+      ? apiPost<CompanyDiscoveryRun>(V2_ENDPOINTS.companyDiscoveryRun, { country: options.country })
+      : apiPost<CompanyDiscoveryRun>(V2_ENDPOINTS.companyDiscoveryRun),
     { onSuccess: () => invalidate('companies') },
   )
 }

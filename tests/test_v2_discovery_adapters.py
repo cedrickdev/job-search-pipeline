@@ -162,6 +162,59 @@ def an_ats_source(fetch: RecordingFetch, *boards: Board,
         clock=frozen_clock())
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_key", ["greenhouse", "lever"])
+async def test_ats_swiss_sweep_rejects_explicit_foreign_location_but_keeps_unknown(
+        source_key: str):
+    fetch = RecordingFetch(postings=[
+        a_posting(source=source_key, url="https://example.ch/jobs/ch",
+                  location="Zürich, Switzerland"),
+        a_posting(source=source_key, url="https://example.ch/jobs/fr",
+                  location="Paris, France"),
+        a_posting(source=source_key, url="https://example.ch/jobs/unknown",
+                  location="Remote"),
+    ])
+    from country_packs.ch.pack import load as load_ch_pack
+
+    adapter = V1AtsSourceAdapter(
+        fetch=fetch, boards=(Board("fixture-board", "Neocraft SA"),),
+        metadata=a_metadata(source_key, capabilities=frozenset({
+            Cap.COMPANY_FILTER, Cap.HEALTHCHECK})),
+        packs=lambda _: load_ch_pack(), clock=frozen_clock())
+    result = await adapter.discover(a_request())
+    assert len(result.opportunities) == 2
+    assert {opportunity.location.country if opportunity.location else None
+            for opportunity in result.opportunities} == {"CH", None}
+    assert result.metrics.postings_skipped == 1
+    assert all(opportunity.location is None or opportunity.location.point is None
+               for opportunity in result.opportunities)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("source_key", "url", "external_id"), [
+    ("greenhouse", "https://boards.greenhouse.io/example/jobs/4001", "4001"),
+    ("lever", "https://jobs.lever.co/example/123e4567-e89b-12d3-a456-426614174000",
+     "123e4567-e89b-12d3-a456-426614174000"),
+])
+async def test_ats_url_recovers_stable_posting_id_without_losing_source_url(
+        source_key: str, url: str, external_id: str):
+    fetch = RecordingFetch(postings=[a_posting(source=source_key, url=url,
+                                               location="Zürich, Switzerland")])
+    from country_packs.ch.pack import load as load_ch_pack
+
+    adapter = V1AtsSourceAdapter(
+        fetch=fetch, boards=(Board("fixture-board", "Neocraft SA"),),
+        metadata=a_metadata(source_key, capabilities=frozenset({
+            Cap.COMPANY_FILTER, Cap.ATS_METADATA,
+            *( (Cap.DIRECT_APPLY_URL,) if source_key == "greenhouse" else () ),
+        })), packs=lambda _: load_ch_pack(), clock=frozen_clock())
+    result = await adapter.discover(a_request())
+    opportunity = result.opportunities[0]
+    assert opportunity.source.external_id == external_id
+    assert opportunity.source.source_url == url
+    assert opportunity.application_url == (url if source_key == "greenhouse" else None)
+
+
 def codes(result) -> set[DiscoveryWarningCode]:
     return {warning.code for warning in result.warnings}
 

@@ -25,6 +25,7 @@ restart is persisted — and then only encrypted.
 | Database credentials | Env only (`JOBSEARCH_DATABASE_URL` / `POSTGRES_*`) | A process reaches the database with these; the database does not store them. |
 | Geocoder API key | Env only (indirect: `GEOCODER_API_KEY` names the var that holds it) | The public Nominatim server needs none. |
 | Discovery source keys (Jooble) | Env only (`JOOBLE_API_KEY`) | A discovery adapter's key. |
+| Integrated Claude terminal key | Env / secret manager, **terminal-manager only** (`ANTHROPIC_API_KEY`) | Shared deployment credential injected only into an ephemeral, non-root terminal runtime. Never passed to the API, Nuxt, PostgreSQL, user volumes, settings JSON, logs or OpenAPI. |
 | Password | **Hashed** in PostgreSQL (Argon2id, one-way) | Not a reversible secret — verified, never decrypted. No vault applies. |
 | Session / CSRF tokens | **Digested** in PostgreSQL (SHA-256, one-way) | Bearer tokens stored as digests, not recoverable. No vault applies. |
 | Site/ATS account password | **V1 only** (`SITE_ACCOUNT_PASSWORD` → `data/site_credentials.json`, plaintext) | No V2 workflow reads this file. See "No plaintext site-credential dependency" below. |
@@ -33,6 +34,27 @@ Two things follow. First, the only ciphertext a rotation touches is the LLM conn
 key — everything else is either env-only or a one-way hash. Second, nothing in the
 "env only" rows belongs in the database "for convenience"; putting a deployment secret
 there would trade a secret-manager boundary for a `pg_dump`.
+
+## Integrated Claude terminal boundary
+
+The embedded Claude Code terminal is deliberately separate from the provider-neutral
+CLI adapter. `ANTHROPIC_API_KEY` is loaded by the private `terminal-manager` service,
+which is the only service with Docker-socket access. The public API receives only a
+manager URL and an internal manager token; it authenticates the account and owns the
+browser WebSocket, but cannot read the key or create a Docker container. Nuxt receives
+neither credential nor runtime reference.
+
+For a local Compose run, keep the high-entropy `JOBSEARCH_TERMINAL_MANAGER_TOKEN` in
+the ignored `.env` file, but put `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` and
+`ANTHROPIC_MODEL` in the separate ignored `terminal.env` file (copy
+`terminal.env.example`). This prevents the Docker-socket-owning manager from inheriting
+the application's other secrets and prevents shell exports from silently overriding the
+selected gateway. On a VPS, inject both sets through the deployment secret store.
+Rotation means replacing the terminal credential, restarting only terminal-manager, and
+stopping existing terminal sessions; no key is persisted, so there is no database
+rotation. `JOBSEARCH_TERMINAL_ALLOWED_ORIGINS` is a strict,
+comma-separated origin allowlist for the public WebSocket — use the exact HTTPS app
+origin in production, never a wildcard.
 
 ## The versioned secret vault
 

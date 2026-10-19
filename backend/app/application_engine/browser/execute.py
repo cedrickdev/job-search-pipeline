@@ -8,10 +8,12 @@ attempt (§2, §29); an application that cannot be loaded is a safe pre-navigati
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from backend.app.application_engine.browser.context_loader import ApplicationContextLoader
 from backend.app.application_engine.browser.execution import run_prepare, run_submit
+from backend.app.application_engine.browser.form_capabilities import FormCapabilityCatalog
 from backend.app.application_engine.browser.registry import BrowserDriverRegistry
 from backend.app.application_engine.task_dispatcher import (
     BrowserTask,
@@ -28,7 +30,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 async def execute_on_page(
         page: Page, task: BrowserTask, *,
         registry: BrowserDriverRegistry,
-        loader: ApplicationContextLoader) -> BrowserTaskResult:
+        loader: ApplicationContextLoader,
+        form_catalog: FormCapabilityCatalog | None = None,
+        form_catalog_loader: Callable[[], FormCapabilityCatalog] | None = None,
+        ) -> BrowserTaskResult:
     """Run one browser task on a live page and return its typed result (§4, §6-7)."""
     driver = registry.detect(task.target_url)
     if driver is None:
@@ -48,6 +53,17 @@ async def execute_on_page(
             outcome=BrowserTaskOutcome.FAILED,
             detail="the application context could not be loaded; nothing was attempted")
 
+    if (task.kind is BrowserTaskKind.SUBMIT
+            and loaded.form_driver_key != driver.driver_key):
+        return BrowserTaskResult(
+            outcome=BrowserTaskOutcome.REQUIRES_HUMAN,
+            human_required_reason=HumanRequiredReason.FORM_CHANGED,
+            detail="the prepared form driver changed; nothing was attempted")
+
     if task.kind is BrowserTaskKind.PREPARE:
         return await run_prepare(page, driver, loaded.context, loaded.profile)
-    return await run_submit(page, driver, loaded.context)
+    return await run_submit(
+        page, driver, loaded.context, form_catalog=form_catalog,
+        form_catalog_loader=form_catalog_loader,
+        form_capability_id=loaded.form_capability_id,
+    )

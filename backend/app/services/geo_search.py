@@ -78,6 +78,16 @@ class GeoSearchService:
             workplace_modes=profile.workplace_modes, bounds=bounds,
             limit=limit, offset=offset)
         if catalog:
+            # Membership is the saved search's historical admission decision.
+            # Source rows may have been unclassified when collected, then a user
+            # may tighten their type/workplace preferences later. Reapplying those
+            # facets here would erase a row the catalog intentionally retained.
+            # Preserve `remote_policy`, which `geo_query_for_areas` derived from
+            # the profile/areas, while clearing only the duplicate SQL facets.
+            query = query.model_copy(update={
+                "opportunity_types": (),
+                "workplace_modes": (),
+            })
             return await self._opportunities.search_geo(
                 query, catalog_scope=(user_id, search_profile_id))
         return await self._opportunities.search_geo(query)

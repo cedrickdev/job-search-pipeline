@@ -21,6 +21,8 @@ function mountForm(props: {
   pending?: boolean
   error?: unknown
   submitLabel?: string
+  editable?: boolean
+  accountEmail?: string | null
 } = {}) {
   return mountSuspended(ProfileForm, { props: { profile: null, ...props } })
 }
@@ -43,6 +45,16 @@ describe('ProfileForm', () => {
     expect(wrapper.findAll('[aria-label$="code"]')).toHaveLength(0)
     // Nothing to save yet: the profile's one required field is empty.
     expect(wrapper.get(SUBMIT).attributes('disabled')).toBeDefined()
+  })
+
+  it('offers only countries activated by the deployment', async () => {
+    const wrapper = await mountForm()
+    const country = wrapper.get<HTMLSelectElement>('#profile-country')
+
+    expect(country.element.tagName).toBe('SELECT')
+    expect(country.findAll('option').map(option => option.attributes('value')))
+      .toEqual(['', 'CH'])
+    expect(country.text()).toContain('Switzerland')
   })
 
   it('will not submit a name that is only whitespace', async () => {
@@ -84,6 +96,19 @@ describe('ProfileForm', () => {
 
     expect(wrapper.get<HTMLInputElement>('#profile-display-name').element.value)
       .toBe('Arrived Late')
+  })
+
+  it('uses the account email and locks every control in read-only mode', async () => {
+    const wrapper = await mountForm({
+      profile: profile({ profile: profileDraft({ display_name: 'Cedrick Vanel' }) }),
+      accountEmail: 'cedrickfeze@bluewin.ch',
+      editable: false,
+    })
+
+    expect(wrapper.get<HTMLInputElement>('#profile-email').element.value).toBe('cedrickfeze@bluewin.ch')
+    expect(wrapper.get<HTMLInputElement>('#profile-email').attributes('disabled')).toBeDefined()
+    expect(wrapper.get<HTMLInputElement>('#profile-phone').attributes('disabled')).toBeDefined()
+    expect(wrapper.find(SUBMIT).exists()).toBe(false)
   })
 })
 
@@ -168,7 +193,7 @@ describe('ProfileForm · what it sends', () => {
 
   it('sends a location as soon as either box is filled', async () => {
     const wrapper = await filled()
-    await wrapper.get('#profile-country').setValue('ch')
+    await wrapper.get('#profile-country').setValue('CH')
     await wrapper.get('form').trigger('submit')
 
     // Upper-cased for the server, which compares ISO codes; the city is left as typed.

@@ -342,6 +342,7 @@ class CandidateEvidenceGuard:
         if isinstance(content, ResumeDocument):
             if content.summary is not None:
                 texts.append((content.summary, "summary"))
+            texts += [(item, "highlight") for item in content.highlights]
             texts += self._entry_texts(content.experience, "experience")
             texts += self._entry_texts(content.education, "education")
         elif isinstance(content, CoverLetterDocument):

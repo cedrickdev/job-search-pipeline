@@ -104,7 +104,7 @@ async def test_country_search_returns_unresolved_rows_without_inventing_distance
 
 
 @pytest.mark.asyncio
-async def test_collected_saved_search_filters_before_pagination_and_keeps_unlocated_list_item(
+async def test_country_scoped_catalog_does_not_show_unverified_location(
     db_session,
 ):
     db_session.add(a_user_row(id=USER))
@@ -143,10 +143,9 @@ async def test_collected_saved_search_filters_before_pagination_and_keeps_unloca
         catalog_scope=(OTHER_USER, SEARCH_PROFILE))
 
     assert {result.opportunity.id for result in (*first, *second)} == {
-        collected.id, unlocated.id}
+        collected.id}
     assert public_only.id not in {result.opportunity.id for result in (*first, *second)}
-    assert unlocated.id in {result.opportunity.id for result in (*first, *second)
-                            if result.status is GeoStatus.UNRESOLVED}
+    assert unlocated.id not in {result.opportunity.id for result in (*first, *second)}
     collected_result = next(result for result in (*first, *second)
                             if result.opportunity.id == collected.id)
     assert collected_result.first_seen_at == NOW

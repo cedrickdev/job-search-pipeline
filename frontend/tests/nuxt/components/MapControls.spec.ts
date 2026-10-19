@@ -1,11 +1,15 @@
 // The mode switch is a two-way binding on one store field, and that is the whole test: a
 // click asks the parent to change `mode`, and the control reflects whatever comes back
 // (§10, §12). It holds no state of its own, so there is nothing else to pin.
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import MapControls from '~/components/map/MapControls.vue'
 
 describe('MapControls', () => {
+  beforeEach(() => {
+    document.cookie = 'app_locale=en; path=/'
+  })
+
   it('marks the active view for assistive tech', async () => {
     const wrapper = await mountSuspended(MapControls, { props: { modelValue: 'opportunities' } })
     const tabs = wrapper.findAll('[role="tab"]')
@@ -21,5 +25,13 @@ describe('MapControls', () => {
     await wrapper.findAll('[role="tab"]')[1]!.trigger('click')
 
     expect(wrapper.emitted('update:modelValue')).toEqual([['companies']])
+  })
+
+  it('uses French labels when the interface language is French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const wrapper = await mountSuspended(MapControls, { props: { modelValue: 'opportunities' } })
+
+    expect(wrapper.findAll('[role="tab"]').map(tab => tab.text())).toEqual(['Offres', 'Entreprises'])
+    expect(wrapper.get('[role="tablist"]').attributes('aria-label')).toBe('Contenu de la carte')
   })
 })

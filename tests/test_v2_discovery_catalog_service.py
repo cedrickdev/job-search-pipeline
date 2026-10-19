@@ -13,6 +13,7 @@ from backend.app.discovery.contracts import SourceHealthStatus
 from backend.app.cli.run_discovery import enqueue_for_user
 from backend.app.discovery.orchestrator import DiscoveryOrchestrator
 from backend.app.discovery.registry import SourceRegistry
+from backend.app.services.discovery_source_access import DiscoverySourceAccessDenied, SourceAccessPolicy
 from backend.app.domain.discovery_run import DiscoveryRunStatus
 from backend.app.domain.identifiers import DiscoveryRunId, OpportunityId
 from backend.app.domain.task import TaskKind, TaskLane
@@ -98,6 +99,50 @@ async def test_owner_run_is_persisted_and_foreign_user_cannot_read_it(catalog_da
     assert await restarted.list_members(OTHER_USER, SEARCH_PROFILE, limit=10, offset=0) == ()
     assert (await restarted.get_latest_run(USER, SEARCH_PROFILE)).id == run_id
     assert await restarted.get_latest_run(OTHER_USER, SEARCH_PROFILE) is None
+
+
+async def test_morning_discovery_atomically_queues_one_owner_scoped_assessment(catalog_database):
+    item = posting(26, source_key="fake_board", external_id="role-26",
+                   source_url="https://example.ch/jobs/26", title="Engineer")
+    source = FakeSource(a_metadata("fake_board"), result=a_result("fake_board", item))
+    service = DiscoveryCatalogService(catalog_database, orchestrator(source),
+                                      clock=lambda: NOW, prepare_discovered=True)
+    run_id = await service.run_profile(USER, SEARCH_PROFILE, trigger="MORNING")
+    assert await service.run_profile(USER, SEARCH_PROFILE, trigger="MORNING",
+                                     run_id=run_id) == run_id
+    async with catalog_database() as session:
+        tasks = (await session.scalars(select(TaskRunRow).where(
+            TaskRunRow.user_id == USER, TaskRunRow.kind == TaskKind.MATCHING))).all()
+    assert len(tasks) == 1
+    assert tasks[0].payload == {"discovery_run_id": str(run_id),
+                                "opportunity_id": str(item.id)}
+
+
+async def test_worker_only_calls_operator_approved_synthetic_source(catalog_database):
+    approved = FakeSource(a_metadata("approved_board"), result=a_result("approved_board"))
+    held = FakeSource(a_metadata("held_board"), result=a_result("held_board"))
+    policy = SourceAccessPolicy(
+        configured_source_keys=("approved_board", "held_board"),
+        allowed_source_keys=("approved_board",),
+    )
+    service = DiscoveryCatalogService(
+        catalog_database, orchestrator(approved, held), clock=lambda: NOW,
+        source_policy=policy)
+
+    await service.run_profile(USER, SEARCH_PROFILE, trigger="MANUAL")
+    assert len(approved.requests) == 1
+    assert held.requests == []
+
+    denied = DiscoveryCatalogService(
+        catalog_database, orchestrator(approved, held), clock=lambda: NOW,
+        source_policy=SourceAccessPolicy(
+            configured_source_keys=("approved_board", "held_board"),
+            allowed_source_keys=()),
+    )
+    with pytest.raises(DiscoverySourceAccessDenied):
+        await denied.run_profile(USER, SEARCH_PROFILE, trigger="MORNING")
+    assert len(approved.requests) == 1
+    assert held.requests == []
 
 
 async def test_inactive_or_foreign_search_never_starts_a_sweep(catalog_database):
@@ -254,7 +299,8 @@ async def test_duplicate_manual_enqueues_share_one_general_lane_task(catalog_dat
                                "trigger": "MANUAL"}
 
 
-async def test_local_morning_dry_run_queues_nothing(catalog_database):
+async def test_local_morning_dry_run_queues_nothing(catalog_database, monkeypatch):
+    monkeypatch.setenv("JOBSEARCH_DISCOVERY_ALLOWED_SOURCES", "jooble")
     count = await enqueue_for_user(catalog_database, USER, dry_run=True,
                                    trigger="MORNING", clock=lambda: NOW)
     assert count == 1

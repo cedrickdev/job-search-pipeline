@@ -20,6 +20,8 @@ import {
   geoLocation,
   opportunityGeoItem,
   opportunityGeoResponse,
+  search,
+  searchList,
   signedIn,
 } from '../support/v2-fixtures'
 import type { FetchStub, Route } from '../support/http'
@@ -65,16 +67,48 @@ const PROFILE_ID = '33333333-3333-4333-8333-333333333333'
 const SESSION = '/api/v2/auth/session'
 const OPPS = '/api/v2/geo/opportunities'
 const COMPANIES = '/api/v2/geo/companies'
+// Exact collection endpoint: the discovery and saved-opportunity endpoints share
+// this prefix, so a substring matcher would swallow their requests first.
+const SEARCHES = /\/api\/v2\/me\/search-profiles(?:\?.*)?$/
 const SAVED = `/api/v2/me/search-profiles/${PROFILE_ID}/opportunities`
+const LATEST = `/api/v2/me/search-profiles/${PROFILE_ID}/discovery-runs/latest`
+const COUNTRY_PACKS = '/api/v2/country-packs'
 
 function routes(extra: Route[] = []): Route[] {
   return [
     ...extra,
+    { match: COUNTRY_PACKS, method: 'GET', json: {
+      packs: [{
+        country: 'CH', display_name: 'Switzerland', default_locale: 'fr-CH',
+        locales: ['fr-CH'], currency: 'CHF', languages: ['fr'], timezone: 'Europe/Zurich',
+        map_viewport: {
+          center: { latitude: 46.8182, longitude: 8.2275 }, zoom: 6.2,
+          bounds: { north: 47.8085, south: 45.8179, east: 10.4921, west: 5.9559 },
+        },
+        opportunity_types: ['FULL_TIME'], enabled_source_count: 11,
+      }],
+    } },
     { match: SAVED, method: 'GET', json: opportunityGeoResponse() },
     { match: OPPS, method: 'GET', json: opportunityGeoResponse() },
     { match: COMPANIES, method: 'GET', json: companyGeoResponse() },
+    { match: LATEST, method: 'GET', status: 404, json: { error: 'discovery_run_not_found' } },
+    { match: SEARCHES, method: 'GET', json: searchList() },
     { match: SESSION, method: 'GET', json: signedIn() },
   ]
+}
+
+/** Selects a portal-rendered Nuxt UI menu option. */
+async function selectDiscoveryLocale(wrapper: VueWrapper, label: string) {
+  const trigger = wrapper.get('.discovery-panel [role="combobox"]')
+  const contentId = trigger.attributes('aria-controls')
+  await trigger.trigger('click')
+  await flushPromises()
+  const content = contentId ? document.getElementById(contentId) : null
+  const option = [...(content?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])]
+    .find(item => item.textContent?.trim() === label)
+  if (!option) throw new Error(`locale option ${label} was not rendered`)
+  option.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, button: 0 }))
+  await flushPromises()
 }
 
 function rowTexts(wrapper: VueWrapper): string[] {
@@ -98,6 +132,8 @@ describe('map page', () => {
     clearNuxtData()
     useSessionStore().$reset()
     useMapExplorerStore().$reset()
+    document.cookie = 'app_locale=fr; path=/'
+    document.cookie = 'discovery_locale=fr; path=/'
   })
 
   afterEach(() => {
@@ -128,6 +164,19 @@ describe('map page', () => {
     expect(rowTexts(wrapper).join(' ')).toContain('Backend Engineer')
   })
 
+  it('uses the only active saved search as the initial map scope', async () => {
+    const { http, wrapper } = await mountMap(routes([
+      { match: SEARCHES, method: 'GET', json: searchList(search()) },
+      { match: SAVED, method: 'GET', json: opportunityGeoResponse([
+        opportunityGeoItem({ id: 'saved', title: 'Swiss saved role' }),
+      ]) },
+    ]))
+
+    expect(http.callsTo(SAVED)).toHaveLength(1)
+    expect(wrapper.text()).toContain('Swiss saved role')
+    expect(wrapper.text()).toContain('Limitée à une recherche enregistrée')
+  })
+
   // §8/§9 from the page's side: the map cannot place these, but the list is the full answer.
   it('keeps an unplaceable role in the list, tagged, with no pin', async () => {
     const { wrapper } = await mountMap(routes([{
@@ -148,7 +197,7 @@ describe('map page', () => {
 
     // Both rows in the list…
     expect(rowTexts(wrapper)).toHaveLength(2)
-    expect(wrapper.get('[data-id="remote"]').text()).toContain('No location')
+    expect(wrapper.get('[data-id="remote"]').text()).toContain('Lieu non précisé')
     // …but only the placeable one is a marker (a stub feature button).
     expect(wrapper.findAll('[data-map-feature]').map(b => b.attributes('data-map-feature')))
       .toEqual(['placed'])
@@ -177,7 +226,7 @@ describe('map page', () => {
       json: companyGeoResponse([companyGeoItem()]),
     }]))
 
-    await wrapper.findAll('[role="tab"]').find(t => t.text() === 'Companies')!.trigger('click')
+    await wrapper.findAll('[role="tab"]').find(t => t.text() === 'Entreprises')!.trigger('click')
     await flushPromises()
 
     expect(http.callsTo(COMPANIES).length).toBeGreaterThanOrEqual(1)
@@ -195,7 +244,7 @@ describe('map page', () => {
     expect(lastUrl(http, SAVED)).toContain('catalog=true')
     // The open read is silenced while a saved search scopes the map.
     expect(http.callsTo(OPPS)).toHaveLength(0)
-    expect(wrapper.text()).toContain('Scoped to a saved search')
+    expect(wrapper.text()).toContain('Limitée à une recherche enregistrée')
     expect(rowTexts(wrapper).join(' ')).toContain('Saved Role')
   })
 
@@ -218,16 +267,22 @@ describe('map page', () => {
       ]) },
     ]), `/map?profile=${PROFILE_ID}`)
 
-    await wrapper.get('.discovery-panel button').trigger('click')
+    const catalogReadsBeforeRefresh = http.callsTo(SAVED).length
+    await wrapper.get('.discovery-panel > button.btn-primary').trigger('click')
     await flushPromises()
     expect(http.callsTo(start).filter(call => call.method === 'POST')).toHaveLength(1)
+    expect(http.callsTo(SAVED).length).toBeGreaterThan(catalogReadsBeforeRefresh)
     expect(wrapper.get('.discovery-status').text()).toContain('incomplète')
-    expect(wrapper.get('.discovery-health').text()).toContain('délai dépassé')
+    expect(wrapper.text()).toContain('Recherche incomplète')
     expect(rowTexts(wrapper).join(' ')).toContain('Previously collected role')
 
-    await wrapper.get('.discovery-panel select').setValue('en')
+    await selectDiscoveryLocale(wrapper, 'English')
     expect(wrapper.get('.discovery-status').text()).toContain('incomplete')
-    expect(wrapper.get('.discovery-health').text()).toContain('timed out')
+    expect(wrapper.text()).toContain('Discovery is incomplete')
+    // Query-language choice affects collection messaging only. It must not turn
+    // the surrounding application into English or alter its document language.
+    expect(document.documentElement.lang).toBe('fr')
+    expect(wrapper.get('h1').text()).toBe('Carte')
   })
 
   it('keeps prior catalog results visible when a refresh request fails', async () => {
@@ -239,8 +294,7 @@ describe('map page', () => {
         opportunityGeoItem({ id: 'old', title: 'Earlier role' }),
       ]) },
     ]), `/map?profile=${PROFILE_ID}`)
-    await wrapper.get('.discovery-panel select').setValue('fr')
-    await wrapper.get('.discovery-panel button').trigger('click')
+    await wrapper.get('.discovery-panel > button.btn-primary').trigger('click')
     await flushPromises()
     expect(wrapper.get('.discovery-status').text()).toContain('indisponible')
     expect(rowTexts(wrapper).join(' ')).toContain('Earlier role')
@@ -271,7 +325,7 @@ describe('map page', () => {
       json: opportunityGeoResponse([]),
     }]))
 
-    expect(wrapper.get('.ov-empty').text()).toContain('No results in this view')
+    expect(wrapper.get('.map-state-card').text()).toContain('Aucune offre collectée dans cette zone')
   })
 
   it('shows an error without losing the list column (§30)', async () => {
@@ -282,7 +336,7 @@ describe('map page', () => {
       json: { error: 'database_unavailable', detail: 'no database' },
     }]))
 
-    expect(wrapper.find('.ov-error').exists()).toBe(true)
+    expect(wrapper.find('.map-state-card--error').exists()).toBe(true)
     // The list section is still on the page — the error is in it, not instead of it.
     expect(wrapper.find('.map-col--list').exists()).toBe(true)
   })

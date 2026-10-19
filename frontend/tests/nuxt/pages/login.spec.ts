@@ -48,6 +48,20 @@ describe('login page', () => {
     navigateTo.mockClear()
     clearNuxtData()
     useSessionStore().$reset()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
+  })
+
+  it('can reveal and hide the password without changing its value', async () => {
+    stubFetch(routes())
+    const wrapper = await mountLogin()
+    const input = wrapper.get<HTMLInputElement>('#password')
+    await input.setValue('correct horse battery staple')
+    expect(input.attributes('type')).toBe('password')
+    await wrapper.get('.password-toggle').trigger('click')
+    expect(input.attributes('type')).toBe('text')
+    expect(input.element.value).toBe('correct horse battery staple')
+    await wrapper.get('.password-toggle').trigger('click')
+    expect(input.attributes('type')).toBe('password')
   })
 
   it('renders the form', async () => {
@@ -59,6 +73,15 @@ describe('login page', () => {
     expect(wrapper.get('#password').attributes('autocomplete')).toBe('current-password')
     expect(wrapper.get('button[type="submit"]').text()).toBe('Sign in')
     expect(wrapper.find('.auth-error').exists()).toBe(false)
+  })
+
+  it('translates the complete sign-in introduction when French is selected', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    stubFetch(routes())
+    const wrapper = await mountLogin()
+
+    expect(wrapper.get('h1').text()).toBe('Se connecter')
+    expect(wrapper.get('.auth-hint').text()).toContain('Vos recherches enregistrées')
   })
 
   it('signs in and lands on the overview', async () => {

@@ -90,6 +90,18 @@ describe('errorMessage', () => {
     }
   })
 
+  it('gives a French recovery instruction for a stale CSRF pair', () => {
+    const previous = document.documentElement.lang
+    document.documentElement.lang = 'fr'
+    try {
+      expect(errorMessage(refusal(400, 'csrf_failed')))
+        .toBe('Cette demande n’a pas pu être vérifiée. Rechargez la page puis réessayez.')
+    }
+    finally {
+      document.documentElement.lang = previous
+    }
+  })
+
   // docs/AUTHENTICATION.md §Enumeration: the API answers identically for an unknown
   // address and a wrong password, and this layer must not undo that.
   it('says the same thing whichever half of a login was wrong', () => {

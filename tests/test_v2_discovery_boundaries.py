@@ -47,11 +47,13 @@ DISCOVERY_PACKAGE = "backend.app.discovery"
 # has to point backwards in this tuple, which is what keeps `registry` from
 # growing into `orchestrator` and keeps both out of `bootstrap`.
 FRAMEWORK_ORDER = ("capabilities", "contracts", "failures", "normalization",
-                   "registry", "requests", "orchestrator", "catalog", "bootstrap")
+                   "registry", "requests", "orchestrator", "catalog",
+                   "ats_board_catalog", "bootstrap")
 
 # Everything but the composition module. These eight files are what "core
 # orchestration" means in criterion 2, and none of them may name a source.
-CORE_MODULES = tuple(module for module in FRAMEWORK_ORDER if module != "bootstrap")
+CORE_MODULES = tuple(module for module in FRAMEWORK_ORDER
+                     if module not in {"bootstrap", "ats_board_catalog"})
 
 ADAPTER_MODULES = ("v1_catalog", "v1_sources")
 

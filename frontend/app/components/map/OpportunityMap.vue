@@ -31,6 +31,7 @@ import type {
   LngLatBoundsLike,
   Map as MapLibreMap,
   MapLayerMouseEvent,
+  StyleSpecification,
 } from 'maplibre-gl'
 import type { FeatureCollection, Point, Polygon } from 'geojson'
 import type { MapFeatureProperties } from '~/types/map'
@@ -49,12 +50,16 @@ const props = withDefaults(defineProps<{
   /** Initial camera. Seeded from the URL by the page; the map owns it afterwards (§22). */
   center: [number, number]
   zoom: number
-  /** The MapLibre style URL and attribution, both from runtime config (§1, §36). */
-  styleUrl: string
+  /** An optional full provider style URL. Takes precedence over the simple tile URL. */
+  styleUrl?: string
+  /** Raster tile template for the configuration-free local basemap. */
+  tileUrl?: string
   attribution?: string
 }>(), {
   radiusCircles: () => [],
   selectedId: null,
+  styleUrl: '',
+  tileUrl: '',
   attribution: '',
 })
 
@@ -83,10 +88,50 @@ const ACCENT_DIM = '#5b43c0'
 const APPROX = '#f0b429'
 const WHITE = '#ffffff'
 
+// The default basemap is intentionally keyless, but it is still a remote service. If the
+// machine is offline or its host is temporarily unavailable, MapLibre can still render the
+// candidate's markers against this local background. A map without a basemap is much more
+// useful than a dead canvas and never pretends that missing tiles mean missing opportunities.
+const LOCAL_FALLBACK_STYLE: StyleSpecification = {
+  version: 8,
+  sources: {},
+  layers: [{
+    id: 'local-background',
+    type: 'background',
+    paint: { 'background-color': '#101827' },
+  }],
+}
+
+/**
+ * A provider style is preferred when configured. Otherwise MapLibre receives a complete
+ * raster style built from the public tile template. This keeps the map useful locally
+ * without committing a provider key, while a VPS can switch to any style URL at build time.
+ */
+function configuredBasemapStyle(): string | StyleSpecification {
+  if (props.styleUrl.trim()) return props.styleUrl.trim()
+  if (!props.tileUrl.trim()) return LOCAL_FALLBACK_STYLE
+
+  return {
+    version: 8,
+    sources: {
+      basemap: {
+        type: 'raster',
+        tiles: [props.tileUrl.trim()],
+        tileSize: 256,
+        minzoom: 0,
+        maxzoom: 19,
+        attribution: props.attribution,
+      },
+    },
+    layers: [{ id: 'basemap', type: 'raster', source: 'basemap' }],
+  }
+}
+
 const container = ref<HTMLDivElement | null>(null)
 // Not reactive on purpose: a MapLibre instance must never be wrapped in a Vue proxy.
 let map: MapLibreMap | null = null
 let loaded = false
+let fallbackApplied = false
 // A fit requested before the map finished loading, replayed once it has.
 let pendingFit: ViewportBounds | null = null
 
@@ -261,12 +306,28 @@ function addLayers(): void {
   map.on('moveend', emitMoveEnd)
 }
 
+/** Add the application-owned layers after either the remote or local style is ready. */
+function onStyleReady(): void {
+  if (!map || map.getSource(SOURCE)) return
+  addLayers()
+  loaded = true
+  emit('ready')
+  if (pendingFit) {
+    fitTo(pendingFit)
+    pendingFit = null
+  }
+}
+
 onMounted(async () => {
   if (!container.value) return
   let maplibregl: typeof import('maplibre-gl')
   try {
     const mod = await import('maplibre-gl')
     maplibregl = (mod as { default?: typeof import('maplibre-gl') }).default ?? mod
+    // MapLibre 6 needs an explicit bundled worker URL: import.meta.url inside
+    // Vite's optimized dependency no longer points to the distributed worker.
+    const { default: workerUrl } = await import('maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url')
+    maplibregl.setWorkerUrl(workerUrl)
     await import('maplibre-gl/dist/maplibre-gl.css')
   }
   catch {
@@ -277,7 +338,7 @@ onMounted(async () => {
   try {
     map = new maplibregl.Map({
       container: container.value,
-      style: props.styleUrl,
+      style: configuredBasemapStyle(),
       center: props.center,
       zoom: props.zoom,
       attributionControl: false,
@@ -297,26 +358,24 @@ onMounted(async () => {
   }))
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
 
-  // A style that fails to fetch fires `error` rather than throwing; surface it once.
+  // A style that fails to fetch fires `error` rather than throwing. Fall back once to a
+  // local, source-free style so the application-owned markers remain interactive offline.
   let styleFailed = false
   map.on('error', (event) => {
     const message = (event as { error?: { message?: string } }).error?.message ?? ''
+    if (!fallbackApplied && /server could not be reached|network|style|sprite|glyph|tiles?\.json|fetch/i.test(message)) {
+      fallbackApplied = true
+      map?.once('style.load', onStyleReady)
+      map?.setStyle(LOCAL_FALLBACK_STYLE)
+      return
+    }
     if (!styleFailed && /style|sprite|glyph|tiles?\.json|fetch/i.test(message)) {
       styleFailed = true
       emit('error', 'The map style could not be loaded.')
     }
   })
 
-  map.on('load', () => {
-    if (!map) return
-    addLayers()
-    loaded = true
-    emit('ready')
-    if (pendingFit) {
-      fitTo(pendingFit)
-      pendingFit = null
-    }
-  })
+  map.on('load', onStyleReady)
 })
 
 onBeforeUnmount(() => {
@@ -326,6 +385,7 @@ onBeforeUnmount(() => {
     map = null
   }
   loaded = false
+  fallbackApplied = false
 })
 
 // Reactive data updates go through the sources — the map is never rebuilt (§5).

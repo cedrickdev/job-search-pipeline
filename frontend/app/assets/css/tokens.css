@@ -58,4 +58,15 @@
   --space-4: 16px;
   --space-6: 24px;
   --space-8: 32px;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  /* Nuxt UI surfaces used by the V2 screens inherit the application theme rather
+     than falling back to a light dashboard palette in dark mode. */
+  --ui-bg: var(--surface);
+  --ui-bg-elevated: var(--surface-2);
+  --ui-border: var(--border);
+  --ui-text: var(--text);
+  --ui-text-muted: var(--text-dim);
+  --ui-primary: var(--accent);
+  --ui-error: var(--danger);
 }

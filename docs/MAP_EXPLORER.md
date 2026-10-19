@@ -21,9 +21,14 @@ runs. A collected result's card shows public source links, first-seen and
 last-seen dates, plus the last material-change date when available. A later
 last-seen time alone means observed again; only a changed title, posting fields
 or source record marks the offer updated. This is a change in collected public
-data, not proof that the employer made it. The response omits raw source metadata. Offers whose country and
-coordinates remain unknown are listed but cannot be pinned; known nonmatching
-countries are still excluded.
+data, not proof that the employer made it. The response omits raw source metadata.
+For a country-only saved search, a collected posting must have a verified matching
+country before it is admitted. An international index's French city without a
+country code cannot be treated as a Swiss hit simply because the request was CH.
+Older unverified non-remote catalog members are hidden by the saved-search geo
+read. Explicit remote work remains list-only when the search includes remote
+roles. In searches without a country-only constraint, an unresolved offer may
+remain in the list but cannot be pinned; known nonmatching countries are excluded.
 
 The new discovery status and control copy has an explicit French/English choice
 on this surface. Other V2 pages and their older map labels are not yet fully
@@ -172,14 +177,14 @@ debounced, so a drag does not spam the history.
 
 ## Configuration
 
-The base map style is the one deployment-specific piece, and it is deliberately
-**not** a committed key. `runtimeConfig.public.mapStyleUrl` defaults to MapLibre's
-keyless demo style so `npm run dev` needs no environment, and a deployment
-overrides it with `NUXT_PUBLIC_MAP_STYLE_URL` — baked at `nuxt generate` time,
-because the app is static and FastAPI serves the output, so nothing reads env at
-runtime. `mapAttribution`, when set, is *appended* to the style's own credit
-through the `AttributionControl`, never a replacement, so a provider's required
-attribution cannot be dropped (§36).
+The basemap is configurable and deliberately contains **no committed provider key**.
+Without `NUXT_PUBLIC_MAP_STYLE_URL`, local development uses the OpenStreetMap raster
+template from `NUXT_PUBLIC_MAP_TILES_URL`; it is suitable for modest interactive local
+use, not a production tile-service contract. A VPS deployment points
+`NUXT_PUBLIC_MAP_STYLE_URL` at its chosen managed provider or tile service. All values
+are baked at `nuxt generate` time because the app is static and FastAPI serves the
+output, so nothing reads env at runtime. `mapAttribution` is retained through
+`AttributionControl`; it must include any provider-specific credit (§36).
 
 ## Two boundaries worth naming
 

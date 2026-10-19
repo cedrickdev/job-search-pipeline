@@ -31,6 +31,8 @@ const IDLE = { state: 'idle', kind: null, started_at: null, last_run: null }
 function routes(extra: Route[] = []): Route[] {
   return [
     ...extra,
+    { match: '/api/v2/me/morning-schedule', method: 'GET', json: { enabled: false, local_time: '08:00', cadence: 'daily' } },
+    { match: '/api/v2/me/morning-runs/latest', method: 'GET', json: { runs: [] } },
     { match: '/api/runs/status', method: 'GET', json: IDLE },
     { match: '/api/runs/', method: 'POST', status: 202, text: '' },
     {
@@ -63,6 +65,94 @@ describe('settings page', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     clearNuxtData()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
+  })
+
+  it.each([
+    ['en', 'CV and letter ready; not submitted'],
+    ['fr', 'CV et lettre prêts ; candidature non envoyée'],
+  ])('shows exact prepared version IDs without claiming a submission in %s', async (locale, label) => {
+    document.cookie = `app_locale=${locale}; path=/`
+    stubFetch(routes([{
+      match: '/api/v2/me/morning-runs/latest', method: 'GET', json: { runs: [{
+        run_id: '55555555-5555-4555-8555-555555555555',
+        search_profile_id: '33333333-3333-4333-8333-333333333333',
+        status: 'SUCCEEDED', seen_count: 1, matched_count: 1,
+        source_health: [], warning_codes: [],
+        preparations: [{
+          opportunity_id: '11111111-1111-4111-8111-111111111111',
+          stage: 'DOCUMENTS_RENDERED', reason_code: null,
+          resume_version_id: '22222222-2222-4222-8222-222222222222',
+          cover_letter_version_id: '44444444-4444-4444-8444-444444444444',
+          updated_at: '2026-10-13T08:00:00Z',
+        }],
+      }] },
+    }]))
+    const wrapper = await mountSuspended(SettingsPage)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="v2-morning-run"]').text()).toContain(label)
+    const links = wrapper.get('[data-testid="v2-morning-run"]').findAll('a')
+    expect(links.some(link => link.attributes('href') === '/api/v2/documents/versions/22222222-2222-4222-8222-222222222222/download')).toBe(true)
+    expect(links.some(link => link.attributes('href') === '/api/v2/documents/versions/44444444-4444-4444-8444-444444444444/download')).toBe(true)
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['en', 'APPROVED', null, 'LIVE_SUBMISSIONS_DISABLED', 'Approved but live sending is disabled'],
+    ['fr', 'APPROVED', null, 'LIVE_SUBMISSIONS_DISABLED', 'Approuvée mais l’envoi réel est désactivé'],
+    ['en', 'APPROVED', 'QUEUED', null, 'Queued for browser submission; not sent'],
+    ['fr', 'APPROVED', 'QUEUED', null, 'En attente d’envoi par navigateur ; non envoyée'],
+    ['en', 'SUBMISSION_STATE_UNKNOWN', null, 'SUBMISSION_STATE_UNKNOWN', 'Submission unconfirmed; do not retry automatically'],
+    ['fr', 'SUBMISSION_STATE_UNKNOWN', null, 'SUBMISSION_STATE_UNKNOWN', 'Envoi non confirmé ; ne pas relancer automatiquement'],
+    ['en', 'SUBMITTED', 'SUCCEEDED', null, 'Submission confirmed'],
+    ['fr', 'SUBMITTED', 'SUCCEEDED', null, 'Candidature confirmée'],
+  ])('shows application progress and audit link in %s for %s', async (locale, state, task, blocker, expected) => {
+    document.cookie = `app_locale=${locale}; path=/`
+    stubFetch(routes([{
+      match: '/api/v2/me/morning-runs/latest', method: 'GET', json: { runs: [{
+        run_id: '55555555-5555-4555-8555-555555555555',
+        search_profile_id: '33333333-3333-4333-8333-333333333333',
+        status: 'SUCCEEDED', seen_count: 1, matched_count: 1,
+        source_health: [], warning_codes: [],
+        preparations: [{
+          opportunity_id: '11111111-1111-4111-8111-111111111111',
+          stage: 'DOCUMENTS_RENDERED', updated_at: '2026-10-13T08:00:00Z',
+          application_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          application_state: state, submission_task_status: task,
+          application_blocker_code: blocker,
+        }],
+      }] },
+    }]))
+    const wrapper = await mountSuspended(SettingsPage)
+    await flushPromises()
+    const section = wrapper.get('[data-testid="v2-morning-run"]')
+    expect(section.text()).toContain(expected)
+    expect(section.get('a[href="/applications?application=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]').text())
+      .toContain(locale === 'fr' ? 'Historique' : 'history')
+    wrapper.unmount()
+  })
+
+  it('announces a terminal provider failure instead of a CV still in progress', async () => {
+    stubFetch(routes([{
+      match: '/api/v2/me/morning-runs/latest', method: 'GET', json: { runs: [{
+        run_id: '55555555-5555-4555-8555-555555555555',
+        search_profile_id: '33333333-3333-4333-8333-333333333333',
+        status: 'PARTIAL', seen_count: 1, matched_count: 1,
+        source_health: [], warning_codes: [],
+        preparations: [{
+          opportunity_id: '11111111-1111-4111-8111-111111111111',
+          stage: 'CV_RENDERED', resume_version_id: '22222222-2222-4222-8222-222222222222',
+          cover_letter_version_id: null, task_status: 'DEAD_LETTERED',
+          task_failure_code: 'PROVIDER_UNAVAILABLE', updated_at: '2026-10-13T08:00:00Z',
+        }], preparations_truncated: false,
+      }] },
+    }]))
+    const wrapper = await mountSuspended(SettingsPage)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="v2-morning-run"] [role="alert"]').text())
+      .toContain('model provider is unavailable')
+    expect(wrapper.get('[data-testid="v2-morning-run"]').text()).not.toContain('CV ready; letter pending')
+    wrapper.unmount()
   })
 
   it('hides local-model fields for the Claude CLI backend, shows them for Ollama', async () => {
@@ -147,6 +237,28 @@ describe('settings page', () => {
     expect(wrapper.text()).toContain('Saved.')
   })
 
+  it('keeps the settings save action in its own contained form footer', async () => {
+    stubFetch(routes())
+    const wrapper = await mountSuspended(SettingsPage)
+    await flushPromises()
+
+    const footer = wrapper.get('[data-testid="settings-save-footer"]')
+    expect(footer.classes()).toContain('settings-card')
+    expect(footer.get('button').text()).toMatch(/save settings/i)
+  })
+
+  it('translates settings labels and controls into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    stubFetch(routes())
+    const wrapper = await mountSuspended(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Candidature automatique')
+    expect(wrapper.text()).toContain('Planification quotidienne')
+    expect(wrapper.find('[aria-label="Score minimum"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Enregistrer les réglages')
+  })
+
   it('shows the server detail when a save is rejected', async () => {
     stubFetch(routes([{
       match: '/api/settings',
@@ -186,6 +298,27 @@ describe('settings page', () => {
     expect(http.callsTo('/api/runs/full').map(c => c.method)).toEqual(['POST'])
   })
 
+  it.each([
+    ['discover', /run now \(discovery\)/i],
+    ['full', /run full pipeline now/i],
+  ] as const)('shows a rejected %s launch instead of silently doing nothing', async (kind, label) => {
+    stubFetch(routes([{
+      match: `/api/runs/${kind}`,
+      method: 'POST',
+      status: 503,
+      json: { detail: 'Run service unavailable' },
+    }]))
+    const wrapper = await mountSuspended(SettingsPage)
+    await flushPromises()
+
+    await buttonNamed(wrapper, label).trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('[role="alert"]').some(alert =>
+      alert.text().includes('Run service unavailable'),
+    )).toBe(true)
+  })
+
   it('disables the run buttons and shows progress while a run is active', async () => {
     stubFetch(routes([{
       match: '/api/runs/status',
@@ -204,5 +337,43 @@ describe('settings page', () => {
     expect(running.text()).toContain('Running… (started 08:00)')
     expect(running.attributes('disabled')).toBeDefined()
     expect(buttonNamed(wrapper, /run full pipeline now/i).attributes('disabled')).toBeDefined()
+  })
+
+  it('shows a V2 queued run as pending, separate from the legacy full pipeline', async () => {
+    const http = stubFetch(routes([{ match: '/api/v2/me/morning-runs', method: 'POST', status: 202,
+      json: { runs: [{ run_id: '55555555-5555-4555-8555-555555555555', search_profile_id: '33333333-3333-4333-8333-333333333333', status: 'QUEUED' }] } }]))
+    const wrapper = await mountSuspended(SettingsPage)
+    await flushPromises()
+    await buttonNamed(wrapper, /run v2 discovery/i).trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="v2-morning-run"]').text()).toContain('Queued')
+    expect(wrapper.get('[data-testid="v2-morning-run"]').text()).not.toContain('application submitted')
+    expect(http.callsTo('/api/runs/full').filter(call => call.method === 'POST')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('shows a partial source failure with a link to its search results', async () => {
+    stubFetch(routes([{ match: '/api/v2/me/morning-runs/latest', method: 'GET', json: { runs: [{
+      run_id: '55555555-5555-4555-8555-555555555555', search_profile_id: '33333333-3333-4333-8333-333333333333',
+      status: 'PARTIAL', seen_count: 4, matched_count: 2, started_at: null, finished_at: null,
+      source_health: [{ source_key: 'board_a', status: 'UNAVAILABLE', reason: 'SOURCE_TIMEOUT' }], warning_codes: ['SOURCE_TIMEOUT'],
+    }] } }]))
+    const wrapper = await mountSuspended(SettingsPage)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="v2-morning-run"]').text()).toContain('Partial')
+    expect(wrapper.get('[data-testid="v2-morning-run"]').text()).toContain('board_a')
+    expect(wrapper.get('[data-testid="v2-morning-run"]').text()).toContain('timed out')
+    expect(wrapper.get('[data-testid="v2-morning-run"] a').attributes('href')).toBe('/map?profile=33333333-3333-4333-8333-333333333333')
+    wrapper.unmount()
+  })
+
+  it('keeps V2 discovery available when the legacy settings read fails', async () => {
+    stubFetch(routes([{ match: '/api/settings', method: 'GET', status: 503, json: { detail: 'legacy unavailable' } }]))
+    const wrapper = await mountSuspended(SettingsPage)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="v2-morning-run"]')).toBeTruthy()
+    expect(buttonNamed(wrapper, /run v2 discovery/i).exists()).toBe(true)
+    expect(wrapper.text()).toContain('Live Swiss source coverage is unverified')
+    wrapper.unmount()
   })
 })

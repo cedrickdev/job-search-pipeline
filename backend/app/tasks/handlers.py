@@ -42,6 +42,7 @@ from backend.app.domain.identifiers import (
     AccountExportId,
     ApplicationId,
     DiscoveryRunId,
+    OpportunityId,
     SearchProfileId,
     UserId,
 )
@@ -54,6 +55,7 @@ from backend.app.services.applications import (
     ApplicationNotActionable,
     ApplicationNotFound,
 )
+from backend.app.services.discovery_source_access import DiscoverySourceAccessDenied
 from backend.app.tasks.clock import Clock, utc_now
 from backend.app.tasks.failures import TaskFailure
 from backend.app.tasks.worker import TaskHandler
@@ -74,6 +76,8 @@ QUOTA_EXCEEDED: str = "APPLICATION_SUBMISSION_QUOTA_EXCEEDED"
 RATE_LIMITED: str = "APPLICATION_RATE_LIMITED"
 RETENTION_INCOMPLETE: str = "RETENTION_SWEEP_INCOMPLETE"
 DISCOVERY_SEARCH_ABSENT: str = "DISCOVERY_SEARCH_NOT_FOUND"
+DISCOVERY_SOURCE_UNAPPROVED: str = "DISCOVERY_SOURCE_UNAPPROVED"
+PREPARATION_MEMBER_ABSENT: str = "PREPARATION_MEMBER_ABSENT"
 
 
 def _require_user(task: TaskRun) -> UserId:
@@ -157,6 +161,70 @@ def build_opportunity_discovery_handler(service_factory: ServiceFactory) -> Task
             raise TaskFailure.permanent(
                 DISCOVERY_SEARCH_ABSENT,
                 detail="active Swiss saved search is unavailable") from error
+        except DiscoverySourceAccessDenied as error:
+            raise TaskFailure.permanent(
+                DISCOVERY_SOURCE_UNAPPROVED,
+                detail="Swiss discovery source access is not approved") from error
+
+    return handle
+
+
+def build_matching_handler(service_factory: ServiceFactory, *,
+                           clock: Clock = utc_now) -> TaskHandler:
+    """Assess one run member; the service alone decides whether documents are queued."""
+
+    async def handle(task: TaskRun, session: AsyncSession) -> None:
+        user_id = _require_user(task)
+        run_id = DiscoveryRunId(_require_uuid(task.payload, "discovery_run_id", task.kind))
+        opportunity_id = OpportunityId(_require_uuid(
+            task.payload, "opportunity_id", task.kind))
+        try:
+            await service_factory(session).assess_and_decide(
+                user_id, run_id, opportunity_id, now=clock())
+        except LookupError as error:
+            raise TaskFailure.permanent(
+                PREPARATION_MEMBER_ABSENT, detail="owner's run member is unavailable") from error
+
+    return handle
+
+
+def build_document_generation_handler(service_factory: ServiceFactory, *,
+                                      clock: Clock = utc_now) -> TaskHandler:
+    """Resume the two document checkpoints without any application-side action."""
+
+    async def handle(task: TaskRun, session: AsyncSession) -> None:
+        user_id = _require_user(task)
+        run_id = DiscoveryRunId(_require_uuid(task.payload, "discovery_run_id", task.kind))
+        opportunity_id = OpportunityId(_require_uuid(
+            task.payload, "opportunity_id", task.kind))
+        try:
+            await service_factory(session).prepare(
+                user_id, run_id, opportunity_id, now=clock())
+        except LookupError as error:
+            raise TaskFailure.permanent(
+                PREPARATION_MEMBER_ABSENT, detail="owner's run member is unavailable") from error
+
+    return handle
+
+
+def build_application_preparation_handler(
+        service: Any, *, clock: Clock = utc_now) -> TaskHandler:
+    """Prepare one committed Swiss dossier in the browser lane; never click submit."""
+
+    async def handle(task: TaskRun, _session: AsyncSession) -> None:
+        user_id = _require_user(task)
+        run_id = DiscoveryRunId(_require_uuid(task.payload, "discovery_run_id", task.kind))
+        opportunity_id = OpportunityId(_require_uuid(
+            task.payload, "opportunity_id", task.kind))
+        try:
+            await service.prepare(user_id, run_id, opportunity_id, now=clock())
+        except LookupError as error:
+            raise TaskFailure.permanent(
+                PREPARATION_MEMBER_ABSENT,
+                detail="owner's rendered Swiss run member is unavailable") from error
+        except ApplicationError as error:
+            raise TaskFailure.permanent(
+                SUBMISSION_REFUSED, detail=error.detail) from error
 
     return handle
 
@@ -237,6 +305,8 @@ def build_application_submission_handler(
 
 def build_general_handlers(*, retention_service: ServiceFactory, export_service: ServiceFactory,
                            discovery_service: ServiceFactory | None = None,
+                           matching_service: ServiceFactory | None = None,
+                           document_service: ServiceFactory | None = None,
                            clock: Clock = utc_now) -> dict[TaskKind, TaskHandler]:
     """The `TaskKind -> handler` registry the general-lane worker dispatches on (§34).
 
@@ -251,10 +321,16 @@ def build_general_handlers(*, retention_service: ServiceFactory, export_service:
     if discovery_service is not None:
         handlers[TaskKind.OPPORTUNITY_DISCOVERY] = build_opportunity_discovery_handler(
             discovery_service)
+    if matching_service is not None:
+        handlers[TaskKind.MATCHING] = build_matching_handler(matching_service, clock=clock)
+    if document_service is not None:
+        handlers[TaskKind.DOCUMENT_GENERATION] = build_document_generation_handler(
+            document_service, clock=clock)
     return handlers
 
 
 def build_browser_handlers(*, application_service: ServiceFactory,
+                           application_preparation_service: Any | None = None,
                            clock: Clock = utc_now,
                            session_factory: async_sessionmaker[AsyncSession] | None = None,
                            live_submissions_enabled: bool = False) -> dict[TaskKind, TaskHandler]:
@@ -265,8 +341,12 @@ def build_browser_handlers(*, application_service: ServiceFactory,
     handler — it cannot be handed, and so cannot run, a general-lane job, the isolation §35 asks
     for made a property of what each worker knows how to do.
     """
-    return {
+    handlers = {
         TaskKind.APPLICATION_SUBMISSION: build_application_submission_handler(
             application_service, clock=clock, session_factory=session_factory,
             live_submissions_enabled=live_submissions_enabled),
     }
+    if application_preparation_service is not None:
+        handlers[TaskKind.APPLICATION_PREPARATION] = build_application_preparation_handler(
+            application_preparation_service, clock=clock)
+    return handlers

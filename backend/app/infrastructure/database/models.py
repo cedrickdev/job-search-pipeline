@@ -28,7 +28,7 @@ table rewrite, and removing one is nearly impossible; a CHECK is one
 `DROP CONSTRAINT`/`ADD CONSTRAINT` pair in a forward-only migration
 (docs/ENGINEERING_STANDARDS.md §Database rules).
 """
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Final
@@ -36,7 +36,9 @@ from uuid import UUID, uuid5
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
+    Date,
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
@@ -46,6 +48,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    Time,
     UniqueConstraint,
     text,
 )
@@ -53,6 +56,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql.elements import TextClause
 
+from backend.app.claude_terminal.contracts import ClaudeTerminalState
 from backend.app.domain.account_export import AccountExportStatus
 from backend.app.domain.analytics import DimensionKind, RateKind, TimingKind
 from backend.app.domain.application import ApplicationState, SubmissionOutcome
@@ -119,6 +123,7 @@ from backend.app.domain.interview import (
     SessionStyle,
 )
 from backend.app.domain.matching import MatchDimension
+from backend.app.domain.morning_preparation import PreparationStage
 from backend.app.domain.opportunity import ContractType, OpportunityType, WorkplaceMode
 from backend.app.domain.outcome import OutcomeKind, OutcomeSource, OutcomeStatus
 from backend.app.domain.policy import AutomationMode
@@ -418,6 +423,42 @@ class UserRow(TimestampedMixin, Base):
         order_by="UserSessionRow.issued_at")
 
 
+class MorningScheduleRow(TimestampedMixin, Base):
+    """The one Swiss morning clock owned by an account."""
+
+    __tablename__ = "morning_schedules"
+    __table_args__ = (
+        CheckConstraint("cadence IN ('daily', 'weekdays')", name="cadence_valid"),
+        CheckConstraint("EXTRACT(SECOND FROM local_time) = 0", name="local_time_minutes"),
+        Index("ix_morning_schedules_enabled_local_time_user_id",
+              "enabled", "local_time", "user_id"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean)
+    local_time: Mapped[time] = mapped_column(Time(timezone=False))
+    cadence: Mapped[str] = mapped_column(String(32))
+
+
+class AtsRequestBudgetRow(TimestampedMixin, Base):
+    """Global per-employer ATS request count for one Europe/Zurich calendar day."""
+
+    __tablename__ = "ats_request_budgets"
+    __table_args__ = (
+        CheckConstraint("source_key IN ('greenhouse', 'lever')",
+                        name="supported_source"),
+        CheckConstraint("length(board_token) BETWEEN 1 AND 128",
+                        name="board_token_length"),
+        CheckConstraint("request_count >= 1", name="positive_request_count"),
+    )
+
+    source_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    board_token: Mapped[str] = mapped_column(Text, primary_key=True)
+    swiss_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class UserSessionRow(TimestampedMixin, Base):
     """One authenticated browser, as a revocable server-side row.
 
@@ -527,6 +568,11 @@ class CandidateProfileRow(LocationColumnsMixin, TimestampedMixin, Base):
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"))
     display_name: Mapped[str]
+    contact_email: Mapped[str | None] = mapped_column(String(320))
+    contact_phone: Mapped[str | None] = mapped_column(String(32))
+    reference_cv_purpose: Mapped[str | None] = mapped_column(String(32))
+    reference_cv_filename: Mapped[str | None] = mapped_column(String(255))
+    reference_cv_storage_key: Mapped[str | None] = mapped_column(Text)
     headline: Mapped[str | None]
 
     availability_earliest_start: Mapped[date | None]
@@ -1393,6 +1439,7 @@ class DiscoveryRunRow(TimestampedMixin, Base):
 
     __tablename__ = "discovery_runs"
     __table_args__ = (
+        UniqueConstraint("id", "user_id", name="uq_discovery_runs_id_user_id"),
         ForeignKeyConstraint(
             ["user_id", "search_profile_id"],
             ["search_profiles.user_id", "search_profiles.id"],
@@ -1423,6 +1470,38 @@ class DiscoveryRunRow(TimestampedMixin, Base):
         JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
     warning_codes: Mapped[list[str]] = mapped_column(
         JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+
+
+class MorningPreparationRow(TimestampedMixin, Base):
+    """One owner/run/opportunity checkpoint; never a submission record."""
+
+    __tablename__ = "morning_preparations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["discovery_run_id", "user_id"], ["discovery_runs.id", "discovery_runs.user_id"],
+            ondelete="CASCADE", name="fk_morning_preparations_owner_run"),
+        CheckConstraint(
+            "(stage NOT IN ('CV_RENDERED', 'DOCUMENTS_RENDERED') "
+            "OR resume_version_id IS NOT NULL) AND "
+            "(stage <> 'DOCUMENTS_RENDERED' OR cover_letter_version_id IS NOT NULL) AND "
+            "(cover_letter_version_id IS NULL OR resume_version_id IS NOT NULL) AND "
+            "(stage NOT IN ('SKIPPED', 'REQUIRES_HUMAN', 'FAILED') "
+            "OR reason_code IS NOT NULL)",
+            name="coherent_stage"),
+        Index("ix_morning_preparations_user_run", "user_id", "discovery_run_id"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"),
+                                          primary_key=True)
+    discovery_run_id: Mapped[UUID] = mapped_column(primary_key=True)
+    opportunity_id: Mapped[UUID] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"), primary_key=True)
+    stage: Mapped[PreparationStage] = mapped_column(
+        enum_column(PreparationStage, "preparation_stage"))
+    decision_id: Mapped[UUID | None]
+    resume_version_id: Mapped[UUID | None]
+    cover_letter_version_id: Mapped[UUID | None]
+    reason_code: Mapped[str | None]
 
 
 class DiscoveryMembershipRow(TimestampedMixin, Base):
@@ -2038,6 +2117,38 @@ class ProviderSessionRow(TimestampedMixin, Base):
         back_populates="sessions", lazy="raise")
 
 
+class ClaudeTerminalSessionRow(TimestampedMixin, Base):
+    """Safe lifecycle metadata for a server-managed terminal runtime.
+
+    This row deliberately has no credential, prompt, terminal output or filesystem
+    path. ``runtime_reference`` is manager-owned opaque data only; it never reaches
+    an API response.
+    """
+
+    __tablename__ = "claude_terminal_sessions"
+    __table_args__ = (
+        Index("ix_claude_terminal_sessions_owner_state", "owner_user_id", "state"),
+        Index("ix_claude_terminal_sessions_expires_at", "expires_at"),
+        CheckConstraint(
+            "(state IN ('TERMINATED', 'FAILED', 'EXPIRED')) = (ended_at IS NOT NULL)",
+            name="ended_at_matches_final_state"),
+        CheckConstraint(
+            "safe_error_code IS NULL OR char_length(safe_error_code) <= 64",
+            name="safe_error_code_bounded"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    owner_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    state: Mapped[ClaudeTerminalState] = mapped_column(
+        enum_column(ClaudeTerminalState, "claude_terminal_state"))
+    runtime_reference: Mapped[str | None]
+    last_activity_at: Mapped[datetime]
+    expires_at: Mapped[datetime]
+    ended_at: Mapped[datetime | None]
+    safe_error_code: Mapped[str | None] = mapped_column(String(64))
+
+
 class LLMRunRow(TimestampedMixin, Base):
     """One telemetry record of one LLM call (§12, §56).
 
@@ -2302,6 +2413,8 @@ class ApplicationRow(TimestampedMixin, Base):
     answers: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
     form_fingerprint: Mapped[str | None]
+    form_driver_key: Mapped[str | None]
+    form_capability_id: Mapped[str | None]
     attempt_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     correlation_id: Mapped[str | None]
 
@@ -3417,8 +3530,9 @@ class AccountExportRow(TimestampedMixin, Base):
 # (§35). `APPLICATION_SUBMISSION` is the one browser kind (`_BROWSER_KINDS`); keep this in step if
 # that set grows.
 _TASK_RUN_LANE_MATCHES_KIND: Final[str] = (
-    "(kind = 'APPLICATION_SUBMISSION' AND lane = 'BROWSER')"
-    " OR (kind <> 'APPLICATION_SUBMISSION' AND lane = 'GENERAL')"
+    "(kind IN ('APPLICATION_PREPARATION', 'APPLICATION_SUBMISSION') AND lane = 'BROWSER')"
+    " OR (kind NOT IN ('APPLICATION_PREPARATION', 'APPLICATION_SUBMISSION') "
+    "AND lane = 'GENERAL')"
 )
 
 # `TaskRun`'s lease is both-or-neither: a task either holds a lease (owner and expiry) or holds

@@ -441,10 +441,12 @@ Details that are decisions rather than defaults:
   prove it.
 - `./data` is mounted **read-only** into `import-v1`, and the importer opens the file
   read-only as well.
-- **No service reads `.env`.** Compose interpolates it into the values in the file —
+- **No application service reads `.env`.** Compose interpolates it into the values in the file —
   which is how a developer overrides the port or the password — but nothing mounts it
   or passes it through: `.env` holds V1's real API credentials and none of them belong
-  in a database container (docs/ENGINEERING_STANDARDS.md §Security).
+  in a database container (docs/ENGINEERING_STANDARDS.md §Security). The isolated
+  terminal manager instead receives only its own three Claude gateway values from
+  the dedicated, ignored `terminal.env`.
 
 `.env.example` carries the dev-only, non-secret database values: `POSTGRES_USER`,
 `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_TEST_DB`, `POSTGRES_PORT`, and the

@@ -100,6 +100,7 @@ class AdapterPreparation(EngineValue):
     questions: tuple[ApplicationQuestion, ...] = ()
     answer_proposals: tuple[ApplicationAnswerProposal, ...] = ()
     form_fingerprint: NonEmptyStr | None = None
+    driver_key: NonEmptyStr | None = None
     human_required_reasons: tuple[HumanRequiredReason, ...] = ()
     detail: NonEmptyStr | None = None
 

@@ -27,15 +27,39 @@ import { useGenerateDocument } from '~/composables/useDocuments'
 import type { CandidateDocument } from '~/types/v2'
 import { errorMessage } from '~/utils/v2-errors'
 
-const props = defineProps<{ opportunityId: string }>()
+const { localize: globalLocalize } = useLocale()
+const props = defineProps<{ opportunityId: string, locale?: 'en' | 'fr' }>()
+const l = (english: string, french: string) => props.locale === 'fr' ? french :
+  (props.locale === 'en' ? english : globalLocalize(english, french))
 
 const router = useRouter()
 const { resume, coverLetter } = useGenerateDocument()
 
 // Either generator's error, whichever last ran; both surface the same way.
+const latestError = computed(() => resume.error ?? coverLetter.error)
+
+const isModelError = computed(() => {
+  const err = latestError.value
+  if (!err || typeof err !== 'object' || !('code' in err)) return false
+  return typeof err.code === 'string' && (err.code.startsWith('provider_')
+    || ['no_eligible_provider', 'capability_not_supported', 'structured_output_invalid'].includes(err.code))
+})
+
+function isQuotaError(error: unknown): error is { code: string } {
+  return typeof error === 'object' && error !== null && 'code' in error &&
+    (error as { code?: unknown }).code === 'quota_exceeded'
+}
+
 const error = computed(() => {
-  const err = resume.error ?? coverLetter.error
-  return err ? errorMessage(err) : null
+  const err = latestError.value
+  if (!err) return null
+  if (isQuotaError(err)) {
+    return l(
+      'Document generation is temporarily unavailable for this plan. Check your usage to continue.',
+      'La génération de document est temporairement indisponible pour ce forfait. Consultez votre utilisation pour continuer.',
+    )
+  }
+  return errorMessage(err)
 })
 
 async function generate(which: 'resume' | 'coverLetter') {
@@ -54,7 +78,7 @@ async function generate(which: 'resume' | 'coverLetter') {
 <template>
   <div class="doc-actions">
     <p class="doc-actions-label">
-      Build from your evidence
+      {{ l('Build from your evidence', 'Créer à partir de vos preuves') }}
     </p>
     <div class="doc-actions-row">
       <button
@@ -63,7 +87,7 @@ async function generate(which: 'resume' | 'coverLetter') {
         :disabled="resume.isPending"
         @click="generate('resume')"
       >
-        {{ resume.isPending ? 'Generating…' : 'Résumé' }}
+        {{ resume.isPending ? l('Generating…', 'Génération…') : l('Resume', 'CV adapté') }}
       </button>
       <button
         type="button"
@@ -71,13 +95,16 @@ async function generate(which: 'resume' | 'coverLetter') {
         :disabled="coverLetter.isPending"
         @click="generate('coverLetter')"
       >
-        {{ coverLetter.isPending ? 'Generating…' : 'Cover letter' }}
+        {{ coverLetter.isPending ? l('Generating…', 'Génération…') : l('Cover letter', 'Lettre de motivation') }}
       </button>
     </div>
     <p v-if="error" class="doc-actions-error" role="alert">
       {{ error }}
-      <NuxtLink to="/evidence">
-        Review your evidence →
+      <NuxtLink :to="isQuotaError(latestError) ? '/billing' : isModelError ? '/settings#llm' : '/evidence'">
+        {{ isQuotaError(latestError)
+          ? l('View usage →', 'Voir l’utilisation →')
+          : isModelError ? l('Check model connection →', 'Vérifier la connexion au modèle →')
+          : l('Review your evidence →', 'Vérifier vos preuves →') }}
       </NuxtLink>
     </p>
   </div>
@@ -101,11 +128,14 @@ async function generate(which: 'resume' | 'coverLetter') {
 }
 .doc-actions-row {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 .doc-actions-row button {
   font-size: 13px;
+  min-height: 40px;
 }
+@media (max-width: 440px) { .doc-actions-row button { flex: 1 1 100%; min-height: 44px; } }
 .doc-actions-error {
   font-size: 12px;
   color: var(--danger, #b91c1c);

@@ -25,10 +25,12 @@ import argparse
 import asyncio
 import logging
 import tempfile
+from datetime import date
 from pathlib import Path
 
 from backend.app.application_engine.browser.context_loader import ApplicationContextLoader
 from backend.app.application_engine.browser.execute import execute_on_page
+from backend.app.application_engine.browser.form_capabilities import load_form_capabilities
 from backend.app.application_engine.browser.registry import BrowserDriverRegistry
 from backend.app.application_engine.browser.runtime import browser_page, profile_dir_for
 from backend.app.application_engine.task_dispatcher import (
@@ -99,6 +101,8 @@ def run(request_path: Path, result_path: Path) -> None:
 async def _drive(task: BrowserTask) -> BrowserTaskResult:
     """Compose the read-only context loader and a real browser, then run the task (§6-7)."""
     registry = BrowserDriverRegistry()
+    form_catalog = load_form_capabilities(
+        BrowserSubmissionSettings.from_env().form_catalog_path, today=date.today())
     engine = create_async_database_engine(DatabaseSettings.from_env())
     factory = create_session_factory(engine)
     document_settings = DocumentSettings.from_env()
@@ -117,7 +121,12 @@ async def _drive(task: BrowserTask) -> BrowserTaskResult:
                     staging_dir=Path(staging))
                 async with browser_page(profile_dir=profile_dir_for(task.user_id)) as page:
                     return await execute_on_page(
-                        page, task, registry=registry, loader=loader)
+                        page, task, registry=registry, loader=loader,
+                        form_catalog=form_catalog,
+                        form_catalog_loader=lambda: load_form_capabilities(
+                            BrowserSubmissionSettings.from_env().form_catalog_path,
+                            today=date.today()),
+                    )
     finally:
         await engine.dispose()
 

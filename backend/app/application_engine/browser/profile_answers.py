@@ -8,13 +8,9 @@ It proposes *only* what the profile genuinely carries:
 - the display name, split into first/last or offered whole, for name fields;
 - the base location, for a location field.
 
-Contact details — email, phone, LinkedIn — are deliberately absent from `CandidateProfile`
-(`backend.app.domain.candidate`: they are PII with their own storage rules), so this proposes
-nothing for them. A form that requires an email therefore resolves to `UNKNOWN_REQUIRED_FIELD` and
-stops for a human (§11), rather than the platform fabricating a contact fact — exactly the "never
-invent candidate data" rule (§12). Those values reach a submission only once a person has supplied
-them and they are persisted as answers, which is the honest path until a declared-contact store
-exists.
+Contact details are proposed only when the candidate explicitly stored them in their own profile.
+Missing contact data still produces no proposal, so a mandatory field becomes a human stop rather
+than an invented answer.
 """
 from __future__ import annotations
 
@@ -49,8 +45,12 @@ def _proposed_value(key: str, profile: CandidateProfile) -> str | None:
         return profile.display_name
     if key == semantics.LOCATION:
         return _format_location(profile.base_location)
-    # EMAIL / PHONE / LINKEDIN and every custom field: the profile holds no trustworthy value, so
-    # nothing is proposed and a required field stops for a human (§11-12).
+    if key == semantics.EMAIL:
+        return str(profile.contact.email) if profile.contact is not None else None
+    if key == semantics.PHONE:
+        return profile.contact.phone if profile.contact is not None else None
+    # LINKEDIN and every custom field: the profile holds no trustworthy value, so nothing is
+    # proposed and a required field stops for a human (§11-12).
     return None
 
 

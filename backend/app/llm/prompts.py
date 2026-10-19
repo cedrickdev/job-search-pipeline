@@ -213,6 +213,7 @@ _RESUME_SCHEMA: Final[dict[str, Any]] = {
         "full_name": {"type": "string"},
         "headline": {"type": ["string", "null"]},
         "summary": {"$ref": "#/$defs/backed_text"},
+        "highlights": {"type": "array", "items": {"$ref": "#/$defs/backed_text"}},
         "experience": {"type": "array", "items": {"$ref": "#/$defs/entry"}},
         "education": {"type": "array", "items": {"$ref": "#/$defs/entry"}},
         "skill_groups": {"type": "array", "items": {

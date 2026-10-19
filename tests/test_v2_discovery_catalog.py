@@ -3,6 +3,7 @@
 import pytest
 
 from backend.app.domain.identifiers import new_opportunity_id
+from backend.app.domain.common import Location
 from backend.app.domain.opportunity import (
     ContractType,
     Opportunity,
@@ -27,6 +28,7 @@ def an_opportunity(**overrides) -> Opportunity:
         "source": OpportunitySourceRecord(source_key="jobup", fetched_at=NOW),
         "company_name": "Neocraft SA",
         "title": "Développeur Python",
+        "location": Location(country="CH", raw="Lausanne"),
         "discovered_at": NOW,
     }
     fields.update(overrides)
@@ -85,6 +87,24 @@ def test_saved_search_filters_collected_opportunities(
     assert matches_search(
         a_search_profile(**profile_fields), an_opportunity(**opportunity_fields)
     ) is expected
+
+
+def test_country_search_does_not_admit_unverified_or_foreign_postings():
+    from backend.app.discovery.catalog import matching_opportunities
+    from backend.app.discovery.orchestrator import SweepReport, SourceOutcome
+
+    swiss = an_opportunity(location=Location(country="CH", raw="Lausanne"))
+    french = an_opportunity(location=Location(country="FR", raw="Orléans"))
+    unknown = an_opportunity(location=Location(raw="Angers"))
+    report = SweepReport(
+        country="CH", started_at=NOW, duration_ms=0,
+        outcomes=(SourceOutcome(
+            request=discovery_requests_for(a_search_profile(), country="CH")[0],
+            result=a_result("wtj", swiss, french, unknown),
+        ),),
+    )
+
+    assert matching_opportunities(a_search_profile(), report) == (swiss,)
 
 
 @pytest.mark.parametrize("profile_fields", [

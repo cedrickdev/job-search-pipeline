@@ -77,6 +77,7 @@ describe('profile page · the account', () => {
     navigateTo.mockClear()
     clearNuxtData()
     useSessionStore().$reset()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
     api = accountApi()
     api.profile = profile()
     api.searches = [search()]
@@ -93,6 +94,14 @@ describe('profile page · the account', () => {
     expect(facts.at(-1)).toBe(new Date('2026-01-09T09:00:00Z').toLocaleString())
     expect(wrapper.get('.settings-card .auth-hint').text())
       .toContain('not available yet')
+  })
+
+  it('translates account labels and search actions into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const wrapper = await mountProfile()
+    expect(wrapper.text()).toContain('Profil candidat')
+    expect(wrapper.text()).toContain('Recherches enregistrées')
+    expect(wrapper.text()).toContain('Modifier')
   })
 
   // The screen names a session; it must not carry the secret that identifies it.
@@ -118,12 +127,28 @@ describe('profile page · the account', () => {
   it('confirms a saved profile', async () => {
     const wrapper = await mountProfile()
 
+    await wrapper.get('[data-testid="edit-profile"]').trigger('click')
     await wrapper.get('#profile-display-name').setValue('Renamed Candidate')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
     expect(api.profile?.profile.display_name).toBe('Renamed Candidate')
     expect(wrapper.get('.settings-ok').attributes('role')).toBe('status')
+  })
+
+  it('keeps the candidate profile locked until the user chooses to edit it', async () => {
+    const wrapper = await mountProfile()
+
+    expect(wrapper.get<HTMLInputElement>('#profile-email').element.value).toBe('candidate@example.invalid')
+    expect(wrapper.get('#profile-email').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('#profile-phone').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('button[type="submit"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="edit-profile"]').trigger('click')
+
+    expect(wrapper.get('#profile-email').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('#profile-phone').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('button[type="submit"]').exists()).toBe(true)
   })
 })
 
@@ -133,6 +158,7 @@ describe('profile page · the saved searches', () => {
     navigateTo.mockClear()
     clearNuxtData()
     useSessionStore().$reset()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
     api = accountApi()
     api.profile = profile()
     api.searches = [search()]
@@ -222,7 +248,7 @@ describe('profile page · the saved searches', () => {
 
     await wrapper.findAll('button').find(b => b.text().includes('Add a search'))!.trigger('click')
     await wrapper.get('#search-name').setValue('Data roles')
-    await wrapper.get('[aria-label="Area 1 country"]').setValue('FR')
+    await wrapper.get('[aria-label="Area 1 country"]').setValue('CH')
     await wrapper.get('.acct-new form').trigger('submit')
     await flushPromises()
 
@@ -264,6 +290,7 @@ describe('profile page · deleting a search', () => {
     navigateTo.mockClear()
     clearNuxtData()
     useSessionStore().$reset()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
     api = accountApi()
     api.profile = profile()
     api.searches = [search()]

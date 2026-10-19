@@ -11,7 +11,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.core.settings import DatabaseSettings
-from backend.app.discovery.requests import countries_in_scope
+from backend.app.discovery.ats_board_catalog import ATS_REVIEWED_BOARDS_PATH, load_reviewed_boards
 from backend.app.domain.identifiers import UserId
 from backend.app.infrastructure.database.engine import (
     create_async_database_engine,
@@ -23,9 +23,12 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyTaskRunRepository,
 )
 from backend.app.services.discovery_catalog import DiscoveryEnqueueService
+from backend.app.services.discovery_source_access import (
+    DiscoverySourceAccessDenied,
+    SourceAccessPolicy,
+)
+from backend.app.services.morning_run import MorningRunService
 from backend.app.tasks.dispatcher import PersistedTaskDispatcher
-
-MAX_PROFILES_PER_INVOCATION = 100
 
 
 async def enqueue_for_user(
@@ -36,20 +39,16 @@ async def enqueue_for_user(
     """Enqueue active CH searches only; a rehearsal rolls back the same writes."""
     if trigger not in {"MANUAL", "MORNING"}:
         raise ValueError("trigger must be MANUAL or MORNING")
+    catalog = load_reviewed_boards(ATS_REVIEWED_BOARDS_PATH)
     async with session_scope(factory, commit=not dry_run) as session:
         searches = SqlAlchemySearchProfileRepository(session)
-        profiles = await searches.list_for_user(
-            user_id, active_only=True, limit=MAX_PROFILES_PER_INVOCATION)
-        dispatcher = PersistedTaskDispatcher(
-            SqlAlchemyTaskRunRepository(session), clock=clock)
-        service = DiscoveryEnqueueService(searches, dispatcher, clock=clock)
-        count = 0
-        for profile in profiles:
-            if "CH" not in countries_in_scope(profile):
-                continue
-            await service.enqueue_discovery(user_id, profile.id, trigger=trigger)
-            count += 1
-        return count
+        tasks = SqlAlchemyTaskRunRepository(session)
+        dispatcher = PersistedTaskDispatcher(tasks, clock=clock)
+        service = MorningRunService(
+            searches, DiscoveryEnqueueService(
+                searches, dispatcher, clock=clock,
+                source_policy=SourceAccessPolicy.from_env(catalog)), tasks)
+        return len(await service.enqueue_active_ch(user_id, trigger=trigger))
 
 
 def _args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -75,7 +74,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         finally:
             await engine.dispose()
 
-    count = asyncio.run(run())
+    try:
+        count = asyncio.run(run())
+    except DiscoverySourceAccessDenied as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     action = "eligible" if args.dry_run else "queued"
     print(f"{count} Swiss saved search(es) {action}")
     return 0

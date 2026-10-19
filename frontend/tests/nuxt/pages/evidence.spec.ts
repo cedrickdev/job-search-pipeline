@@ -53,6 +53,18 @@ function buttonNamed(wrapper: VueWrapper, label: RegExp) {
   return found
 }
 
+/** Select a cited fact through the real Nuxt UI menu (rendered in a portal). */
+async function citeEvidence(wrapper: VueWrapper) {
+  const trigger = wrapper.get('[data-testid="claim-evidence-picker"]')
+  await trigger.trigger('click')
+  await flushPromises()
+  const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')]
+    .find(item => item.textContent?.includes('Backend engineer with 8 years of experience'))
+  if (!option) throw new Error('the cited-evidence option was not rendered')
+  option.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await flushPromises()
+}
+
 /**
  * The JSON body of the POST to `fragment`.
  *
@@ -79,6 +91,7 @@ describe('evidence page', () => {
     vi.restoreAllMocks()
     clearNuxtData()
     useSessionStore().$reset()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
   })
 
   it('lists the attested facts and the claims that rest on them', async () => {
@@ -88,6 +101,15 @@ describe('evidence page', () => {
     expect(wrapper.text()).toContain('Senior Backend Engineer')
     // A claim shows what it rests on by evidence summary, not a bare id.
     expect(wrapper.text()).toContain('rests on: Backend engineer with 8 years of experience')
+  })
+
+  it('translates the evidence workspace and enum labels into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const { wrapper } = await mountPage()
+
+    expect(wrapper.get('h1').text()).toBe('Éléments de preuve')
+    expect(wrapper.text()).toContain('Les faits attestés qui servent à rédiger vos CV')
+    expect(wrapper.find('[aria-label="Type de preuve"]').exists()).toBe(true)
   })
 
   it('records a fact, sending the typed kind and provenance', async () => {
@@ -115,7 +137,7 @@ describe('evidence page', () => {
     // so the button stays disabled.
     expect(buttonNamed(wrapper, /Assert claim/).attributes('disabled')).toBeDefined()
 
-    await wrapper.get(`input[value="66666666-6666-4666-8666-666666666666"]`).setValue(true)
+    await citeEvidence(wrapper)
     expect(buttonNamed(wrapper, /Assert claim/).attributes('disabled')).toBeUndefined()
   })
 
@@ -123,7 +145,7 @@ describe('evidence page', () => {
     const { http, wrapper } = await mountPage()
 
     await wrapper.get('[aria-label="Claim label"]').setValue('Senior Backend Engineer')
-    await wrapper.get(`input[value="66666666-6666-4666-8666-666666666666"]`).setValue(true)
+    await citeEvidence(wrapper)
     await submitClaimForm(wrapper)
     await flushPromises()
 
@@ -141,7 +163,7 @@ describe('evidence page', () => {
     }])
 
     await wrapper.get('[aria-label="Claim label"]').setValue('Senior Backend Engineer')
-    await wrapper.get(`input[value="66666666-6666-4666-8666-666666666666"]`).setValue(true)
+    await citeEvidence(wrapper)
     await submitClaimForm(wrapper)
     await flushPromises()
 

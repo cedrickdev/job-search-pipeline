@@ -12,7 +12,9 @@ import { computed, toRef } from 'vue'
 import { useApplicationEventsQuery } from '~/composables/useApplications'
 import type { ApplicationEvent } from '~/types/v2'
 import { errorMessage } from '~/utils/v2-errors'
+import { applicationEventDetail, applicationReason } from '~/utils/application-event-format'
 
+const { localize: l, locale } = useLocale()
 const props = defineProps<{ applicationId: string }>()
 
 const { data, status, error } = useApplicationEventsQuery(
@@ -22,7 +24,29 @@ const events = computed<ApplicationEvent[]>(() => data.value?.events ?? [])
 
 /** The employer-safe instant, formatted for a reader without leaking a timezone quirk. */
 function when(iso: string): string {
-  return new Date(iso).toLocaleString()
+  return new Date(iso).toLocaleString(locale.value === 'fr' ? 'fr-CH' : 'en-CH')
+}
+
+const EVENT_LABELS: Record<ApplicationEvent['event_type'], [string, string]> = {
+  CREATED: ['Created', 'Créée'],
+  PREPARATION_STARTED: ['Preparation started', 'Préparation commencée'],
+  PREPARED: ['Prepared', 'Préparée'],
+  GATE_EVALUATED: ['Policy checked', 'Politique vérifiée'],
+  HUMAN_REQUIRED: ['Human review required', 'Intervention humaine requise'],
+  APPROVED: ['Approved', 'Approuvée'],
+  SUBMISSION_STARTED: ['Submission started', 'Envoi commencé'],
+  SUBMITTED: ['Submitted', 'Envoyée'],
+  SUBMISSION_STATE_UNKNOWN: ['Submission unconfirmed', 'Envoi non confirmé'],
+  FAILED: ['Failed', 'Échec'],
+  CANCELLED: ['Cancelled', 'Annulée'],
+  WITHDRAWN: ['Withdrawn', 'Retirée'],
+  DUPLICATE_BLOCKED: ['Duplicate blocked', 'Doublon bloqué'],
+  RATE_LIMITED: ['Rate limit reached', 'Limite atteinte'],
+}
+const ACTOR_LABELS: Record<ApplicationEvent['actor'], [string, string]> = {
+  SYSTEM: ['System', 'Système'],
+  USER: ['You', 'Vous'],
+  WORKER: ['Worker', 'Automate'],
 }
 </script>
 
@@ -30,17 +54,17 @@ function when(iso: string): string {
   <div class="trail">
     <p v-if="error" class="trail__error" role="alert">{{ errorMessage(error) }}</p>
     <p v-else-if="status === 'pending' && events.length === 0" class="trail__empty">
-      Loading history…
+      {{ l('Loading history…', 'Chargement de l’historique…') }}
     </p>
     <ol v-else class="trail__list">
       <li v-for="(event, index) in events" :key="index" class="trail__event">
-        <span class="trail__type">{{ event.event_type }}</span>
-        <span class="trail__actor">{{ event.actor }}</span>
+        <span class="trail__type">{{ l(...EVENT_LABELS[event.event_type]) }}</span>
+        <span class="trail__actor">{{ l(...ACTOR_LABELS[event.actor]) }}</span>
         <span class="trail__when">{{ when(event.occurred_at) }}</span>
-        <span v-if="event.detail" class="trail__detail">{{ event.detail }}</span>
+        <span v-if="event.detail" class="trail__detail">{{ applicationEventDetail(event.detail, locale) }}</span>
         <ul v-if="event.reasons.length > 0" class="trail__reasons">
           <li v-for="(reason, reasonIndex) in event.reasons" :key="reasonIndex">
-            {{ reason.detail ?? reason.code }}
+            {{ applicationReason(reason.detail ?? reason.code, locale) }}
           </li>
         </ul>
       </li>

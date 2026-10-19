@@ -3,8 +3,8 @@
 //
 // The unit suite mounts this page against a stubbed `fetch`; two things only a browser
 // shows are here — that the screen is reachable (the Applications nav link appears for
-// a session) and that a reviewed application offers the single "Approve & submit"
-// decision the review screen is for (§89).
+// a session) and that a reviewed browser application offers approval before it
+// can be queued for the browser worker. Tests never send a real application.
 //
 // No backend runs. Every `/api/**` request is answered from the table below, so
 // nothing reaches a live board or LLM (CLAUDE.md §Testing).
@@ -57,11 +57,13 @@ test('reaches applications from the nav and shows the reviewed one', async ({ pa
   const api = await mockApi(page, routes())
   await page.goto('/')
 
-  await page.getByRole('link', { name: 'Applications' }).click()
+  await page.getByRole('link', { name: /^(Applications|Candidatures)$/ }).click()
   await expect(page).toHaveURL('/applications')
-  await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible()
-  await expect(page.getByText('READY_FOR_REVIEW')).toBeVisible()
-  // A reviewed application offers the single approve-and-submit decision (§89).
-  await expect(page.getByRole('button', { name: /Approve & submit/ })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^(Applications|Candidatures)$/ })).toBeVisible()
+  await expect(page.getByRole('listitem').filter({ hasText: 'Ready for review' })).toBeVisible()
+  // Browser execution separates approval from queueing; non-browser channels
+  // retain the combined action. Neither action is clicked in this smoke test.
+  await expect(page.getByRole('button', { name: /^(Approve|Approuver)$/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /Approve & submit|Approuver et envoyer/ })).toHaveCount(0)
   expect(api.unmatched).toEqual([])
 })

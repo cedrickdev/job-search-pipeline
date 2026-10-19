@@ -5,7 +5,8 @@ import argparse
 import asyncio
 import os
 import sys
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, Final
 
 import httpx
@@ -35,6 +36,9 @@ USER_AGENT_ENV: Final[str] = "GEOCODER_USER_AGENT"
 CONTACT_EMAIL_ENV: Final[str] = "GEOCODER_CONTACT_EMAIL"
 API_KEY_NAME_ENV: Final[str] = "GEOCODER_API_KEY"
 SUPPORTED_PROVIDERS: Final[tuple[str, ...]] = (PROVIDER_KEY,)
+# Public Nominatim permits at most one request per second. The enrichment cache
+# prevents repeat calls, and this interval protects the remaining cache misses.
+NOMINATIM_MIN_REQUEST_INTERVAL_SECONDS: Final[float] = 1.0
 
 
 class GeocoderCompositionError(ValueError):
@@ -45,12 +49,25 @@ class HttpxGetter:
     """The narrow `HttpGet` port over an identified, bounded HTTPX client."""
 
     def __init__(self, *, settings: GeocoderSettings,
-                 transport: httpx.AsyncBaseTransport | None = None) -> None:
+                 transport: httpx.AsyncBaseTransport | None = None,
+                 monotonic: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         self._settings = settings
         self._transport = transport
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._last_request_started_at: float | None = None
 
     async def __call__(self, url: str,
                        params: Mapping[str, str]) -> tuple[int, Any]:
+        now = self._monotonic()
+        if self._last_request_started_at is not None:
+            delay = NOMINATIM_MIN_REQUEST_INTERVAL_SECONDS - (
+                now - self._last_request_started_at)
+            if delay > 0:
+                await self._sleep(delay)
+                now = self._monotonic()
+        self._last_request_started_at = now
         async with httpx.AsyncClient(
             headers={"User-Agent": self._settings.user_agent,
                      "Accept": "application/json"},

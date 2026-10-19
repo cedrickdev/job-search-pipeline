@@ -36,6 +36,13 @@ describe('parseViewport', () => {
     expect(parseViewport({})).toEqual(DEFAULT_VIEWPORT)
   })
 
+  it('uses the active Country Pack frame when the URL carries no camera', () => {
+    const swiss = { center: [8.2275, 46.8182] as [number, number], zoom: 6.2 }
+    expect(parseViewport({}, swiss)).toEqual(swiss)
+    expect(parseViewport({ lat: '46.52', lng: '6.63' }, swiss))
+      .toEqual({ center: [6.63, 46.52], zoom: 6.2 })
+  })
+
   it('takes the first value when a param arrives repeated', () => {
     expect(parseViewport({ lat: ['46.52', '0'], lng: ['6.63', '0'], zoom: ['11'] }))
       .toEqual({ center: [6.63, 46.52], zoom: 11 })

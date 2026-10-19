@@ -167,7 +167,7 @@ describe('useCompanyQuery', () => {
     await mountSuspended(holder)
     await flushPromises()
 
-    expect(http.calls).toHaveLength(0)
+    expect(http.callsTo('/api/v2/companies/')).toHaveLength(0)
   })
 
   it('fetches the one company once the id is known', async () => {

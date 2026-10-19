@@ -46,6 +46,21 @@ def test_ch_pack_converts_an_activity_rate_into_weekly_hours(ch):
     assert ch.metadata.weekly_hours_for_percent(80) == pytest.approx(33.6)
 
 
+def test_ch_pack_owns_the_default_map_frame(ch):
+    """A client frames Switzerland from pack data, not a frontend constant."""
+    viewport = ch.metadata.map_viewport
+    assert viewport.center.latitude == pytest.approx(46.8182)
+    assert viewport.center.longitude == pytest.approx(8.2275)
+    assert viewport.zoom == pytest.approx(6.2)
+    assert viewport.bounds.model_dump() == {
+        "north": 47.8085,
+        "south": 45.8179,
+        "east": 10.4921,
+        "west": 5.9559,
+    }
+    assert viewport.bounds.contains(viewport.center)
+
+
 def test_ch_pack_enables_eleven_sources_in_priority_order(ch):
     """The approved CH sources retain the pack's priority order."""
     assert ch.enabled_source_keys == (
@@ -224,7 +239,13 @@ def _valid_files() -> dict[str, object]:
         "metadata.yaml": {
             "country": "FR", "display_name": "France", "default_locale": "fr-FR",
             "locales": ["fr-FR"], "currency": "EUR", "languages": ["fr"],
-            "timezone": "Europe/Paris", "full_time_weekly_hours": 35.0},
+            "timezone": "Europe/Paris", "full_time_weekly_hours": 35.0,
+            "map_viewport": {
+                "center": {"latitude": 46.6, "longitude": 2.4},
+                "zoom": 5.0,
+                "bounds": {"north": 51.1, "south": 41.3,
+                           "east": 9.7, "west": -5.2},
+            }},
         "sources.yaml": {"sources": [
             {"source_key": "jobup", "priority": 10,
              "expects_capabilities": ["KEYWORD_SEARCH"]}]},
@@ -378,6 +399,31 @@ def test_a_domain_preference_must_be_an_ending_and_nothing_else(tmp_path, value)
     _rejects(tmp_path / "p",
              {"metadata.yaml": _valid_files()["metadata.yaml"]
               | {"company_domain_suffixes": [value]}},
+             CountryPackErrorCode.COUNTRY_PACK_INVALID_FIELD)
+
+
+def test_a_map_center_outside_its_country_frame_is_refused(tmp_path):
+    metadata = _valid_files()["metadata.yaml"] | {
+        "map_viewport": {
+            "center": {"latitude": 48.8, "longitude": 2.3},
+            "zoom": 6.0,
+            "bounds": {"north": 47.8, "south": 45.8, "east": 10.5, "west": 5.9},
+        },
+    }
+    _rejects(tmp_path / "p", {"metadata.yaml": metadata},
+             CountryPackErrorCode.COUNTRY_PACK_INVALID_FIELD)
+
+
+@pytest.mark.parametrize("zoom", [-0.1, 24.1])
+def test_a_map_zoom_outside_maplibres_range_is_refused(tmp_path, zoom):
+    metadata = _valid_files()["metadata.yaml"] | {
+        "map_viewport": {
+            "center": {"latitude": 46.8, "longitude": 8.2},
+            "zoom": zoom,
+            "bounds": {"north": 47.8, "south": 45.8, "east": 10.5, "west": 5.9},
+        },
+    }
+    _rejects(tmp_path / "p", {"metadata.yaml": metadata},
              CountryPackErrorCode.COUNTRY_PACK_INVALID_FIELD)
 
 

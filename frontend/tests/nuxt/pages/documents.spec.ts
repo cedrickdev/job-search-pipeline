@@ -78,6 +78,7 @@ describe('documents page · the list', () => {
     vi.restoreAllMocks()
     clearNuxtData()
     useSessionStore().$reset()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
   })
 
   it('lists each document with its type and whether a version is usable', async () => {
@@ -111,6 +112,7 @@ describe('document page · one document', () => {
     vi.restoreAllMocks()
     clearNuxtData()
     useSessionStore().$reset()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
   })
 
   it('renders the résumé content the guard checked', async () => {
@@ -120,6 +122,14 @@ describe('document page · one document', () => {
     expect(wrapper.text()).toContain('Backend engineer with 8 years of experience')
     expect(wrapper.text()).toContain('Rebuilt the checkout flow, cutting latency 30%')
     expect(buttonNamed(wrapper, /Download PDF/).attributes('disabled')).toBeUndefined()
+  })
+
+  it('translates the document details and actions into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const { wrapper } = await mountDetail()
+
+    expect(wrapper.text()).toContain('Télécharger le PDF')
+    expect(wrapper.text()).toContain('Expérience')
   })
 
   it('keeps a rejected attempt on screen with the rule it broke', async () => {

@@ -266,7 +266,7 @@ test('registers, sets the account up and lands on the command center', async ({ 
   await page.locator('#display-name').fill('Test Candidate')
   await page.locator('#email').fill(ACCOUNT.email)
   await page.locator('#password').fill(PASSPHRASE)
-  await page.getByRole('button', { name: 'Create account' }).click()
+  await page.getByRole('button', { name: 'Create an account' }).click()
 
   // A new account has nothing set up, so there is one place for it to go.
   await expect(page).toHaveURL('/onboarding')
@@ -293,18 +293,19 @@ test('registers, sets the account up and lands on the command center', async ({ 
     onboarding({ has_profile: true, search_profiles: 1, active_search_profiles: 1 }),
   )
   await page.locator('#search-name').fill('Backend roles')
-  await page.getByLabel('Area 1 country').fill('CH')
+  await page.getByLabel('Area 1 country').selectOption('CH')
   await page.getByRole('button', { name: 'Save and continue' }).click()
 
   await expect(page.getByRole('heading', { name: 'Ready' })).toBeVisible()
 
   // Step 3 — the stamp, and out.
   serverNow(table, { match: '/api/v2/onboarding/complete', method: 'POST', json: ACCOUNT })
+  await page.locator('input[data-test="terms-consent"]').check()
   await page.getByRole('button', { name: 'Finish setup' }).click()
 
   await expect(page).toHaveURL('/')
   // The shell's account affordance, which only appears for a session it has read.
-  await expect(page.locator('.topbar-account')).toHaveText('Test Candidate')
+  await expect(page.getByRole('link', { name: 'Your account: Test Candidate' })).toBeVisible()
   expect(api.callsTo('/api/v2/onboarding/complete')).toHaveLength(1)
   expect(api.unmatched).toEqual([])
 })

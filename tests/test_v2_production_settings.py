@@ -18,6 +18,7 @@ import pytest
 from backend.app.core.production import (
     BILLING_ENABLED_VARIABLE,
     LLM_CREDENTIAL_ENCRYPTION_ENABLED_VARIABLE,
+    LOCAL_UNMETERED_VARIABLE,
     DeploymentMode,
     ProductionConfigError,
     deployment_mode,
@@ -164,6 +165,16 @@ def test_production_rejects_turning_the_secure_cookie_off() -> None:
 def test_production_allows_the_secure_cookie_left_at_its_default() -> None:
     """Unset means the Secure default — no problem; only an explicit false is rejected (§54)."""
     assert production_problems(_production()) == []
+
+
+def test_production_rejects_the_local_unmetered_bypass() -> None:
+    """Commercial quota bypass is a local rehearsal switch, never a deployment option."""
+    problems = production_problems(_production(**{LOCAL_UNMETERED_VARIABLE: "true"}))
+    assert any(LOCAL_UNMETERED_VARIABLE in problem for problem in problems)
+
+
+def test_development_allows_the_local_unmetered_bypass() -> None:
+    validate_production_readiness({LOCAL_UNMETERED_VARIABLE: "true"})
 
 
 # --- conditional feature gating: only required when the feature is switched on (§53) ---------

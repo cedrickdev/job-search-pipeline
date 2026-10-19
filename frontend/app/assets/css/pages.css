@@ -110,7 +110,7 @@
 .an-col-warn { background: var(--warning, #c98a16); }
 
 /* ── SettingsPage ─────────────────────────────────────────────────────────── */
-.settings-page { max-width: 640px; display: flex; flex-direction: column; gap: var(--space-5); }
+.settings-page { width: 100%; max-width: 720px; min-width: 0; display: flex; flex-direction: column; gap: var(--space-5); }
 .settings-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
 .settings-card h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
@@ -122,9 +122,17 @@
 }
 .settings-hint { color: var(--text-dim); font-size: 13px; line-height: 1.5; }
 .settings-warn { background: var(--accent-tint); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-3); }
-.settings-actions { display: flex; align-items: center; gap: var(--space-3); }
+.settings-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
+.settings-card--save { align-items: stretch; justify-content: space-between; }
+.settings-card--save > div:first-child { display: flex; flex-direction: column; gap: var(--space-1); }
+.settings-actions--save { justify-content: flex-end; padding-top: var(--space-1); border-top: 1px solid var(--border); }
 .settings-ok { color: var(--text-dim); }
 .settings-err { color: #e5534b; }
+.morning-run-list, .morning-source-list { list-style: none; margin: 0; padding: 0; }
+.morning-run-list { display: grid; gap: var(--space-2); }
+.morning-run-item { min-width: 0; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow-wrap: anywhere; }
+.morning-run-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); }
+.morning-source-list { margin-top: var(--space-2); color: var(--text-dim); font-size: 13px; }
 
 /* ── Authentication and account screens (Phase 4) ──────────────────────────────
    New styles rather than ported ones: V1 had no accounts, so there is nothing to
@@ -162,6 +170,74 @@
 }
 .auth-card input[type="checkbox"], .acct-form input[type="checkbox"] { width: auto; }
 .auth-card button[type="submit"], .acct-form button[type="submit"] { margin-top: var(--space-2); }
+.password-field { position: relative; display: flex; align-items: center; }
+.password-field input { padding-right: 44px; }
+.password-toggle { position: absolute; right: 6px; width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--text-dim); }
+.password-toggle:hover { background: var(--accent-tint); color: var(--text); }
+.terms-consent { display: flex; gap: var(--space-2); align-items: flex-start; font-size: 13px; line-height: 1.45; }
+.terms-consent input { width: auto; margin-top: 3px; }
+.legal-page { line-height: 1.7; }
+.legal-page h2 { margin-top: var(--space-3); }
+.provider-local-action { display: grid; grid-template-columns: 1fr auto; gap: var(--space-3); align-items: center; background: var(--accent-tint); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-4); }
+.provider-local-action h2 { font-size: 14px; margin: 0; }
+.provider-local-action p { grid-column: 1 / -1; }
+
+@media (max-width: 900px) {
+  .settings-row { align-items: stretch; flex-direction: column; gap: var(--space-2); }
+  .settings-row :is(input, select, [role="combobox"]) { min-width: 0; width: 100%; }
+}
+
+@media (max-width: 620px) {
+  .auth-page { align-items: flex-start; padding: var(--space-3); }
+  .auth-page--wide { padding-top: var(--space-3); }
+  .auth-card, .auth-card--wide { max-width: none; padding: var(--space-4); border-radius: var(--radius-sm); }
+  .acct-row, .acct-row--list { grid-template-columns: 1fr; }
+  .acct-actions, .settings-actions { align-items: stretch; flex-direction: column; }
+  .acct-actions > button, .settings-actions > button { width: 100%; }
+  .onb-steps { flex-direction: column; gap: var(--space-2); }
+  .onb-step { border-top: 0; border-left: 2px solid var(--border); padding: var(--space-1) 0 var(--space-1) var(--space-2); }
+  .onb-step.current { border-left-color: var(--accent); }
+  .onb-step.done { border-left-color: var(--ok); }
+  .provider-local-action { grid-template-columns: 1fr; }
+  .provider-local-action .btn-primary { width: 100%; }
+  .main input:not([type="checkbox"]), .main select, .main textarea { font-size: 16px; }
+  .toolbar, .acct-actions, .settings-actions, .drawer-actions { flex-wrap: wrap; }
+  .toolbar > * { flex: 1 1 100%; min-width: 0; }
+  .acct-actions > *, .settings-actions > * { min-width: min(100%, 44px); }
+  .ov-bar-row { grid-template-columns: minmax(0, 1fr) minmax(48px, 2fr) auto; }
+  .jobs-table th, .jobs-table td { white-space: nowrap; }
+}
+
+@media (max-width: 620px) {
+  .acct-head, .profile-card-head, .co-filters { align-items: stretch; flex-direction: column; }
+  .acct-head > :is(a, button), .profile-card-head > button, .co-filters > :is(label, button) { width: 100%; }
+  .settings-card, .ov-section { padding: var(--space-3); }
+  .settings-row:not(.settings-row--check) { align-items: stretch; flex-direction: column; gap: var(--space-2); }
+  .settings-row :is(input[type="number"], input[type="text"], input[type="time"], select) { width: 100%; min-width: 0; }
+  .job-row { align-items: flex-start; }
+  .job-row-meta { flex-wrap: wrap; justify-content: flex-end; }
+  .track-tab { min-width: 0; flex-basis: 100%; }
+  .seg { max-width: 100%; overflow-x: auto; }
+  .drawer { width: 100vw; }
+  .drawer-head, .drawer-body { padding: var(--space-4); }
+}
+
+@media (max-width: 420px) {
+  .kpi-grid, .acct-facts, .co-facts { grid-template-columns: minmax(0, 1fr); }
+  .ov-bar-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .ov-bar-track { grid-column: 1 / -1; grid-row: 2; }
+}
+
+@media (max-width: 360px) {
+  .brand { font-size: 14px; }
+  .main { padding: var(--space-2); }
+  .auth-page { padding: var(--space-2); }
+}
+
+@media (pointer: coarse) {
+  .theme-btn, .btn-primary, .btn-ghost, .btn-link, .map-control, .drawer-tab,
+  .seg button, .toolbar button, .fu-actions button, .fu-copy { min-height: 44px; }
+}
 
 .acct-form { display: flex; flex-direction: column; gap: var(--space-2); }
 .acct-field { font-size: 13px; color: var(--text-dim); margin-top: var(--space-2); }
@@ -172,11 +248,13 @@
 .acct-checks { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
 .acct-check { display: inline-flex; align-items: center; gap: var(--space-2); font-size: 13px; }
 .acct-kept { font-size: 13px; color: var(--text-dim); }
-.acct-actions { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3); }
+.acct-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-3); }
 
 .acct-page { max-width: 720px; display: flex; flex-direction: column; gap: var(--space-4); }
 .acct-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
 .acct-head h1 { font-size: 22px; }
+.profile-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.profile-card-head h2 { margin: 0; }
 .acct-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-3); margin: 0; }
 .acct-facts dt { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
 .acct-facts dd { margin: 0; font-size: 13px; word-break: break-word; }
@@ -215,5 +293,5 @@
 .co-facts dd { margin: 0; font-size: 13px; word-break: break-word; }
 .co-evidence { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--text-dim); }
 
-.topbar-account { color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); font-size: 13px; }
+.topbar-account:not(.topbar-account--avatar) { color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); font-size: 13px; }
 .topbar-account:hover { color: var(--text); }

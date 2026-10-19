@@ -46,6 +46,8 @@ class LoadedApplication:
 
     profile: CandidateProfile
     context: DriverContext
+    form_driver_key: str | None = None
+    form_capability_id: str | None = None
 
 
 class ApplicationContextLoader:
@@ -87,7 +89,11 @@ class ApplicationContextLoader:
             uploads=uploads,
             expected_form_fingerprint=app.form_fingerprint,
             correlation_id=correlation_id)
-        return LoadedApplication(profile=profile, context=context)
+        return LoadedApplication(
+            profile=profile, context=context,
+            form_driver_key=app.form_driver_key,
+            form_capability_id=app.form_capability_id,
+        )
 
 
     async def _resolve_uploads(self, user_id: UserId,

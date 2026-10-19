@@ -60,6 +60,10 @@ import `httpx` or `subprocess`, which the domain purity test forbids under
 say-so: asking for structured output *is* requiring `STRUCTURED_OUTPUT`, and the two
 cannot drift.
 
+The integrated Claude terminal is deliberately outside this provider contract. It is an optional,
+interactive, session-isolated settings surface managed by a private Docker service. It is not a
+stored candidate LLM connection and cannot bypass evidence, document or application-policy rules.
+
 ## 2. Transport is a classification, never a branch
 
 `ProviderTransport` (in `contracts.py`) has three members — `CLI`,

@@ -174,6 +174,22 @@ const MESSAGES: Record<V2ErrorCode, string> = {
 
 const FALLBACK = 'Something went wrong. Try again.'
 
+/**
+ * A session can be renewed while an older tab remains open. The backend correctly
+ * rejects the stale CSRF pair, but the recovery instruction must be readable in
+ * the selected interface language. We never replay the rejected write: an
+ * application, approval, or document generation may be irreversible.
+ */
+const FRENCH_RECOVERY_MESSAGES: Partial<Record<V2ErrorCode, string>> = {
+  csrf_failed: 'Cette demande n’a pas pu être vérifiée. Rechargez la page puis réessayez.',
+  not_authenticated: 'Votre session a expiré. Connectez-vous à nouveau pour continuer.',
+}
+
+function isFrenchInterface(): boolean {
+  if (typeof document === 'undefined') return false
+  return document.documentElement.lang.toLowerCase().startsWith('fr')
+}
+
 /** A refusal as one sentence, whatever it turns out to be. */
 export function errorMessage(error: unknown): string {
   if (!(error instanceof ApiError)) {
@@ -184,6 +200,9 @@ export function errorMessage(error: unknown): string {
       : 'The server could not be reached. Check your connection and try again.'
   }
   if (error.code === 'account_locked') return lockedMessage(error.body)
+  if (error.code !== null && isFrenchInterface() && error.code in FRENCH_RECOVERY_MESSAGES) {
+    return FRENCH_RECOVERY_MESSAGES[error.code as V2ErrorCode]!
+  }
   if (error.code !== null && error.code in MESSAGES) {
     return MESSAGES[error.code as V2ErrorCode]
   }

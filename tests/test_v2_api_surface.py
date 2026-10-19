@@ -75,6 +75,9 @@ four rules the rest of the surface does — under the prefix, authenticated (a m
 Its receipt is counts and an instant, never account data, so the credential walk forbids a secret
 there by the same absence; that a wrong password touches nothing and the row-cascade is complete is
 proven in the deletion tests, not here.
+
+Phase 17 adds one authenticated, safe read for the public Country Pack catalogue. It publishes only
+country metadata and map configuration; credentials and raw eligibility policy remain absent.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -82,7 +85,11 @@ from datetime import timedelta
 import pytest
 
 from backend.app.api import API_V2_PREFIX
-from backend.app.api.dependencies import discovery_catalog_service
+from backend.app.api.dependencies import (
+    discovery_catalog_service,
+    morning_run_service,
+    morning_schedule_repository,
+)
 from backend.app.domain.discovery_run import DiscoveryRun, DiscoveryRunStatus, DiscoveryTrigger
 from backend.app.documents import LocalDocumentArtifactStore
 from backend.app.exports import LocalAccountExportStore
@@ -126,10 +133,11 @@ from tests.v2_builders import (
     an_opportunity,
 )
 
-# The whole V2 surface as of Phase 15, spelled out. Written as a literal on purpose:
+# The whole V2 surface as of Phase 17, spelled out. Written as a literal on purpose:
 # a test that derived it from the application would agree with any change.
 V2_OPERATIONS = (
     ("DELETE", "/api/v2/me/search-profiles/{search_profile_id}"),
+    ("DELETE", "/api/v2/settings/claude-terminal/sessions/{session_id}"),
     ("DELETE", "/api/v2/settings/llm/connections/{connection_id}"),
     ("GET", "/api/v2/applications"),
     ("GET", "/api/v2/applications/{application_id}"),
@@ -150,7 +158,9 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/chat/conversations/{conversation_id}/proposals"),
     ("GET", "/api/v2/companies"),
     ("GET", "/api/v2/companies/{company_id}"),
+    ("GET", "/api/v2/country-packs"),
     ("GET", "/api/v2/documents"),
+    ("GET", "/api/v2/documents/versions/{version_id}/download"),
     ("GET", "/api/v2/documents/{document_id}"),
     ("GET", "/api/v2/documents/{document_id}/download"),
     ("GET", "/api/v2/geo/companies"),
@@ -166,6 +176,8 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/me/exports"),
     ("GET", "/api/v2/me/exports/{export_id}"),
     ("GET", "/api/v2/me/exports/{export_id}/download"),
+    ("GET", "/api/v2/me/morning-runs/latest"),
+    ("GET", "/api/v2/me/morning-schedule"),
     ("GET", "/api/v2/me/profile"),
     ("GET", "/api/v2/me/search-profiles"),
     ("GET", "/api/v2/me/search-profiles/{search_profile_id}/discovery-runs/latest"),
@@ -174,6 +186,7 @@ V2_OPERATIONS = (
     ("GET", "/api/v2/opportunities/{opportunity_id}/match"),
     ("GET", "/api/v2/opportunities/{opportunity_id}/role-classification"),
     ("GET", "/api/v2/role-classifications"),
+    ("GET", "/api/v2/settings/claude-terminal/sessions/{session_id}"),
     ("GET", "/api/v2/settings/llm/connections"),
     ("GET", "/api/v2/settings/llm/connections/{connection_id}"),
     ("PATCH", "/api/v2/settings/llm/connections/{connection_id}"),
@@ -211,7 +224,9 @@ V2_OPERATIONS = (
     ("POST", "/api/v2/me/deletion"),
     ("POST", "/api/v2/me/evidence"),
     ("POST", "/api/v2/me/exports"),
+    ("POST", "/api/v2/me/morning-runs"),
     ("POST", "/api/v2/me/opportunities/{opportunity_id}/local-autopilot"),
+    ("POST", "/api/v2/me/reference-cv"),
     ("POST", "/api/v2/me/search-profiles"),
     ("POST", "/api/v2/me/search-profiles/{search_profile_id}/discovery-runs"),
     ("POST", "/api/v2/onboarding/complete"),
@@ -220,8 +235,10 @@ V2_OPERATIONS = (
     ("POST", "/api/v2/opportunities/{opportunity_id}/role-classification"),
     ("POST", "/api/v2/outcomes/{outcome_id}/correct"),
     ("POST", "/api/v2/outcomes/{outcome_id}/retract"),
+    ("POST", "/api/v2/settings/claude-terminal/sessions"),
     ("POST", "/api/v2/settings/llm/connections"),
     ("POST", "/api/v2/settings/llm/connections/{connection_id}/healthcheck"),
+    ("PUT", "/api/v2/me/morning-schedule"),
     ("PUT", "/api/v2/me/profile"),
     ("PUT", "/api/v2/me/search-profiles/{search_profile_id}"),
     ("PUT", "/api/v2/opportunities/{opportunity_id}/role-classification"),
@@ -286,7 +303,41 @@ async def test_the_v2_surface_is_exactly_the_operations_phases_4_6_7_9_and_10_de
 
         assert published == V2_OPERATIONS
         assert all(path.startswith(f"{API_V2_PREFIX}/") for _, path in published)
-        assert len({path for _, path in published}) == 81
+        assert len({path for _, path in published}) == 89
+
+
+@pytest.mark.asyncio
+async def test_openapi_exposes_only_the_integrated_claude_terminal_surface(tmp_path):
+    """The former host-terminal launcher must never return as an undocumented escape hatch."""
+    async with api_harness(tmp_path) as api:
+        paths = api.app.openapi()["paths"]
+
+        assert "/api/v2/settings/claude-terminal/sessions" in paths
+        assert "/api/v2/settings/llm/claude-code/terminal" not in paths
+
+
+@pytest.mark.asyncio
+async def test_pinned_document_download_is_owner_scoped(tmp_path):
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        owner = next(iter(api.users.users))
+        document_id = CandidateDocumentId(PLACEHOLDER_ID)
+        version_id = document_version_id(document_id, 1)
+        storage = LocalDocumentArtifactStore(tmp_path / "document_artifacts")
+        key = storage.key_for(document_id, version_id)
+        storage.put(key, b"%PDF-1.7\n%pinned\n")
+        await api.documents.upsert(a_rendered_document(
+            id=document_id, user_id=owner,
+            candidate_profile_id=default_candidate_profile_id(owner),
+            opportunity_id=OpportunityId(PLACEHOLDER_ID), storage_key=key))
+        path = f"/documents/versions/{version_id}/download"
+        own = await api.read(path)
+        assert own.status_code == 200
+        assert own.content == b"%PDF-1.7\n%pinned\n"
+
+        await api.sign_in(email="other@example.com")
+        foreign = await api.read(path)
+        assert foreign.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -317,7 +368,8 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
     all views; opening a checkout or a portal and receiving a provider webhook are its writes.
     Phase 16 M5 adds three account-export reads — the export history list, one export's lifecycle
     record and its archive download — all views; requesting an export (`POST /me/exports`), which
-    produces the archive, is its write.
+    produces the archive, is its write. Phase 17 adds the Country Pack catalogue, an authenticated
+    read of public country metadata and map configuration.
     """
     async with api_harness(tmp_path) as api:
         published = operations(api.app, under=API_V2_PREFIX)
@@ -342,7 +394,9 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/chat/conversations/{conversation_id}/proposals",
             "/api/v2/companies",
             "/api/v2/companies/{company_id}",
+            "/api/v2/country-packs",
             "/api/v2/documents",
+            "/api/v2/documents/versions/{version_id}/download",
             "/api/v2/documents/{document_id}",
             "/api/v2/documents/{document_id}/download",
             "/api/v2/geo/companies",
@@ -357,6 +411,8 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/me/exports",
             "/api/v2/me/exports/{export_id}",
             "/api/v2/me/exports/{export_id}/download",
+            "/api/v2/me/morning-runs/latest",
+            "/api/v2/me/morning-schedule",
             "/api/v2/me/profile",
             "/api/v2/me/discovery-runs/{run_id}",
             "/api/v2/me/search-profiles",
@@ -366,6 +422,7 @@ async def test_a_safe_method_is_only_published_where_nothing_is_written(tmp_path
             "/api/v2/opportunities/{opportunity_id}/match",
             "/api/v2/opportunities/{opportunity_id}/role-classification",
             "/api/v2/role-classifications",
+            "/api/v2/settings/claude-terminal/sessions/{session_id}",
             "/api/v2/settings/llm/connections",
             "/api/v2/settings/llm/connections/{connection_id}"}
         # `HEAD`/`OPTIONS`/`TRACE` are never published. `PATCH` now is — the one
@@ -414,6 +471,16 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
                 return await self.get_run(owner, PLACEHOLDER_ID)
 
         api.app.dependency_overrides[discovery_catalog_service] = lambda: ReadOnlyDiscovery()
+        class ReadOnlySchedules:
+            async def get(self, owner):
+                return None
+
+        class ReadOnlyMorningRuns:
+            async def latest_for_user(self, owner):
+                return ()
+
+        api.app.dependency_overrides[morning_schedule_repository] = lambda: ReadOnlySchedules()
+        api.app.dependency_overrides[morning_run_service] = lambda: ReadOnlyMorningRuns()
         # `GET /opportunities/{id}/match` reads a stored verdict, so the sweep only
         # exercises its 200 path when the pair has one: a posting under the
         # placeholder id and an eligibility keyed on this account's default profile
@@ -502,8 +569,16 @@ async def test_calling_every_get_twice_leaves_every_store_identical(tmp_path):
             byte_size=len(b'{"schema_version": 1}'),
             completed_at=api.clock.instant,
             expires_at=api.clock.instant + timedelta(hours=168)))
-        reads = [_get_with_scope(concrete(path)) for method, path in operations(
-            api.app, under=API_V2_PREFIX) if method == "GET"]
+        # This owner-scoped lifecycle read needs a live manager-backed terminal session.
+        # Its absence and non-mutation contracts are covered by the dedicated terminal
+        # route tests, rather than inventing a runtime for this general GET sweep.
+        reads = [_get_with_scope(
+            concrete(path).replace(str(PLACEHOLDER_ID),
+                                   str(document_version_id(document_id, 1)))
+            if path == "/api/v2/documents/versions/{version_id}/download"
+            else concrete(path)) for method, path in operations(
+            api.app, under=API_V2_PREFIX)
+            if method == "GET" and path != "/api/v2/settings/claude-terminal/sessions/{session_id}"]
         before = deepcopy((api.users.users, api.sessions.sessions,
                            api.profiles.profiles, api.searches.searches,
                            api.companies.companies, api.career_sites.sites,
@@ -575,7 +650,7 @@ async def test_the_one_write_a_get_performs_is_last_seen_at_and_it_cannot_extend
 @pytest.mark.asyncio
 async def test_every_operation_but_register_and_login_refuses_an_anonymous_caller(
         tmp_path):
-    """401 from all ninety, with no body sent and nothing created.
+    """401 from all 105 protected operations, with no body sent and nothing created.
 
     No payload is needed because FastAPI resolves the session dependency before it
     validates a body, so the refusal happens before the request is read — which is
@@ -598,7 +673,7 @@ async def test_every_operation_but_register_and_login_refuses_an_anonymous_calle
             api.app, under=API_V2_PREFIX)
             if (method, path) not in PUBLIC_OPERATIONS | PROVIDER_OPERATIONS]
 
-        assert len(protected) == 95
+        assert len(protected) == 105
         for method, template in protected:
             response = await api.client.request(method, concrete(template))
 

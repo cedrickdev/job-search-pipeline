@@ -31,6 +31,7 @@ row or a byte.
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Protocol
 
 from backend.app.core.settings import RetentionSettings
 from backend.app.domain.identifiers import AccountExportId
@@ -40,6 +41,7 @@ from backend.app.repositories.contracts import (
     ProviderSessionRepository,
     SessionRepository,
 )
+from backend.app.services.claude_terminal import ClaudeTerminalReapReport
 
 # A capped bulk-delete: remove at most `limit` rows, return how many were removed. The two
 # looping sweeps (sessions, provider sessions) share this shape, so `_drain` can loop either.
@@ -48,6 +50,13 @@ _BatchDelete = Callable[[int], Awaitable[int]]
 # A fixed, secret-free reason for an archive whose bytes could not be purged. The export id is
 # recorded alongside it; the reason never carries the archive's contents or its storage path.
 _REASON_STORE_FAILED: str = "EXPORT_STORE_DELETE_FAILED"
+
+
+class ClaudeTerminalReaper(Protocol):
+    """The minimal, secret-free terminal cleanup capability retention needs."""
+
+    async def reap_due(self, *, now: datetime) -> ClaudeTerminalReapReport: ...
+    async def count_due(self, *, now: datetime) -> int: ...
 
 
 @dataclass(frozen=True)
@@ -77,10 +86,12 @@ class RetentionSweepReport:
     expired_exports: int
     dry_run: bool = False
     failures: tuple[RetentionPurgeFailure, ...] = field(default_factory=tuple)
+    expired_terminal_sessions: int = 0
+    terminal_cleanup_failures: int = 0
 
     @property
     def failed(self) -> int:
-        return len(self.failures)
+        return len(self.failures) + self.terminal_cleanup_failures
 
     @property
     def is_clean(self) -> bool:
@@ -103,12 +114,14 @@ class RetentionService:
                  provider_sessions: ProviderSessionRepository,
                  exports: AccountExportRepository,
                  export_store: AccountExportStore,
-                 settings: RetentionSettings) -> None:
+                 settings: RetentionSettings,
+                 terminal_reaper: ClaudeTerminalReaper | None = None) -> None:
         self._sessions = sessions
         self._provider_sessions = provider_sessions
         self._exports = exports
         self._export_store = export_store
         self._settings = settings
+        self._terminal_reaper = terminal_reaper
 
     async def sweep(self, *, now: datetime, dry_run: bool = False) -> RetentionSweepReport:
         """Purge every temporary category at `now`, or report what a purge would remove.
@@ -121,12 +134,15 @@ class RetentionService:
         expired_sessions = await self._sweep_expired_sessions(now, dry_run)
         expired_exports, failures = await self._sweep_expired_exports(now, dry_run)
         stale_provider = await self._sweep_stale_provider_sessions(now, dry_run)
+        expired_terminals, terminal_failures = await self._sweep_expired_terminals(now, dry_run)
         return RetentionSweepReport(
             expired_sessions=expired_sessions,
             stale_provider_sessions=stale_provider,
             expired_exports=expired_exports,
             dry_run=dry_run,
-            failures=tuple(failures))
+            failures=tuple(failures),
+            expired_terminal_sessions=expired_terminals,
+            terminal_cleanup_failures=terminal_failures)
 
     async def _sweep_expired_sessions(self, now: datetime, dry_run: bool) -> int:
         """Delete every session whose absolute lifetime has elapsed, or count them (§30)."""
@@ -146,6 +162,15 @@ class RetentionService:
             return await self._provider_sessions.count_stale(cutoff)
         return await self._drain(
             lambda limit: self._provider_sessions.delete_stale(cutoff, limit=limit))
+
+    async def _sweep_expired_terminals(self, now: datetime, dry_run: bool) -> tuple[int, int]:
+        """Clean a bounded page of private runtimes through the manager-only reaper."""
+        if self._terminal_reaper is None:
+            return 0, 0
+        if dry_run:
+            return await self._terminal_reaper.count_due(now=now), 0
+        report = await self._terminal_reaper.reap_due(now=now)
+        return report.expired, report.failed
     async def _sweep_expired_exports(
             self, now: datetime, dry_run: bool) -> tuple[int, list[RetentionPurgeFailure]]:
         """Purge each lapsed `READY` archive's bytes, then mark its row `EXPIRED` (§30).
@@ -210,6 +235,7 @@ def format_retention_report(report: RetentionSweepReport) -> str:
         f"  expired sessions        {verb} {report.expired_sessions}",
         f"  expired export archives {verb} {report.expired_exports}",
         f"  stale provider sessions {verb} {report.stale_provider_sessions}",
+        f"  expired terminal sessions {verb} {report.expired_terminal_sessions}",
         f"  failed                  {report.failed}",
     ]
     if report.failures:

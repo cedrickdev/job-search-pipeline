@@ -94,12 +94,9 @@ async function grantCsrfCookie(page: Page) {
   }])
 }
 
-test('reaches providers from the nav and lists a connection', async ({ page }) => {
+test('opens providers settings and lists a connection', async ({ page }) => {
   const api = await mockApi(page, routes())
-  await page.goto('/')
-
-  // The link is session-gated, so its presence is the session having resolved.
-  await page.getByRole('link', { name: 'Providers' }).click()
+  await page.goto('/providers')
   await expect(page).toHaveURL('/providers')
   await expect(page.getByRole('heading', { name: 'Providers' })).toBeVisible()
   await expect(page.getByText('Acme Gateway')).toBeVisible()

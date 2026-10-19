@@ -27,29 +27,39 @@ import logging
 import signal
 import sys
 from collections.abc import Sequence
+from datetime import date, timedelta
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.api import dependencies
 from backend.app.application_engine.bootstrap import build_application_registry
+from backend.app.application_engine.browser.form_capabilities import load_form_capabilities
 from backend.app.application_engine.task_dispatcher import SubprocessTaskDispatcher
 from backend.app.billing.entitlements import EntitlementResolver
 from backend.app.billing.metering import MeteringService
+from backend.app.claude_terminal.service import ClaudeTerminalSessionService
 from backend.app.core.production import validate_production_readiness
 from backend.app.core.settings import (
     BrowserSubmissionSettings,
+    ClaudeTerminalSettings,
     DatabaseSettings,
+    DocumentSettings,
     ExportSettings,
+    LLMSecretSettings,
     RetentionSettings,
 )
-from backend.app.discovery.bootstrap import build_discovery
+from backend.app.discovery.ats_board_catalog import ATS_REVIEWED_BOARDS_PATH, load_reviewed_boards
+from backend.app.discovery.bootstrap import build_country_packs, build_discovery
 from backend.app.domain.task import TaskKind, TaskLane
 from backend.app.exports.store import LocalAccountExportStore
 from backend.app.infrastructure.database.engine import (
     create_async_database_engine,
     create_session_factory,
 )
+from backend.app.llm.secrets import FernetSecretCipher
+from backend.app.repositories.ats_request_budget import SqlAlchemyAtsRequestBudget
+from backend.app.repositories.morning_preparation import MorningPreparationRepository
 from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyAccountExportRepository,
     SqlAlchemyApplicationDecisionRepository,
@@ -58,6 +68,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyApplicationRepository,
     SqlAlchemyCandidateDocumentRepository,
     SqlAlchemyCandidateProfileRepository,
+    SqlAlchemyClaudeTerminalSessionRepository,
     SqlAlchemyEligibilityResultRepository,
     SqlAlchemyMatchEvaluationRepository,
     SqlAlchemyOpportunityRepository,
@@ -66,11 +77,25 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemySessionRepository,
     SqlAlchemySubmissionAttemptRepository,
     SqlAlchemySubscriptionRepository,
+    SqlAlchemyTaskRunRepository,
     SqlAlchemyUsageEventRepository,
 )
 from backend.app.retention.service import RetentionService
+from backend.app.services.application_decisions import ApplicationDecisionService
+from backend.app.services.application_queue import ApplicationQueueService
 from backend.app.services.applications import ApplicationService
+from backend.app.services.assessment import AssessmentService
+from backend.app.services.claude_terminal import (
+    ClaudeTerminalService,
+    InternalTerminalManagerClient,
+)
 from backend.app.services.discovery_catalog import DiscoveryCatalogService
+from backend.app.services.discovery_source_access import SourceAccessPolicy
+from backend.app.services.morning_application import MorningApplicationService
+from backend.app.services.morning_documents import MorningDocumentsService
+from backend.app.services.morning_preparation import MorningPreparationService
+from backend.app.tasks.clock import utc_now
+from backend.app.tasks.dispatcher import PersistedTaskDispatcher
 from backend.app.tasks.handlers import build_browser_handlers, build_general_handlers
 from backend.app.tasks.settings import TaskQueueSettings
 from backend.app.tasks.worker import TaskHandler, TaskWorker, run_lane
@@ -91,14 +116,29 @@ def _general_registry(
     the API's own gatherer/service builders so the eighteen-repository read side is defined once.
     """
     export_store = LocalAccountExportStore(Path(export_settings.artifact_root))
+    terminal_settings = ClaudeTerminalSettings.from_env()
 
     def retention_factory(session: AsyncSession) -> RetentionService:
+        terminal_reaper = None
+        if (terminal_settings.enabled and terminal_settings.manager_url
+                and terminal_settings.manager_token):
+            terminal_reaper = ClaudeTerminalService(
+                ClaudeTerminalSessionService(
+                    SqlAlchemyClaudeTerminalSessionRepository(session),
+                    session_ttl=timedelta(minutes=terminal_settings.session_ttl_minutes),
+                ),
+                InternalTerminalManagerClient(
+                    base_url=terminal_settings.manager_url,
+                    token=terminal_settings.manager_token,
+                ),
+            )
         return RetentionService(
             sessions=SqlAlchemySessionRepository(session),
             provider_sessions=SqlAlchemyProviderSessionRepository(session),
             exports=SqlAlchemyAccountExportRepository(session),
             export_store=export_store,
-            settings=retention_settings)
+            settings=retention_settings,
+            terminal_reaper=terminal_reaper)
 
     def export_factory(session: AsyncSession) -> object:
         gatherer = dependencies.account_export_gatherer(session)
@@ -108,14 +148,74 @@ def _general_registry(
         return build_general_handlers(
             retention_service=retention_factory, export_service=export_factory)
 
-    orchestrator = build_discovery().orchestrator
+    catalog = load_reviewed_boards(ATS_REVIEWED_BOARDS_PATH)
+    orchestrator = build_discovery(
+        boards=catalog.boards,
+        budget=SqlAlchemyAtsRequestBudget(session_factory)).orchestrator
+    source_policy = SourceAccessPolicy.from_env(catalog)
+    packs = build_country_packs()
+    document_settings = DocumentSettings.from_env()
+    secret_settings = LLMSecretSettings.from_env()
+    cipher = (FernetSecretCipher(
+        secret_settings.master_key, version=secret_settings.active_version,
+        older=dict(secret_settings.previous_keys))
+        if secret_settings.master_key else None)
 
     def discovery_factory(_session: AsyncSession) -> DiscoveryCatalogService:
-        return DiscoveryCatalogService(session_factory, orchestrator)
+        return DiscoveryCatalogService(session_factory, orchestrator,
+                                       source_policy=source_policy,
+                                       prepare_discovered=True)
+
+    def matching_factory(session: AsyncSession) -> MorningPreparationService:
+        profiles = SqlAlchemyCandidateProfileRepository(session)
+        opportunities = SqlAlchemyOpportunityRepository(session)
+        matches = SqlAlchemyMatchEvaluationRepository(session)
+        eligibilities = SqlAlchemyEligibilityResultRepository(session)
+        return MorningPreparationService(
+            ledger=MorningPreparationRepository(session),
+            assessor=AssessmentService(profiles, opportunities, matches,
+                                       eligibilities, packs),
+            decider=ApplicationDecisionService(
+                profiles=profiles, opportunities=opportunities, matches=matches,
+                eligibilities=eligibilities,
+                policies=SqlAlchemyApplicationPolicyRepository(session),
+                decisions=SqlAlchemyApplicationDecisionRepository(session)),
+            dispatcher=PersistedTaskDispatcher(SqlAlchemyTaskRunRepository(session),
+                                               clock=utc_now),
+        )
+
+    def assessment_factory(session: AsyncSession) -> AssessmentService:
+        return AssessmentService(
+            SqlAlchemyCandidateProfileRepository(session),
+            SqlAlchemyOpportunityRepository(session),
+            SqlAlchemyMatchEvaluationRepository(session),
+            SqlAlchemyEligibilityResultRepository(session), packs)
+
+    def decision_factory(session: AsyncSession) -> ApplicationDecisionService:
+        return ApplicationDecisionService(
+            profiles=SqlAlchemyCandidateProfileRepository(session),
+            opportunities=SqlAlchemyOpportunityRepository(session),
+            matches=SqlAlchemyMatchEvaluationRepository(session),
+            eligibilities=SqlAlchemyEligibilityResultRepository(session),
+            policies=SqlAlchemyApplicationPolicyRepository(session),
+            decisions=SqlAlchemyApplicationDecisionRepository(session))
+
+    def document_factory(_session: AsyncSession) -> MorningDocumentsService:
+        return MorningDocumentsService(
+            session_factory,
+            document_builder=lambda session, user_id: (
+                dependencies.compose_document_service_for_user(
+                    session, user_id, settings=document_settings, cipher=cipher)),
+            assessor_builder=assessment_factory,
+            decider_builder=decision_factory,
+            dispatcher_builder=lambda session: PersistedTaskDispatcher(
+                SqlAlchemyTaskRunRepository(session), clock=utc_now),
+        )
 
     return build_general_handlers(
         retention_service=retention_factory, export_service=export_factory,
-        discovery_service=discovery_factory)
+        discovery_service=discovery_factory, matching_service=matching_factory,
+        document_service=document_factory)
 
 
 def _browser_registry(
@@ -139,6 +239,7 @@ def _browser_registry(
     never loosens a safety gate; it can only restrict a submission the gate already permitted.
     """
     registry = build_application_registry(task_dispatcher=SubprocessTaskDispatcher())
+    browser_settings = BrowserSubmissionSettings.from_env()
 
     def application_factory(session: AsyncSession) -> ApplicationService:
         metering = MeteringService(
@@ -157,11 +258,32 @@ def _browser_registry(
             profiles=SqlAlchemyCandidateProfileRepository(session),
             opportunities=SqlAlchemyOpportunityRepository(session),
             documents=SqlAlchemyCandidateDocumentRepository(session),
-            registry=registry, metering=metering)
+            registry=registry, metering=metering,
+            form_catalog=load_form_capabilities(
+                browser_settings.form_catalog_path, today=date.today()))
 
-    live_enabled = BrowserSubmissionSettings.from_env().live_enabled
+    live_enabled = browser_settings.live_enabled
+
+    def queue_factory(session: AsyncSession) -> ApplicationQueueService:
+        return ApplicationQueueService(
+            SqlAlchemyApplicationRepository(session),
+            SqlAlchemyApplicationPolicyRepository(session),
+            SqlAlchemyOpportunityRepository(session),
+            PersistedTaskDispatcher(SqlAlchemyTaskRunRepository(session), clock=utc_now),
+            live_enabled=live_enabled,
+            form_catalog=load_form_capabilities(
+                browser_settings.form_catalog_path, today=date.today()),
+        )
+
     return build_browser_handlers(
         application_service=application_factory,
+        application_preparation_service=(MorningApplicationService(
+            session_factory, application_builder=application_factory,
+            queue_builder=queue_factory,
+            task_dispatcher_builder=lambda session: PersistedTaskDispatcher(
+                SqlAlchemyTaskRunRepository(session), clock=utc_now),
+            live_enabled=live_enabled)
+            if session_factory is not None else None),
         session_factory=session_factory,
         live_submissions_enabled=live_enabled)
 
@@ -219,6 +341,13 @@ async def _run(lane: TaskLane, *, once: bool) -> int:  # pragma: no cover
     session_factory = create_session_factory(engine)
     handlers = _registry_for(lane, session_factory=session_factory)
     try:
+        if lane is TaskLane.BROWSER:
+            reconciler = MorningApplicationService(
+                session_factory,
+                task_dispatcher_builder=lambda session: PersistedTaskDispatcher(
+                    SqlAlchemyTaskRunRepository(session), clock=utc_now),
+            )
+            await reconciler.reconcile_ready()
         if once:
             return await _drain_once(
                 lane, session_factory=session_factory, settings=settings, handlers=handlers)
@@ -258,7 +387,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover
     validate_production_readiness()
     lane = TaskLane(args.lane)
     try:
-        return asyncio.run(_run(lane, once=args.once))
+        asyncio.run(_run(lane, once=args.once))
+        return 0
     except KeyboardInterrupt:  # a Ctrl-C before the signal handler is armed is still a clean exit
         logger.info("interrupted; shutting down the %s lane", lane.value)
         return 0

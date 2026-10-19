@@ -107,6 +107,36 @@ async def test_http_getter_applies_provider_identity_and_timeout() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_http_getter_spaces_uncached_provider_requests_by_one_second() -> None:
+    now = 100.0
+    slept: list[float] = []
+
+    def monotonic() -> float:
+        return now
+
+    async def sleep(delay: float) -> None:
+        nonlocal now
+        slept.append(delay)
+        now += delay
+
+    def answer(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    settings = nominatim_settings(user_agent="job-search-pipeline/test")
+    getter = HttpxGetter(
+        settings=settings,
+        transport=httpx.MockTransport(answer),
+        monotonic=monotonic,
+        sleep=sleep,
+    )
+
+    await getter("https://example.test/search", {"q": "Lausanne"})
+    await getter("https://example.test/search", {"q": "Zurich"})
+
+    assert slept == [1.0]
+
+
 def test_report_uses_one_unambiguous_utc_suffix() -> None:
     rendered = _format_report(a_report())
 

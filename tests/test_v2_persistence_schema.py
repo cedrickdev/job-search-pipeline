@@ -69,7 +69,7 @@ TABLES = Base.metadata.tables
 # which §17's server-authoritative catalogue is explicitly not.
 SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
                  "geocoding_cache", "opportunities", "opportunity_source_records",
-                 "plans")
+                 "plans", "ats_request_budgets")
 
 # Rows one user owns, named by the `user_id` Phase 4's authorization filter reads.
 # `candidate_documents` (Phase 10) carries `user_id` denormalized beside its
@@ -113,7 +113,8 @@ SHARED_TABLES = ("companies", "company_discovery_records", "company_locations",
 # own data, read `WHERE user_id = :current_user` and cascaded from `users` on deletion.
 USER_OWNED_TABLES = ("account_exports", "application_decisions", "application_outcomes",
                      "application_policies", "applications",
-                     "candidate_documents", "candidate_profiles",
+                     "candidate_documents", "candidate_profiles", "claude_terminal_sessions",
+                     "morning_schedules", "morning_preparations",
                      "discovery_runs", "discovery_memberships",
                      "career_recommendations",
                      "chat_action_executions", "chat_action_proposals",
@@ -222,7 +223,7 @@ def _python_type(column):
         return None
 
 
-def test_the_metadata_holds_exactly_the_fifty_six_v2_tables():
+def test_the_metadata_holds_exactly_the_sixty_v2_tables():
     """A tripwire on the shape of the schema itself.
 
     `models.py` is the only place a V2 table may be declared, so the six ownership
@@ -233,7 +234,7 @@ def test_the_metadata_holds_exactly_the_fifty_six_v2_tables():
     assert set(TABLES) == set(SHARED_TABLES) | set(USER_OWNED_TABLES) | set(
         PARENT_OWNED_TABLES) | set(TELEMETRY_TABLES) | set(AUDIT_TABLES) | set(
         WORK_TABLES) | {"users"}
-    assert len(TABLES) == 56
+    assert len(TABLES) == 60
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
@@ -246,7 +247,12 @@ def test_every_table_has_a_primary_key_and_the_bookkeeping_columns(table_name):
     import post-mortem.
     """
     table = TABLES[table_name]
-    assert list(table.primary_key.columns.keys()) == ["id"]
+    expected_key = (["user_id"] if table_name == "morning_schedules"
+                    else ["user_id", "discovery_run_id", "opportunity_id"]
+                    if table_name == "morning_preparations"
+                    else ["source_key", "board_token", "swiss_date"]
+                    if table_name == "ats_request_budgets" else ["id"])
+    assert list(table.primary_key.columns.keys()) == expected_key
     for name in ("created_at", "updated_at"):
         assert table.columns[name].server_default is not None
 
@@ -335,10 +341,12 @@ def test_user_owned_rows_name_their_owner_and_cascade_from_users(table_name):
     (docs/ENGINEERING_STANDARDS.md §Security).
     """
     table = TABLES[table_name]
-    assert "user_id" in table.columns
-    assert table.columns["user_id"].nullable is False
+    owner_column = "owner_user_id" if table_name == "claude_terminal_sessions" else "user_id"
+    assert owner_column in table.columns
+    assert table.columns[owner_column].nullable is False
     to_users = [fk for fk in table.foreign_keys if fk.column.table.name == "users"]
     assert [fk.ondelete for fk in to_users] == ["CASCADE"]
+    assert [fk.parent.name for fk in to_users] == [owner_column]
 
 
 @pytest.mark.parametrize("table_name", sorted(PARENT_OWNED_TABLES))
@@ -487,7 +495,13 @@ def test_free_text_columns_are_text_not_varchar():
     sized = {(table, column.name) for table, column in _columns()
              if _python_type(column) is str
              and not isinstance(column.type, Text | Enum)}
-    assert sized == {("opportunities", "posting_language"),
+    assert sized == {("morning_schedules", "cadence"),
+                     ("opportunities", "posting_language"),
+                     ("candidate_profiles", "contact_email"),
+                     ("candidate_profiles", "contact_phone"),
+                     ("candidate_profiles", "reference_cv_purpose"),
+                     ("candidate_profiles", "reference_cv_filename"),
+                     ("claude_terminal_sessions", "safe_error_code"),
                      ("opportunities", "salary_currency"),
                      ("candidate_languages", "language"),
                      ("candidate_profiles", "location_country"),

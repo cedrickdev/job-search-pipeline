@@ -28,16 +28,19 @@
 import { computed, onMounted, ref } from 'vue'
 import { useSessionStore } from '~/stores/session'
 import { errorMessage } from '~/utils/v2-errors'
+import { useLocale } from '~/composables/useLocale'
 
 definePageMeta({ layout: false })
 
-useHead({ title: 'Sign in · Command Center' })
-
 const session = useSessionStore()
 const route = useRoute()
+const { t } = useLocale()
+
+useHead({ title: () => `${t('common.signIn')} · Command Center` })
 
 const email = ref('')
 const password = ref('')
+const showPassword = ref(false)
 const pending = ref(false)
 const failure = ref<unknown>(null)
 
@@ -88,17 +91,14 @@ async function submit() {
 <template>
   <main class="auth-page">
     <form class="auth-card" novalidate @submit.prevent="submit">
-      <h1>Sign in</h1>
-      <p class="auth-hint">
-        Your saved searches and candidate profile live on this machine, behind your
-        account.
-      </p>
+      <h1>{{ t('common.signIn') }}</h1>
+      <p class="auth-hint">{{ t('auth.loginIntro') }}</p>
 
       <p v-if="message" class="auth-error" role="alert">
         {{ message }}
       </p>
 
-      <label class="auth-field" for="email">Email</label>
+      <label class="auth-field" for="email">{{ t('auth.email') }}</label>
       <input
         id="email"
         v-model.trim="email"
@@ -109,25 +109,37 @@ async function submit() {
         :disabled="pending"
       >
 
-      <label class="auth-field" for="password">Password</label>
-      <input
-        id="password"
-        v-model="password"
-        type="password"
-        name="password"
-        autocomplete="current-password"
-        required
-        :disabled="pending"
-      >
+      <label class="auth-field" for="password">{{ t('auth.password') }}</label>
+      <div class="password-field">
+        <input
+          id="password"
+          v-model="password"
+          :type="showPassword ? 'text' : 'password'"
+          name="password"
+          autocomplete="current-password"
+          required
+          :disabled="pending"
+        >
+        <button
+          class="password-toggle"
+          type="button"
+          :aria-label="showPassword ? t('common.hidePassword') : t('common.showPassword')"
+          :title="showPassword ? t('common.hidePassword') : t('common.showPassword')"
+          :disabled="pending"
+          @click="showPassword = !showPassword"
+        >
+          {{ showPassword ? '◉' : '◌' }}
+        </button>
+      </div>
 
       <button class="btn-primary" type="submit" :disabled="pending">
-        {{ pending ? 'Signing in…' : 'Sign in' }}
+        {{ pending ? t('auth.signingIn') : t('common.signIn') }}
       </button>
 
       <p class="auth-alt">
-        No account yet?
+        {{ t('auth.noAccount') }}
         <NuxtLink to="/register">
-          Create one
+          {{ t('auth.createAccount') }}
         </NuxtLink>
       </p>
     </form>

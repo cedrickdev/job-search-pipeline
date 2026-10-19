@@ -4,7 +4,9 @@
    One line changed: V1 mounted into `#root`, Nuxt mounts into `#__nuxt`. */
 
 * { box-sizing: border-box; }
-html, body, #__nuxt { height: 100%; margin: 0; }
+html, body, #__nuxt { min-height: 100%; margin: 0; }
+html { color-scheme: dark; scroll-behavior: smooth; }
+:root[data-theme="light"] { color-scheme: light; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -15,9 +17,15 @@ body {
 }
 h1, h2, h3, h4 { font-family: var(--font-ui); font-weight: 600; margin: 0; }
 .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-a { color: var(--accent); text-decoration: none; }
+a { color: var(--accent); text-decoration: none; text-underline-offset: 0.18em; }
+a:hover { text-decoration: underline; }
+button, input, select, textarea { font: inherit; }
 button { font-family: var(--font-ui); cursor: pointer; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: not-allowed; opacity: 0.58; }
+:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 58%, white); outline-offset: 3px; }
+:where(button, a, input, select, textarea, [role="button"], [role="combobox"]) { -webkit-tap-highlight-color: transparent; }
+:where(button, [role="button"]) { transition: transform 140ms var(--ease-out), background-color 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease; }
+:where(button, [role="button"]):active:not(:disabled) { transform: scale(0.98); }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
 .seg button { background: var(--surface); color: var(--text-dim); border: none; padding: 6px 14px; cursor: pointer; }
 .seg button.active { background: var(--accent-tint); color: var(--text); }
@@ -31,7 +39,9 @@ button { font-family: var(--font-ui); cursor: pointer; }
   border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px;
   transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
 }
-.track-tab:hover { border-color: var(--accent); }
+@media (hover: hover) and (pointer: fine) {
+  .track-tab:hover { border-color: var(--accent); }
+}
 .track-tab.active {
   background: var(--accent-tint); color: var(--text);
   border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset;
@@ -43,5 +53,15 @@ button { font-family: var(--font-ui); cursor: pointer; }
 /* Buttons, from webapp/src/components/JobDrawer.css where V1 happened to declare
    them. They are used by the drawer, the settings page, the follow-up panel and
    the copilot, so they belong with the other global primitives. */
-.btn-primary { background: var(--accent); color: white; border: none; border-radius: var(--radius-sm); padding: var(--space-2) var(--space-4); font-weight: 600; }
-.btn-ghost { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-4); }
+.btn-primary, .btn-ghost { min-height: 44px; padding: var(--space-2) var(--space-4); font-weight: 650; }
+.btn-primary { background: var(--accent); color: white; border: 1px solid transparent; border-radius: var(--radius-sm); box-shadow: 0 1px 1px rgb(0 0 0 / 14%); }
+.btn-ghost { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary:hover { background: var(--accent-dim); }
+  .btn-ghost:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--surface); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 1ms !important; }
+}

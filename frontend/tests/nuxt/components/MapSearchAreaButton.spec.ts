@@ -1,11 +1,15 @@
 // The map never re-queries as the user pans — this button is the explicit request to fetch
 // the current view (§20). It carries no state: the page decides when it shows and what
 // "search" does; here it only emits, and shows a pending label while a search is in flight.
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import MapSearchAreaButton from '~/components/map/MapSearchAreaButton.vue'
 
 describe('MapSearchAreaButton', () => {
+  beforeEach(() => {
+    document.cookie = 'app_locale=en; path=/; max-age=0'
+  })
+
   it('emits an explicit search request on click', async () => {
     const wrapper = await mountSuspended(MapSearchAreaButton)
 
@@ -20,5 +24,11 @@ describe('MapSearchAreaButton', () => {
 
     expect(wrapper.text()).toContain('Searching…')
     expect(wrapper.get('button').attributes('disabled')).toBeDefined()
+  })
+
+  it('localizes the explicit search action into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const wrapper = await mountSuspended(MapSearchAreaButton)
+    expect(wrapper.text()).toContain('Rechercher dans cette zone')
   })
 })

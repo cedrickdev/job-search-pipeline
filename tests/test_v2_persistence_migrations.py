@@ -66,11 +66,13 @@ V2_TABLES = frozenset({
     "strategy_change_proposals", "strategy_change_executions",
     "plans", "plan_entitlements", "subscriptions", "usage_events",
     "subscription_events", "task_runs", "discovery_runs", "discovery_memberships",
+    "claude_terminal_sessions", "morning_schedules", "ats_request_budgets",
+    "morning_preparations",
 })
 
 # The revision `alembic upgrade head` is expected to stop at. A revision added
 # without updating this line is a revision nobody decided to ship.
-HEAD_REVISION = "0025"
+HEAD_REVISION = "0032"
 
 # Every `geography(Point,4326)` column, by the table that holds it. One radius
 # query has to run against any of them, so they are declared identically and
@@ -220,6 +222,16 @@ def test_catalog_change_tracking_revision_is_reversible(schema_engine):
         assert "last_changed_at" not in {
             column["name"] for column in inspect(connection).get_columns("discovery_memberships")}
         command.upgrade(alembic_config(connection), "head")
+
+
+def test_morning_schedule_revision_is_reversible(schema_engine):
+    reset_schema(schema_engine)
+    with schema_engine.begin() as connection:
+        assert "morning_schedules" in inspect(connection).get_table_names()
+        command.downgrade(alembic_config(connection), "0028")
+        assert "morning_schedules" not in inspect(connection).get_table_names()
+        command.upgrade(alembic_config(connection), "0029")
+        assert "morning_schedules" in inspect(connection).get_table_names()
 
 
 def test_the_migrated_schema_and_the_models_describe_the_same_database(schema_engine):

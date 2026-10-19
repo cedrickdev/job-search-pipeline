@@ -26,6 +26,7 @@ from backend.app.discovery.contracts import (
     SourceType,
 )
 from backend.app.domain.identifiers import new_search_profile_id, new_user_id
+from backend.app.domain.common import GeoBounds, GeoPoint
 from backend.app.domain.search import CountrySearchArea, SearchProfile
 from country_packs.contracts import (
     CountryPack,
@@ -89,7 +90,12 @@ def a_pack(country: str = "CH", *bindings: SourceBinding, **overrides) -> Countr
             currency="CHF",
             languages=("fr",),
             timezone="Europe/Zurich",
-            full_time_weekly_hours=42.0),
+            full_time_weekly_hours=42.0,
+            map_viewport={
+                "center": GeoPoint(latitude=46.8, longitude=8.2),
+                "zoom": 6.0,
+                "bounds": GeoBounds(north=47.9, south=45.8, east=10.6, west=5.8),
+            }),
         "sources": bindings,
     }
     fields.update(overrides)

@@ -26,7 +26,7 @@ FROM python:${PYTHON_VERSION}-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    XDG_CACHE_HOME=/tmp/jobsearch-cache
 
 # WeasyPrint links these at import time, and it is a hard dependency of the
 # project rather than an extra — so an image that can `import pipeline.cv_render`
@@ -60,7 +60,11 @@ COPY . .
 # traceback points at /app/backend/... rather than a copy under site-packages.
 # Runtime dependencies only: the test suite runs on the host (or on CI's runner)
 # against the exposed port, so pytest and the linters have no business here.
-RUN pip install -e .
+# Keep wheel downloads in BuildKit's cache, not in the final image.  Source edits
+# still require an editable install, but a transient PyPI failure must not force a
+# second multi-minute dependency download for every local rebuild.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -e .
 
 # `data/` is excluded from the build context (it holds the operator's tracker and
 # job-board logins), so the directory has to be created here — and owned by the
@@ -72,7 +76,8 @@ RUN pip install -e .
 # are created here — and owned by the runtime user, because Docker seeds a fresh named
 # volume from the image path including its ownership. Without this the mounted volumes
 # would be root-owned and create_app / the workers would fail to write as uid 10001.
-RUN mkdir -p /app/data /app/var && chown 10001:10001 /app/data /app/var
+RUN mkdir -p /app/data /app/var "$XDG_CACHE_HOME" \
+    && chown -R 10001:10001 /app/data /app/var "$XDG_CACHE_HOME"
 
 # ── tools ───────────────────────────────────────────────────────────────────────
 # The backup and restore-check jobs (§45-46) shell out to `pg_dump`, `pg_restore` and

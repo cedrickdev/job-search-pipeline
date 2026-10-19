@@ -78,12 +78,15 @@ class TaskKind(StrEnum):
     CAREER_ANALYTICS = "CAREER_ANALYTICS"
     ACCOUNT_EXPORT = "ACCOUNT_EXPORT"
     RETENTION_SWEEP = "RETENTION_SWEEP"
+    APPLICATION_PREPARATION = "APPLICATION_PREPARATION"
     APPLICATION_SUBMISSION = "APPLICATION_SUBMISSION"
 
 
 # The kinds that drive a real browser and therefore belong to the isolated browser lane (§35).
 # A frozenset, not a scattered `if`, so "what needs the browser worker" is one auditable fact.
-_BROWSER_KINDS: frozenset[TaskKind] = frozenset({TaskKind.APPLICATION_SUBMISSION})
+_BROWSER_KINDS: frozenset[TaskKind] = frozenset({
+    TaskKind.APPLICATION_PREPARATION, TaskKind.APPLICATION_SUBMISSION,
+})
 
 
 def lane_for_kind(kind: TaskKind) -> TaskLane:

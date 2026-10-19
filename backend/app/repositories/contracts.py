@@ -68,6 +68,7 @@ from backend.app.domain.identifiers import (
     ChatActionProposalId,
     CompanyId,
     ConversationId,
+    DocumentVersionId,
     EligibilityResultId,
     InterviewAnswerId,
     InterviewQuestionId,
@@ -700,6 +701,11 @@ class CandidateDocumentRepository(Protocol):
         `MatchEvaluationRepository.get`: a caller that could tell them apart could
         enumerate another user's rows by id.
         """
+        ...
+
+    async def get_for_version(self, user_id: UserId,
+                              version_id: DocumentVersionId) -> CandidateDocument | None:
+        """Find the owner-scoped aggregate carrying an exact version, or nothing."""
         ...
 
     async def get_for_pair(self, user_id: UserId,

@@ -14,6 +14,7 @@ import { computed, ref } from 'vue'
 import { useJobs } from '~/composables/useQueries'
 import type { TrackKey } from '~/utils/tracks'
 
+const { localize: l } = useLocale()
 const props = withDefaults(defineProps<{ track?: TrackKey }>(), { track: 'job' })
 const emit = defineEmits<{ open: [jobId: number] }>()
 
@@ -44,11 +45,11 @@ const items = computed(() =>
     <table v-else class="jobs-table">
       <thead>
         <tr>
-          <th>Company</th>
-          <th>Role</th>
-          <th>Status</th>
-          <th>Score</th>
-          <th>Screen %</th>
+          <th>{{ l('Company', 'Entreprise') }}</th>
+          <th>{{ l('Role', 'Poste') }}</th>
+          <th>{{ l('Status', 'Statut') }}</th>
+          <th>{{ l('Score', 'Score') }}</th>
+          <th>{{ l('Screen %', 'Réussite estimée (%)') }}</th>
         </tr>
       </thead>
       <tbody>

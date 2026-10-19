@@ -31,7 +31,9 @@ from backend.app.billing.metering import MeteringService
 from backend.app.domain.base import DomainModel, LanguageCode, NonEmptyStr
 from backend.app.domain.candidate import (
     Availability,
+    CandidateContact,
     CandidateProfile,
+    ReferenceCvPurpose,
     WorkAuthorization,
 )
 from backend.app.domain.common import LanguageProficiency, Location, WorkloadRange
@@ -85,6 +87,9 @@ class CandidateProfileDraft(DomainModel):
     """
 
     display_name: NonEmptyStr
+    contact: CandidateContact | None = None
+    reference_cv_purpose: ReferenceCvPurpose | None = None
+    reference_cv_filename: NonEmptyStr | None = None
     headline: NonEmptyStr | None = None
     base_location: Location | None = None
     languages: tuple[LanguageProficiency, ...] = ()
@@ -182,6 +187,12 @@ class OnboardingService:
             id=default_candidate_profile_id(user_id),
             user_id=user_id,
             display_name=draft.display_name,
+            contact=draft.contact,
+            reference_cv_purpose=(existing.reference_cv_purpose if existing is not None else None),
+            reference_cv_filename=(existing.reference_cv_filename
+                                   if existing is not None else None),
+            reference_cv_storage_key=(existing.reference_cv_storage_key
+                                      if existing is not None else None),
             headline=draft.headline,
             base_location=draft.base_location,
             languages=draft.languages,

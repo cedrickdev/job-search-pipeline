@@ -34,6 +34,37 @@ export default defineNuxtConfig({
 
   fonts: { assets: { prefix: '/assets/fonts/' } },
 
+  // The app is generated as static files and may run without an internet
+  // connection. Bundle every icon it names so Nuxt never falls back to Iconify's
+  // public API at runtime — including the shell controls used on mobile.
+  icon: {
+    clientBundle: {
+      // The shell also stores icon names in TypeScript (command-palette actions)
+      // and chooses some dynamically. Scan Vue and TS sources so development and
+      // static builds do not fall back to Iconify's network endpoint.
+      scan: {
+        globInclude: ['**/*.{vue,jsx,tsx,md,mdc,mdx,yml,yaml,ts,js}'],
+      },
+      icons: [
+        'lucide:circle-alert',
+        'lucide:circle-check',
+        'lucide:map-pin-off',
+        'lucide:menu',
+        'lucide:moon',
+        'lucide:search',
+        'lucide:sparkles',
+        'lucide:sun',
+        'lucide:sun-moon',
+        'lucide:upload',
+        'lucide:user',
+        'lucide:x',
+        'heroicons:arrow-path',
+        'heroicons:credit-card',
+        'heroicons:plus',
+      ],
+    },
+  },
+
   // The V1 palette lives in CSS custom properties under [data-theme]; Nuxt UI's
   // own dark mode is driven by a `.dark` class. Binding both to one attribute
   // keeps a single source of truth for "which theme is on": `classSuffix: ''`
@@ -66,19 +97,15 @@ export default defineNuxtConfig({
     },
   },
 
-  // Phase 8 map explorer. The base map style is the one deployment-specific piece of
-  // the map, and it must never be a committed API key: MapLibre renders whatever style
-  // URL it is handed, and this is the only place that names one. It is overridable per
-  // deployment through NUXT_PUBLIC_MAP_STYLE_URL — baked at `nuxt generate` time, since
-  // the app is static and FastAPI serves it, so there is no server reading env at
-  // runtime (docs/MAP_EXPLORER.md §Configuration). The default is MapLibre's keyless
-  // demo style so `npm run dev` needs no environment; a real deployment points this at
-  // its own. `mapAttribution`, when set, is appended to whatever the style already
-  // declares — never a replacement, so a provider's required credit cannot be dropped.
+  // Phase 8 map explorer. No provider key is committed. Local builds receive a simple
+  // OpenStreetMap raster template, while a VPS can set NUXT_PUBLIC_MAP_STYLE_URL to any
+  // provider style. These values are baked at `nuxt generate` time because the app is
+  // static. Attribution is always kept by OpportunityMap.
   runtimeConfig: {
     public: {
-      mapStyleUrl: 'https://demotiles.maplibre.org/style.json',
-      mapAttribution: '',
+      mapStyleUrl: '',
+      mapTilesUrl: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      mapAttribution: '© OpenStreetMap contributors',
     },
   },
 
@@ -90,6 +117,11 @@ export default defineNuxtConfig({
   vite: {
     // Vitest resolves this config too; without it the happy-dom environment
     // inherits Nuxt's default `#imports` alias only through @nuxt/test-utils.
-    optimizeDeps: { include: ['markdown-it'] },
+    optimizeDeps: {
+      include: ['markdown-it'],
+      // MapLibre's worker is bundled explicitly by OpportunityMap.vue. Excluding
+      // the package prevents Vite from caching a non-existent optimized worker.
+      exclude: ['maplibre-gl'],
+    },
   },
 })

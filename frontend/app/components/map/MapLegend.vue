@@ -8,24 +8,25 @@
 -->
 <script setup lang="ts">
 defineProps<{ mode: 'opportunities' | 'companies' }>()
+const { localize: l } = useLocale()
 </script>
 
 <template>
   <div class="map-legend">
     <span class="map-legend-item">
       <span class="map-legend-dot map-legend-dot--exact" />
-      Located
+      {{ l('Located', 'Localisée') }}
     </span>
     <span class="map-legend-item">
       <span class="map-legend-dot map-legend-dot--approx" />
-      {{ mode === 'companies' ? 'Approximate area' : 'Approximate — company office' }}
+      {{ mode === 'companies' ? l('Approximate area', 'Zone approximative') : l('Approximate — company office', 'Approximation — siège de l’entreprise') }}
     </span>
     <span class="map-legend-item">
       <span class="map-legend-cluster">5</span>
-      Cluster
+      {{ l('Cluster', 'Groupe') }}
     </span>
     <span v-if="mode === 'opportunities'" class="map-legend-note">
-      Remote-only and unresolved roles have no pin — see the list.
+      {{ l('Remote-only and unresolved roles have no pin — see the list.', 'Les offres à distance ou sans lieu précis n’ont pas de repère : consultez la liste.') }}
     </span>
   </div>
 </template>

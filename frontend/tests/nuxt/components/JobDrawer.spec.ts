@@ -186,6 +186,7 @@ describe('JobDrawer', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     clearNuxtData()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
   })
 
   it('renders job detail', async () => {
@@ -196,6 +197,14 @@ describe('JobDrawer', () => {
     expect(text).toContain('Shift Lead')
     expect(text).toContain('91')
     expect(text).toContain('Strong match')
+  })
+
+  it('translates drawer navigation and actions into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const { wrapper } = await open(detail())
+    expect(wrapper.get('[role="dialog"]').attributes('aria-label')).toBe('Détail de l’offre')
+    expect(wrapper.text()).toContain('Aperçu')
+    expect(wrapper.text()).toContain('Approuver')
   })
 
   it('shows the activity timeline on the Activity tab', async () => {

@@ -87,6 +87,7 @@ from backend.app.domain.identifiers import (
     ApplicationPolicyId,
     CandidateDocumentId,
     CandidateProfileId,
+    DocumentVersionId,
     CareerRecommendationId,
     CareerSiteId,
     ChatActionExecutionId,
@@ -998,6 +999,13 @@ class FakeCandidateDocumentRepository:
         if found is None or found.user_id != user_id:
             return None
         return found.model_copy(deep=True)
+
+    async def get_for_version(self, user_id: UserId,
+                              version_id: DocumentVersionId) -> CandidateDocument | None:
+        return next((document.model_copy(deep=True)
+                     for document in self.documents.values()
+                     if document.user_id == user_id
+                     and any(version.id == version_id for version in document.versions)), None)
 
     async def get_for_pair(self, user_id: UserId,
                            candidate_profile_id: CandidateProfileId,

@@ -114,28 +114,26 @@ class RenderedDocument:
 def render_document(content: DocumentContent, *, language: str) -> RenderedDocument:
     """Render one document to a one-page ATS PDF.
 
-    `language` is carried for parity with the generator and for a future
-    localized label set; the content is already in one language by the time it
-    reaches here, so the renderer lays out whatever text it is given.
+    Localize section labels; candidate facts remain exactly as generated and guarded.
     """
     if isinstance(content, ResumeDocument):
-        return _render_resume(content)
+        return _render_resume(content, language=language)
     return _render_cover_letter(content)
 
 
-def _render_resume(resume: ResumeDocument) -> RenderedDocument:
+def _render_resume(resume: ResumeDocument, *, language: str = "en") -> RenderedDocument:
     # Work on a plain, mutable copy of the bullets so the one-page loop can drop
     # them without touching the frozen domain object the service still holds.
     experience = [_entry_dict(entry) for entry in resume.experience]
     education = [_entry_dict(entry) for entry in resume.education]
     dropped: list[str] = []
-    doc = _weasy_doc(_resume_html(resume, experience, education))
+    doc = _weasy_doc(_resume_html(resume, experience, education, language=language))
     while len(doc.pages) > 1:
         removed = _drop_lowest_priority_bullet(experience)
         if removed is None:
             break  # nothing left to drop; ship it and let the caller see pages>1
         dropped.append(removed)
-        doc = _weasy_doc(_resume_html(resume, experience, education))
+        doc = _weasy_doc(_resume_html(resume, experience, education, language=language))
     return _finish(doc, tuple(dropped))
 
 
@@ -147,19 +145,29 @@ def _render_cover_letter(letter: CoverLetterDocument) -> RenderedDocument:
 # --- HTML assembly ------------------------------------------------------
 
 def _resume_html(resume: ResumeDocument, experience: list[_EntryLayout],
-                 education: list[_EntryLayout]) -> str:
+                 education: list[_EntryLayout], *, language: str = "en") -> str:
+    labels = ({"summary": "Synthèse", "highlights": "Points forts pertinents",
+               "experience": "Expérience", "education": "Formation",
+               "skills": "Compétences", "languages": "Langues"}
+              if language == "fr" else
+              {"summary": "Summary", "highlights": "Relevant highlights",
+               "experience": "Experience", "education": "Education",
+               "skills": "Skills", "languages": "Languages"})
     parts: list[str] = [f"<h1>{_esc(resume.full_name)}</h1>"]
     if resume.headline:
         parts.append(f'<p class="headline">{_esc(resume.headline)}</p>')
     if resume.summary is not None:
-        parts.append('<section><h2>Summary</h2>'
+        parts.append(f'<section><h2>{labels["summary"]}</h2>'
                      f'<p class="summary">{_esc(resume.summary.text)}</p></section>')
+    if resume.highlights:
+        items = "".join(f"<li>{_esc(item.text)}</li>" for item in resume.highlights)
+        parts.append(f'<section><h2>{labels["highlights"]}</h2><ul>{items}</ul></section>')
     if experience:
-        parts.append('<section><h2>Experience</h2>'
+        parts.append(f'<section><h2>{labels["experience"]}</h2>'
                      + "".join(_entry_html(entry) for entry in experience)
                      + '</section>')
     if education:
-        parts.append('<section><h2>Education</h2>'
+        parts.append(f'<section><h2>{labels["education"]}</h2>'
                      + "".join(_entry_html(entry) for entry in education)
                      + '</section>')
     if resume.skill_groups:
@@ -167,9 +175,10 @@ def _resume_html(resume: ResumeDocument, experience: list[_EntryLayout],
         for group in resume.skill_groups:
             label = f"<strong>{_esc(group.name)}:</strong> " if group.name else ""
             rows.append(f"<p>{label}{_esc(', '.join(group.skills))}</p>")
-        parts.append(f'<section class="skills"><h2>Skills</h2>{"".join(rows)}</section>')
+        parts.append(f'<section class="skills"><h2>{labels["skills"]}</h2>'
+                     f'{"".join(rows)}</section>')
     if resume.languages:
-        parts.append('<section class="languages"><h2>Languages</h2>'
+        parts.append(f'<section class="languages"><h2>{labels["languages"]}</h2>'
                      f'<p>{_esc(", ".join(resume.languages))}</p></section>')
     return _document(parts)
 

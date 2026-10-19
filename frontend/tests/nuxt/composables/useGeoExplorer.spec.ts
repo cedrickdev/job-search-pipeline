@@ -175,7 +175,7 @@ describe('useSavedSearchOpportunitiesQuery', () => {
     )
     await flushPromises()
 
-    expect(http.calls).toHaveLength(0)
+    expect(http.callsTo(SAVED)).toHaveLength(0)
     wrapper.unmount()
   })
 

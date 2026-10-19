@@ -297,7 +297,7 @@ def opportunity_from_posting(
         # Ashby's `compensationTierSummary`), no adapter claims STRUCTURED_SALARY,
         # and the string survives in `raw` for a parser that can do better.
         salary=None,
-        location=_location(location_text, metadata),
+        location=_location(location_text, metadata, pack),
         posting_language=pack.terminology.language_for(language),
         posted_at=v1_parse_date(posted) if posted else None,
         discovered_at=fetched_at,
@@ -310,7 +310,8 @@ def opportunity_from_posting(
     )
 
 
-def _location(raw: str | None, metadata: SourceMetadata) -> Location | None:
+def _location(raw: str | None, metadata: SourceMetadata,
+              pack: CountryPack) -> Location | None:
     """Free text plus, when it is not a guess, the country.
 
     The country comes from the *source*, not from the pack being swept: a CH sweep
@@ -320,6 +321,15 @@ def _location(raw: str | None, metadata: SourceMetadata) -> Location | None:
     coordinates stay empty — Phase 7 owns geocoding.
     """
     country = metadata.sole_country
+    if raw:
+        # Only a terminal, explicitly named country is evidence. A city name
+        # alone stays unlocated; a Swiss employer's board can list foreign jobs.
+        parenthesized = re.search(r"\(([^()]+)\)\s*$", raw)
+        suffix = (parenthesized.group(1) if parenthesized else
+                  raw.rsplit(",", 1)[-1]).strip().casefold()
+        aliases = {name.casefold(): code for name, code in
+                   pack.metadata.location_country_aliases.items()}
+        country = aliases.get(suffix, country)
     if raw is None and country is None:
         return None
     return Location(raw=raw, country=country)

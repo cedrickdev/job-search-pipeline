@@ -9,7 +9,8 @@
 // The default viewport is a neutral country frame — Switzerland, the reference pack's
 // country — never a candidate's own coordinates (§37). It is only a fallback: a saved
 // search, a shared link, or the results themselves override it.
-import { ref } from 'vue'
+import { ref, toValue, watch } from 'vue'
+import type { MaybeRefOrGetter } from 'vue'
 
 export interface Viewport {
   /** MapLibre order: `[longitude, latitude]`. The URL names them `lng`/`lat` for humans. */
@@ -39,14 +40,17 @@ function firstNumber(value: unknown): number | null {
  * default on its own. A shared link with a plausible `lat`/`lng` but a junk `zoom` still
  * opens where it points, just at the default zoom — a stranger's link should never throw.
  */
-export function parseViewport(query: Record<string, unknown>): Viewport {
+export function parseViewport(
+  query: Record<string, unknown>,
+  fallback: Viewport = DEFAULT_VIEWPORT,
+): Viewport {
   const lat = firstNumber(query.lat)
   const lng = firstNumber(query.lng)
   const zoom = firstNumber(query.zoom)
   const latOk = lat !== null && lat >= -90 && lat <= 90
   const lngOk = lng !== null && lng >= -180 && lng <= 180
-  const center: [number, number] = latOk && lngOk ? [lng, lat] : DEFAULT_VIEWPORT.center
-  const z = zoom !== null && zoom >= 0 && zoom <= 24 ? zoom : DEFAULT_VIEWPORT.zoom
+  const center: [number, number] = latOk && lngOk ? [lng, lat] : fallback.center
+  const z = zoom !== null && zoom >= 0 && zoom <= 24 ? zoom : fallback.zoom
   return { center, zoom: z }
 }
 
@@ -85,12 +89,21 @@ export function markersBounds(points: ReadonlyArray<{ longitude: number, latitud
 }
 
 /** The reactive camera plus the current view's bounds, seeded from the URL once at setup. */
-export function useMapViewport() {
+export function useMapViewport(defaultViewport: MaybeRefOrGetter<Viewport> = DEFAULT_VIEWPORT) {
   const route = useRoute()
-  const viewport = ref<Viewport>(parseViewport(route.query))
+  const viewport = ref<Viewport>(parseViewport(route.query, toValue(defaultViewport)))
   // The `"n,s,e,w"` of the current view, refreshed on every settled move. What
   // "Search this area" sends, and what a bounds-scoped query reads.
   const bounds = ref<string | null>(null)
+
+  watch(
+    () => toValue(defaultViewport),
+    next => {
+      if (!('lat' in route.query) || !('lng' in route.query)) {
+        viewport.value = parseViewport(route.query, next)
+      }
+    },
+  )
 
   /** Called by the map once a pan/zoom settles (debounced upstream, on `moveend`). */
   function applyMove(next: { center: [number, number], zoom: number, bounds: string }) {

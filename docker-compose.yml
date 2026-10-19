@@ -18,13 +18,12 @@
 # one-shot jobs, so starting the stack never runs a migration, a backup or an import
 # as a side effect.
 #
-# No service reads `.env`. Compose interpolates it into the values below, which is
-# how a developer overrides a port or the password, but nothing here mounts it or
-# passes it through: `.env` holds V1's real API credentials and none of them belong
-# in these containers, and no image layer ever carries a secret (§55). The same rule
-# is why no container sees `data/` or `cv/` — see the `api` service below. A real
-# deployment supplies secrets through its orchestrator's secret store, never this file
-# (docs/PRODUCTION_DEPLOYMENT.md).
+# Compose interpolates selected non-secret configuration from `.env` into the values
+# below. It never mounts that file, so no image layer carries it (§55). The geocoder
+# identity is passed explicitly to the API/general worker because the offline,
+# operator-triggered enrichment command needs it; credentials remain absent unless a
+# deployment injects them through its secret store. The same rule is why no container
+# sees `data/` or `cv/` — see the `api` service below.
 
 name: jobsearch
 
@@ -122,6 +121,22 @@ services:
       # composition and matches how a deployment wires it (docs/PRODUCTION_DEPLOYMENT.md).
       JOBSEARCH_REDIS_URL: redis://redis:6379/0
       JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED: ${JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED:-false}
+      JOBSEARCH_DISCOVERY_ALLOWED_SOURCES: ${JOBSEARCH_DISCOVERY_ALLOWED_SOURCES:-}
+      # The API never receives ANTHROPIC_API_KEY or the Docker socket. It can only
+      # request lifecycle operations from the private terminal-manager service.
+      JOBSEARCH_TERMINAL_ENABLED: ${JOBSEARCH_TERMINAL_ENABLED:-false}
+      JOBSEARCH_TERMINAL_MANAGER_URL: http://terminal-manager:8788
+      JOBSEARCH_TERMINAL_MANAGER_TOKEN: ${JOBSEARCH_TERMINAL_MANAGER_TOKEN:-}
+      JOBSEARCH_TERMINAL_ALLOWED_ORIGINS: ${JOBSEARCH_TERMINAL_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      # Allows a local end-to-end workflow rehearsal without silently pretending a
+      # Stripe subscription exists. The production startup gate rejects this flag.
+      JOBSEARCH_LOCAL_UNMETERED: ${JOBSEARCH_LOCAL_UNMETERED:-true}
+      # Required only for the explicit offline geocoding command. Keeping this
+      # propagation here means `docker compose exec api ...geocode` has exactly
+      # the declared deployment identity and fails safely when it was not set.
+      GEOCODER_USER_AGENT: ${GEOCODER_USER_AGENT:-}
+      GEOCODER_CONTACT_EMAIL: ${GEOCODER_CONTACT_EMAIL:-}
+      GEOCODER_API_KEY: ${GEOCODER_API_KEY:-}
     volumes:
       # A named volume, NOT a bind mount of ./data. That directory holds the
       # operator's real tracker, job-board logins and answers.yaml; a container
@@ -192,6 +207,47 @@ services:
     # single-origin deployment builds the bundle on the host and lets FastAPI serve
     # it, as start.sh does.
 
+  # Privileged only in the narrow sense that it owns the Docker socket needed to
+  # create short-lived Claude runtimes. It has no host port and no candidate data;
+  # API authentication/ownership checks remain in FastAPI before any request here.
+  terminal-manager:
+    profiles: ["terminal"]
+    build:
+      context: .
+      dockerfile: docker/terminal-manager.Dockerfile
+    # The gateway belongs to this project. This dedicated, ignored file contains
+    # only the three Claude gateway values. The Docker-socket-owning manager must
+    # never inherit the database, browser, or application secrets in `.env`.
+    env_file:
+      - path: terminal.env
+        required: false
+    environment:
+      JOBSEARCH_TERMINAL_MANAGER_TOKEN: ${JOBSEARCH_TERMINAL_MANAGER_TOKEN:-}
+      JOBSEARCH_CLAUDE_TERMINAL_IMAGE: jobsearch-claude-terminal:local
+      JOBSEARCH_TERMINAL_NETWORK: jobsearch_terminal_egress
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - default
+      - terminal_egress
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/healthz').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  # Build target only. Run `docker compose build claude-terminal-runtime` before
+  # enabling the terminal profile; it creates the image terminal-manager launches
+  # dynamically, not a permanent user runtime.
+  claude-terminal-runtime:
+    profiles: ["terminal-build"]
+    build:
+      context: .
+      dockerfile: docker/claude-terminal.Dockerfile
+    image: jobsearch-claude-terminal:local
+    command: ["sleep", "infinity"]
+
   # The Nuxt dev server (docker/frontend.Dockerfile). Development convenience, not
   # a production artifact: with `ssr: false` production is a static bundle served
   # by the FastAPI process, so there is nothing else for a Node container to do.
@@ -240,6 +296,10 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobsearch}:${POSTGRES_PASSWORD:-jobsearch_dev_only}@postgres:5432/${POSTGRES_DB:-jobsearch_dev}
       JOBSEARCH_REDIS_URL: redis://redis:6379/0
+      JOBSEARCH_DISCOVERY_ALLOWED_SOURCES: ${JOBSEARCH_DISCOVERY_ALLOWED_SOURCES:-}
+      GEOCODER_USER_AGENT: ${GEOCODER_USER_AGENT:-}
+      GEOCODER_CONTACT_EMAIL: ${GEOCODER_CONTACT_EMAIL:-}
+      GEOCODER_API_KEY: ${GEOCODER_API_KEY:-}
     volumes:
       # Shares the API's artifact volume so an export it writes is the file the API
       # streams back (see the `api` service). No `data/` — the worker touches no SQLite.
@@ -252,6 +312,24 @@ services:
     # The schema is `docker compose run --rm migrate`'s job, never a worker startup step
     # (§58): a worker that migrates on boot migrates on every scale-up and restart loop.
     restart: unless-stopped
+
+  # Swiss V2 schedule evaluator only. It enqueues owner-scoped discovery jobs;
+  # the general worker performs collection in a separate process. No browser,
+  # Docker socket, candidate files or model credentials reach this service.
+  morning-scheduler:
+    profiles: ["workers"]
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    command: ["python", "-m", "backend.app.cli.morning_scheduler"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobsearch}:${POSTGRES_PASSWORD:-jobsearch_dev_only}@postgres:5432/${POSTGRES_DB:-jobsearch_dev}
+      JOBSEARCH_MORNING_SCHEDULER_ENABLED: ${JOBSEARCH_MORNING_SCHEDULER_ENABLED:-false}
+      JOBSEARCH_DISCOVERY_ALLOWED_SOURCES: ${JOBSEARCH_DISCOVERY_ALLOWED_SOURCES:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
 
   # The browser-lane worker (Phase 16 §35): Playwright application submissions, on its
   # own Playwright-capable image so browsers never bloat the API/general-worker image.
@@ -390,23 +468,30 @@ volumes:
   postgres_data:
     # Named, so `docker compose down` keeps the data and only
     # `docker compose down -v` throws it away.
-    name: jobsearch_postgres_data
+    name: ${JOBSEARCH_VOLUME_PREFIX:-jobsearch}_postgres_data
 
   api_data:
     # V1's SQLite tracker and settings.json for the containerized API, kept apart
     # from the host `data/` on purpose (see the `api` service). Nothing in it is
     # precious — `down -v` and it is bootstrapped empty again on the next start.
-    name: jobsearch_api_data
+    name: ${JOBSEARCH_VOLUME_PREFIX:-jobsearch}_api_data
 
   # Generated artifacts under /app/var: account exports, document renders and PostgreSQL
   # dumps. Shared by `api`, `worker`, `backup` and `restore-check` so a file one writes is
   # the file another reads. `down` keeps it; only `down -v` throws the dumps away.
   app_var:
-    name: jobsearch_app_var
+    name: ${JOBSEARCH_VOLUME_PREFIX:-jobsearch}_app_var
 
   # Container-side node_modules and .nuxt, so the bind-mounted sources do not
   # shadow the Linux install with the host's macOS one.
   frontend_node_modules:
-    name: jobsearch_frontend_node_modules
+    name: ${JOBSEARCH_VOLUME_PREFIX:-jobsearch}_frontend_node_modules
   frontend_nuxt:
-    name: jobsearch_frontend_nuxt
+    name: ${JOBSEARCH_VOLUME_PREFIX:-jobsearch}_frontend_nuxt
+
+networks:
+  # Runtime containers join this network only. It deliberately has no routes to
+  # the Compose application network, database or Redis; host firewall/VPS policy
+  # further restricts its outbound traffic to Anthropic endpoints.
+  terminal_egress:
+    name: ${JOBSEARCH_VOLUME_PREFIX:-jobsearch}_terminal_egress

@@ -15,13 +15,14 @@
   the row says which.
 -->
 <script setup lang="ts">
+const { t, localize: l, locale } = useLocale()
 import { computed } from 'vue'
 import { useDocumentsQuery } from '~/composables/useDocuments'
 import type { CandidateDocument } from '~/types/v2'
 
 definePageMeta({ middleware: 'auth' })
 
-useHead({ title: 'Documents · Command Center' })
+useHead({ title: () => `${t('page.documents')} · Command Center` })
 
 const { data, status, error } = useDocumentsQuery()
 
@@ -31,7 +32,7 @@ const documents = computed(() => data.value?.documents ?? [])
 /** A date as the reader's locale writes it; the API sends UTC ISO-8601. */
 function when(iso: string): string {
   const at = new Date(iso)
-  return Number.isNaN(at.getTime()) ? '—' : at.toLocaleString()
+  return Number.isNaN(at.getTime()) ? '—' : at.toLocaleString(locale.value === 'fr' ? 'fr-CH' : 'en-CH')
 }
 
 /** Whether a document has a version fit to be shown as the candidate's. */
@@ -39,52 +40,51 @@ function isUsable(doc: CandidateDocument): boolean {
   return doc.latest_usable_version !== null
 }
 
-const TYPE_LABEL: Record<CandidateDocument['document_type'], string> = {
-  RESUME: 'Résumé',
-  COVER_LETTER: 'Cover letter',
+function typeLabel(type: CandidateDocument['document_type']): string {
+  return type === 'RESUME' ? l('Résumé', 'CV') : l('Cover letter', 'Lettre de motivation')
 }
 </script>
 
 <template>
   <div class="acct-page">
     <header class="acct-head">
-      <h1>Documents</h1>
+      <h1>{{ t('page.documents') }}</h1>
       <NuxtLink to="/evidence" class="btn-ghost">
-        Evidence →
+        {{ l('Evidence →', 'Preuves →') }}
       </NuxtLink>
     </header>
 
     <p class="settings-hint">
-      Résumés and cover letters generated for the postings you have looked at. Each is
-      built only from your recorded evidence, and every attempt is kept — including the
-      ones the guard refused.
+      {{ l('Résumés and cover letters generated for the postings you have looked at. Each is built only from your recorded evidence, and every attempt is kept — including the ones the guard refused.', 'CV et lettres de motivation générés pour les offres consultées. Chaque document repose uniquement sur vos preuves enregistrées et toutes les tentatives sont conservées, y compris celles refusées par le contrôle.') }}
     </p>
 
     <p v-if="loading" class="ov-state">
-      Loading documents…
+      {{ l('Loading documents…', 'Chargement des documents…') }}
     </p>
     <p v-else-if="error" class="ov-state ov-error">
-      Could not load your documents.
+      {{ l('Could not load your documents.', 'Impossible de charger vos documents.') }}
     </p>
     <template v-else>
       <p v-if="!documents.length" class="ov-empty">
-        No documents yet. Open a posting to generate a résumé or a cover letter.
+        {{ l('No documents yet. Open a posting to generate a résumé or a cover letter.', 'Aucun document pour le moment. Ouvrez une offre pour générer un CV ou une lettre de motivation.') }}
       </p>
       <ul v-else class="acct-searches">
         <li v-for="doc in documents" :key="doc.id" class="acct-search">
           <div class="acct-search-row">
             <div class="acct-search-main">
               <NuxtLink :to="`/documents/${doc.id}`" class="acct-search-name">
-                {{ TYPE_LABEL[doc.document_type] }}
+            {{ typeLabel(doc.document_type) }}
               </NuxtLink>
               <span class="acct-search-meta">
                 {{ doc.versions.length }}
-                {{ doc.versions.length === 1 ? 'attempt' : 'attempts' }} ·
-                updated {{ when(doc.updated_at) }}
+                {{ doc.versions.length === 1 ? l('attempt', 'tentative') : l('attempts', 'tentatives') }} ·
+                {{ l('updated', 'mis à jour le') }} {{ when(doc.updated_at) }}
               </span>
             </div>
             <span :class="isUsable(doc) ? 'acct-live' : 'acct-paused'">
-              {{ isUsable(doc) ? `v${doc.latest_usable_version} ready` : 'no usable version' }}
+              {{ isUsable(doc)
+                ? l(`v${doc.latest_usable_version} ready`, `v${doc.latest_usable_version} disponible`)
+                : l('no usable version', 'aucune version utilisable') }}
             </span>
           </div>
         </li>

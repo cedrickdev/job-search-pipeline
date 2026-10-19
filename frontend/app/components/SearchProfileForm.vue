@@ -29,6 +29,9 @@
 import { computed, ref, watch } from 'vue'
 import type { SearchArea, SearchProfile, SearchProfileDraft } from '~/types/v2'
 import { errorMessage, fieldErrors } from '~/utils/v2-errors'
+import { useLocale } from '~/composables/useLocale'
+import { DEFAULT_COUNTRY_OPTIONS } from '~/composables/useCountryPacks'
+import type { CountryOption } from '~/composables/useCountryPacks'
 
 type OpportunityType = SearchProfileDraft['opportunity_types'][number]
 type WorkplaceMode = SearchProfileDraft['workplace_modes'][number]
@@ -49,15 +52,19 @@ interface AreaRow { kind: EditableKind, country: string, label: string | null }
 function isEditable(area: SearchArea): area is EditableArea {
   return area.kind !== 'RADIUS'
 }
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   /** The saved search, or null for one being created. */
   search: SearchProfile | null
   pending?: boolean
   error?: unknown
   submitLabel?: string
-}>()
+  countryOptions?: readonly CountryOption[]
+}>(), {
+  countryOptions: () => DEFAULT_COUNTRY_OPTIONS,
+})
 
 const emit = defineEmits<{ submit: [draft: SearchProfileDraft] }>()
+const { locale, t } = useLocale()
 
 const name = ref('')
 const isActive = ref(true)
@@ -79,7 +86,9 @@ function fromLines(text: string): string[] {
 
 /** `FULL_TIME` as "full time"; the enum spelling is for the API, not the reader. */
 function readable(value: string): string {
-  return value.toLowerCase().split('_').join(' ')
+  const fallback = value.toLowerCase().split('_').join(' ')
+  const family = TYPES.includes(value as OpportunityType) ? 'opportunity' : 'workplace'
+  return t(`${family}.${value}`, fallback)
 }
 
 // Copied out of the response rather than bound to it, so no `v-model` writes into
@@ -169,13 +178,13 @@ function submit() {
       {{ message }}
     </p>
 
-    <label class="acct-field" for="search-name">Name</label>
+  <label class="acct-field" for="search-name">{{ t('search.name') }}</label>
     <input
       id="search-name"
       v-model="name"
       type="text"
       required
-      placeholder="Backend roles in Switzerland"
+      :placeholder="t('search.placeholder')"
       :disabled="pending"
     >
     <p v-if="fields.name" class="auth-field-error" role="alert">
@@ -184,18 +193,15 @@ function submit() {
 
     <label class="acct-check">
       <input v-model="isActive" type="checkbox" :disabled="pending">
-      Run this search
+      {{ t('search.run') }}
     </label>
     <p class="auth-hint">
-      A paused search is kept and skipped by discovery runs.
+      {{ t('search.pausedHint') }}
     </p>
 
     <fieldset class="acct-fieldset">
-      <legend>Where</legend>
-      <p class="auth-hint">
-        At least one area: a country, or remote-only postings — those optionally
-        narrowed to one country.
-      </p>
+      <legend>{{ t('search.where') }}</legend>
+      <p class="auth-hint">{{ t('search.areaHelp') }}</p>
       <div v-for="(row, index) in areas" :key="index" class="acct-row acct-row--list">
         <select
           v-model="row.kind"
@@ -203,25 +209,26 @@ function submit() {
           :disabled="pending"
         >
           <option value="COUNTRY">
-            Country
+            {{ t('search.country') }}
           </option>
           <option value="REMOTE_ONLY">
-            Remote only
+            {{ t('search.remoteOnly') }}
           </option>
         </select>
-        <input
-          v-model.trim="row.country"
-          type="text"
-          maxlength="2"
-          placeholder="CH"
-          pattern="[A-Za-z]{2}"
+        <select
+          v-model="row.country"
           :aria-label="`Area ${index + 1} country`"
           :disabled="pending"
         >
+          <option value="">—</option>
+          <option v-for="option in countryOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
         <button
           class="btn-ghost"
           type="button"
-          :aria-label="`Remove area ${index + 1}`"
+          :aria-label="`${t('search.removeArea')} ${index + 1}`"
           :disabled="pending"
           @click="removeArea(index)"
         >
@@ -230,17 +237,17 @@ function submit() {
       </div>
       <p v-for="(text, index) in keptLabels" :key="`kept-${index}`" class="acct-kept">
         {{ text }}
-        <span class="auth-optional">(kept as saved — the map view will edit these)</span>
+        <span class="auth-optional">{{ t('search.keptArea') }}</span>
       </p>
       <p v-if="fields.areas || fields.country" class="auth-field-error" role="alert">
         {{ fields.areas ?? fields.country }}
       </p>
       <button class="btn-ghost" type="button" :disabled="pending" @click="addArea">
-        + Add an area
+        {{ t('search.addArea') }}
       </button>
     </fieldset>
 
-    <label class="acct-field" for="search-queries">Search terms</label>
+    <label class="acct-field" for="search-queries">{{ t('search.terms') }}</label>
     <textarea
       id="search-queries"
       v-model="queries"
@@ -249,8 +256,7 @@ function submit() {
       aria-describedby="search-queries-hint"
     />
     <p id="search-queries-hint" class="auth-hint">
-      One per line, as you would type it into a job board. None means the board's
-      own default listing for the area.
+      {{ t('search.termsHelp') }}
     </p>
     <p v-if="fields.queries" class="auth-field-error" role="alert">
       {{ fields.queries }}
@@ -258,21 +264,21 @@ function submit() {
 
     <div class="acct-row">
       <div>
-        <label class="acct-field" for="search-titles">Title must contain</label>
+        <label class="acct-field" for="search-titles">{{ t('search.titleContains') }}</label>
         <textarea id="search-titles" v-model="titleKeywords" rows="3" :disabled="pending" />
       </div>
       <div>
-        <label class="acct-field" for="search-excluded">Exclude</label>
+        <label class="acct-field" for="search-excluded">{{ t('search.exclude') }}</label>
         <textarea id="search-excluded" v-model="excludedKeywords" rows="3" :disabled="pending" />
       </div>
     </div>
     <p class="auth-hint">
-      One keyword per line. Empty means no restriction.
+      {{ t('search.keywordHelp') }}
     </p>
 
     <fieldset class="acct-fieldset">
       <legend>
-        Type of work <span class="auth-optional">(any, if none are ticked)</span>
+        {{ t('search.workType') }} <span class="auth-optional">{{ t('search.anyIfNone') }}</span>
       </legend>
       <div class="acct-checks">
         <label v-for="type in TYPES" :key="type" class="acct-check">
@@ -284,7 +290,7 @@ function submit() {
 
     <fieldset class="acct-fieldset">
       <legend>
-        Workplace <span class="auth-optional">(any, if none are ticked)</span>
+        {{ t('search.workplace') }} <span class="auth-optional">{{ t('search.anyIfNone') }}</span>
       </legend>
       <div class="acct-checks">
         <label v-for="mode in MODES" :key="mode" class="acct-check">
@@ -296,7 +302,7 @@ function submit() {
 
     <div class="acct-actions">
       <button class="btn-primary" type="submit" :disabled="!canSubmit">
-        {{ pending ? 'Saving…' : (submitLabel ?? 'Save search') }}
+        {{ pending ? t('search.saving') : (submitLabel ?? t('search.save')) }}
       </button>
     </div>
   </form>

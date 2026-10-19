@@ -16,6 +16,7 @@ export function useDiscoveryRun(profileId: MaybeRefOrGetter<string | null>) {
   const queued = ref<DiscoveryQueued | null>(null)
   const report = ref<DiscoveryRun | null>(null)
   const error = ref(false)
+  const errorCode = ref<string | null>(null)
   const busy = ref(false)
   let generation = 0
   let polls = 0
@@ -43,13 +44,16 @@ export function useDiscoveryRun(profileId: MaybeRefOrGetter<string | null>) {
       if (TERMINAL.has(result.status)) {
         timer.pause()
         await invalidate('geo:saved')
+        busy.value = false
       }
       else timer.resume()
     }
-    catch {
+    catch (cause) {
       if (currentGeneration !== generation) return
       timer.pause()
       error.value = true
+      errorCode.value = cause instanceof ApiError ? cause.code : null
+      busy.value = false
     }
   }
 
@@ -60,6 +64,7 @@ export function useDiscoveryRun(profileId: MaybeRefOrGetter<string | null>) {
     timer.pause()
     busy.value = true
     error.value = false
+    errorCode.value = null
     try {
       const result = await apiPost<DiscoveryQueued>(discoveryStart(id))
       if (currentGeneration !== generation) return
@@ -68,11 +73,18 @@ export function useDiscoveryRun(profileId: MaybeRefOrGetter<string | null>) {
       polls = 0
       await poll()
     }
-    catch {
-      if (currentGeneration === generation) error.value = true
+    catch (cause) {
+      if (currentGeneration === generation) {
+        error.value = true
+        errorCode.value = cause instanceof ApiError ? cause.code : null
+      }
     }
     finally {
-      if (currentGeneration === generation) busy.value = false
+      // A queued/running discovery is still in progress after its first status
+      // read. Keep the control busy until `poll` observes a terminal result so
+      // the UI does not imply the refresh has already finished.
+      if (currentGeneration === generation
+          && (error.value || TERMINAL.has(status.value))) busy.value = false
     }
   }
 
@@ -99,9 +111,10 @@ export function useDiscoveryRun(profileId: MaybeRefOrGetter<string | null>) {
     queued.value = null
     report.value = null
     error.value = false
+    errorCode.value = null
     busy.value = false
     if (id) void hydrate(id, generation)
   }, { immediate: true })
   onScopeDispose(() => timer.pause())
-  return { refresh, status, sourceHealth, lastUpdated, report, busy, error }
+  return { refresh, status, sourceHealth, lastUpdated, report, busy, error, errorCode }
 }

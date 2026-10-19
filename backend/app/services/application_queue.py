@@ -1,4 +1,5 @@
 """Owner-scoped ingress to the durable browser submission lane."""
+from backend.app.application_engine.browser.form_capabilities import FormCapabilityCatalog
 from backend.app.domain.application import ApplicationState
 from backend.app.domain.application_channel import ApplicationChannel
 from backend.app.domain.identifiers import ApplicationId, TaskRunId, UserId
@@ -25,12 +26,14 @@ class ApplicationQueueService:
     def __init__(self, applications: ApplicationRepository,
                  policies: ApplicationPolicyRepository,
                  opportunities: OpportunityRepository,
-                 dispatcher: TaskDispatcher, *, live_enabled: bool) -> None:
+                 dispatcher: TaskDispatcher, *, live_enabled: bool,
+                 form_catalog: FormCapabilityCatalog | None = None) -> None:
         self._applications = applications
         self._policies = policies
         self._opportunities = opportunities
         self._dispatcher = dispatcher
         self._live_enabled = live_enabled
+        self._form_catalog = form_catalog or FormCapabilityCatalog(forms=())
 
     async def enqueue_approved(self, user_id: UserId,
                                app_id: ApplicationId) -> TaskRunId:
@@ -52,6 +55,13 @@ class ApplicationQueueService:
         if (opportunity is None or opportunity.location is None
                 or opportunity.location.country != "CH"
                 or opportunity.application_url is None):
+            raise BrowserSubmissionNotPermitted()
+        if app.form_capability_id is None:
+            raise BrowserSubmissionNotPermitted()
+        decision = self._form_catalog.resolve(
+            str(opportunity.application_url), app.form_driver_key,
+            app.form_fingerprint)
+        if decision.capability_id != app.form_capability_id:
             raise BrowserSubmissionNotPermitted()
         return await self._dispatcher.enqueue(TaskSpec(
             kind=TaskKind.APPLICATION_SUBMISSION,

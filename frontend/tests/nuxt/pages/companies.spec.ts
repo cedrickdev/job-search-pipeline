@@ -36,6 +36,7 @@ import type { VueWrapper } from '@vue/test-utils'
 const COMPANY_ID = '44444444-4444-4444-8444-444444444444'
 const LIST = '/api/v2/companies?'
 const RUN = '/api/v2/company-discovery/run'
+const COUNTRY_PACKS = '/api/v2/country-packs'
 
 /**
  * The routes both screens need.
@@ -52,6 +53,17 @@ function routes(extra: Route[] = [], detail: CompanyDetail = companyDetail(),
                 list = companyList()): Route[] {
   return [
     ...extra,
+    { match: COUNTRY_PACKS, method: 'GET', json: {
+      packs: [{
+        country: 'CH', display_name: 'Switzerland', default_locale: 'fr-CH',
+        locales: ['fr-CH'], currency: 'CHF', languages: ['fr'], timezone: 'Europe/Zurich',
+        map_viewport: {
+          center: { latitude: 46.8182, longitude: 8.2275 }, zoom: 6.2,
+          bounds: { north: 47.8085, south: 45.8179, east: 10.4921, west: 5.9559 },
+        },
+        opportunity_types: ['FULL_TIME'], enabled_source_count: 11,
+      }],
+    } },
     { match: RUN, method: 'POST', json: discoveryRun() },
     { match: `/api/v2/companies/${COMPANY_ID}`, method: 'GET', json: detail },
     { match: '/api/v2/companies', method: 'GET', json: list },
@@ -182,7 +194,8 @@ describe('companies page · the directory', () => {
     const { http, wrapper } = await mountList()
 
     await wrapper.get('input[type="search"]').setValue('logi')
-    await wrapper.get('[aria-label="Country"]').setValue('ch')
+    expect(wrapper.get('[aria-label="Country"]').element.tagName).toBe('SELECT')
+    await wrapper.get('[aria-label="Country"]').setValue('CH')
     await wrapper.get('[aria-label="Platform"]').setValue('LEVER')
     await wrapper.get('[aria-label="Spontaneous"]').setValue('SUPPORTED')
     await wrapper.get('form').trigger('submit')

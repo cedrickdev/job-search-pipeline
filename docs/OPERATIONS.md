@@ -29,7 +29,8 @@ jobs run in the same image and environment as the application.
 | `api` | the FastAPI application (JSON API + built SPA) | core |
 | `frontend` | the Nuxt dev server (dev only) | core |
 | `worker` | the general lane: discovery, export, retention | `workers` |
-| `browser-worker` | the browser lane: Playwright submissions only | `workers` |
+| `morning-scheduler` | evaluate Swiss V2 schedules and enqueue discovery | `workers` |
+| `browser-worker` | the browser lane: application preparation and guarded submissions | `workers` |
 | `migrate` | `alembic upgrade head`, the explicit schema step | `tools` |
 | `seed-plans` | write/reconcile the plan catalogue, idempotently | `tools` |
 | `import-v1` | the V1 SQLite importer | `tools` |
@@ -50,12 +51,79 @@ then the catalogue the entitlement resolver reads exists, then the API and worke
 
 ## Background workers and lanes (§32–40)
 
-### Explicit Swiss catalog morning run
+### Swiss V2 scheduled and on-demand discovery
+
+Settings stores a separate, per-account V2 schedule. `morning-scheduler` is
+disabled by default until approved source access is configured and the operator
+sets `JOBSEARCH_MORNING_SCHEDULER_ENABLED=true`. Once enabled it checks every
+five minutes in `Europe/Zurich`, and enqueues one `MORNING` discovery
+task per active Swiss saved search and local day. The queue's idempotency key
+handles repeated ticks and both instants of a daylight-saving fallback. The
+general `worker` must be running to collect offers; a queued state is not a
+completed search, generated document, or candidature. Source health and warnings
+are visible in `GET /api/v2/me/morning-runs/latest`; the map reads the persisted
+catalog. The Settings “run now” action uses a separate `MANUAL` trigger and does
+not enable the schedule.
+
+Every V2 discovery entry point requires `JOBSEARCH_DISCOVERY_ALLOWED_SOURCES`,
+a comma-separated operator allow-list of reviewed CH source keys. Empty by
+default, it makes manual runs return HTTP 409 and scheduled runs enqueue
+nothing. The general worker rechecks the list before a source request, even
+for tasks queued before a configuration change. An unrestricted saved search
+uses only allowed keys; an explicitly selected unapproved key is refused.
+Setting this variable is not a permit: document source authorization, quotas,
+storage conditions and a bounded non-submitting dry-run first. The current
+review approves no live board; keep the list empty for real accounts.
+
+Greenhouse and Lever use the separate V2 catalog
+`config/ats_reviewed_boards.yaml`, which is empty by default. Do not copy the
+legacy `config/companies.yaml` entries into it automatically. Before adding a
+board, record its employer career-page provenance, applicable collection and
+storage conditions, review date, Swiss posting evidence and a daily request
+budget in `docs/SWISS_SOURCE_REVIEW_2026-10-12.md`. First deploy the V2 board
+access gate and durable budget migration. Then add only reviewed `approved`
+entries, restart both API and worker so they use the same catalog snapshot,
+set `JOBSEARCH_DISCOVERY_ALLOWED_SOURCES=greenhouse,lever`, and use a bounded
+non-submitting one-shot discovery run. Confirm source health, request counts and
+actual CH locations before enabling the resident schedule. A listing feed's
+approval does not enable Playwright form submissions; that is a separate gate.
+The API loads and validates this file during startup; the worker and scheduler
+load it when their process starts or tick begins. Editing the file while a
+worker is running does not hot-reload its existing snapshot. Stop the worker,
+restart API and worker with the reviewed catalog, then resume queued work; the
+new worker rechecks source policy before fetching. Do not assume a queued task
+carries approval from the time it was created.
+
+For a disposable, migrated test database with synthetic accounts only:
+
+```
+python -m backend.app.cli.morning_scheduler --once --dry-run
+python -m backend.app.cli.morning_scheduler --once
+python -m backend.app.cli.run_worker --lane general --once
+```
+
+The dry-run rolls back queued work. On Compose, use the workers profile for
+resident operation; a one-shot check is
+`docker compose --profile workers run --rm morning-scheduler python -m backend.app.cli.morning_scheduler --once --dry-run`.
+Compose's default volume names are fixed for the local application. A different
+`-p` project name **alone does not isolate PostgreSQL**: it can mount the same
+`jobsearch_postgres_data` volume and interrupt the running database. Before a
+rehearsal, set a unique `JOBSEARCH_VOLUME_PREFIX` for **every** Compose command,
+along with non-conflicting `POSTGRES_PORT`, `REDIS_PORT`, `API_PORT` and
+`FRONTEND_PORT`; inspect `docker compose config --format json` and verify that
+`volumes.postgres_data.name` is new before `up`. Never use `down -v` without
+checking the resolved volume names. The prefix defaults to `jobsearch`, so
+ordinary local operation keeps its existing volumes.
+Do not point these rehearsal commands at the candidate's live database. No CH
+jobboard in the current source-access review is approved for real automated
+collection yet; fixtures prove orchestration only. LinkedIn remains disabled.
+
+### Explicit Swiss catalog morning run (per-user CLI compatibility)
 
 First create an active CH saved search for the candidate. The local command
 below queues discovery for **one account's** eligible searches; it never
 submits applications and never starts an implicit schedule. Use a disposable
-test database for rehearsals. `--dry-run` counts eligible searches while
+test database for rehearsals. `--dry-run` counts source-approved searches while
 rolling back queued tasks; omit it only when you intend to enqueue work:
 
 ```
@@ -65,10 +133,15 @@ python -m backend.app.cli.run_worker --lane general --once
 ```
 
 The general worker must run to execute queued discovery; the browser worker is
-not needed for collection. The default trigger is `MORNING`, with one run per
-local Swiss calendar day coalesced for a saved search. Schedule the CLI
-explicitly for each user/deployment if desired; there is no built-in morning
-timer. Review run status, source health and warning codes in the map before
+not needed for collection but is needed to prepare the resulting applications.
+After `DOCUMENTS_RENDERED`, it consumes `APPLICATION_PREPARATION` and only an
+exact reviewed form plus active policy can reach the submission queue. The
+packaged form catalog is empty and live submission is off by default. The
+Morning Run UI is read-only progress, not proof of delivery; the application
+audit trail is authoritative. The default trigger is `MORNING`, with one run per
+local Swiss calendar day coalesced for a saved search. The V2 scheduler above
+now provides the built-in timer; this CLI remains an explicit per-user command.
+Review run status, source health and warning codes in the map before
 interpreting the result count. Partial coverage never means the Swiss market
 has no matching vacancies. LinkedIn is disabled, jobs.ch is not integrated,
 Jooble needs its API key, and ATS sources need employer board identifiers.
@@ -92,17 +165,35 @@ never consume a general-lane worker (§35):
 
 ```
 python -m backend.app.cli.run_worker --lane general    # discovery, export, retention
-python -m backend.app.cli.run_worker --lane browser    # Playwright application submissions
+python -m backend.app.cli.run_worker --lane browser    # application preparation and guarded submissions
 python -m backend.app.cli.run_worker --lane general --once   # drain ready work and exit
 ```
 
 - **`general`** — discovery, account export and the retention sweep. Runs on the lean `runtime`
   image; scale it horizontally, each instance leases distinct work.
-- **`browser`** — Playwright application submissions only, on the Playwright image. Its concurrency
+- **`browser`** — committed application preparation and guarded Playwright submissions, on the Playwright image. Its concurrency
   defaults to 1 so a stuck submission cannot starve the lane; scale by adding containers, not
   threads.
 - **`--once`** drains the currently-ready work and exits — the mode a scheduled `RETENTION_SWEEP`
   cron uses when you would rather run the sweep on a timer than a resident worker.
+
+### Integrated Claude terminal cleanup
+
+When the optional terminal profile is enabled, the general retention sweep includes one bounded
+page of expired Claude terminal sessions. It asks the private manager to stop the labelled runtime
+before it persists `EXPIRED`. A manager outage leaves the session retryable instead of claiming
+cleanup that did not happen.
+
+For an immediate operator pass, inspect first and then apply:
+
+```bash
+python -m backend.app.cli.reap_claude_terminals --dry-run
+python -m backend.app.cli.reap_claude_terminals
+```
+
+The command reports counts only. It must never log prompts, terminal output, environment values,
+host paths, runtime references or user identifiers. During key rotation, stop `terminal-manager`,
+rotate the secret, restart it, then run the reaper and investigate every non-zero failure count.
 
 A task that exhausts its retries lands in the dead-letter lane rather than blocking the queue.
 Inspect and requeue dead-lettered work from the task table; a rising dead-letter count is an alert

@@ -14,19 +14,61 @@
   padding: var(--space-6) var(--space-4);
   display: flex; flex-direction: column; gap: var(--space-2);
 }
+.mobile-nav-toggle, .nav-backdrop { display: none; }
 .brand { font-weight: 700; font-size: 16px; margin-bottom: var(--space-6); }
 .nav-link {
   display: block; padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm); color: var(--text-dim); font-weight: 500;
 }
 .nav-link.active { background: var(--accent-tint); color: var(--text); }
-.nav-link:hover { color: var(--text); }
+@media (hover: hover) and (pointer: fine) {
+  .nav-link:hover { color: var(--text); background: color-mix(in srgb, var(--accent-tint) 55%, transparent); }
+  .command-trigger:hover { background: var(--surface); border-color: var(--accent); color: var(--text); }
+}
 .main { padding: var(--space-8); overflow: auto; }
-.topbar { display: flex; justify-content: flex-end; gap: var(--space-2); margin-bottom: var(--space-6); }
+.topbar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: var(--space-2); min-width: 0; margin-bottom: var(--space-6); }
+.command-trigger {
+  align-items: center; display: inline-flex; flex: 0 1 clamp(14rem, 23vw, 20rem); gap: var(--space-2); min-width: 14rem; min-height: 44px;
+  padding: var(--space-2) var(--space-3); background: var(--surface-2); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; font: inherit;
+  font-size: 13px; text-align: left; transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+}
+.command-trigger:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 35%, transparent); outline-offset: 2px; }
+.command-trigger span:not([aria-hidden="true"]) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.command-trigger kbd {
+  padding: 2px 6px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-muted);
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.2;
+}
+.command-modal { width: min(42rem, calc(100vw - 2rem)); overflow: hidden; }
+.command-palette { max-height: min(32rem, calc(100dvh - 6rem)); }
+.locale-switcher { display: inline-flex; align-items: center; }
+.locale-switcher [role="combobox"] { min-width: 4.25rem; }
+.topbar-account--avatar {
+  display: inline-grid; place-items: center; flex: 0 0 44px; width: 44px; min-height: 44px;
+  padding: 0; color: var(--text); background: var(--surface-2);
+}
+.account-avatar {
+  display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--accent-tint); color: var(--accent); font-size: 11px; font-weight: 700;
+  letter-spacing: .02em;
+}
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .theme-btn {
   background: var(--surface-2); border: 1px solid var(--border);
-  color: var(--text); border-radius: var(--radius-sm);
+  color: var(--text); border-radius: var(--radius-sm); display: inline-flex; align-items: center; flex: 0 0 auto; gap: var(--space-2); min-height: 44px;
   padding: var(--space-2) var(--space-3);
+}
+@media (hover: hover) and (pointer: fine) {
+  .theme-btn:hover, .topbar-account--avatar:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--surface); }
+}
+
+/* A desktop toolbar should remain a compact utility row long before the sidebar
+   turns into a mobile drawer.  Icon-only controls retain their accessible names. */
+@media (max-width: 1180px) and (min-width: 901px) {
+  .topbar { gap: 6px; }
+  .command-trigger { flex-basis: clamp(11rem, 22vw, 15rem); min-width: 11rem; }
+  .topbar-control-label { display: none; }
+  .theme-btn { flex-basis: 44px; justify-content: center; padding: var(--space-2); }
 }
 .copilot-dock {
   position: fixed; top: 0; right: 0; bottom: 0; width: 380px;
@@ -39,6 +81,66 @@
   padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border);
   font-weight: 600;
 }
+
+/* ── Application shell: the sidebar becomes a contained drawer, never a horizontal
+   strip of every route, when a touch-sized viewport cannot hold the navigation. ── */
+@media (max-width: 900px) {
+  .shell { display: block; min-height: 100dvh; }
+  .sidebar {
+    position: fixed; inset: 0 auto 0 0; z-index: 60;
+    width: min(20rem, calc(100vw - 3.5rem));
+    padding: max(var(--space-5), env(safe-area-inset-top)) var(--space-4) max(var(--space-5), env(safe-area-inset-bottom));
+    border-right: 1px solid var(--border); border-bottom: 0;
+    overflow-y: auto; overscroll-behavior: contain;
+    transform: translateX(-105%); transition: transform 180ms ease-out;
+    box-shadow: 10px 0 30px rgb(0 0 0 / 18%);
+  }
+  .sidebar--open { transform: translateX(0); }
+  .sidebar .brand { margin-bottom: var(--space-5); }
+  .sidebar .nav-link { min-height: 44px; display: flex; align-items: center; }
+  .nav-backdrop {
+    display: block; position: fixed; z-index: 59; inset: 0; border: 0;
+    background: rgb(3 7 18 / 48%); cursor: default;
+  }
+  .main { min-width: 0; padding: var(--space-4); }
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    align-items: center; justify-content: flex-start; flex-wrap: nowrap; gap: var(--space-2);
+    margin: calc(var(--space-4) * -1) calc(var(--space-4) * -1) var(--space-4);
+    padding: var(--space-2) var(--space-3);
+    background: color-mix(in srgb, var(--bg) 96%, transparent);
+    border-bottom: 1px solid var(--border); backdrop-filter: blur(12px);
+  }
+  .mobile-nav-toggle {
+    display: inline-grid; place-items: center; flex: 0 0 44px; width: 44px; min-height: 44px;
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .command-trigger { flex: 1 1 auto; min-width: 0; min-height: 44px; }
+  .command-trigger span:not([aria-hidden="true"]) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .command-trigger kbd, .topbar-control-label { display: none; }
+  .topbar > :is(a, button, label) { min-height: 44px; }
+  .theme-btn { flex: 0 0 44px; justify-content: center; padding: var(--space-2); }
+}
+
+@media (max-width: 620px) {
+  .main { padding: var(--space-3); }
+  .topbar {
+    gap: 6px;
+    margin: calc(var(--space-3) * -1) calc(var(--space-3) * -1) var(--space-4);
+  }
+  .locale-switcher { flex: 0 0 auto; }
+  .copilot-dock { inset: auto 0 0; width: 100%; height: min(82dvh, 720px); border-left: 0; border-top: 1px solid var(--border); border-radius: var(--radius) var(--radius) 0 0; }
+}
+
+/* Keep every route's main column shrinkable; long names, URLs and translated
+   labels must not widen the application viewport. */
+.main, .main > *, .main [class*="__content"] { min-width: 0; }
+.main :where(img, video, canvas, svg) { max-width: 100%; }
+.main :where(input, select, textarea) { max-width: 100%; }
+.main :where(p, dd, dt, h1, h2, h3, a, button, label) { overflow-wrap: anywhere; }
+.jobs-table { display: block; max-width: 100%; overflow-x: auto; }
+.copilot-dock { max-width: 100vw; }
 
 /* ── StatusBadge ──────────────────────────────────────────────────────────── */
 .status-badge {

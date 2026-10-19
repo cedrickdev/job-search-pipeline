@@ -426,6 +426,7 @@ export function documentVersion(overrides: Partial<DocumentVersion> = {}): Docum
         text: 'Backend engineer with 8 years of experience',
         evidence_ids: [EVIDENCE_ID],
       },
+      highlights: [],
       experience: [{
         heading: 'Senior Backend Engineer',
         subheading: 'Acme, 2018–2026',
@@ -1230,4 +1231,3 @@ export function usageSnapshot(overrides: Partial<UsageSnapshot> = {}): UsageSnap
     ...overrides,
   }
 }
-

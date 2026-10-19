@@ -25,8 +25,10 @@ Nothing here drives a browser or sends an email itself: it resolves the adapter 
 channel from the registry and calls typed methods, so no vendor branching leaks into
 the workflow (§8).
 """
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
+from backend.app.application_engine.browser.form_capabilities import FormCapabilityCatalog
 from backend.app.application_engine.contracts import (
     AdapterPreparation,
     ApplicationAdapter,
@@ -76,6 +78,7 @@ from backend.app.domain.execution_gate import (
 )
 from backend.app.domain.identifiers import (
     ApplicationId,
+    DocumentVersionId,
     OpportunityId,
     UserId,
     application_id,
@@ -158,6 +161,7 @@ class ApplicationService:
                  opportunities: OpportunityRepository,
                  documents: CandidateDocumentRepository,
                  registry: ApplicationAdapterRegistry,
+                 form_catalog: FormCapabilityCatalog | None = None,
                  metering: MeteringService | None = None) -> None:
         self._applications = applications
         self._events = events
@@ -170,6 +174,7 @@ class ApplicationService:
         self._opportunities = opportunities
         self._documents = documents
         self._registry = registry
+        self._form_catalog = form_catalog or FormCapabilityCatalog(forms=())
         self._metering = metering
 
     # -- reads ---------------------------------------------------------------
@@ -239,7 +244,9 @@ class ApplicationService:
     # -- prepare -------------------------------------------------------------
 
     async def prepare(self, user_id: UserId, app_id: ApplicationId, *,
-                      now: datetime) -> Application:
+                      now: datetime,
+                      required_versions: Mapping[CandidateDocumentType, DocumentVersionId]
+                      | None = None) -> Application:
         """Prepare materials, resolve answers, pin documents, and route by the gate.
 
         Reversible (§33): it may be re-run after a human resolves something. It never
@@ -250,6 +257,15 @@ class ApplicationService:
         if app.is_terminal or app.state is ApplicationState.SUBMITTED:
             raise ApplicationNotActionable(app.state, "prepare")
         adapter = self._registry.resolve(app.channel)
+
+        # A Morning Run's checkpoint is authoritative even if a user later generated
+        # another CV. Refuse a missing/foreign/unrendered version before browser I/O.
+        exact_pins = None
+        if required_versions is not None:
+            documents = await self._documents_for(app, app.opportunity_id) \
+                if app.opportunity_id is not None else ()
+            exact_pins = self._pin_documents(
+                documents, now=now, required_versions=required_versions)
 
         app = app.transition_to(ApplicationState.PREPARING, at=now)
         app = await self._applications.upsert(app)
@@ -268,11 +284,27 @@ class ApplicationService:
 
         answers, answer_reasons = _resolve_answers(prep)
         human_reasons = _dedupe(prep.human_required_reasons + answer_reasons)
-        pinned = self._pin_documents(context.documents, now=now)
+        pinned = (exact_pins if exact_pins is not None else
+                  self._pin_documents(context.documents, now=now))
 
         app = app.with_answers(answers, at=now)
         app = app.with_pinned_documents(pinned, at=now)
-        app = app.with_form_fingerprint(prep.form_fingerprint, at=now)
+        capability_id = None
+        effective_safety = adapter.capabilities.safety_level
+        if app.channel is ApplicationChannel.BROWSER:
+            decision = self._form_catalog.resolve(
+                str(context.opportunity.application_url)
+                if context.opportunity is not None else None,
+                prep.driver_key, prep.form_fingerprint,
+            )
+            if (decision.capability_id is not None
+                    and self._form_catalog.allows_questions(
+                        decision.capability_id, prep.questions)
+                    and not human_reasons):
+                capability_id = decision.capability_id
+                effective_safety = decision.safety_level
+        app = app.with_form_identity(
+            prep.form_fingerprint, prep.driver_key, capability_id, at=now)
         await self._append(app, ApplicationEventType.PREPARED, now=now,
                           detail=prep.detail)
 
@@ -284,7 +316,7 @@ class ApplicationService:
             return resolved
 
         authorization = await self._evaluate_gate(
-            app, adapter_safety=adapter.capabilities.safety_level, now=now)
+            app, adapter_safety=effective_safety, now=now)
         return await self._route_prepared(app, authorization, now=now)
 
     async def _route_prepared(self, app: Application,
@@ -340,8 +372,12 @@ class ApplicationService:
         if app.state is not ApplicationState.APPROVED:
             raise ApplicationNotActionable(app.state, "reserve submission")
         adapter = self._registry.resolve(app.channel)
+        scoped_safety = await self._scoped_safety(app, adapter.capabilities.safety_level)
+        if (app.form_capability_id is not None
+                and scoped_safety is not AdapterSafetyLevel.FULLY_SUPPORTED):
+            raise ApplicationError(ApplicationFailureCode.APPLICATION_FORM_CHANGED)
         authorization = await self._evaluate_gate(
-            app, adapter_safety=adapter.capabilities.safety_level, now=now)
+            app, adapter_safety=scoped_safety, now=now)
         stopped = await self._stop_if_gate_refuses(app, authorization, now=now)
         if stopped is not None:
             raise ApplicationNotActionable(stopped.state, "reserve submission")
@@ -390,8 +426,15 @@ class ApplicationService:
         if attempt is None or attempt.id != reservation.attempt_id or not attempt.is_in_flight:
             raise ApplicationError(ApplicationFailureCode.APPLICATION_SUBMISSION_UNKNOWN)
         adapter = self._registry.resolve(app.channel)
+        scoped_safety = await self._scoped_safety(app, adapter.capabilities.safety_level)
+        if (app.form_capability_id is not None
+                and scoped_safety is not AdapterSafetyLevel.FULLY_SUPPORTED):
+            return SubmissionResult(
+                outcome=SubmissionOutcome.REQUIRES_HUMAN,
+                human_required_reason=HumanRequiredReason.AMBIGUOUS_FORM,
+                detail="the reviewed form capability is no longer active")
         authorization = await self._evaluate_gate(
-            app, adapter_safety=adapter.capabilities.safety_level,
+            app, adapter_safety=scoped_safety,
             now=now, exclude_reserved=True)
         if authorization.outcome not in (
                 ExecutionOutcome.PERMITTED, ExecutionOutcome.REQUIRES_APPROVAL):
@@ -653,6 +696,21 @@ class ApplicationService:
             expected_form_fingerprint=app.form_fingerprint,
             correlation_id=app.correlation_id)
 
+    async def _scoped_safety(
+        self, app: Application, ordinary: AdapterSafetyLevel,
+    ) -> AdapterSafetyLevel:
+        if app.channel is not ApplicationChannel.BROWSER or app.form_capability_id is None:
+            return ordinary
+        opportunity = await self._opportunities.get(app.opportunity_id) \
+            if app.opportunity_id is not None else None
+        decision = self._form_catalog.resolve(
+            str(opportunity.application_url) if opportunity else None,
+            app.form_driver_key, app.form_fingerprint,
+        )
+        if decision.capability_id != app.form_capability_id:
+            return ordinary
+        return decision.safety_level
+
     async def _documents_for(self, app: Application,
                             opportunity_id: OpportunityId
                             ) -> tuple[CandidateDocument, ...]:
@@ -666,11 +724,24 @@ class ApplicationService:
         return tuple(found)
 
     def _pin_documents(self, documents: tuple[CandidateDocument, ...], *,
-                      now: datetime) -> tuple[PinnedDocument, ...]:
+                      now: datetime,
+                      required_versions: Mapping[CandidateDocumentType, DocumentVersionId]
+                      | None = None) -> tuple[PinnedDocument, ...]:
         """Pin the newest rendered version of each document for submission (§14-16)."""
         pinned: list[PinnedDocument] = []
+        if required_versions is not None and set(required_versions) != {
+            document.document_type for document in documents
+        }:
+            raise ApplicationError(ApplicationFailureCode.APPLICATION_DOCUMENT_NOT_READY)
         for document in documents:
-            version = _latest_rendered(document)
+            version = (next((item for item in document.versions
+                             if item.id == required_versions[document.document_type]), None)
+                       if required_versions is not None else _latest_rendered(document))
+            if required_versions is not None and (
+                    version is None or version.status is not DocumentStatus.RENDERED
+                    or version.artifact is None or version.guard_report is None
+                    or not version.guard_report.ok):
+                raise ApplicationError(ApplicationFailureCode.APPLICATION_DOCUMENT_NOT_READY)
             if version is not None:
                 pinned.append(PinnedDocument(
                     document_id=document.id, version_id=version.id,

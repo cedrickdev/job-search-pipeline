@@ -286,6 +286,8 @@ class Application(DomainModel):
     pinned_documents: tuple[PinnedDocument, ...] = ()
     answers: tuple[ApplicationAnswer, ...] = ()
     form_fingerprint: NonEmptyStr | None = None
+    form_driver_key: NonEmptyStr | None = None
+    form_capability_id: NonEmptyStr | None = None
     attempt_count: Annotated[int, Field(ge=0)] = 0
     correlation_id: NonEmptyStr | None = None
     created_at: UtcDatetime
@@ -354,6 +356,14 @@ class Application(DomainModel):
         """
         return self.model_copy(
             update={"form_fingerprint": fingerprint, "updated_at": at})
+
+    def with_form_identity(self, fingerprint: str | None, driver_key: str | None,
+                           capability_id: str | None, *, at: UtcDatetime) -> "Application":
+        """Record the exact prepared variant; a later send must recheck all three."""
+        return self.model_copy(update={
+            "form_fingerprint": fingerprint, "form_driver_key": driver_key,
+            "form_capability_id": capability_id, "updated_at": at,
+        })
 
     def with_answers(self, answers: tuple[ApplicationAnswer, ...], *,
                     at: UtcDatetime) -> "Application":

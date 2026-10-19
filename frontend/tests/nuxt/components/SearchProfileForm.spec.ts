@@ -57,6 +57,16 @@ describe('SearchProfileForm', () => {
     expect(wrapper.get(SUBMIT).attributes('disabled')).toBeDefined()
   })
 
+  it('offers only countries activated by the deployment', async () => {
+    const wrapper = await mountForm()
+    const country = wrapper.get<HTMLSelectElement>('[aria-label="Area 1 country"]')
+
+    expect(country.element.tagName).toBe('SELECT')
+    expect(country.findAll('option').map(option => option.attributes('value')))
+      .toEqual(['', 'CH'])
+    expect(country.text()).toContain('Switzerland')
+  })
+
   it('fills itself from a saved search', async () => {
     const wrapper = await mountForm({
       search: search({
@@ -217,7 +227,7 @@ describe('SearchProfileForm · what it sends', () => {
   async function drafted(name = 'Backend roles') {
     const wrapper = await mountForm()
     await wrapper.get('#search-name').setValue(name)
-    await wrapper.get('[aria-label="Area 1 country"]').setValue('ch')
+    await wrapper.get('[aria-label="Area 1 country"]').setValue('CH')
     return wrapper
   }
 

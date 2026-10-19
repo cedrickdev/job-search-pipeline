@@ -16,6 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app.domain.candidate import (
+    CandidateContact,
     Availability,
     CandidateEvidence,
     EvidenceKind,
@@ -133,6 +134,23 @@ async def test_save_profile_keeps_every_value_object_the_draft_carried() -> None
     # preferences, and evidence is added afterwards through its own service.
     assert saved.evidence == ()
     assert saved.claims == ()
+
+
+@pytest.mark.asyncio
+async def test_save_profile_keeps_explicit_contact_details_for_applications() -> None:
+    service, _, _, _ = build_service()
+    user = account()
+
+    saved = await service.save_profile(
+        user.id,
+        profile_draft(contact=CandidateContact(email="cedrickfeze@bluewin.ch",
+                                                phone="+41 783410631")),
+        now=NOW,
+    )
+
+    assert saved.contact is not None
+    assert str(saved.contact.email) == "cedrickfeze@bluewin.ch"
+    assert saved.contact.phone == "+41 783410631"
 
 
 @pytest.mark.asyncio

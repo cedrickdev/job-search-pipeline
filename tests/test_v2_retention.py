@@ -239,6 +239,37 @@ async def test_a_dry_run_reports_what_it_would_remove_but_deletes_nothing(tmp_pa
     assert store.get(lapsed.storage_key).content == b"archive"
 
 
+async def test_retention_runs_the_bounded_terminal_reaper_and_surfaces_failures(tmp_path) -> None:
+    """Expired terminal runtimes share the scheduled retention path without leaking metadata."""
+    class TerminalReaper:
+        async def reap_due(self, *, now):
+            assert now == SWEEP_AT
+            return type("Report", (), {"expired": 2, "failed": 1})()
+
+        async def count_due(self, *, now):
+            assert now == SWEEP_AT
+            return 2
+
+    service = RetentionService(
+        sessions=FakeSessionRepository(),
+        provider_sessions=FakeProviderSessionRepository(),
+        exports=FakeAccountExportRepository(),
+        export_store=LocalAccountExportStore(tmp_path),
+        settings=_settings(),
+        terminal_reaper=TerminalReaper(),
+    )
+
+    report = await service.sweep(now=SWEEP_AT)
+    dry_run = await service.sweep(now=SWEEP_AT, dry_run=True)
+
+    assert report.expired_terminal_sessions == 2
+    assert report.terminal_cleanup_failures == 1
+    assert report.failed == 1
+    assert not report.is_clean
+    assert dry_run.expired_terminal_sessions == 2
+    assert dry_run.terminal_cleanup_failures == 0
+
+
 async def test_the_sweep_pages_beyond_the_batch_limit(tmp_path) -> None:
     """A sweep drains more rows than its `sweep_batch_limit`, looping until a page comes short."""
     sessions = FakeSessionRepository()

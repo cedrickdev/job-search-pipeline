@@ -131,6 +131,24 @@ async def test_resolve_raises_when_even_the_free_plan_is_unseeded():
     assert caught.value.code is BillingErrorCode.PLAN_CATALOGUE_MISSING
 
 
+async def test_local_unmetered_resolves_a_non_paid_unlimited_development_plan():
+    """Local rehearsal removes commercial ceilings without impersonating a paid plan."""
+    free = _a_free_plan(
+        an_entitlement(key=EntitlementKey.ACTIVE_SEARCH_PROFILES, limit=1),
+        an_entitlement(key=EntitlementKey.APPLICATION_SUBMISSIONS, limit=5),
+    )
+    plans, subscriptions = FakePlanRepository(), FakeSubscriptionRepository()
+    await plans.upsert(free)
+    resolver = EntitlementResolver(plans, subscriptions, local_unmetered=True)
+
+    resolved = await resolver.resolve(USER, as_of=NOW)
+
+    assert resolved.plan.slug == "local-development"
+    assert resolved.is_paid is False
+    assert all(entitlement.limit is None for entitlement in resolved.plan.entitlements)
+    assert resolved.period == calendar_month_period(NOW)
+
+
 # -- the metering reservation: authorize (the commercial clause) and record (the ledger) -------
 
 async def _metering_over(*plans, subscriptions=(), usage_events=()):

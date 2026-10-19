@@ -24,6 +24,9 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.application_engine.adapters.generic import GenericManualAdapter
+from backend.app.application_engine.browser.form_capabilities import (
+    FormCapability, FormCapabilityCatalog,
+)
 from backend.app.application_engine.contracts import (
     AdapterCapabilities,
     AdapterPreparation,
@@ -310,6 +313,19 @@ _OTHER_ELIGIBILITY = EligibilityResultId(UUID("00000000-0000-4000-8000-000000000
 # A distinct instant from the seed (NOW), so the day/week window includes the winner's
 # freshly reserved slot when the loser counts the budget.
 _SUBMIT_AT = LATER
+_QUEUE_TARGET = "https://jobs.lever.co/fixture/role/apply"
+_QUEUE_FINGERPRINT = "a" * 64
+
+
+def _queue_fixture_catalog() -> FormCapabilityCatalog:
+    return FormCapabilityCatalog(forms=(FormCapability(
+        id="lever-queue-fixture", ats="lever", employer="Fixture SA",
+        target_url=_QUEUE_TARGET, driver_key="lever/1",
+        form_fingerprint=_QUEUE_FINGERPRINT,
+        allowed_required_fields=frozenset(), allowed_upload_slots=frozenset(),
+        conditions_url="https://fixture.example/terms", review_id="fixture-review",
+        reviewed_at=_SUBMIT_AT.date(), access_decision="approved",
+    ),))
 
 
 class _CountingBrowserAdapter:
@@ -607,13 +623,22 @@ async def test_persisted_browser_queue_reaches_worker_once(committed_world):
     registry.register(adapter)
 
     async with session_scope(committed_world) as session:
+        await SqlAlchemyOpportunityRepository(session).upsert(
+            an_opportunity(application_url=_QUEUE_TARGET))
+        applications = SqlAlchemyApplicationRepository(session)
+        approved = await applications.get(USER, app_id)
+        assert approved is not None
+        await applications.upsert(approved.model_copy(update={
+            "form_driver_key": "lever/1", "form_fingerprint": _QUEUE_FINGERPRINT,
+            "form_capability_id": "lever-queue-fixture",
+        }))
         queue = ApplicationQueueService(
-            SqlAlchemyApplicationRepository(session),
+            applications,
             SqlAlchemyApplicationPolicyRepository(session),
             SqlAlchemyOpportunityRepository(session),
             PersistedTaskDispatcher(SqlAlchemyTaskRunRepository(session),
                                     clock=lambda: _SUBMIT_AT),
-            live_enabled=True)
+            live_enabled=True, form_catalog=_queue_fixture_catalog())
         task_id = await queue.enqueue_approved(USER, app_id)
         assert await queue.enqueue_approved(USER, app_id) == task_id
 
@@ -653,7 +678,8 @@ async def test_authenticated_api_queue_persists_task_and_worker_finishes_it(
             await session.flush()
             await SqlAlchemyCandidateProfileRepository(session).upsert(
                 a_candidate_profile(id=profile_id, user_id=owner))
-            await SqlAlchemyOpportunityRepository(session).upsert(an_opportunity())
+            await SqlAlchemyOpportunityRepository(session).upsert(
+                an_opportunity(application_url=_QUEUE_TARGET))
             policy = await SqlAlchemyApplicationPolicyRepository(session).upsert(
                 an_autopilot_policy(user_id=owner))
             decision = await SqlAlchemyApplicationDecisionRepository(session).upsert(
@@ -664,7 +690,9 @@ async def test_authenticated_api_queue_persists_task_and_worker_finishes_it(
                                       candidate_profile_id=profile_id))
             approved = await SqlAlchemyApplicationRepository(session).upsert(
                 _an_application(decision, state=ApplicationState.APPROVED,
-                                user_id=owner))
+                                user_id=owner, form_driver_key="lever/1",
+                                form_fingerprint=_QUEUE_FINGERPRINT,
+                                form_capability_id="lever-queue-fixture"))
 
         async def persisted_queue():
             async with session_scope(committed_world) as session:
@@ -674,7 +702,7 @@ async def test_authenticated_api_queue_persists_task_and_worker_finishes_it(
                     SqlAlchemyOpportunityRepository(session),
                     PersistedTaskDispatcher(SqlAlchemyTaskRunRepository(session),
                                             clock=lambda: _SUBMIT_AT),
-                    live_enabled=True)
+                    live_enabled=True, form_catalog=_queue_fixture_catalog())
 
         api.app.dependency_overrides[application_queue_service] = persisted_queue
         response = await api.write("POST", f"/applications/{approved.id}/queue")

@@ -9,6 +9,7 @@
 <script setup lang="ts">
 defineProps<{ loading?: boolean }>()
 const emit = defineEmits<{ search: [] }>()
+const { localize: l } = useLocale()
 </script>
 
 <template>
@@ -18,8 +19,8 @@ const emit = defineEmits<{ search: [] }>()
     :disabled="loading"
     @click="emit('search')"
   >
-    <span v-if="loading">Searching…</span>
-    <span v-else>Search this area</span>
+    <span v-if="loading">{{ l('Searching…', 'Recherche…') }}</span>
+    <span v-else>{{ l('Search this area', 'Rechercher dans cette zone') }}</span>
   </button>
 </template>
 

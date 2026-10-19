@@ -21,19 +21,21 @@
 import { computed, onMounted, ref } from 'vue'
 import { useSessionStore } from '~/stores/session'
 import { errorMessage, fieldErrors } from '~/utils/v2-errors'
+import { useLocale } from '~/composables/useLocale'
 
 definePageMeta({ layout: false })
-
-useHead({ title: 'Create an account · Command Center' })
 
 /** Matches `MINIMUM_PASSWORD_LENGTH` in backend/app/core/passwords.py. */
 const MINIMUM_PASSWORD_LENGTH = 12
 
 const session = useSessionStore()
+const { locale, t } = useLocale()
+useHead({ title: () => `${t('auth.createAccount')} · Command Center` })
 
 const displayName = ref('')
 const email = ref('')
 const password = ref('')
+const showPassword = ref(false)
 const pending = ref(false)
 const failure = ref<unknown>(null)
 
@@ -74,17 +76,14 @@ async function submit() {
 <template>
   <main class="auth-page">
     <form class="auth-card" novalidate @submit.prevent="submit">
-      <h1>Create an account</h1>
-      <p class="auth-hint">
-        One account per person on this machine. Nothing is sent anywhere: the account
-        lives in the database this application runs against.
-      </p>
+      <h1>{{ t('auth.createAccount') }}</h1>
+      <p class="auth-hint">{{ t('auth.registerIntro') }}</p>
 
       <p v-if="message" class="auth-error" role="alert">
         {{ message }}
       </p>
 
-      <label class="auth-field" for="display-name">Name <span class="auth-optional">(optional)</span></label>
+      <label class="auth-field" for="display-name">{{ t('auth.name') }} <span class="auth-optional">({{ t('auth.optional') }})</span></label>
       <input
         id="display-name"
         v-model.trim="displayName"
@@ -97,7 +96,7 @@ async function submit() {
         {{ fields.display_name }}
       </p>
 
-      <label class="auth-field" for="email">Email</label>
+      <label class="auth-field" for="email">{{ t('auth.email') }}</label>
       <input
         id="email"
         v-model.trim="email"
@@ -111,37 +110,49 @@ async function submit() {
         {{ fields.email }}
       </p>
 
-      <label class="auth-field" for="password">Password</label>
-      <input
-        id="password"
-        v-model="password"
-        type="password"
-        name="password"
-        autocomplete="new-password"
-        :minlength="MINIMUM_PASSWORD_LENGTH"
-        required
-        :disabled="pending"
-        aria-describedby="password-hint"
-      >
+      <label class="auth-field" for="password">{{ t('auth.password') }}</label>
+      <div class="password-field">
+        <input
+          id="password"
+          v-model="password"
+          :type="showPassword ? 'text' : 'password'"
+          name="password"
+          autocomplete="new-password"
+          :minlength="MINIMUM_PASSWORD_LENGTH"
+          required
+          :disabled="pending"
+          aria-describedby="password-hint"
+        >
+        <button
+          class="password-toggle"
+          type="button"
+          :aria-label="showPassword ? t('common.hidePassword') : t('common.showPassword')"
+          :title="showPassword ? t('common.hidePassword') : t('common.showPassword')"
+          :disabled="pending"
+          @click="showPassword = !showPassword"
+        >
+          {{ showPassword ? '◉' : '◌' }}
+        </button>
+      </div>
       <p id="password-hint" class="auth-hint">
-        At least {{ MINIMUM_PASSWORD_LENGTH }} characters. A passphrase of a few words
-        is easier to remember and harder to guess than a short mixed-case password.
+        {{ locale === 'fr' ? 'Au moins' : 'At least' }} {{ MINIMUM_PASSWORD_LENGTH }}
+        {{ locale === 'fr' ? 'caractères.' : 'characters.' }} {{ t('auth.passwordHint') }}
       </p>
       <p v-if="tooShort" class="auth-field-error" role="alert">
-        {{ MINIMUM_PASSWORD_LENGTH }} characters minimum.
+        {{ MINIMUM_PASSWORD_LENGTH }} {{ t('auth.passwordMinimum') }}
       </p>
       <p v-else-if="fields.password" class="auth-field-error" role="alert">
         {{ fields.password }}
       </p>
 
       <button class="btn-primary" type="submit" :disabled="pending || tooShort">
-        {{ pending ? 'Creating…' : 'Create account' }}
+        {{ pending ? t('common.loading') : t('auth.createAccount') }}
       </button>
 
       <p class="auth-alt">
-        Already have an account?
+        {{ t('auth.haveAccount') }}
         <NuxtLink to="/login">
-          Sign in
+          {{ t('common.signIn') }}
         </NuxtLink>
       </p>
     </form>

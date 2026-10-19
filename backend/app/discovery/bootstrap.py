@@ -36,8 +36,14 @@ through `required_capabilities`, where advisory claims do not count.
 from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
-from backend.app.discovery.adapters.v1_catalog import build_v1_sources
-from backend.app.discovery.adapters.v1_sources import Clock, CompanyBoard, utc_now
+from backend.app.discovery.adapters.budgeted_ats import (
+    AtsRequestBudget,
+    BudgetedAtsSourceAdapter,
+)
+from backend.app.discovery.adapters.v1_catalog import ATS_SOURCES, build_v1_sources
+from backend.app.discovery.adapters.v1_sources import Clock, utc_now
+from backend.app.discovery.ats_board_catalog import ReviewedBoard
+from backend.app.discovery.contracts import OpportunitySource
 from backend.app.discovery.orchestrator import (
     MAX_CONCURRENT_SOURCES,
     DiscoveryOrchestrator,
@@ -65,7 +71,8 @@ def build_country_packs() -> CountryPackRegistry:
 def build_source_registry(
     *,
     packs: CountryPackRegistry,
-    boards: Mapping[str, Sequence[CompanyBoard]] | None = None,
+    boards: Mapping[str, Sequence[ReviewedBoard]],
+    budget: AtsRequestBudget | None = None,
     clock: Clock = utc_now,
 ) -> SourceRegistry:
     """Every wrapped V1 source, registered under its stable key.
@@ -75,9 +82,23 @@ def build_source_registry(
     it reads. `boards` and `clock` pass straight through to `build_v1_sources`,
     which is what lets a test register two fake employers and a frozen clock.
     """
+    if set(boards) - {"greenhouse", "lever"}:
+        raise ValueError("V2 ATS catalog contains an unsupported source")
+    if any(boards.values()) and budget is None:
+        raise ValueError("V2 ATS boards require a durable request budget")
+    # Never pass approved boards into an unbudgeted V1 adapter, even briefly.
+    sources: list[OpportunitySource] = list(build_v1_sources(
+        packs=packs.get, boards={}, clock=clock))
+    fetches = {metadata.source_key: fetch for metadata, fetch in ATS_SOURCES}
+    for index, source in enumerate(sources):
+        key = source.metadata.source_key
+        if key in ("greenhouse", "lever") and boards.get(key):
+            assert budget is not None
+            sources[index] = BudgetedAtsSourceAdapter(
+                metadata=source.metadata, fetch=fetches[key],
+                boards=boards[key], budget=budget, packs=packs.get, clock=clock)
     registry = SourceRegistry()
-    registry.register_all(build_v1_sources(packs=packs.get, boards=boards,
-                                           clock=clock))
+    registry.register_all(sources)
     return registry
 
 
@@ -141,7 +162,8 @@ class Discovery(NamedTuple):
 
 def build_discovery(
     *,
-    boards: Mapping[str, Sequence[CompanyBoard]] | None = None,
+    boards: Mapping[str, Sequence[ReviewedBoard]],
+    budget: AtsRequestBudget | None = None,
     clock: Clock = utc_now,
     max_concurrency: int = MAX_CONCURRENT_SOURCES,
 ) -> Discovery:
@@ -153,7 +175,8 @@ def build_discovery(
     and read the results.
     """
     packs = build_country_packs()
-    registry = build_source_registry(packs=packs, boards=boards, clock=clock)
+    registry = build_source_registry(packs=packs, boards=boards,
+                                     budget=budget, clock=clock)
     verify_pack_expectations(registry, packs)
     return Discovery(
         packs=packs,

@@ -50,6 +50,7 @@ from backend.app.billing.service import (
     UsageSnapshot,
 )
 from backend.app.chat.conversation import ChatStreamEvent, ChatStreamEventType
+from backend.app.claude_terminal.contracts import ClaudeTerminalSession
 from backend.app.companies.contracts import (
     MAX_COMPANIES_PER_PROVIDER,
     CompanyDiscoveryRequest,
@@ -197,6 +198,7 @@ from backend.app.domain.identifiers import (
     ChatActionProposalId,
     ChatMessageId,
     ClaimId,
+    ClaudeTerminalSessionId,
     CompanyId,
     ConversationId,
     DocumentVersionId,
@@ -246,6 +248,7 @@ from backend.app.domain.matching import (
     MatchEvaluation,
     to_percent,
 )
+from backend.app.domain.morning_preparation import Preparation, PreparationStage
 from backend.app.domain.opportunity import (
     ContractType,
     Opportunity,
@@ -286,6 +289,7 @@ from backend.app.domain.subscription_event import (
     SubscriptionEvent,
     SubscriptionEventOutcome,
 )
+from backend.app.domain.task import TaskStatus
 from backend.app.domain.usage import UsagePeriod
 from backend.app.domain.user import User, UserStatus
 from backend.app.interview.service import AnswerOutcome, InterviewTurn, SessionDetail
@@ -302,17 +306,20 @@ from backend.app.repositories.contracts import (
     MatchedRadius,
     OpportunityGeoResult,
 )
+from backend.app.repositories.morning_run import MorningApplicationProgress
 from backend.app.services.assessment import Assessment
 from backend.app.services.company_directory import CompanyDetail
 from backend.app.services.company_discovery import (
     CompanyDiscoveryOutcome,
     OpportunityLinkReport,
 )
+from backend.app.services.morning_run import MorningRunItem, MorningRunStatus
 from backend.app.services.onboarding import (
     CandidateProfileDraft,
     OnboardingState,
     SearchProfileDraft,
 )
+from country_packs.contracts import CountryPack
 
 Password = SecretStr
 
@@ -328,6 +335,64 @@ class ApiModel(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
+
+
+class CountryMapCenterResponse(ApiModel):
+    latitude: float
+    longitude: float
+
+
+class CountryMapBoundsResponse(ApiModel):
+    north: float
+    south: float
+    east: float
+    west: float
+
+
+class CountryMapViewportResponse(ApiModel):
+    center: CountryMapCenterResponse
+    zoom: float
+    bounds: CountryMapBoundsResponse
+
+
+class CountryPackResponse(ApiModel):
+    country: str
+    display_name: str
+    default_locale: str
+    locales: tuple[str, ...]
+    currency: str
+    languages: tuple[str, ...]
+    timezone: str
+    map_viewport: CountryMapViewportResponse
+    opportunity_types: tuple[str, ...]
+    enabled_source_count: int
+
+    @classmethod
+    def of(cls, pack: CountryPack) -> "CountryPackResponse":
+        viewport = pack.metadata.map_viewport
+        return cls(
+            country=pack.country,
+            display_name=pack.metadata.display_name,
+            default_locale=pack.metadata.default_locale,
+            locales=pack.metadata.locales,
+            currency=pack.metadata.currency,
+            languages=pack.metadata.languages,
+            timezone=pack.metadata.timezone,
+            map_viewport=CountryMapViewportResponse(
+                center=CountryMapCenterResponse(
+                    latitude=viewport.center.latitude,
+                    longitude=viewport.center.longitude,
+                ),
+                zoom=viewport.zoom,
+                bounds=CountryMapBoundsResponse(**viewport.bounds.model_dump()),
+            ),
+            opportunity_types=tuple(value.value for value in pack.opportunity_types.supported),
+            enabled_source_count=len(pack.enabled_source_keys),
+        )
+
+
+class CountryPackListResponse(ApiModel):
+    packs: tuple[CountryPackResponse, ...]
 
 
 class RegisterRequest(ApiModel):
@@ -407,6 +472,7 @@ class CandidateProfileResponse(ApiModel):
             id=profile.id, user_id=profile.user_id, updated_at=profile.updated_at,
             profile=CandidateProfileDraft(
                 display_name=profile.display_name,
+                contact=profile.contact,
                 headline=profile.headline,
                 base_location=profile.base_location,
                 languages=profile.languages,
@@ -1071,6 +1137,101 @@ class DiscoveryRunResponse(ApiModel):
                    source_health=tuple(DiscoverySourceHealthResponse.of(item)
                                        for item in run.source_health),
                    warning_codes=run.warning_codes)
+
+
+class MorningScheduleRequest(ApiModel):
+    enabled: bool
+    local_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    cadence: Literal["daily", "weekdays"]
+
+
+class MorningScheduleResponse(MorningScheduleRequest):
+    updated_at: UtcDatetime | None = None
+
+
+class MorningRunQueuedItemResponse(ApiModel):
+    search_profile_id: UUID
+    run_id: UUID
+    status: Literal["QUEUED", "RUNNING", "SUCCEEDED", "DEAD_LETTERED"]
+
+    @classmethod
+    def of(cls, item: MorningRunItem) -> "MorningRunQueuedItemResponse":
+        return cls(search_profile_id=item.search_profile_id, run_id=item.run_id,
+                   status=item.status.value)
+
+
+class MorningRunBatchResponse(ApiModel):
+    runs: tuple[MorningRunQueuedItemResponse, ...]
+
+
+class MorningPreparationResponse(ApiModel):
+    opportunity_id: UUID
+    stage: PreparationStage
+    reason_code: str | None = None
+    resume_version_id: UUID | None = None
+    cover_letter_version_id: UUID | None = None
+    updated_at: UtcDatetime
+    task_status: Literal["QUEUED", "RUNNING", "SUCCEEDED", "DEAD_LETTERED"] | None = None
+    task_failure_code: str | None = None
+    application_id: UUID | None = None
+    application_state: ApplicationState | None = None
+    form_capability_id: str | None = None
+    submission_task_status: TaskStatus | None = None
+    application_blocker_code: str | None = None
+
+    @classmethod
+    def of(cls, item: Preparation,
+           task: tuple[TaskStatus, str | None] | None = None,
+           progress: MorningApplicationProgress | None = None) -> "MorningPreparationResponse":
+        return cls(opportunity_id=item.opportunity_id, stage=item.stage,
+                   reason_code=item.reason_code,
+                   resume_version_id=item.resume_version_id,
+                   cover_letter_version_id=item.cover_letter_version_id,
+                   updated_at=item.updated_at,
+                   task_status=task[0].value if task else None,
+                   task_failure_code=task[1] if task else None,
+                   application_id=progress.application_id if progress else None,
+                   application_state=progress.state if progress else None,
+                   form_capability_id=progress.capability_id if progress else None,
+                   submission_task_status=(progress.submission_task_status
+                                           if progress else None),
+                   application_blocker_code=progress.blocker_code if progress else None)
+
+
+class MorningRunStatusResponse(ApiModel):
+    search_profile_id: UUID
+    run_id: UUID | None
+    status: Literal["NOT_STARTED", "QUEUED", "RUNNING", "SUCCEEDED", "PARTIAL", "FAILED"]
+    started_at: UtcDatetime | None = None
+    finished_at: UtcDatetime | None = None
+    seen_count: int = Field(ge=0)
+    matched_count: int = Field(ge=0)
+    source_health: tuple[DiscoverySourceHealthResponse, ...] = ()
+    warning_codes: tuple[str, ...] = ()
+    preparations: tuple[MorningPreparationResponse, ...] = ()
+    preparations_truncated: bool = False
+
+    @classmethod
+    def of(cls, item: MorningRunStatus) -> "MorningRunStatusResponse":
+        return cls(
+            search_profile_id=item.search_profile_id, run_id=item.run_id,
+            status=item.status, started_at=item.started_at,
+            finished_at=item.finished_at, seen_count=item.seen_count,
+            matched_count=item.matched_count,
+            source_health=tuple(DiscoverySourceHealthResponse.of(health)
+                                for health in item.source_health),
+            warning_codes=item.warning_codes,
+            preparations=tuple(MorningPreparationResponse.of(
+                                   preparation,
+                                   item.preparation_tasks.get(preparation.opportunity_id),
+                                   item.application_progress.get(preparation.opportunity_id))
+                               for preparation in item.preparations),
+            preparations_truncated=item.preparations_truncated,
+        )
+
+
+class MorningRunLatestResponse(ApiModel):
+    runs: tuple[MorningRunStatusResponse, ...]
 
 
 class CompanyGeoItemResponse(ApiModel):
@@ -1821,6 +1982,33 @@ class LLMConnectionHealthResponse(ApiModel):
     def of(cls, health: ProviderHealth) -> "LLMConnectionHealthResponse":
         return cls(status=health.status, detail=health.detail,
                    latency_ms=health.latency_ms)
+
+
+class ClaudeCodeTerminalResponse(ApiModel):
+    """Result of the local-only Claude Code terminal launcher."""
+
+    started: bool
+    message: str
+
+
+class ClaudeTerminalSessionResponse(ApiModel):
+    """Secret-free owner view of an integrated Claude terminal session."""
+
+    id: ClaudeTerminalSessionId
+    state: str
+    created_at: datetime
+    expires_at: datetime
+    ended_at: datetime | None
+    safe_error_code: str | None
+    stream_url: str
+
+    @classmethod
+    def of(
+        cls, terminal: ClaudeTerminalSession, *, stream_url: str,
+    ) -> "ClaudeTerminalSessionResponse":
+        return cls(id=terminal.id, state=terminal.state, created_at=terminal.created_at,
+                   expires_at=terminal.expires_at, ended_at=terminal.ended_at,
+                   safe_error_code=terminal.safe_error_code, stream_url=stream_url)
 
 
 # --- Phase 12: the application engine ---------------------------------------

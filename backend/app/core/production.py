@@ -46,6 +46,9 @@ DEPLOYMENT_MODE_VARIABLE: Final[str] = "JOBSEARCH_ENV"
 BILLING_ENABLED_VARIABLE: Final[str] = "JOBSEARCH_BILLING_ENABLED"
 LLM_CREDENTIAL_ENCRYPTION_ENABLED_VARIABLE: Final[str] = (
     "JOBSEARCH_LLM_CREDENTIAL_ENCRYPTION_ENABLED")
+# Explicitly local-only: enables a full local workflow rehearsal without a paid
+# subscription. Production validation rejects it below.
+LOCAL_UNMETERED_VARIABLE: Final[str] = "JOBSEARCH_LOCAL_UNMETERED"
 
 # The Redis URL is resolved most-specific-first, the same order the queue and the rate limiter use;
 # owned here as a public constant because production validation is the one place that must ask "is
@@ -170,6 +173,11 @@ def production_problems(env: Mapping[str, str] | None = None) -> list[str]:
             problems.append(
                 f"{LLM_CREDENTIAL_ENCRYPTION_ENABLED_VARIABLE} is on but {LLM_SECRET_KEY_VARIABLE} "
                 "is unset; the master key is required to encrypt stored LLM credentials at rest")
+
+    if _is_true(source, LOCAL_UNMETERED_VARIABLE):
+        problems.append(
+            f"{LOCAL_UNMETERED_VARIABLE} is a local-development convenience and must be off "
+            "in production")
 
     return problems
 

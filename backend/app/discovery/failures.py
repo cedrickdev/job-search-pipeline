@@ -161,6 +161,12 @@ _DETAILS: Final[dict[SourceFailureCode, str]] = {
     SourceFailureCode.SOURCE_PARTIAL_FAILURE: (
         "the source answered only part of the request"
     ),
+    SourceFailureCode.SOURCE_BUDGET_EXHAUSTED: (
+        "the reviewed employer board reached its daily request budget"
+    ),
+    SourceFailureCode.SOURCE_BUDGET_UNAVAILABLE: (
+        "the employer board request budget could not be verified"
+    ),
     SourceFailureCode.SOURCE_ADAPTER_ERROR: (
         "the adapter failed before the source could answer"
     ),

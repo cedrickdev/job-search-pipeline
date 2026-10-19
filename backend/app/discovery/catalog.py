@@ -4,7 +4,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from backend.app.discovery.orchestrator import SweepReport
 from backend.app.domain.opportunity import Opportunity
-from backend.app.domain.search import SearchProfile
+from backend.app.domain.search import SearchAreaKind, SearchProfile
 
 
 def matches_search(profile: SearchProfile, opportunity: Opportunity) -> bool:
@@ -34,10 +34,19 @@ def matches_search(profile: SearchProfile, opportunity: Opportunity) -> bool:
 def matching_opportunities(
     profile: SearchProfile, report: SweepReport
 ) -> tuple[Opportunity, ...]:
-    """Select a profile's visible postings from a source-neutral sweep report."""
+    """Select postings; a country-only search requires verified country evidence.
+
+    An international index can rank French results for a Swiss keyword query.
+    Unknown country is not proof of Switzerland, even when the sweep is CH.
+    """
+    country_only = all(area.kind is SearchAreaKind.COUNTRY
+                       for area in profile.areas)
     return tuple(
         opportunity for opportunity in report.opportunities
         if matches_search(profile, opportunity)
+        and (not country_only or (
+            opportunity.location is not None
+            and opportunity.location.country == report.country))
     )
 
 

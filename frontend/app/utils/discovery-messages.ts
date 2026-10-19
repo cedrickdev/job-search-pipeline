@@ -32,11 +32,15 @@ const healthCopy = {
     HEALTHY: 'Disponible', DEGRADED: 'Dégradée',
     MISCONFIGURED: 'Configuration à vérifier', UNAVAILABLE: 'Indisponible',
     SOURCE_TIMEOUT: 'délai dépassé',
+    SOURCE_BUDGET_EXHAUSTED: 'quota quotidien épuisé',
+    SOURCE_BUDGET_UNAVAILABLE: 'quota de requêtes indisponible',
   },
   en: {
     HEALTHY: 'Available', DEGRADED: 'Degraded',
     MISCONFIGURED: 'Check configuration', UNAVAILABLE: 'Unavailable',
     SOURCE_TIMEOUT: 'timed out',
+    SOURCE_BUDGET_EXHAUSTED: 'daily request budget exhausted',
+    SOURCE_BUDGET_UNAVAILABLE: 'request budget unavailable',
   },
 } as const
 
@@ -45,7 +49,8 @@ export function sourceHealthMessage(
   status: 'HEALTHY' | 'DEGRADED' | 'MISCONFIGURED' | 'UNAVAILABLE',
   reason: string | null,
 ): string {
-  const reasonText = reason === 'SOURCE_TIMEOUT' ? healthCopy[locale].SOURCE_TIMEOUT : null
+  const reasonText = reason === 'SOURCE_TIMEOUT' || reason === 'SOURCE_BUDGET_EXHAUSTED' || reason === 'SOURCE_BUDGET_UNAVAILABLE'
+    ? healthCopy[locale][reason] : null
   return [healthCopy[locale][status], reasonText].filter(Boolean).join(' — ')
 }
 

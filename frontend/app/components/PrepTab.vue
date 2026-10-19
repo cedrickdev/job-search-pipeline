@@ -10,6 +10,7 @@
   V1's invalidation would have replaced the cache entry.
 -->
 <script setup lang="ts">
+const { localize: l } = useLocale()
 import { computed, ref, watch } from 'vue'
 import type { PrepData } from '~/types/domain'
 import { usePrep } from '~/composables/useQueries'
@@ -85,17 +86,17 @@ function submitInterview() {
     </div>
 
     <div class="prep-section">
-      <h4>Notes</h4>
+      <h4>{{ l('Notes', 'Notes') }}</h4>
       <textarea
         v-model="notes"
         class="prep-notes"
-        aria-label="Prep notes"
+        :aria-label="l('Prep notes', 'Notes de préparation')"
         @blur="onNotesBlur"
       />
     </div>
 
     <div v-if="data.likely_questions && data.likely_questions.length > 0" class="prep-section">
-      <h4>Likely questions</h4>
+      <h4>{{ l('Likely questions', 'Questions probables') }}</h4>
       <ul class="prep-list">
         <li v-for="(q, i) in data.likely_questions" :key="i">
           {{ q }}
@@ -103,7 +104,7 @@ function submitInterview() {
       </ul>
     </div>
     <div v-if="data.talking_points && data.talking_points.length > 0" class="prep-section">
-      <h4>Talking points</h4>
+      <h4>{{ l('Talking points', 'Arguments à présenter') }}</h4>
       <ul class="prep-list">
         <li v-for="(q, i) in data.talking_points" :key="i">
           {{ q }}
@@ -111,7 +112,7 @@ function submitInterview() {
       </ul>
     </div>
     <div v-if="data.company_research && data.company_research.length > 0" class="prep-section">
-      <h4>Company research</h4>
+      <h4>{{ l('Company research', 'Recherche sur l’entreprise') }}</h4>
       <ul class="prep-list">
         <li v-for="(q, i) in data.company_research" :key="i">
           {{ q }}
@@ -120,7 +121,7 @@ function submitInterview() {
     </div>
 
     <div class="prep-section">
-      <h4>Interview log</h4>
+      <h4>{{ l('Interview log', 'Journal des entretiens') }}</h4>
       <ul class="prep-list">
         <li v-for="iv in data.interviews" :key="iv.id" class="iv-row">
           <span>
@@ -130,8 +131,8 @@ function submitInterview() {
         </li>
       </ul>
       <div class="iv-add">
-        <input v-model="round" placeholder="Round (e.g. Phone screen)" aria-label="Round label">
-        <input v-model="when" type="datetime-local" aria-label="Scheduled for">
+        <input v-model="round" :placeholder="l('Round (e.g. Phone screen)', 'Étape (p. ex. entretien téléphonique)')" :aria-label="l('Round label', 'Étape de l’entretien')">
+        <input v-model="when" type="datetime-local" :aria-label="l('Scheduled for', 'Date prévue')">
         <button class="btn-ghost" :disabled="!round" @click="submitInterview">
           Add
         </button>

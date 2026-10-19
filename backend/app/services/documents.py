@@ -243,6 +243,18 @@ class DocumentService:
             raise DocumentArtifactMissing(str(document_id))
         return self._artifacts.get(version.artifact.storage_key)
 
+    async def download_version(self, user_id: UserId,
+                               version_id: DocumentVersionId) -> StoredArtifact:
+        """Read one pinned, guarded PDF; never silently switch to a newer version."""
+        document = await self._documents.get_for_version(user_id, version_id)
+        if document is None:
+            raise DocumentNotFound(str(version_id))
+        version = next((item for item in document.versions if item.id == version_id), None)
+        if version is None or version.status is not DocumentStatus.RENDERED \
+                or version.artifact is None:
+            raise DocumentArtifactMissing(str(version_id))
+        return self._artifacts.get(version.artifact.storage_key)
+
     async def _compose(self, document_type: CandidateDocumentType,
                        profile: CandidateProfile, opportunity: Opportunity,
                        context: GenerationContext) -> DocumentContent:

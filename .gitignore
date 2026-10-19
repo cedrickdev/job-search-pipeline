@@ -4,6 +4,7 @@
 .env
 .env.*
 !.env.example
+terminal.env
 
 # ANTHROPIC_API_KEY in plaintext, Claude side then Codex side.
 .claude/settings.local.json

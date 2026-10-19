@@ -172,6 +172,14 @@ then queue it separately, or use the existing approve/submit flow for other chan
 The queue result means *waiting*, not submitted; refresh and inspect the audit trail
 for the actual outcome. The live-send switch is off by default, so queueing normally
 returns a typed refusal in local development.
+The Swiss Morning Run now links its exact CV and letter versions to one committed,
+owner-scoped application. The browser lane prepares that application separately
+from the document transaction. The API, queue service and browser child all require
+the same exact operator-reviewed form capability before an unattended click; the
+packaged catalog (`config/ats_approved_forms.yaml`) is empty. A form fingerprint
+or supported ATS host alone does not grant permission. The Morning Run status
+distinguishes prepared, queued, confirmed, unknown and human-required states and
+links to this page's audit trail.
 There is no "ignore safeguards" control, and the default policy is MANUAL.
 
 ## Security invariants

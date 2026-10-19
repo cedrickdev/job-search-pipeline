@@ -28,13 +28,13 @@ COMPAT_DIR = REPO_ROOT / "backend" / "app" / "compat"
 # point backwards in this tuple, which is what keeps the graph acyclic and keeps
 # `eligibility` from growing into `matching`.
 DEPENDENCY_ORDER = (
-    "base", "identifiers", "user", "common", "opportunity", "company", "candidate",
+    "base", "identifiers", "user", "common", "morning_schedule", "morning_preparation", "opportunity", "company", "candidate",
     "documents", "search", "discovery_run", "geo", "matching", "eligibility", "policy", "decision",
     "application_channel", "application_failure", "application_answer", "application",
     "application_event", "execution_gate", "chat", "interview",
     "outcome", "role", "analytics", "recommendation", "strategy_change",
     "entitlement", "subscription", "subscription_event", "usage", "account_export",
-    "task",
+    "autopilot", "task",
 )
 
 # Named explicitly rather than derived, so the list reads as the phase order's

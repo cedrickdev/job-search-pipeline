@@ -37,6 +37,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.claude_terminal.contracts import ClaudeTerminalSession, ClaudeTerminalState
 from backend.app.domain.account_export import AccountExport, AccountExportStatus
 from backend.app.domain.application import Application, ApplicationState
 from backend.app.domain.application_event import ApplicationEvent, SubmissionAttempt
@@ -76,8 +77,10 @@ from backend.app.domain.identifiers import (
     CandidateProfileId,
     CareerRecommendationId,
     ChatActionProposalId,
+    ClaudeTerminalSessionId,
     CompanyId,
     ConversationId,
+    DocumentVersionId,
     EligibilityResultId,
     InterviewAnswerId,
     InterviewQuestionId,
@@ -146,6 +149,8 @@ from backend.app.infrastructure.database.mappers import (
     chat_action_proposal_to_row,
     chat_message_to_domain,
     chat_message_to_row,
+    claude_terminal_session_to_domain,
+    claude_terminal_session_to_row,
     company_alias_to_domain,
     company_alias_to_row,
     company_location_to_domain,
@@ -216,6 +221,7 @@ from backend.app.infrastructure.database.models import (
     ChatActionExecutionRow,
     ChatActionProposalRow,
     ChatMessageRow,
+    ClaudeTerminalSessionRow,
     CompanyAliasRow,
     CompanyCareerSiteRow,
     CompanyDiscoveryRecordRow,
@@ -836,7 +842,21 @@ class SqlAlchemyOpportunityRepository:
             CompanyLocationRow.location_country.is_(None),
             CompanyLocationRow.location_point.is_(None),
         ) if catalog_scope is not None else None
+        if unknown_catalog_location is not None and query.countries:
+            # A country-only saved search must not display old unverified
+            # international hits. Explicit remote jobs remain list-only when
+            # the search opted into remote work.
+            unknown_catalog_location = and_(
+                unknown_catalog_location,
+                OpportunityRow.workplace_mode == WorkplaceMode.REMOTE)
         remote = OpportunityRow.workplace_mode == WorkplaceMode.REMOTE
+        # An absent classification is not affirmative evidence of remote work.
+        # Source adapters frequently leave this field unknown, so an
+        # EXCLUDE_REMOTE search must remove only postings explicitly labelled
+        # REMOTE. SQL's ``NOT (NULL = 'REMOTE')`` evaluates to NULL and would
+        # otherwise silently discard geographically matching catalogue entries.
+        not_explicitly_remote = or_(
+            OpportunityRow.workplace_mode.is_(None), ~remote)
         predicates: list[ColumnElement[bool]] = []
         if query.remote_policy is RemotePolicy.REMOTE_ONLY:
             predicates.append(remote)
@@ -849,7 +869,7 @@ class SqlAlchemyOpportunityRepository:
             geographic = or_(*geographic_predicates)
             if unknown_catalog_location is not None:
                 geographic = or_(geographic, unknown_catalog_location)
-            predicates.extend((geographic, ~remote))
+            predicates.extend((geographic, not_explicitly_remote))
 
         if query.remote_countries:
             remote_country = or_(~remote,
@@ -1414,6 +1434,17 @@ class SqlAlchemyCandidateDocumentRepository:
                   document_id: CandidateDocumentId) -> CandidateDocument | None:
         row = await self._row(user_id, document_id)
         return None if row is None else candidate_document_to_domain(row)
+
+    async def get_for_version(self, user_id: UserId,
+                              version_id: DocumentVersionId) -> CandidateDocument | None:
+        document_id = (await self._session.execute(
+            select(DocumentVersionRow.document_id)
+            .join(CandidateDocumentRow, CandidateDocumentRow.id == DocumentVersionRow.document_id)
+            .where(CandidateDocumentRow.user_id == user_id,
+                   DocumentVersionRow.id == version_id)
+        )).scalar_one_or_none()
+        return None if document_id is None else await self.get(
+            user_id, CandidateDocumentId(document_id))
 
     async def get_for_pair(self, user_id: UserId,
                            candidate_profile_id: CandidateProfileId,
@@ -2955,6 +2986,57 @@ class SqlAlchemyAccountExportRepository:
                    AccountExportRow.expires_at.is_not(None),
                    AccountExportRow.expires_at <= as_of))
         return int(result.scalar_one())
+
+
+class SqlAlchemyClaudeTerminalSessionRepository:
+    """Safe terminal-session persistence; every public read is owner-scoped."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(self, terminal: ClaudeTerminalSession) -> ClaudeTerminalSession:
+        row = claude_terminal_session_to_row(terminal)
+        self._session.add(row)
+        await self._session.flush()
+        return claude_terminal_session_to_domain(row)
+
+    async def get_for_user(
+            self, user_id: UserId, session_id: ClaudeTerminalSessionId,
+    ) -> ClaudeTerminalSession | None:
+        result = await self._session.execute(
+            select(ClaudeTerminalSessionRow).where(
+                ClaudeTerminalSessionRow.id == session_id,
+                ClaudeTerminalSessionRow.owner_user_id == user_id,
+            ))
+        row = result.scalar_one_or_none()
+        return None if row is None else claude_terminal_session_to_domain(row)
+
+    async def save(self, terminal: ClaudeTerminalSession) -> ClaudeTerminalSession:
+        result = await self._session.execute(
+            select(ClaudeTerminalSessionRow).where(
+                ClaudeTerminalSessionRow.id == terminal.id,
+            ))
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise LookupError("terminal session does not exist")
+        mapped = claude_terminal_session_to_row(terminal, row)
+        await self._session.flush()
+        return claude_terminal_session_to_domain(mapped)
+
+    async def list_expired_active(
+            self, now: datetime, *, limit: int = DEFAULT_LIMIT,
+    ) -> tuple[ClaudeTerminalSession, ...]:
+        result = await self._session.execute(
+            select(ClaudeTerminalSessionRow)
+            .where(
+                ClaudeTerminalSessionRow.state.in_(
+                    (ClaudeTerminalState.CREATING, ClaudeTerminalState.ACTIVE,
+                     ClaudeTerminalState.STOPPING)),
+                ClaudeTerminalSessionRow.expires_at <= now,
+            )
+            .order_by(ClaudeTerminalSessionRow.expires_at, ClaudeTerminalSessionRow.id)
+            .limit(limit))
+        return tuple(claude_terminal_session_to_domain(row) for row in result.scalars())
 
 
 class SqlAlchemyTaskRunRepository:

@@ -30,8 +30,15 @@ export type SessionWindow = Schemas['SessionResponse']
 /** The reply to register, login and `GET /auth/session`. */
 export type SignedIn = Schemas['SignedInResponse']
 
+/** Country-local configuration active in this deployment. */
+export type CountryPack = Schemas['CountryPackResponse']
+export type CountryPackList = Schemas['CountryPackListResponse']
+
+/** Secret-free, owner-scoped state for one integrated Claude Code terminal. */
+export type ClaudeTerminalSession = Schemas['ClaudeTerminalSessionResponse']
+
 /** A candidate profile as submitted: no id, no owner, no timestamps. */
-export type CandidateProfileDraft = Schemas['CandidateProfileDraft']
+export type CandidateProfileDraft = Schemas['CandidateProfileDraft-Input']
 
 /** A saved profile, echoed back with its id and `updated_at`. */
 export type CandidateProfile = Schemas['CandidateProfileResponse']
@@ -44,6 +51,11 @@ export type SearchProfile = Schemas['SearchProfileResponse']
 
 /** The list wrapper — every V2 response is an object, never a bare array. */
 export type SearchProfileList = Schemas['SearchProfileListResponse']
+export type MorningSchedule = Schemas['MorningScheduleResponse']
+export type MorningScheduleRequest = Schemas['MorningScheduleRequest']
+export type MorningRunBatch = Schemas['MorningRunBatchResponse']
+export type MorningRunStatus = Schemas['MorningRunStatusResponse']
+export type MorningRunLatest = Schemas['MorningRunLatestResponse']
 
 /** Which onboarding step to show, and whether finishing is allowed. */
 export type OnboardingState = Schemas['OnboardingStateResponse']

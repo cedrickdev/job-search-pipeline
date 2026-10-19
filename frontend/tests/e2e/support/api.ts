@@ -55,6 +55,42 @@ export const ANONYMOUS_SESSION: MockRoute = {
   json: { error: 'not_authenticated', detail: 'no session cookie' },
 }
 
+/**
+ * Reads made by the authenticated landing route before a test navigates away.
+ *
+ * The V2 root deliberately resolves to `/map`; it therefore hydrates the search
+ * picker and the open catalogue.  These are shell bootstrap reads, not hidden
+ * live-network fallbacks.  Keeping their deterministic empty answers here lets
+ * feature specs focus on the page they are exercising while map specs still put
+ * their richer routes first and assert the exact request themselves.
+ */
+const SHELL_BOOTSTRAP_ROUTES: MockRoute[] = [
+  {
+    match: '/api/v2/country-packs',
+    method: 'GET',
+    json: {
+      packs: [{
+        country: 'CH',
+        display_name: 'Switzerland',
+        default_locale: 'fr-CH',
+        locales: ['fr-CH', 'de-CH', 'it-CH', 'en-CH'],
+        currency: 'CHF',
+        languages: ['fr', 'de', 'it', 'en'],
+        timezone: 'Europe/Zurich',
+        map_viewport: {
+          center: { latitude: 46.8182, longitude: 8.2275 },
+          zoom: 6.2,
+          bounds: { north: 47.8085, south: 45.8179, east: 10.4921, west: 5.9559 },
+        },
+        opportunity_types: ['FULL_TIME', 'INTERNSHIP'],
+        enabled_source_count: 11,
+      }],
+    },
+  },
+  { match: '/api/v2/me/search-profiles?active_only=true', method: 'GET', json: { search_profiles: [] } },
+  { match: '/api/v2/geo/opportunities', method: 'GET', json: { opportunities: [], limit: 50, offset: 0 } },
+]
+
 /** Install the route table on `page`. Call before `page.goto`. */
 export async function mockApi(page: Page, routes: MockRoute[]): Promise<ApiMock> {
   const calls: RecordedCall[] = []
@@ -68,7 +104,7 @@ export async function mockApi(page: Page, routes: MockRoute[]): Promise<ApiMock>
     const call: RecordedCall = { url, method, body: request.postData() }
     calls.push(call)
 
-    const hit = routes.find((r) => {
+    const hit = [...routes, ...SHELL_BOOTSTRAP_ROUTES].find((r) => {
       if (r.method && r.method.toUpperCase() !== method) return false
       return typeof r.match === 'string' ? url.includes(r.match) : r.match.test(url)
     })

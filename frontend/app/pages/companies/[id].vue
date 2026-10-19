@@ -20,6 +20,7 @@ import { computed } from 'vue'
 import { useCompanyQuery } from '~/composables/useCompanies'
 import type { CompanyDetail } from '~/types/v2'
 
+const { localize: l } = useLocale()
 definePageMeta({ middleware: 'auth' })
 
 const route = useRoute()
@@ -38,18 +39,18 @@ const isLoading = computed(() => status.value === 'pending' && data.value === un
 const isMissing = computed(() => !error.value && data.value === null)
 
 useHead({
-  title: () => `${company.value?.name ?? 'Company'} · Command Center`,
+  title: () => `${company.value?.name ?? l('Company', 'Entreprise')} · Command Center`,
 })
 
 /** The spontaneous-application verdict in words, `UNKNOWN` kept as itself. */
 const spontaneous = computed(() => {
   const channel = company.value?.spontaneous_application
-  if (!channel) return { label: 'Unknown — nobody has checked', url: null as string | null }
+  if (!channel) return { label: l('Unknown — nobody has checked', 'Inconnu — aucune vérification'), url: null as string | null }
   const label = channel.support === 'SUPPORTED'
-    ? 'Supported'
+    ? l('Supported', 'Disponible')
     : channel.support === 'NOT_SUPPORTED'
-      ? 'Not supported'
-      : 'Unknown — nobody has checked'
+      ? l('Not supported', 'Non disponible')
+      : l('Unknown — nobody has checked', 'Inconnu — aucune vérification')
   return { label, url: channel.url }
 })
 
@@ -70,84 +71,84 @@ function moment(value: string | null): string {
 <template>
   <div class="acct-page co-page">
     <p v-if="isLoading" class="ov-state">
-      Loading company…
+      {{ l('Loading company…', 'Chargement de l’entreprise…') }}
     </p>
     <p v-else-if="isMissing" class="ov-state">
-      That company is not in the directory.
+      {{ l('That company is not in the directory.', 'Cette entreprise ne figure pas dans le répertoire.') }}
       <NuxtLink to="/companies">
-        Back to companies
+        {{ l('Back to companies', 'Retour aux entreprises') }}
       </NuxtLink>
     </p>
     <p v-else-if="error || !data || !company" class="ov-state ov-error">
-      Could not load this company.
+      {{ l('Could not load this company.', 'Impossible de charger cette entreprise.') }}
     </p>
     <template v-else>
       <header class="acct-head">
         <h1>{{ company.name }}</h1>
         <NuxtLink to="/companies" class="btn-ghost">
-          ← Companies
+          ← {{ l('Companies', 'Entreprises') }}
         </NuxtLink>
       </header>
 
       <section class="co-section">
-        <h2>Facts</h2>
+        <h2>{{ l('Facts', 'Informations') }}</h2>
         <dl class="co-facts">
-          <dt>Identity</dt>
+          <dt>{{ l('Identity', 'Identité') }}</dt>
           <dd>{{ company.identity_status }}</dd>
-          <dt>Normalized name</dt>
+          <dt>{{ l('Normalized name', 'Nom normalisé') }}</dt>
           <dd><code>{{ company.normalized_name }}</code></dd>
-          <dt>Country</dt>
+          <dt>{{ l('Country', 'Pays') }}</dt>
           <dd>{{ company.country ?? '—' }}</dd>
-          <dt>Website</dt>
+          <dt>{{ l('Website', 'Site web') }}</dt>
           <dd>
             <a v-if="company.website" :href="company.website" rel="noreferrer noopener" target="_blank">
               {{ company.website }}
             </a>
             <span v-else>—</span>
           </dd>
-          <dt>Careers</dt>
+          <dt>{{ l('Careers', 'Carrières') }}</dt>
           <dd>
             <a v-if="company.careers_url" :href="company.careers_url" rel="noreferrer noopener" target="_blank">
               {{ company.careers_url }}
             </a>
             <span v-else>—</span>
           </dd>
-          <dt>Spontaneous applications</dt>
+          <dt>{{ l('Spontaneous applications', 'Candidatures spontanées') }}</dt>
           <dd>
             {{ spontaneous.label }}
             <a v-if="spontaneous.url" :href="spontaneous.url" rel="noreferrer noopener" target="_blank">
-              (form)
+              ({{ l('form', 'formulaire') }})
             </a>
           </dd>
-          <dt>Discovered by</dt>
+          <dt>{{ l('Discovered by', 'Découverte par') }}</dt>
           <dd>{{ data.discovered_by.join(', ') || '—' }}</dd>
         </dl>
       </section>
 
       <section v-if="company.detected_ats" class="co-section">
-        <h2>Applicant tracking system</h2>
+        <h2>{{ l('Applicant tracking system', 'Système de suivi des candidatures') }}</h2>
         <p class="acct-search-row">
           <span class="ov-count">{{ company.detected_ats.platform }}</span>
           <span class="ov-count">{{ company.detected_ats.status }}</span>
           <span class="acct-search-meta">
             org {{ company.detected_ats.organization_id ?? 'unknown' }} ·
-            detected by {{ company.detected_ats.detected_by }}
+              {{ l('detected by', 'détecté par') }} {{ company.detected_ats.detected_by }}
           </span>
         </p>
         <ul class="co-evidence">
           <li v-for="item in company.detected_ats.evidence" :key="item.code">
             <code>{{ item.code }}</code> — {{ item.detail }}
             <a v-if="item.source_url" :href="item.source_url" rel="noreferrer noopener" target="_blank">
-              source
+              {{ l('source', 'source') }}
             </a>
           </li>
         </ul>
       </section>
 
       <section v-if="company.spontaneous_application?.evidence.length" class="co-section">
-        <h2>Spontaneous-application evidence</h2>
+        <h2>{{ l('Spontaneous-application evidence', 'Preuves de candidature spontanée') }}</h2>
         <p class="settings-hint">
-          Observed by {{ company.spontaneous_application.observed_by ?? 'an unnamed provider' }}.
+          {{ l('Observed by', 'Observé par') }} {{ company.spontaneous_application.observed_by ?? l('an unnamed provider', 'un fournisseur non renseigné') }}.
         </p>
         <ul class="co-evidence">
           <li v-for="item in company.spontaneous_application.evidence" :key="item.code">
@@ -157,19 +158,19 @@ function moment(value: string | null): string {
       </section>
 
       <section v-if="company.locations.length" class="co-section">
-        <h2>Locations</h2>
+        <h2>{{ l('Locations', 'Emplacements') }}</h2>
         <ul class="acct-searches">
           <li v-for="(entry, index) in company.locations" :key="index" class="acct-search">
             <div class="acct-search-row">
               <span class="acct-search-main">{{ place(entry) }}</span>
-              <span v-if="entry.is_headquarters" class="ov-count">HQ</span>
+              <span v-if="entry.is_headquarters" class="ov-count">{{ l('HQ', 'Siège') }}</span>
             </div>
           </li>
         </ul>
       </section>
 
       <section v-if="data.career_sites.length" class="co-section">
-        <h2>Career pages</h2>
+        <h2>{{ l('Career pages', 'Pages carrière') }}</h2>
         <ul class="acct-searches">
           <li v-for="site in data.career_sites" :key="site.url" class="acct-search">
             <div class="acct-search-row">
@@ -181,22 +182,22 @@ function moment(value: string | null): string {
               <span class="ov-count">{{ site.verification_status }}</span>
             </div>
             <span class="acct-search-meta">
-              from {{ site.source_key }} · found {{ moment(site.discovered_at) }} ·
-              checked {{ moment(site.last_checked_at) }}
+              {{ l('from', 'source') }} {{ site.source_key }} · {{ l('found', 'trouvée') }} {{ moment(site.discovered_at) }} ·
+              {{ l('checked', 'vérifiée') }} {{ moment(site.last_checked_at) }}
             </span>
           </li>
         </ul>
       </section>
 
       <section v-if="data.aliases.length" class="co-section">
-        <h2>Also known as</h2>
+        <h2>{{ l('Also known as', 'Également connue sous') }}</h2>
         <ul class="acct-searches">
           <li v-for="alias in data.aliases" :key="`${alias.source_key}:${alias.normalized_alias}`" class="acct-search">
             <div class="acct-search-row">
               <span class="acct-search-main acct-search-name">{{ alias.alias }}</span>
               <span class="acct-search-meta">
-                from {{ alias.source_key }} · first {{ moment(alias.first_seen_at) }} ·
-                last {{ moment(alias.last_seen_at) }}
+                {{ l('from', 'source') }} {{ alias.source_key }} · {{ l('first seen', 'première observation') }} {{ moment(alias.first_seen_at) }} ·
+                {{ l('last seen', 'dernière observation') }} {{ moment(alias.last_seen_at) }}
               </span>
             </div>
           </li>
@@ -204,7 +205,7 @@ function moment(value: string | null): string {
       </section>
 
       <section v-if="data.discoveries.length" class="co-section">
-        <h2>Provenance</h2>
+        <h2>{{ l('Provenance', 'Provenance') }}</h2>
         <ul class="acct-searches">
           <li
             v-for="record in data.discoveries"

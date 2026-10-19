@@ -17,6 +17,7 @@ import { watch, ref } from 'vue'
 import type { CompanyGeoItem, OpportunityGeoItem } from '~/types/v2'
 import { distanceLabel, remoteLabel, statusLabel } from '~/utils/geo-format'
 
+const { localize: l, locale } = useLocale()
 const props = defineProps<{
   mode: 'opportunities' | 'companies'
   opportunities?: OpportunityGeoItem[]
@@ -45,7 +46,7 @@ watch(() => props.selectedId, (id) => {
 </script>
 
 <template>
-  <ul ref="listEl" class="map-list" :aria-label="mode === 'companies' ? 'Employers' : 'Opportunities'">
+  <ul ref="listEl" class="map-list" :aria-label="mode === 'companies' ? l('Employers', 'Employeurs') : l('Opportunities', 'Offres')">
     <template v-if="mode === 'opportunities'">
       <li v-for="item in opportunities" :key="item.id" class="map-list-li">
         <button
@@ -58,12 +59,12 @@ watch(() => props.selectedId, (id) => {
         >
           <span class="map-row-main">
             <span class="map-row-title">{{ item.title }}</span>
-            <span class="map-row-sub">{{ item.company_name }}</span>
+            <span class="map-row-sub">{{ item.company_name }}<template v-if="item.location?.raw"> · {{ item.location.raw }}</template></span>
           </span>
           <span class="map-row-meta">
-            <span v-if="!opportunityPlaced(item)" class="map-row-tag">No location</span>
+            <span v-if="!opportunityPlaced(item)" class="map-row-tag">{{ l('No location', 'Lieu non précisé') }}</span>
             <span v-else-if="remoteLabel(item.remote_scope)" class="map-row-tag">
-              {{ remoteLabel(item.remote_scope) }}
+              {{ remoteLabel(item.remote_scope, locale) }}
             </span>
             <span class="map-row-dist">{{ distanceLabel(item.distance_meters) }}</span>
           </span>
@@ -83,11 +84,11 @@ watch(() => props.selectedId, (id) => {
         >
           <span class="map-row-main">
             <span class="map-row-title">{{ item.company.name }}</span>
-            <span class="map-row-sub">{{ statusLabel(item.status) }}</span>
+            <span class="map-row-sub">{{ item.location.raw ?? statusLabel(item.status, locale) }}</span>
           </span>
           <span class="map-row-meta">
-            <span v-if="!companyPlaced(item)" class="map-row-tag">No location</span>
-            <span v-else-if="item.is_headquarters" class="map-row-tag">HQ</span>
+            <span v-if="!companyPlaced(item)" class="map-row-tag">{{ l('No location', 'Lieu non précisé') }}</span>
+            <span v-else-if="item.is_headquarters" class="map-row-tag">{{ l('HQ', 'Siège') }}</span>
             <span class="map-row-dist">{{ distanceLabel(item.distance_meters) }}</span>
           </span>
         </button>
@@ -120,9 +121,7 @@ watch(() => props.selectedId, (id) => {
   cursor: pointer;
   color: var(--text);
 }
-.map-row:hover {
-  background: var(--surface-2);
-}
+@media (hover: hover) and (pointer: fine) { .map-row:hover { background: var(--surface-2); } }
 .map-row:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -170,5 +169,10 @@ watch(() => props.selectedId, (id) => {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-muted);
+}
+@media (max-width: 460px) {
+  .map-row { align-items: flex-start; min-height: 56px; }
+  .map-row-meta { align-items: flex-end; flex-direction: column; gap: 2px; }
+  .map-row-tag { max-width: 8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 </style>

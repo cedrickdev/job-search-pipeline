@@ -39,38 +39,79 @@ function mountShell() {
   return mountSuspended(DefaultLayout, { slots: { default: () => 'content' } })
 }
 
+async function selectLocale(wrapper: Awaited<ReturnType<typeof mountShell>>, label: string) {
+  const trigger = wrapper.get('.locale-switcher [role="combobox"]')
+  const contentId = trigger.attributes('aria-controls')
+  await trigger.trigger('click')
+  await flushPromises()
+  const content = contentId ? document.getElementById(contentId) : null
+  const option = [...(content?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])]
+    .find(item => item.textContent?.trim() === label)
+  if (!option) throw new Error(`language option ${label} was not rendered`)
+  option.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, button: 0 }))
+  await flushPromises()
+}
+
 describe('default layout (V1 AppShell)', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     clearNuxtData()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
     // The store outlives a test — it is the app's, not the wrapper's — so an
     // authenticated case would otherwise leak into the next mount.
     useSessionStore().$reset()
     stubFetch(shellRoutes())
   })
 
-  it('renders nav links and content', async () => {
+  it('keeps the public shell focused on authentication instead of empty legacy data', async () => {
     const wrapper = await mountShell()
 
     const links = wrapper.findAll(NAV).map(a => a.text())
-    expect(links).toEqual(['Overview', 'Jobs', 'Analytics', 'Settings'])
+    expect(links).toEqual([])
     expect(wrapper.text()).toContain('content')
     expect(wrapper.text()).toContain('⌘ Command Center')
+    expect(wrapper.get('.topbar-account').attributes('href')).toBe('/login')
   })
 
-  it('points each nav link at its route', async () => {
+  it('opens the navigation drawer from the mobile control and closes it from its backdrop', async () => {
     const wrapper = await mountShell()
-    expect(wrapper.findAll(NAV).map(a => a.attributes('href')))
-      .toEqual(['/', '/jobs', '/analytics', '/settings'])
+
+    expect(wrapper.get('.sidebar').classes()).not.toContain('sidebar--open')
+    await wrapper.get('[aria-label="Open navigation"]').trigger('click')
+    expect(wrapper.get('.sidebar').classes()).toContain('sidebar--open')
+    expect(wrapper.find('.nav-backdrop').exists()).toBe(true)
+
+    await wrapper.get('.nav-backdrop').trigger('click')
+    expect(wrapper.get('.sidebar').classes()).not.toContain('sidebar--open')
   })
 
-  // The V1 pages this shell wraps work without an account, so an anonymous
-  // visitor gets an invitation rather than a redirect (app/middleware/auth.ts).
+  it('opens the global quick search from its visible trigger', async () => {
+    const wrapper = await mountShell()
+
+    await wrapper.get('[aria-label="Open quick search"]').trigger('click')
+    await flushPromises()
+
+    expect(document.body.querySelector('input[placeholder="Search pages and actions…"]')).not.toBeNull()
+  })
+
+  it('switches the shell language and document language to French', async () => {
+    const wrapper = await mountShell()
+
+    await selectLocale(wrapper, 'FR')
+
+    expect(wrapper.findAll(NAV).map(a => a.text()))
+      .toEqual([])
+    expect(document.documentElement.lang).toBe('fr')
+    expect(document.cookie).toContain('app_locale=fr')
+  })
+
   it('offers a sign-in link when there is no session', async () => {
     const wrapper = await mountShell()
     await flushPromises()
 
     const account = wrapper.get('.topbar-account')
+    expect(account.classes()).toContain('topbar-account--avatar')
+    expect(account.attributes('aria-label')).toBe('Sign in')
     expect(account.text()).toBe('Sign in')
     expect(account.attributes('href')).toBe('/login')
   })
@@ -81,26 +122,20 @@ describe('default layout (V1 AppShell)', () => {
     await flushPromises()
 
     const account = wrapper.get('.topbar-account')
-    expect(account.text()).toBe('Test Candidate')
+    expect(account.classes()).toContain('topbar-account--avatar')
+    expect(account.attributes('aria-label')).toBe('Your account: Test Candidate')
+    expect(account.get('.account-avatar').text()).toBe('TC')
     expect(account.attributes('href')).toBe('/profile')
   })
 
-  /**
-   * The V2 screens are offered to a signed-in visitor only.
-   *
-   * Not because their data is private — an employer is a shared fact, and Phase 6 keeps
-   * `user_id` off the companies table for exactly that reason. It is that the pages are
-   * guarded, so an anonymous click would land on /login; the four V1 links stay
-   * unconditional because the pages behind them work without an account.
-   */
-  it('adds the guarded V2 screens to the nav once there is a session', async () => {
+  it('shows only the V2 workflow routes once there is a session', async () => {
     stubFetch(shellRoutes({ match: '/api/v2/auth/session', json: signedIn() }))
     const wrapper = await mountShell()
     await flushPromises()
 
     const links = wrapper.findAll(NAV)
     expect(links.map(a => a.text()))
-      .toEqual(['Overview', 'Jobs', 'Analytics', 'Settings', 'Companies', 'Map', 'Documents', 'Evidence', 'Applications', 'Providers', 'Career Chat', 'Interview', 'Career', 'Strategy', 'Billing'])
+      .toEqual(['Companies', 'Map', 'Documents', 'Evidence', 'Applications', 'Interview', 'Strategy', 'Billing', 'Settings'])
     const href = (label: string) =>
       links.find(a => a.text() === label)!.attributes('href')
     expect(href('Companies')).toBe('/companies')
@@ -108,18 +143,16 @@ describe('default layout (V1 AppShell)', () => {
     expect(href('Documents')).toBe('/documents')
     expect(href('Evidence')).toBe('/evidence')
     expect(href('Applications')).toBe('/applications')
-    expect(href('Providers')).toBe('/providers')
-    expect(href('Career Chat')).toBe('/chat')
     expect(href('Interview')).toBe('/interview')
-    expect(href('Career')).toBe('/career')
     expect(href('Strategy')).toBe('/strategy')
     expect(href('Billing')).toBe('/billing')
+    expect(href('Settings')).toBe('/settings')
   })
 
   it('toggles the global copilot panel', async () => {
     const wrapper = await mountShell()
 
-    expect(wrapper.find('[aria-label="Copilot"]').exists()).toBe(false)
+    expect(wrapper.find('section[aria-label="Copilot"]').exists()).toBe(false)
     const copilotButton = wrapper.findAll('button').find(b => /copilot/i.test(b.text()))!
     await copilotButton.trigger('click')
     await flushPromises()
@@ -173,12 +206,12 @@ describe('theme toggle (V1 useTheme)', () => {
     const label = () => toggle.text()
 
     const first = useColorMode().value
-    expect(label()).toBe(first === 'dark' ? '☾ Dark' : '☀ Light')
+    expect(label()).toBe(first === 'dark' ? 'Dark' : 'Light')
 
     await toggle.trigger('click')
     await flushPromises()
     const second = useColorMode().value
-    expect(label()).toBe(second === 'dark' ? '☾ Dark' : '☀ Light')
+    expect(label()).toBe(second === 'dark' ? 'Dark' : 'Light')
   })
 
   it('toggles back to the mode it started in', async () => {

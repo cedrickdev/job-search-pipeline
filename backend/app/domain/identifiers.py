@@ -74,6 +74,7 @@ UsageEventId = NewType("UsageEventId", UUID)
 AccountExportId = NewType("AccountExportId", UUID)
 TaskRunId = NewType("TaskRunId", UUID)
 DiscoveryRunId = NewType("DiscoveryRunId", UUID)
+ClaudeTerminalSessionId = NewType("ClaudeTerminalSessionId", UUID)
 
 
 def new_user_id() -> UserId:
@@ -82,6 +83,11 @@ def new_user_id() -> UserId:
 
 def new_user_session_id() -> UserSessionId:
     return UserSessionId(uuid4())
+
+
+def new_claude_terminal_session_id() -> ClaudeTerminalSessionId:
+    """Create the opaque id for one browser-visible terminal session."""
+    return ClaudeTerminalSessionId(uuid4())
 
 
 def new_candidate_profile_id() -> CandidateProfileId:

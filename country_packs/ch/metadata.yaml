@@ -31,6 +31,19 @@ languages:
   - en
 timezone: Europe/Zurich
 full_time_weekly_hours: 42.0
+# Neutral national frame used by the map before a query or result set provides a
+# tighter viewport. Coordinates are WGS84; the bounds cover Switzerland without
+# pretending that they define legal territory.
+map_viewport:
+  center:
+    latitude: 46.8182
+    longitude: 8.2275
+  zoom: 6.2
+  bounds:
+    north: 47.8085
+    south: 45.8179
+    east: 10.4921
+    west: 5.9559
 # The domains a Swiss employer's own site is most likely to sit on. Used as a
 # tie-break when two candidate websites are otherwise equally plausible, never as a
 # filter: a Swiss company on a .com is ordinary, and refusing it would lose half the
@@ -38,6 +51,35 @@ full_time_weekly_hours: 42.0
 company_domain_suffixes:
   - .ch
   - .swiss
+location_country_aliases:
+  CH: CH
+  Switzerland: CH
+  Suisse: CH
+  Schweiz: CH
+  Svizzera: CH
+  FR: FR
+  France: FR
+  DE: DE
+  Germany: DE
+  Deutschland: DE
+  Allemagne: DE
+  AT: AT
+  Austria: AT
+  Oesterreich: AT
+  IT: IT
+  Italy: IT
+  Italia: IT
+  Italie: IT
+  LI: LI
+  Liechtenstein: LI
+  US: US
+  USA: US
+  United States: US
+  GB: GB
+  UK: GB
+  United Kingdom: GB
+  CA: CA
+  Canada: CA
 documentation_url: https://www.seco.admin.ch/
 notes: >-
   Romansh (rm) is a national language but no source in this pack publishes in it,

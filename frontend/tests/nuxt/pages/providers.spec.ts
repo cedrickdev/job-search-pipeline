@@ -74,6 +74,7 @@ describe('providers page', () => {
     vi.restoreAllMocks()
     clearNuxtData()
     useSessionStore().$reset()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
   })
 
   it('lists a connection with its provider, endpoint and default marker', async () => {
@@ -83,6 +84,16 @@ describe('providers page', () => {
     expect(wrapper.text()).toContain('Local OpenAI-compatible')
     expect(wrapper.text()).toContain('http://127.0.0.1:11434/v1')
     expect(wrapper.text()).toContain('default')
+  })
+
+  it('translates the provider settings and connection form into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const { wrapper } = await mountPage([], llmConnectionList([]))
+
+    expect(wrapper.get('h1').text()).toBe('Fournisseurs de modèles')
+    expect(wrapper.text()).toContain('Connexions aux modèles de langage utilisables')
+    expect(wrapper.get('select').attributes('aria-label')).toBe('Type de fournisseur')
+    expect(wrapper.get('label[for="conn-name"]').text()).toBe('Nom')
   })
 
   it('says "key set" for a stored credential but never renders the value', async () => {

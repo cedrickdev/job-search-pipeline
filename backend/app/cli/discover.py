@@ -284,7 +284,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     args = _parse_args(argv)
     try:
-        discovery = build_discovery()
+        from backend.app.discovery.ats_board_catalog import (
+            ATS_REVIEWED_BOARDS_PATH,
+            load_reviewed_boards,
+        )
+        discovery = build_discovery(
+            boards=load_reviewed_boards(ATS_REVIEWED_BOARDS_PATH).boards)
     except (CountryPackError, SourceRegistryError) as exc:
         # Composition, not discovery: a malformed pack or a binding no adapter
         # answers. §16 wants this loud, and there is nothing to sweep meanwhile.

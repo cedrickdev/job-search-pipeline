@@ -46,6 +46,7 @@ describe('onboarding page', () => {
     navigateTo.mockClear()
     clearNuxtData()
     useSessionStore().$reset()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
     api = accountApi()
   })
 
@@ -56,6 +57,25 @@ describe('onboarding page', () => {
     expect(wrapper.get('h2').text()).toBe('Who you are')
     expect(wrapper.find('#profile-display-name').exists()).toBe(true)
     expect(wrapper.get('button[type="submit"]').text()).toBe('Save and continue')
+  })
+
+  it('localizes the profile step and its profile form into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const wrapper = await mountOnboarding()
+
+    expect(wrapper.get('h2').text()).toBe('Qui êtes-vous ?')
+    expect(wrapper.get('label[for="profile-display-name"]').text()).toBe('Nom')
+  })
+
+  it('localizes the search step and its search form into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    api.profile = profile()
+    const wrapper = await mountOnboarding()
+
+    expect(wrapper.get('h2').text()).toBe('Que recherchez-vous ?')
+    expect(wrapper.get('label[for="search-name"]').text()).toBe('Nom')
+    expect(wrapper.get('legend').text()).toBe('Où chercher')
+    expect(wrapper.get('.acct-check').text()).toContain('Activer cette recherche')
   })
 
   it('advances to the search step once the profile is saved', async () => {
@@ -101,6 +121,7 @@ describe('onboarding page', () => {
     api.searches = [search()]
     const wrapper = await mountOnboarding()
 
+    await wrapper.get('[data-test="terms-consent"]').setValue(true)
     await wrapper.get('button.btn-primary').trigger('click')
     await flushPromises()
 
@@ -110,6 +131,17 @@ describe('onboarding page', () => {
     // the next navigation.
     expect(useSessionStore().needsOnboarding).toBe(false)
     expect(navigateTo).toHaveBeenCalledWith('/')
+  })
+
+  it('requires explicit terms acceptance before enabling Finish setup', async () => {
+    api.profile = profile()
+    api.searches = [search()]
+    const wrapper = await mountOnboarding()
+
+    const finish = wrapper.get('button.btn-primary')
+    expect(finish.attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-test="terms-consent"]').setValue(true)
+    expect(finish.attributes('disabled')).toBeUndefined()
   })
 })
 
@@ -181,6 +213,7 @@ describe('onboarding page · refusals and the way out', () => {
     // time the button is pressed.
     api.searches = [search({ search: searchDraft({ is_active: false }) })]
 
+    await wrapper.get('[data-test="terms-consent"]').setValue(true)
     await wrapper.get('button.btn-primary').trigger('click')
     await flushPromises()
 

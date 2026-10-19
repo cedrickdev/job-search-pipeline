@@ -267,6 +267,15 @@ allowed to know a provider type maps to a concrete adapter is
 the credential encrypted at rest and never returned — are [LLM
 Connections](./LLM_CONNECTIONS.md).
 
+### Isolated interactive Claude terminal
+
+The optional in-app Claude Code terminal is not a general LLM provider and does not run in the API
+process. The public API persists only an owner-scoped lifecycle and forwards validated terminal
+frames to a private `terminal-manager`. That manager alone owns the Docker socket and deployment
+Anthropic credential, creating one non-root, resource-limited runtime per session. The frontend
+never receives runtime references, Docker metadata or provider secrets. Expiry cleanup is bounded:
+stop the runtime first, then persist `EXPIRED`; a failed stop remains retryable.
+
 ## 10. Typed LLM outputs
 
 Critical decisions must use typed schemas, preferably Pydantic v2.

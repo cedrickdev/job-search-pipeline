@@ -79,7 +79,7 @@ test('filters the board by track without a second request', async ({ page }) => 
   await page.getByRole('tab', { name: /Travail/ }).click()
 
   // No card in the fixture is on the `travail` track, so the pipeline reads empty.
-  await expect(page.getByText('Rien dans ce pipeline pour l\'instant.')).toBeVisible()
+  await expect(page.getByText('Nothing in this pipeline yet.')).toBeVisible()
   expect(api.callsTo('/api/jobs')).toHaveLength(before)
   expect(api.calls.every(c => !c.url.includes('track'))).toBe(true)
 })

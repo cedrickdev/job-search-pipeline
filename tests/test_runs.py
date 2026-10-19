@@ -2,11 +2,30 @@
 guard. The subprocess runner is injected, so no real process is spawned. Async
 behavior is driven with asyncio.run(scenario()) — no pytest-asyncio needed."""
 import asyncio
+import subprocess
+import sys
 
 import pytest
 
 from pipeline.db import connect, init_db
 from server.runs import RunBusyError, RunManager
+
+
+def test_discovery_uses_the_running_interpreter_outside_a_repo_venv(tmp_path):
+    """Docker installs Python globally: discovery must not assume /app/.venv."""
+    completed = subprocess.run(
+        [sys.executable, "-c", "\n".join([
+            "import sys, subprocess",
+            "from pathlib import Path",
+            "from pipeline import paths",
+            "paths.ROOT = Path(sys.argv[1])",
+            "from server.runs import COMMANDS",
+            "subprocess.run([COMMANDS['discovery'][0], '--version'], check=True)",
+        ]), str(tmp_path)],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "Python" in completed.stdout
 
 
 def _make_db(tmp_path):

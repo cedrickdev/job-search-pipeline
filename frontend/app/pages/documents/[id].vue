@@ -24,6 +24,7 @@ import { useDocumentQuery, useDownloadDocument } from '~/composables/useDocument
 import type { CandidateDocument, DocumentVersion } from '~/types/v2'
 import { errorMessage } from '~/utils/v2-errors'
 
+const { localize: l } = useLocale()
 definePageMeta({ middleware: 'auth' })
 
 const route = useRoute()
@@ -50,13 +51,12 @@ const hasRendered = computed(() =>
 const downloadError = computed(() =>
   (download.error ? errorMessage(download.error) : null))
 
-const TYPE_LABEL: Record<CandidateDocument['document_type'], string> = {
-  RESUME: 'Résumé',
-  COVER_LETTER: 'Cover letter',
+function typeLabel(type: CandidateDocument['document_type']): string {
+  return type === 'RESUME' ? 'Résumé' : l('Cover letter', 'Lettre de motivation')
 }
 
 useHead({
-  title: () => `${doc.value ? TYPE_LABEL[doc.value.document_type] : 'Document'} · Command Center`,
+  title: () => `${doc.value ? typeLabel(doc.value.document_type) : l('Document', 'Document')} · Command Center`,
 })
 
 function when(iso: string): string {
@@ -79,20 +79,20 @@ function onDownload() {
 <template>
   <div class="acct-page">
     <p v-if="loading" class="ov-state">
-      Loading document…
+      {{ l('Loading document…', 'Chargement du document…') }}
     </p>
     <p v-else-if="missing" class="ov-state">
-      That document does not exist.
+      {{ l('That document does not exist.', 'Ce document n’existe pas.') }}
       <NuxtLink to="/documents">
-        Back to documents
+        {{ l('Back to documents', 'Retour aux documents') }}
       </NuxtLink>
     </p>
     <p v-else-if="error || !doc" class="ov-state ov-error">
-      Could not load this document.
+      {{ l('Could not load this document.', 'Impossible de charger ce document.') }}
     </p>
     <template v-else>
       <header class="acct-head">
-        <h1>{{ TYPE_LABEL[doc.document_type] }}</h1>
+        <h1>{{ typeLabel(doc.document_type) }}</h1>
         <div class="doc-head-actions">
           <button
             type="button"
@@ -100,17 +100,16 @@ function onDownload() {
             :disabled="!hasRendered || download.isPending"
             @click="onDownload"
           >
-            {{ download.isPending ? 'Preparing…' : 'Download PDF' }}
+            {{ download.isPending ? l('Preparing…', 'Préparation…') : l('Download PDF', 'Télécharger le PDF') }}
           </button>
           <NuxtLink to="/documents" class="btn-ghost">
-            ← Documents
+            ← {{ l('Documents', 'Documents') }}
           </NuxtLink>
         </div>
       </header>
 
       <p v-if="!hasRendered" class="settings-hint">
-        No version has been rendered yet, so there is nothing to download. A version is
-        rendered once it clears the evidence guard.
+        {{ l('No version has been rendered yet, so there is nothing to download. A version is rendered once it clears the evidence guard.', 'Aucune version n’a encore été générée. Elle sera disponible au téléchargement après validation des preuves.') }}
       </p>
       <p v-if="downloadError" class="auth-error" role="alert">
         {{ downloadError }}
@@ -120,9 +119,9 @@ function onDownload() {
         <li v-for="version in versions" :key="version.id" class="settings-card doc-version">
           <div class="acct-search-row">
             <div class="acct-search-main">
-              <span class="acct-search-name">Version {{ version.version }}</span>
+              <span class="acct-search-name">{{ l('Version', 'Version') }} {{ version.version }}</span>
               <span class="acct-search-meta">
-                {{ version.language }} · generated {{ when(version.created_at) }}
+                {{ version.language }} · {{ l('generated', 'générée le') }} {{ when(version.created_at) }}
                 <template v-if="version.generator_key">
                   · <code>{{ version.generator_key }}</code>
                 </template>
@@ -136,9 +135,9 @@ function onDownload() {
           </div>
 
           <p v-if="version.artifact" class="acct-search-meta">
-            {{ version.artifact.page_count ?? '?' }} page(s) ·
+            {{ version.artifact.page_count ?? '?' }} {{ l('page(s)', 'page(s)') }} ·
             {{ size(version.artifact.byte_size) }} ·
-            rendered {{ when(version.artifact.rendered_at) }}
+            {{ l('rendered', 'généré le') }} {{ when(version.artifact.rendered_at) }}
           </p>
 
           <!-- A rejected attempt, kept with the reasons it was rejected. -->
@@ -147,7 +146,7 @@ function onDownload() {
             class="doc-violations"
           >
             <p class="doc-violations-head">
-              The guard refused this version:
+              {{ l('The guard refused this version:', 'Le contrôle a rejeté cette version :') }}
             </p>
             <ul class="co-evidence">
               <li v-for="(v, i) in version.guard_report.violations" :key="i">
@@ -171,7 +170,7 @@ function onDownload() {
               {{ version.content.summary.text }}
             </p>
             <section v-if="version.content.experience.length" class="doc-section">
-              <h3>Experience</h3>
+              <h3>{{ l('Experience', 'Expérience') }}</h3>
               <div v-for="(entry, i) in version.content.experience" :key="i" class="doc-entry">
                 <p class="doc-entry-heading">
                   {{ entry.heading }}
@@ -187,7 +186,7 @@ function onDownload() {
               </div>
             </section>
             <section v-if="version.content.education.length" class="doc-section">
-              <h3>Education</h3>
+              <h3>{{ l('Education', 'Formation') }}</h3>
               <div v-for="(entry, i) in version.content.education" :key="i" class="doc-entry">
                 <p class="doc-entry-heading">
                   {{ entry.heading }}
@@ -198,14 +197,14 @@ function onDownload() {
               </div>
             </section>
             <section v-if="version.content.skill_groups.length" class="doc-section">
-              <h3>Skills</h3>
+              <h3>{{ l('Skills', 'Compétences') }}</h3>
               <p v-for="(group, i) in version.content.skill_groups" :key="i">
                 <strong v-if="group.name">{{ group.name }}:</strong>
                 {{ group.skills.join(', ') }}
               </p>
             </section>
             <section v-if="version.content.languages.length" class="doc-section">
-              <h3>Languages</h3>
+              <h3>{{ l('Languages', 'Langues') }}</h3>
               <p>{{ version.content.languages.join(', ') }}</p>
             </section>
           </div>

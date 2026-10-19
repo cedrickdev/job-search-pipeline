@@ -46,6 +46,7 @@ const mapMocks = vi.hoisted(() => {
     filters: Record<string, unknown> = {}
     easeToCalls: Record<string, unknown>[] = []
     fitBoundsCalls: { box: unknown, opts: unknown }[] = []
+    setStyleCalls: unknown[] = []
     resizeCount = 0
     removed = 0
     queryResult: { properties?: Record<string, unknown>, geometry?: { type: string, coordinates: number[] } }[] = []
@@ -60,6 +61,15 @@ const mapMocks = vi.hoisted(() => {
     on(type: string, a: Handler | string, b?: Handler) {
       if (typeof a === 'function') (this.globalHandlers[type] ??= []).push(a)
       else if (b) ((this.layerHandlers[type] ??= {})[a] ??= []).push(b)
+      return this
+    }
+
+    once(type: string, handler: Handler) {
+      const onceHandler: Handler = (event) => {
+        this.globalHandlers[type] = (this.globalHandlers[type] ?? []).filter(item => item !== onceHandler)
+        handler(event)
+      }
+      ;(this.globalHandlers[type] ??= []).push(onceHandler)
       return this
     }
 
@@ -87,6 +97,7 @@ const mapMocks = vi.hoisted(() => {
     easeTo(opts: Record<string, unknown>) { this.easeToCalls.push(opts) }
     fitBounds(box: unknown, opts: unknown) { this.fitBoundsCalls.push({ box, opts }) }
     resize() { this.resizeCount++ }
+    setStyle(style: unknown) { this.setStyleCalls.push(style); this.sources = {}; this.layers = [] }
     remove() { this.removed++ }
 
     layerIds() { return this.layers.map(layer => layer.id as string) }
@@ -101,11 +112,13 @@ const mapMocks = vi.hoisted(() => {
 })
 
 vi.mock('maplibre-gl/dist/maplibre-gl.css', () => ({}))
+vi.mock('maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url', () => ({ default: '/worker.js' }))
 vi.mock('maplibre-gl', () => {
   const api = {
     Map: mapMocks.FakeMap,
     AttributionControl: mapMocks.FakeControl,
     NavigationControl: mapMocks.FakeControl,
+    setWorkerUrl: vi.fn(),
   }
   return { ...api, default: api }
 })
@@ -147,6 +160,24 @@ describe('OpportunityMap · lifecycle', () => {
     expect(map.opts.zoom).toBe(6)
     // Attribution is never dropped (§36): the control is added, plus navigation.
     expect(map.controls).toHaveLength(2)
+  })
+
+  it('builds a usable raster basemap when no provider style URL is configured', async () => {
+    await mountMap({
+      styleUrl: '',
+      tileUrl: 'https://tiles.example.test/{z}/{x}/{y}.png',
+      attribution: '© Example Maps',
+    })
+
+    const style = instances[0]!.opts.style as {
+      sources: Record<string, { tiles: string[], attribution: string }>
+      layers: { id: string, type: string, source: string }[]
+    }
+    const basemap = style.sources.basemap
+    expect(basemap).toBeDefined()
+    expect(basemap?.tiles).toEqual(['https://tiles.example.test/{z}/{x}/{y}.png'])
+    expect(basemap?.attribution).toBe('© Example Maps')
+    expect(style.layers).toContainEqual({ id: 'basemap', type: 'raster', source: 'basemap' })
   })
 
   it('adds the clustered source and every layer on load, then reports ready', async () => {
@@ -279,13 +310,30 @@ describe('OpportunityMap · failure is never a throw (§30)', () => {
     expect(wrapper.emitted('error')).toHaveLength(1)
   })
 
-  it('surfaces a style-load error once', async () => {
+  it('surfaces a style-load error only after the local fallback also fails', async () => {
     const wrapper = await mountMap()
     await load()
 
-    instances[0]!.fire('error', { error: { message: 'tiles.json could not be fetched' } })
+    instances[0]!.fire('error', { error: { message: 'The server could not be reached.' } })
+    instances[0]!.fire('error', { error: { message: 'style could not be loaded' } })
 
     expect(wrapper.emitted('error')).toHaveLength(1)
     expect(wrapper.emitted('error')![0]).toEqual(['The map style could not be loaded.'])
+  })
+
+  it('keeps markers usable with a local fallback when the tile server is unreachable', async () => {
+    const wrapper = await mountMap()
+    const map = instances[0]!
+
+    map.fire('error', { error: { message: 'The server could not be reached.' } })
+
+    expect(map.setStyleCalls).toHaveLength(1)
+    expect(wrapper.emitted('error')).toBeUndefined()
+
+    map.fire('style.load')
+    await flushPromises()
+
+    expect(map.getSource('entities')).toBeDefined()
+    expect(wrapper.emitted('ready')).toHaveLength(1)
   })
 })

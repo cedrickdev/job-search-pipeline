@@ -19,10 +19,12 @@ worked example of the contract every model-backed adapter must meet — *cite
 evidence that exists, and never state a number or a skill the cited evidence does
 not carry.*
 """
+import re
 from typing import Protocol, runtime_checkable
 
 from backend.app.domain.candidate import (
     CandidateClaim,
+    CandidateEvidence,
     CandidateProfile,
     ClaimType,
     EvidenceKind,
@@ -45,6 +47,13 @@ REFERENCE_GENERATOR_KEY = "deterministic-reference/1"
 # before the renderer's trimming ever has to intervene, and a model-backed
 # generator is free to choose differently.
 _MAX_COVER_LETTER_PARAGRAPHS = 4
+_MAX_RESUME_HIGHLIGHTS = 8
+_MIN_USABLE_RESUME_FACTS = 2
+_MEANINGFUL_TOKEN = re.compile(r"[a-zA-ZÀ-ÿ][a-zA-ZÀ-ÿ0-9+#.]{2,}")
+_NON_FACTUAL_LINES = {
+    "languages", "langues", "skills", "compétences", "competences",
+    "experience", "expérience", "education", "formation", "contact",
+}
 
 
 class InsufficientEvidence(Exception):
@@ -114,34 +123,34 @@ class DeterministicDocumentGenerator:
     async def generate_resume(self, *, profile: CandidateProfile,
                               opportunity: Opportunity,
                               context: GenerationContext) -> ResumeDocument:
-        if not profile.evidence:
-            raise InsufficientEvidence(
-                "the candidate has no evidence on file, so no résumé can be built "
-                "from it")
+        self._require_usable_resume_evidence(profile)
         return ResumeDocument(
             full_name=profile.display_name,
             headline=profile.headline,
-            summary=self._summary(profile),
-            experience=self._entries(profile, ClaimType.EXPERIENCE),
-            education=self._entries(profile, ClaimType.EDUCATION),
-            skill_groups=self._skill_groups(profile),
+            summary=self._summary(profile, opportunity),
+            highlights=self._highlights(profile, opportunity),
+            experience=self._entries(profile, ClaimType.EXPERIENCE, opportunity),
+            education=self._entries(profile, ClaimType.EDUCATION, opportunity),
+            skill_groups=self._skill_groups(profile, opportunity, language=context.target_language),
             languages=self._languages(profile),
         )
 
-    def _summary(self, profile: CandidateProfile) -> EvidenceBackedText | None:
+    def _summary(self, profile: CandidateProfile,
+                 opportunity: Opportunity | None = None) -> EvidenceBackedText | None:
         """The résumé summary, taken verbatim from a summary evidence record.
 
         A `CV_SUMMARY` record if one exists; otherwise none — the generator does
         not manufacture a summary out of the headline, because a headline is a
         profile label, not an evidence-backed statement.
         """
-        for item in profile.evidence:
+        for item in self._ranked_evidence(profile.evidence, opportunity):
             if item.kind is EvidenceKind.CV_SUMMARY:
                 return EvidenceBackedText(text=item.summary, evidence_ids=(item.id,))
         return None
 
     def _entries(self, profile: CandidateProfile,
-                 claim_type: ClaimType) -> tuple[ResumeEntry, ...]:
+                 claim_type: ClaimType,
+                 opportunity: Opportunity | None = None) -> tuple[ResumeEntry, ...]:
         """One entry per claim of a type, its bullets straight from its evidence.
 
         The heading is the claim's own label and the bullets are the summaries of
@@ -150,8 +159,8 @@ class DeterministicDocumentGenerator:
         terms are trivially supported — the generator selects, it does not compose.
         """
         entries: list[ResumeEntry] = []
-        for claim in self._claims_of(profile, claim_type):
-            evidence = profile.evidence_for(claim)
+        for claim in self._ranked_claims(profile, claim_type, opportunity):
+            evidence = self._ranked_evidence(profile.evidence_for(claim), opportunity)
             bullets = tuple(
                 EvidenceBackedText(text=item.summary, evidence_ids=(item.id,))
                 for item in evidence)
@@ -162,7 +171,8 @@ class DeterministicDocumentGenerator:
                 bullets=bullets))
         return tuple(entries)
 
-    def _skill_groups(self, profile: CandidateProfile
+    def _skill_groups(self, profile: CandidateProfile,
+                      opportunity: Opportunity | None = None, *, language: str = "en"
                       ) -> tuple[ResumeSkillGroup, ...]:
         """A single "Skills" group listing every distinct SKILL claim label.
 
@@ -173,14 +183,88 @@ class DeterministicDocumentGenerator:
         """
         seen: set[str] = set()
         skills: list[str] = []
-        for claim in self._claims_of(profile, ClaimType.SKILL):
+        for claim in self._ranked_claims(profile, ClaimType.SKILL, opportunity):
             folded = claim.label.casefold()
             if folded not in seen:
                 seen.add(folded)
                 skills.append(claim.label)
         if not skills:
             return ()
-        return (ResumeSkillGroup(name="Skills", skills=tuple(skills)),)
+        return (ResumeSkillGroup(name="Compétences" if language == "fr" else "Skills",
+                                 skills=tuple(skills)),)
+
+    def _highlights(self, profile: CandidateProfile,
+                    opportunity: Opportunity) -> tuple[EvidenceBackedText, ...]:
+        """Surface imported CV facts without pretending they are jobs or degrees.
+
+        The importer intentionally records raw CV lines as evidence.  Until the
+        candidate has reviewed/structured those lines into claims, this section
+        keeps useful, truthful material in the CV while preserving that distinction.
+        A posting only changes selection/order, never the words themselves.
+        """
+        structured = {item.id for claim in profile.claims
+                      for item in profile.evidence_for(claim)}
+        highlights: list[EvidenceBackedText] = []
+        for item in self._ranked_evidence(profile.evidence, opportunity):
+            if item.id in structured or item.kind is EvidenceKind.CV_SUMMARY:
+                continue
+            if not self._is_meaningful_fact(item.summary):
+                continue
+            highlights.append(EvidenceBackedText(
+                text=item.summary, evidence_ids=(item.id,)))
+            if len(highlights) == _MAX_RESUME_HIGHLIGHTS:
+                break
+        return tuple(highlights)
+
+    @staticmethod
+    def _is_meaningful_fact(text: str) -> bool:
+        normalized = " ".join(text.casefold().split())
+        return normalized not in _NON_FACTUAL_LINES and len(_MEANINGFUL_TOKEN.findall(text)) >= 2
+
+    def _require_usable_resume_evidence(self, profile: CandidateProfile) -> None:
+        structured = sum(
+            1 for claim in profile.claims
+            if claim.claim_type in (ClaimType.EXPERIENCE, ClaimType.EDUCATION, ClaimType.SKILL,
+                                     ClaimType.ACHIEVEMENT))
+        imported_facts = sum(
+            1 for item in profile.evidence
+            if item.kind is EvidenceKind.CV_SUMMARY or self._is_meaningful_fact(item.summary))
+        if structured or imported_facts >= _MIN_USABLE_RESUME_FACTS:
+            return
+        raise InsufficientEvidence(
+            "the profile does not yet contain enough usable CV evidence; import a complete "
+            "reference CV or add at least two concrete profile facts before generating")
+
+    @staticmethod
+    def _opportunity_terms(opportunity: Opportunity | None) -> set[str]:
+        if opportunity is None:
+            return set()
+        values = [opportunity.title, opportunity.company_name, opportunity.description or ""]
+        values.extend(requirement.skill for requirement in opportunity.skill_requirements)
+        return {term.casefold() for value in values for term in _MEANINGFUL_TOKEN.findall(value)}
+
+    def _ranked_evidence(
+        self, evidence: tuple[CandidateEvidence, ...], opportunity: Opportunity | None,
+    ) -> tuple[CandidateEvidence, ...]:
+        terms = self._opportunity_terms(opportunity)
+        return tuple(sorted(
+            evidence,
+            key=lambda item: -len(terms.intersection(
+                term.casefold() for term in _MEANINGFUL_TOKEN.findall(
+                    f"{item.summary} {item.detail or ''}"))),
+        ))
+
+    def _ranked_claims(self, profile: CandidateProfile, claim_type: ClaimType,
+                       opportunity: Opportunity | None) -> tuple[CandidateClaim, ...]:
+        terms = self._opportunity_terms(opportunity)
+        claims = self._claims_of(profile, claim_type)
+        return tuple(sorted(
+            claims,
+            key=lambda claim: -len(terms.intersection(
+                term.casefold() for term in _MEANINGFUL_TOKEN.findall(
+                    f"{claim.label} {claim.detail or ''} " + " ".join(
+                        item.summary for item in profile.evidence_for(claim))))),
+        ))
 
     @staticmethod
     def _languages(profile: CandidateProfile) -> tuple[str, ...]:
@@ -198,7 +282,7 @@ class DeterministicDocumentGenerator:
     async def generate_cover_letter(self, *, profile: CandidateProfile,
                                     opportunity: Opportunity,
                                     context: GenerationContext) -> CoverLetterDocument:
-        paragraphs = self._letter_paragraphs(profile)
+        paragraphs = self._letter_paragraphs(profile, opportunity)
         if not paragraphs:
             raise InsufficientEvidence(
                 "the candidate has no evidence on file, so no cover letter can be "
@@ -208,14 +292,18 @@ class DeterministicDocumentGenerator:
         # as candidate claims — rather than in an evidence-backed paragraph.
         return CoverLetterDocument(
             recipient=self._recipient(opportunity),
-            greeting="Dear Hiring Team,",
+            greeting=("Madame, Monsieur," if context.target_language == "fr"
+                      else "Dear Hiring Team,"),
             body=paragraphs,
-            closing="Thank you for considering my application. I would welcome the "
-                    "opportunity to discuss how I can contribute.",
+            closing=("Je vous remercie de l’attention portée à ma candidature et me tiens "
+                     "à votre disposition pour un entretien."
+                     if context.target_language == "fr" else
+                     "Thank you for considering my application. I would welcome the "
+                     "opportunity to discuss how I can contribute."),
             signature=profile.display_name,
         )
 
-    def _letter_paragraphs(self, profile: CandidateProfile
+    def _letter_paragraphs(self, profile: CandidateProfile, opportunity: Opportunity
                            ) -> tuple[EvidenceBackedText, ...]:
         """Body paragraphs, each a candidate evidence record quoted verbatim.
 
@@ -226,13 +314,13 @@ class DeterministicDocumentGenerator:
         """
         paragraphs: list[EvidenceBackedText] = []
         used: set[EvidenceId] = set()
-        summary = self._summary(profile)
+        summary = self._summary(profile, opportunity)
         if summary is not None:
             paragraphs.append(summary)
             used.update(summary.evidence_ids)
         for claim_type in (ClaimType.ACHIEVEMENT, ClaimType.EXPERIENCE):
-            for claim in self._claims_of(profile, claim_type):
-                for item in profile.evidence_for(claim):
+            for claim in self._ranked_claims(profile, claim_type, opportunity):
+                for item in self._ranked_evidence(profile.evidence_for(claim), opportunity):
                     if item.id in used:
                         continue
                     paragraphs.append(EvidenceBackedText(
@@ -242,12 +330,11 @@ class DeterministicDocumentGenerator:
                         return tuple(paragraphs)
         if paragraphs:
             return tuple(paragraphs)
-        # No summary and no achievement/experience claims: fall back to any single
-        # evidence record so a candidate with only, say, a diploma still gets a
-        # truthful one-line letter rather than an error.
-        for item in profile.evidence:
-            return (EvidenceBackedText(text=item.summary, evidence_ids=(item.id,)),)
-        return ()
+        # Imported facts have no structured claims yet. Select those most relevant
+        # to this posting rather than always copying the first line of the CV.
+        return tuple(EvidenceBackedText(text=item.summary, evidence_ids=(item.id,))
+                     for item in self._ranked_evidence(profile.evidence, opportunity)
+                     if self._is_meaningful_fact(item.summary))[:_MAX_COVER_LETTER_PARAGRAPHS]
 
     @staticmethod
     def _recipient(opportunity: Opportunity) -> str:

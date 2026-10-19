@@ -10,6 +10,7 @@
   else, and the overview navigates here instead of opening its own.
 -->
 <script setup lang="ts">
+const { locale } = useLocale()
 import { computed, ref } from 'vue'
 import { TRACKS, type TrackKey } from '~/utils/tracks'
 
@@ -45,10 +46,10 @@ const activeTrack = computed(() => TRACKS.find(t => t.key === track.value) ?? TR
       </h1>
       <div class="seg">
         <button :class="{ active: view === 'board' }" @click="view = 'board'">
-          Board
+        {{ locale === 'fr' ? 'Tableau' : 'Board' }}
         </button>
         <button :class="{ active: view === 'table' }" @click="view = 'table'">
-          Table
+        {{ locale === 'fr' ? 'Tableau de données' : 'Table' }}
         </button>
       </div>
     </div>

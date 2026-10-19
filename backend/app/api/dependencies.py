@@ -32,18 +32,22 @@ test has to override to run the whole V2 surface without PostgreSQL, and a route
 built its own service would take that property away.
 """
 from collections.abc import AsyncIterator, Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Final
 
 import httpx
-from fastapi import Depends, Request
-from pydantic import SecretStr
+from fastapi import Depends, HTTPException, Request
+from pydantic import SecretStr, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.requests import HTTPConnection
 
 from backend.app.accounts import AccountDeletionService
 from backend.app.api.errors import RateLimited, csrf_failed, not_authenticated
 from backend.app.application_engine.bootstrap import build_application_registry
+from backend.app.application_engine.browser.form_capabilities import load_form_capabilities
+from backend.app.application_engine.registry import ApplicationAdapterRegistry
+from backend.app.application_engine.task_dispatcher import SubprocessTaskDispatcher
 from backend.app.billing.entitlements import EntitlementResolver
 from backend.app.billing.metering import MeteringService
 from backend.app.billing.provider import BillingProvider
@@ -59,6 +63,7 @@ from backend.app.chat.context import ChatContextBuilder
 from backend.app.chat.conversation import ChatConversationService
 from backend.app.chat.executor import ChatActionExecutor
 from backend.app.chat.validators import ProposalValidator
+from backend.app.claude_terminal.service import ClaudeTerminalSessionService
 from backend.app.companies.bootstrap import build_company_discovery
 from backend.app.companies.providers.manual_seed import (
     PROVIDER_KEY as MANUAL_SEED_PROVIDER,
@@ -66,6 +71,7 @@ from backend.app.companies.providers.manual_seed import (
 from backend.app.core.settings import (
     AuthSettings,
     BrowserSubmissionSettings,
+    ClaudeTerminalSettings,
     DatabaseSettings,
     DocumentSettings,
     ExportSettings,
@@ -74,13 +80,21 @@ from backend.app.core.settings import (
     SiteSettings,
     StripeSettings,
 )
+from backend.app.discovery.ats_board_catalog import (
+    ATS_REVIEWED_BOARDS_PATH,
+    ReviewedAtsCatalog,
+    load_reviewed_boards,
+)
 from backend.app.discovery.bootstrap import build_country_packs, build_discovery
 from backend.app.discovery.orchestrator import DiscoveryOrchestrator
 from backend.app.documents import (
     DeterministicDocumentGenerator,
+    DocumentGenerator,
     LocalDocumentArtifactStore,
 )
 from backend.app.documents.guard import CandidateEvidenceGuard
+from backend.app.documents.llm_generator import LLMDocumentGenerator
+from backend.app.domain.identifiers import UserId
 from backend.app.exports import (
     AccountExportGatherer,
     AccountExportService,
@@ -101,6 +115,11 @@ from backend.app.llm.recorder import LLMTelemetryRecorder
 from backend.app.llm.router import LLMRouter, PrivacyClass, RoutingPolicy
 from backend.app.llm.secrets import FernetSecretCipher, SecretCipher
 from backend.app.ratelimit import RateLimitCategory, RateLimiter
+from backend.app.repositories.ats_request_budget import SqlAlchemyAtsRequestBudget
+from backend.app.repositories.discovery_catalog import DiscoveryRunStore
+from backend.app.repositories.morning_preparation import MorningPreparationRepository
+from backend.app.repositories.morning_run import MorningRunStatusRepository
+from backend.app.repositories.morning_schedule import SqlAlchemyMorningScheduleRepository
 from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyAccountExportRepository,
     SqlAlchemyApplicationDecisionRepository,
@@ -115,6 +134,7 @@ from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemyChatActionExecutionRepository,
     SqlAlchemyChatActionProposalRepository,
     SqlAlchemyChatMessageRepository,
+    SqlAlchemyClaudeTerminalSessionRepository,
     SqlAlchemyCompanyDiscoveryRepository,
     SqlAlchemyCompanyRepository,
     SqlAlchemyConversationRepository,
@@ -151,6 +171,10 @@ from backend.app.services.authentication import (
     AuthenticationService,
     csrf_token_matches,
 )
+from backend.app.services.claude_terminal import (
+    ClaudeTerminalService,
+    InternalTerminalManagerClient,
+)
 from backend.app.services.company_directory import CompanyDirectoryService
 from backend.app.services.company_discovery import (
     CompanyDiscoveryService,
@@ -160,12 +184,15 @@ from backend.app.services.discovery_catalog import (
     DiscoveryCatalogService,
     DiscoveryEnqueueService,
 )
+from backend.app.services.discovery_source_access import SourceAccessPolicy
 from backend.app.services.documents import DocumentService
 from backend.app.services.evidence import CandidateEvidenceService
 from backend.app.services.geo_search import GeoSearchService
 from backend.app.services.llm_connections import LLMConnectionService
 from backend.app.services.local_autopilot import LocalAutopilotService
+from backend.app.services.morning_run import MorningRunService
 from backend.app.services.onboarding import OnboardingService
+from backend.app.services.reference_cv import ReferenceCvService
 from backend.app.tasks.dispatcher import PersistedTaskDispatcher
 from country_packs.registry import CountryPackRegistry
 
@@ -194,6 +221,7 @@ STRIPE_SETTINGS_ATTRIBUTE: Final[str] = "v2_stripe_settings"
 SITE_SETTINGS_ATTRIBUTE: Final[str] = "v2_site_settings"
 RATE_LIMIT_SETTINGS_ATTRIBUTE: Final[str] = "v2_rate_limit_settings"
 RATE_LIMITER_ATTRIBUTE: Final[str] = "v2_rate_limiter"
+TERMINAL_SETTINGS_ATTRIBUTE: Final[str] = "v2_terminal_settings"
 
 # The sentinel a cached `None` cipher is stored as, so "resolved to no cipher" is told
 # apart from "not resolved yet" — a deployment with no master key must not re-read the
@@ -211,7 +239,7 @@ def now() -> datetime:
     return datetime.now(UTC)
 
 
-def auth_settings(request: Request) -> AuthSettings:
+def auth_settings(request: HTTPConnection) -> AuthSettings:
     """The cookie and lockout policy for this deployment.
 
     Resolved by `create_app` and stored on the application, never re-read from the
@@ -227,7 +255,20 @@ def auth_settings(request: Request) -> AuthSettings:
     return resolved
 
 
-def session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
+def claude_terminal_settings(request: HTTPConnection) -> ClaudeTerminalSettings:
+    settings = getattr(request.app.state, TERMINAL_SETTINGS_ATTRIBUTE, None)
+    if isinstance(settings, ClaudeTerminalSettings):
+        return settings
+    try:
+        resolved = ClaudeTerminalSettings.from_env()
+    except ValidationError:
+        # Configuration errors must not become an opaque 500 or expose env values.
+        raise HTTPException(status_code=503, detail="TERMINAL_MISCONFIGURED") from None
+    setattr(request.app.state, TERMINAL_SETTINGS_ATTRIBUTE, resolved)
+    return resolved
+
+
+def session_factory(request: HTTPConnection) -> async_sessionmaker[AsyncSession]:
     """The async session factory, built on first use and cached on the app.
 
     No connection is opened here — `create_async_engine` is lazy — so this stays
@@ -256,16 +297,39 @@ def discovery_orchestrator(request: Request) -> DiscoveryOrchestrator:
     existing = getattr(request.app.state, DISCOVERY_ATTRIBUTE, None)
     if isinstance(existing, DiscoveryOrchestrator):
         return existing
-    composed = build_discovery().orchestrator
+    composed = build_discovery(
+        boards=reviewed_ats_catalog(request).boards,
+        budget=SqlAlchemyAtsRequestBudget(session_factory(request))).orchestrator
     setattr(request.app.state, DISCOVERY_ATTRIBUTE, composed)
     return composed
 
 
+def reviewed_ats_catalog(request: Request) -> ReviewedAtsCatalog:
+    """One catalog snapshot per API process; edits require restart."""
+    existing = getattr(request.app.state, "reviewed_ats_catalog", None)
+    if isinstance(existing, ReviewedAtsCatalog):
+        return existing
+    catalog = load_reviewed_boards(ATS_REVIEWED_BOARDS_PATH)
+    request.app.state.reviewed_ats_catalog = catalog
+    return catalog
+
+
+def discovery_source_policy(request: Request) -> SourceAccessPolicy:
+    existing = getattr(request.app.state, "discovery_source_policy", None)
+    if isinstance(existing, SourceAccessPolicy):
+        return existing
+    policy = SourceAccessPolicy.from_env(reviewed_ats_catalog(request))
+    request.app.state.discovery_source_policy = policy
+    return policy
+
+
 def discovery_catalog_service(
+        request: Request,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(session_factory)],
         orchestrator: Annotated[DiscoveryOrchestrator, Depends(discovery_orchestrator)],
 ) -> DiscoveryCatalogService:
-    return DiscoveryCatalogService(factory, orchestrator)
+    return DiscoveryCatalogService(factory, orchestrator,
+                                   source_policy=discovery_source_policy(request))
 
 
 async def database_session(
@@ -283,6 +347,7 @@ async def database_session(
 
 
 def discovery_enqueue_service(
+        request: Request,
         session: Annotated[AsyncSession, Depends(database_session)],
         instant: Annotated[datetime, Depends(now)],
 ) -> DiscoveryEnqueueService:
@@ -290,6 +355,25 @@ def discovery_enqueue_service(
         SqlAlchemySearchProfileRepository(session),
         PersistedTaskDispatcher(SqlAlchemyTaskRunRepository(session), clock=lambda: instant),
         clock=lambda: instant,
+        source_policy=discovery_source_policy(request),
+    )
+
+
+def morning_schedule_repository(
+        session: Annotated[AsyncSession, Depends(database_session)],
+) -> SqlAlchemyMorningScheduleRepository:
+    return SqlAlchemyMorningScheduleRepository(session)
+
+
+def morning_run_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        enqueue: Annotated[DiscoveryEnqueueService, Depends(discovery_enqueue_service)],
+) -> MorningRunService:
+    return MorningRunService(
+        SqlAlchemySearchProfileRepository(session), enqueue,
+        SqlAlchemyTaskRunRepository(session), MorningRunStatusRepository(session),
+        DiscoveryRunStore(session), MorningPreparationRepository(session),
+        live_submissions_enabled=BrowserSubmissionSettings.from_env().live_enabled,
     )
 
 
@@ -299,6 +383,32 @@ def authentication_service(
 ) -> AuthenticationService:
     return AuthenticationService(SqlAlchemyUserRepository(session),
                                  SqlAlchemySessionRepository(session), settings)
+
+
+async def current_session(
+        request: HTTPConnection,
+        service: Annotated[AuthenticationService, Depends(authentication_service)],
+        settings: Annotated[AuthSettings, Depends(auth_settings)],
+        instant: Annotated[datetime, Depends(now)],
+) -> AuthenticatedSession:
+    """Resolve the authenticated caller and enforce CSRF on unsafe requests.
+
+    This deliberately lives before any account-aware service composition: document
+    generation, chat and interview practice all need the same caller identity to
+    select that account's LLM connections without accepting a user id from a route.
+    """
+    raw = request.cookies.get(settings.session_cookie_name)
+    if not raw:
+        raise not_authenticated()
+    authenticated = await service.authenticate(token=SecretStr(raw), now=instant)
+    if authenticated is None:
+        raise not_authenticated()
+    if (request.scope["type"] == "http"
+            and str(request.scope.get("method", "GET")).upper() not in SAFE_METHODS
+            and not csrf_token_matches(
+                authenticated.session, request.headers.get(CSRF_HEADER))):
+        raise csrf_failed()
+    return authenticated
 
 
 def _metering(session: AsyncSession) -> MeteringService:
@@ -396,32 +506,12 @@ def evidence_service(
     return CandidateEvidenceService(SqlAlchemyCandidateProfileRepository(session))
 
 
-def document_service(
+def reference_cv_service(
         session: Annotated[AsyncSession, Depends(database_session)],
         settings: Annotated[DocumentSettings, Depends(document_settings)],
-) -> DocumentService:
-    """The generate-guard-render-store-version workflow, composed for this request.
-
-    Three repositories (the profile it builds from, the posting it targets, the
-    documents it versions), the deterministic reference generator, the pure evidence
-    guard, and the local artifact store rooted at the configured path. The generator
-    and the guard are cheap, stateless value objects built per request rather than
-    cached — the store resolves its root once here. No clock in the constructor; the
-    route hands `now` to `generate`, so a version's timestamps agree.
-
-    The reference generator is the Phase 10 default: it selects and reorders the
-    candidate's own evidence and passes the guard by construction. A model-backed
-    generator (Phase 11) would be swapped in here without the route or the service
-    changing (docs/LLM_PROVIDER_ARCHITECTURE.md §3).
-    """
-    return DocumentService(
-        SqlAlchemyCandidateProfileRepository(session),
-        SqlAlchemyOpportunityRepository(session),
-        SqlAlchemyCandidateDocumentRepository(session),
-        DeterministicDocumentGenerator(),
-        CandidateEvidenceGuard(),
-        LocalDocumentArtifactStore(Path(settings.artifact_root)),
-        metering=_metering(session))
+) -> ReferenceCvService:
+    return ReferenceCvService(SqlAlchemyCandidateProfileRepository(session),
+                              Path(settings.artifact_root))
 
 
 def export_settings(request: Request) -> ExportSettings:
@@ -541,6 +631,47 @@ def llm_cipher(
     return resolved
 
 
+async def document_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        settings: Annotated[DocumentSettings, Depends(document_settings)],
+        current: Annotated[AuthenticatedSession, Depends(current_session)],
+        cipher: Annotated[SecretCipher | None, Depends(llm_cipher)],
+) -> DocumentService:
+    """Compose evidence-guarded documents with the account's explicit model choice.
+
+    Without an enabled connection, generation remains deterministic and fully local.
+    Enabling a provider in Settings is the candidate's explicit opt-in to use it for
+    the richer, provider-neutral tailoring path; the evidence guard and renderer
+    remain outside the model boundary in both cases.
+    """
+    return await compose_document_service_for_user(
+        session, current.user.id, settings=settings, cipher=cipher)
+
+
+async def compose_document_service_for_user(
+        session: AsyncSession, user_id: UserId, *, settings: DocumentSettings,
+        cipher: SecretCipher | None,
+) -> DocumentService:
+    """Share API/worker provider selection while keeping each user's own connections."""
+    connections = await SqlAlchemyLLMConnectionRepository(session).list_for_user(
+        user_id, enabled_only=True)
+    generator: DocumentGenerator = DeterministicDocumentGenerator()
+    if connections:
+        generator = LLMDocumentGenerator(
+            router=LLMRouter(build_llm_provider_registry(connections, cipher=cipher)),
+            policy=RoutingPolicy(privacy=PrivacyClass.EXTERNAL_ALLOWED),
+            recorder=LLMTelemetryRecorder(
+                runs=SqlAlchemyLLMRunRepository(session), connections=connections,
+                metering=_metering(session)),
+            user_id=user_id)
+    return DocumentService(
+        SqlAlchemyCandidateProfileRepository(session),
+        SqlAlchemyOpportunityRepository(session),
+        SqlAlchemyCandidateDocumentRepository(session), generator,
+        CandidateEvidenceGuard(), LocalDocumentArtifactStore(Path(settings.artifact_root)),
+        metering=_metering(session))
+
+
 def llm_connection_service(
         session: Annotated[AsyncSession, Depends(database_session)],
         cipher: Annotated[SecretCipher | None, Depends(llm_cipher)],
@@ -556,6 +687,21 @@ def llm_connection_service(
     """
     return LLMConnectionService(
         SqlAlchemyLLMConnectionRepository(session), cipher=cipher)
+
+
+def claude_terminal_service(
+        session: Annotated[AsyncSession, Depends(database_session)],
+        settings: Annotated[ClaudeTerminalSettings, Depends(claude_terminal_settings)],
+) -> ClaudeTerminalService:
+    if not settings.enabled or not settings.manager_url or not settings.manager_token:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="TERMINAL_UNAVAILABLE")
+    sessions = ClaudeTerminalSessionService(
+        SqlAlchemyClaudeTerminalSessionRepository(session),
+        session_ttl=timedelta(minutes=settings.session_ttl_minutes),
+    )
+    return ClaudeTerminalService(sessions, InternalTerminalManagerClient(
+        base_url=settings.manager_url, token=settings.manager_token))
 
 
 def assessment_service(
@@ -635,32 +781,7 @@ def company_discovery_service(
             confirmed_alias_sources=frozenset({MANUAL_SEED_PROVIDER})))
 
 
-async def current_session(
-        request: Request,
-        service: Annotated[AuthenticationService, Depends(authentication_service)],
-        settings: Annotated[AuthSettings, Depends(auth_settings)],
-        instant: Annotated[datetime, Depends(now)],
-) -> AuthenticatedSession:
-    """Who is making this request — and, if it is unsafe, that it may.
-
-    Raises 401 when there is no usable session, and 403 when an unsafe method
-    arrives without a matching `X-CSRF-Token`. The order matters: the CSRF check
-    needs the session's stored digest, so it can only happen after the cookie has
-    resolved to a session.
-    """
-    raw = request.cookies.get(settings.session_cookie_name)
-    if not raw:
-        raise not_authenticated()
-    authenticated = await service.authenticate(token=SecretStr(raw), now=instant)
-    if authenticated is None:
-        raise not_authenticated()
-    if request.method.upper() not in SAFE_METHODS and not csrf_token_matches(
-            authenticated.session, request.headers.get(CSRF_HEADER)):
-        raise csrf_failed()
-    return authenticated
-
-
-def reject_cross_site_writes(request: Request) -> None:
+def reject_cross_site_writes(connection: HTTPConnection) -> None:
     """Refuse an unsafe request the browser itself calls cross-site.
 
     Applied to the whole V2 router, so it covers `login` and `register` too — the
@@ -674,9 +795,11 @@ def reject_cross_site_writes(request: Request) -> None:
     an authenticated write; this is the cheap outer layer
     (docs/AUTHENTICATION.md §CSRF).
     """
-    if request.method.upper() in SAFE_METHODS:
+    if connection.scope["type"] != "http":
         return
-    if request.headers.get("Sec-Fetch-Site") == "cross-site":
+    if str(connection.scope.get("method", "GET")).upper() in SAFE_METHODS:
+        return
+    if connection.headers.get("Sec-Fetch-Site") == "cross-site":
         raise csrf_failed()
 
 
@@ -685,12 +808,11 @@ def application_service(
 ) -> ApplicationService:
     """The application lifecycle service, composed for this request.
 
-    Ten repositories and the adapter registry. The registry is built with only its
-    generic fallback (`build_application_registry` with no collaborators): the API
-    process prepares applications and routes them to a human, and it does not itself
-    drive a browser or send mail — that is a worker's job, and a worker deployment
-    composes a registry with a `TaskDispatcher` and an `EmailSender`. Preparing a
-    safe, fallback-only registry here is what keeps the default cautious (§13). No
+    Ten repositories and the adapter registry. By default the registry has only its
+    generic fallback: the API does not drive a browser. A local operator may opt in
+    to reversible browser preparation with `JOBSEARCH_BROWSER_LOCAL_PREPARATION_ENABLED`;
+    that path still uses the isolated subprocess dispatcher. Irreversible submission
+    remains a separate queue/worker action guarded by the live-submission switch. No
     clock in the constructor — each route hands `now` to the method it calls, so a
     single request's timestamps and rate window agree.
     """
@@ -705,8 +827,25 @@ def application_service(
         profiles=SqlAlchemyCandidateProfileRepository(session),
         opportunities=SqlAlchemyOpportunityRepository(session),
         documents=SqlAlchemyCandidateDocumentRepository(session),
-        registry=build_application_registry(),
-        metering=_metering(session))
+        registry=application_registry(),
+        metering=_metering(session),
+        form_catalog=load_form_capabilities(
+            BrowserSubmissionSettings.from_env().form_catalog_path,
+            today=date.today()))
+
+
+def application_registry() -> ApplicationAdapterRegistry:
+    """Build the API-side adapter registry for the explicit local runtime mode.
+
+    The default remains the generic, human-handoff adapter. When local browser
+    preparation is enabled, PREPARE tasks run through the isolated subprocess
+    dispatcher; irreversible submission still requires the separate live switch
+    and the browser lane's committed queue path.
+    """
+    settings = BrowserSubmissionSettings.from_env()
+    dispatcher = (SubprocessTaskDispatcher()
+                  if settings.local_preparation_enabled else None)
+    return build_application_registry(task_dispatcher=dispatcher)
 
 
 def local_autopilot_service(
@@ -731,7 +870,10 @@ def application_queue_service(
         opportunities=SqlAlchemyOpportunityRepository(session),
         dispatcher=PersistedTaskDispatcher(
             SqlAlchemyTaskRunRepository(session), clock=lambda: instant),
-        live_enabled=BrowserSubmissionSettings.from_env().live_enabled)
+        live_enabled=BrowserSubmissionSettings.from_env().live_enabled,
+        form_catalog=load_form_capabilities(
+            BrowserSubmissionSettings.from_env().form_catalog_path,
+            today=date.today()))
 
 
 async def chat_conversation_service(
@@ -814,11 +956,10 @@ async def interview_service(
     The context builder reads the same two user-scoped repositories the rest of V2 uses, so
     the grounding a prompt bears is this account's own.
 
-    The privacy decision is made here and nowhere else, and it is the opposite of the chat's:
-    `LOCAL_ONLY`, because every interview prompt carries the candidate's own evidence, and the
-    default for anything bearing candidate data is that it must not leave the machine unless an
-    operator opts a connection out (backend/app/interview/llm.py §Privacy,
-    docs/LLM_PROVIDER_ARCHITECTURE.md §Privacy). Transcription is local by construction — the
+    The privacy decision is made here and nowhere else. An enabled connection is an explicit
+    user choice in Settings, so it may serve interview practice whether it is local or remote;
+    an account with no enabled connection is still refused before a session starts.
+    Transcription is local by construction — the
     `WhisperCppTranscriber` runs on the box and discards the audio — so no privacy question
     reaches the router for a voice answer. No clock in the constructor; each route hands `now`
     to the method it calls, so a single request's timestamps agree.
@@ -838,7 +979,7 @@ async def interview_service(
             opportunities=SqlAlchemyOpportunityRepository(session)),
         llm=InterviewLLM(
             router=LLMRouter(registry),
-            policy=RoutingPolicy(privacy=PrivacyClass.LOCAL_ONLY),
+            policy=RoutingPolicy(privacy=PrivacyClass.EXTERNAL_ALLOWED),
             recorder=LLMTelemetryRecorder(
                 runs=SqlAlchemyLLMRunRepository(session), connections=connections,
                 metering=_metering(session)),
@@ -1215,9 +1356,11 @@ CompanyDiscovery = Annotated[CompanyDiscoveryService,
 GeoSearch = Annotated[GeoSearchService, Depends(geo_search_service)]
 Assessment = Annotated[AssessmentService, Depends(assessment_service)]
 Evidence = Annotated[CandidateEvidenceService, Depends(evidence_service)]
+ReferenceCv = Annotated[ReferenceCvService, Depends(reference_cv_service)]
 Documents = Annotated[DocumentService, Depends(document_service)]
 LocalAutopilot = Annotated[LocalAutopilotService, Depends(local_autopilot_service)]
 LLMConnections = Annotated[LLMConnectionService, Depends(llm_connection_service)]
+ClaudeTerminals = Annotated[ClaudeTerminalService, Depends(claude_terminal_service)]
 Applications = Annotated[ApplicationService, Depends(application_service)]
 BrowserLaneTasks = Annotated[ApplicationQueueService, Depends(application_queue_service)]
 ChatConversations = Annotated[ChatConversationService,

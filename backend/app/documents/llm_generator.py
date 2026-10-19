@@ -31,6 +31,7 @@ produced it (§56) — the deterministic generator left no such trail because it
 call.
 """
 import json
+import re
 from typing import Any, TypeVar
 
 from pydantic import ValidationError
@@ -121,10 +122,12 @@ class LLMDocumentGenerator:
 
     @staticmethod
     def _require_evidence(profile: CandidateProfile) -> None:
-        if not profile.evidence:
+        meaningful = sum(
+            1 for item in profile.evidence
+            if len(re.findall(r"[a-zA-ZÀ-ÿ][a-zA-ZÀ-ÿ0-9+#.]{2,}", item.summary)) >= 2)
+        if meaningful < 2 and not profile.claims:
             raise InsufficientEvidence(
-                "the candidate has no evidence on file, so no document can be built "
-                "from it")
+                "the profile does not yet contain enough usable CV evidence to build a document")
 
     async def _run(self, request: LLMRequest) -> LLMResponse:
         """Route the request, through the recorder when one is set, and return the answer.

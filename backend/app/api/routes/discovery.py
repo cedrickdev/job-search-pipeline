@@ -19,6 +19,7 @@ from backend.app.services.discovery_catalog import (
     DiscoveryCatalogService,
     DiscoveryEnqueueService,
 )
+from backend.app.services.discovery_source_access import DiscoverySourceAccessDenied
 
 router = APIRouter(tags=["v2-discovery"])
 
@@ -41,6 +42,8 @@ async def enqueue_discovery(
                                                   trigger="MANUAL")
     except LookupError as exc:
         raise _not_found() from exc
+    except DiscoverySourceAccessDenied as exc:
+        raise ApiError(status.HTTP_409_CONFLICT, "discovery_source_unapproved", str(exc)) from exc
     return DiscoveryQueuedResponse(run_id=task_id)
 
 

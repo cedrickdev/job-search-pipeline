@@ -14,6 +14,8 @@ The modules, in dependency order:
 - `identifiers` — typed UUID ids and their factories;
 - `user` — accounts and server-side sessions;
 - `common` — value objects shared by several entities (`Location`, `Reason`, …);
+- `morning_schedule` — one user's Swiss wall-clock discovery schedule;
+- `morning_preparation` — owner-scoped matching and document checkpoints;
 - `opportunity` — the central abstraction and its source record;
 - `company` — employers and their physical sites;
 - `candidate` — profile, evidence and claims;

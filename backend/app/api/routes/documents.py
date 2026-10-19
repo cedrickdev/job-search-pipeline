@@ -18,7 +18,7 @@ attempt that grows the history, not an idempotent replace. `GET /documents` and
 rendered PDF. The reads answer 404 for "no such document" and "not yours" alike,
 so a caller cannot learn another account holds a document by asking for it.
 """
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile, status
 
 from backend.app.api.dependencies import (
     CurrentSession,
@@ -26,6 +26,7 @@ from backend.app.api.dependencies import (
     Documents,
     Evidence,
     Now,
+    ReferenceCv,
 )
 from backend.app.api.schemas import (
     AddClaimRequest,
@@ -35,16 +36,32 @@ from backend.app.api.schemas import (
     CandidateDocumentResponse,
     CandidateEvidenceListResponse,
     CandidateEvidenceResponse,
+    CandidateProfileResponse,
     GenerateDocumentRequest,
 )
+from backend.app.domain.candidate import ReferenceCvPurpose
 from backend.app.domain.documents import CandidateDocumentType
-from backend.app.domain.identifiers import CandidateDocumentId, OpportunityId
+from backend.app.domain.identifiers import CandidateDocumentId, DocumentVersionId, OpportunityId
 from backend.app.services.evidence import ClaimDraft, EvidenceDraft
 
 router = APIRouter(tags=["v2-documents"])
 
 
 # --- candidate evidence store ------------------------------------------------
+
+@router.post("/me/reference-cv", response_model=CandidateProfileResponse)
+async def import_reference_cv(
+        current: CurrentSession, service: ReferenceCv, instant: Now,
+        purpose: ReferenceCvPurpose = Form(...), file: UploadFile = File(...),
+        ) -> CandidateProfileResponse:
+    """Import one private reference CV and turn readable lines into evidence."""
+    try:
+        profile = await service.import_file(
+            current.user.id, filename=file.filename or "reference-cv.txt",
+            content=await file.read(), purpose=purpose, now=instant)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return CandidateProfileResponse.of(profile)
 
 @router.post("/me/evidence", response_model=CandidateEvidenceResponse,
              status_code=status.HTTP_201_CREATED)
@@ -177,3 +194,15 @@ async def download_document(document_id: CandidateDocumentId, current: CurrentSe
         content=stored.content, media_type=stored.media_type,
         headers={"Content-Disposition":
                  f'attachment; filename="{document_id}.pdf"'})
+
+
+@router.get("/documents/versions/{version_id}/download")
+async def download_document_version(version_id: DocumentVersionId,
+                                    current: CurrentSession,
+                                    service: Documents) -> Response:
+    """Download one exact rendered version; owner and guard checks stay in the service."""
+    stored = await service.download_version(current.user.id, version_id)
+    return Response(
+        content=stored.content, media_type=stored.media_type,
+        headers={"Content-Disposition":
+                 f'attachment; filename="{version_id}.pdf"'})

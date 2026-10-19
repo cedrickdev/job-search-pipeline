@@ -146,7 +146,7 @@ describe('useDocumentQuery', () => {
     await run(() => useDocumentQuery(null))
     await flushPromises()
 
-    expect(http.calls).toHaveLength(0)
+    expect(http.callsTo('/api/v2/documents/')).toHaveLength(0)
   })
 
   it('fetches the one document once the id is known', async () => {

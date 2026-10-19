@@ -35,7 +35,7 @@ describe('DocumentGenerateActions', () => {
     })
     const push = vi.spyOn(useRouter(), 'push').mockResolvedValue()
 
-    await buttonNamed(wrapper, /Résumé/).trigger('click')
+    await buttonNamed(wrapper, /CV adapté|Resume/).trigger('click')
     await flushPromises()
 
     // The generator returns the whole document; the person is taken to read it.
@@ -71,13 +71,26 @@ describe('DocumentGenerateActions', () => {
     })
     const push = vi.spyOn(useRouter(), 'push').mockResolvedValue()
 
-    await buttonNamed(wrapper, /Résumé/).trigger('click')
+    await buttonNamed(wrapper, /CV adapté|Resume/).trigger('click')
     await flushPromises()
 
     expect(wrapper.get('.doc-actions-error').text())
-      .toContain('There is not enough evidence on your profile')
+      .toMatch(/There is not enough evidence on your profile|preuves insuffisantes/i)
     // Points at the fix — add evidence — rather than a dead end.
     expect(wrapper.get('.doc-actions-error a').attributes('href')).toBe('/evidence')
     expect(push).not.toHaveBeenCalled()
+  })
+
+  it('directs a rejected model credential to model settings, not candidate evidence', async () => {
+    stubFetch([{
+      match: '/resume', method: 'POST', status: 503,
+      json: { error: 'provider_auth_required', detail: 'Authentication failed' },
+    }])
+    const wrapper = await mountSuspended(DocumentGenerateActions, {
+      props: { opportunityId: OPPORTUNITY_ID },
+    })
+    await buttonNamed(wrapper, /CV adapté|Resume/).trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.doc-actions-error a').attributes('href')).toBe('/settings#llm')
   })
 })

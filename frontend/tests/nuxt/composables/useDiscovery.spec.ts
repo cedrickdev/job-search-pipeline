@@ -20,6 +20,8 @@ function holder() {
         h('button', { onClick: discovery.refresh }, 'Refresh'),
         h('output', discovery.status.value),
         h('span', discovery.sourceHealth.value.length),
+        h('em', String(discovery.busy.value)),
+        h('small', discovery.errorCode.value ?? ''),
       ])
     },
   })
@@ -40,6 +42,7 @@ describe('Swiss discovery run', () => {
     await flushPromises()
     expect(wrapper.get('output').text()).toBe('PARTIAL')
     expect(wrapper.get('span').text()).toBe('1')
+    expect(wrapper.get('em').text()).toBe('false')
     expect(http.callsTo(START).filter(call => call.method === 'POST')).toHaveLength(0)
     wrapper.unmount()
   })
@@ -66,11 +69,30 @@ describe('Swiss discovery run', () => {
     wrapper.unmount()
   })
 
+  it('keeps an unapproved-source refusal visible instead of suggesting an empty map', async () => {
+    stubFetch([
+      { match: LATEST, method: 'GET', status: 404 },
+      { match: START, method: 'POST', status: 409, json: {
+        error: 'discovery_source_unapproved', detail: 'source access not approved',
+      } },
+    ])
+    const wrapper = await mountSuspended(holder())
+    await flushPromises()
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('output').text()).toBe('ERROR')
+    expect(wrapper.get('small').text()).toBe('discovery_source_unapproved')
+    expect(wrapper.get('em').text()).toBe('false')
+    wrapper.unmount()
+  })
+
   it('has explicit French and English partial-coverage wording', () => {
     expect(discoveryMessage('fr', 'PARTIAL')).toContain('incomplète')
     expect(discoveryMessage('en', 'PARTIAL')).toContain('incomplete')
     expect(sourceHealthMessage('fr', 'UNAVAILABLE', 'SOURCE_TIMEOUT')).toContain('délai')
     expect(sourceHealthMessage('en', 'UNAVAILABLE', 'SOURCE_TIMEOUT')).toContain('timed out')
+    expect(sourceHealthMessage('fr', 'UNAVAILABLE', 'SOURCE_BUDGET_EXHAUSTED')).toContain('quota quotidien épuisé')
+    expect(sourceHealthMessage('en', 'UNAVAILABLE', 'SOURCE_BUDGET_UNAVAILABLE')).toContain('request budget unavailable')
   })
 
   it('keeps a queued run pending while its worker has not produced a report', async () => {
@@ -87,6 +109,7 @@ describe('Swiss discovery run', () => {
     await wrapper.get('button').trigger('click')
     await flushPromises()
     expect(wrapper.get('output').text()).toBe('QUEUED')
+    expect(wrapper.get('em').text()).toBe('true')
     expect(http.callsTo(STATUS)).toHaveLength(1)
     wrapper.unmount()
   })
@@ -106,6 +129,7 @@ describe('Swiss discovery run', () => {
     await wrapper.get('button').trigger('click')
     await flushPromises()
     expect(wrapper.get('output').text()).toBe('SUCCEEDED')
+    expect(wrapper.get('em').text()).toBe('false')
     expect(http.callsTo(STATUS)).toHaveLength(1)
     wrapper.unmount()
   })

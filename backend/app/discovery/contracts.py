@@ -239,6 +239,8 @@ class SourceFailureCode(StrEnum):
     SOURCE_MISCONFIGURED = "SOURCE_MISCONFIGURED"
     SOURCE_PARSE_FAILED = "SOURCE_PARSE_FAILED"
     SOURCE_PARTIAL_FAILURE = "SOURCE_PARTIAL_FAILURE"
+    SOURCE_BUDGET_EXHAUSTED = "SOURCE_BUDGET_EXHAUSTED"
+    SOURCE_BUDGET_UNAVAILABLE = "SOURCE_BUDGET_UNAVAILABLE"
     # The catch-all for a bug in an adapter rather than a fault at the source.
     SOURCE_ADAPTER_ERROR = "SOURCE_ADAPTER_ERROR"
 
@@ -314,9 +316,12 @@ class DiscoveryWarningCode(StrEnum):
     # One posting could not be normalized (no title, no company, no URL). Dropping
     # it silently is how a source appears to shrink for no reason.
     POSTING_SKIPPED = "POSTING_SKIPPED"
+    FOREIGN_LOCATION_EXCLUDED = "FOREIGN_LOCATION_EXCLUDED"
     # The registry matched nothing for this request. §18 requires this to be an
     # explicit result rather than an empty list that looks like "nothing is hiring".
     NO_SOURCE_SELECTED = "NO_SOURCE_SELECTED"
+    SOURCE_BUDGET_EXHAUSTED = "SOURCE_BUDGET_EXHAUSTED"
+    SOURCE_BUDGET_UNAVAILABLE = "SOURCE_BUDGET_UNAVAILABLE"
 
 
 class DiscoveryWarning(DomainModel):

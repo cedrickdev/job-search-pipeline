@@ -26,9 +26,15 @@ misconfigured, not a caller sending a bad request.
 """
 from dataclasses import dataclass
 from datetime import datetime
+from os import environ
 
 from backend.app.billing.catalogue import FREE_PLAN_SLUG
 from backend.app.billing.errors import BillingError, BillingErrorCode
+from backend.app.core.production import (
+    LOCAL_UNMETERED_VARIABLE,
+    DeploymentMode,
+    deployment_mode,
+)
 from backend.app.domain.entitlement import Entitlement, EntitlementKey, Plan
 from backend.app.domain.identifiers import UserId
 from backend.app.domain.subscription import Subscription
@@ -69,10 +75,16 @@ class EntitlementResolver:
     """
 
     def __init__(self, plans: PlanRepository, subscriptions: SubscriptionRepository, *,
-                 free_plan_slug: str = FREE_PLAN_SLUG) -> None:
+                 free_plan_slug: str = FREE_PLAN_SLUG,
+                 local_unmetered: bool | None = None) -> None:
         self._plans = plans
         self._subscriptions = subscriptions
         self._free_plan_slug = free_plan_slug
+        self._local_unmetered = (
+            local_unmetered if local_unmetered is not None else
+            deployment_mode() is DeploymentMode.DEVELOPMENT and
+            environ.get(LOCAL_UNMETERED_VARIABLE, "").strip().lower()
+            in {"1", "true", "yes", "on"})
 
     async def resolve(self, user_id: UserId, *, as_of: datetime) -> ResolvedEntitlements:
         """This account's effective plan and billing window, as of `as_of` (§14-16).
@@ -83,6 +95,11 @@ class EntitlementResolver:
         catalogue entry never leaves an account stranded above the free tier. Raises
         `PLAN_CATALOGUE_MISSING` only when even the free plan is unseeded.
         """
+        if self._local_unmetered:
+            return ResolvedEntitlements(
+                plan=self._local_plan(await self._free_plan()),
+                period=calendar_month_period(as_of), is_paid=False)
+
         current = await self._subscriptions.get_current(user_id)
         if current is not None and current.grants_plan_entitlements(as_of):
             plan = await self._plans.get(current.plan_id)
@@ -92,6 +109,18 @@ class EntitlementResolver:
                     is_paid=current.is_provider_backed)
         return ResolvedEntitlements(
             plan=await self._free_plan(), period=calendar_month_period(as_of), is_paid=False)
+
+    @staticmethod
+    def _local_plan(free: Plan) -> Plan:
+        """A clearly-labelled, non-purchasable plan for local workflow validation."""
+        return free.model_copy(update={
+            "slug": "local-development",
+            "name": "Local development",
+            "description": "Unlimited local workflow testing. Not a paid subscription.",
+            "entitlements": tuple(
+                Entitlement(key=entitlement.key, limit=None)
+                for entitlement in free.entitlements),
+        })
 
     async def _free_plan(self) -> Plan:
         """The free-tier plan the fallback resolves to, or a loud refusal if it is unseeded."""

@@ -57,6 +57,8 @@ The essentials are validated unconditionally; the rest only when their feature i
 | `JOBSEARCH_STRIPE_SECRET_KEY` | `JOBSEARCH_BILLING_ENABLED=true` | unset |
 | `JOBSEARCH_STRIPE_WEBHOOK_SECRET` | `JOBSEARCH_BILLING_ENABLED=true` | unset |
 | `JOBSEARCH_LLM_SECRET_KEY` | `JOBSEARCH_LLM_CREDENTIAL_ENCRYPTION_ENABLED=true` | unset |
+| `ANTHROPIC_API_KEY` + `JOBSEARCH_TERMINAL_MANAGER_TOKEN` | `JOBSEARCH_TERMINAL_ENABLED=true`, on **terminal-manager only** | unset |
+| `JOBSEARCH_TERMINAL_ALLOWED_ORIGINS` | `JOBSEARCH_TERMINAL_ENABLED=true`, on the public API | unset, wildcard or non-origin URL |
 
 `JOBSEARCH_REDIS_URL` resolves most-specific-first (`JOBSEARCH_REDIS_URL` then `REDIS_URL`), the same
 order the task queue and the rate limiter use, so validation asks "is a real Redis configured?" the
@@ -78,8 +80,10 @@ Secrets reach a container through its environment or the orchestrator's secret s
 holds. Nothing is ever baked into an image layer. `.dockerignore` excludes `.env`, `.env.*`, `data/`
 and `cv/` from every build context, so a `COPY . .` cannot capture one, and no compose service mounts
 `.env` or passes it through — Compose only interpolates it into non-secret values (ports, the dev
-password). This file and `.env.example` document variable *names* and dev defaults only; real secrets
-stay out of the repository.
+password). The isolated terminal manager is the deliberate exception: it reads a dedicated ignored
+`terminal.env` containing only its Claude gateway values, never the application's `.env`. This file,
+`.env.example` and `terminal.env.example` document variable *names* and dev defaults only; real
+secrets stay out of the repository.
 
 ## Service composition (§56)
 
@@ -94,12 +98,13 @@ one-shot jobs run in the same image and environment as the application.
 | `api` | the FastAPI application (JSON API + built SPA) | — (core) |
 | `frontend` | the Nuxt dev server (dev only; production is the SPA the API serves) | — (core) |
 | `worker` | the general lane: discovery, export, retention (§34-35) | `workers` |
-| `browser-worker` | the browser lane: Playwright submissions only (§35) | `workers` |
+| `browser-worker` | the browser lane: committed application preparation and guarded Playwright submissions (§35) | `workers` |
 | `browser-tests` | mandatory local Chromium fixture checks; no live ATS | `tools` |
 | `migrate` | `alembic upgrade head`, the explicit schema step (§58) | `tools` |
 | `import-v1` | the V1 SQLite importer | `tools` |
 | `backup` | write a PostgreSQL dump (§45) | `tools` |
 | `restore-check` | restore-drill the newest dump into a scratch DB (§46) | `tools` |
+| `terminal-manager` | private owner of the Docker socket and the deployment Claude key; starts isolated per-session runtimes | `terminal` |
 
 Two profiles keep dev ergonomics: `docker compose up` starts db + Redis + API + frontend;
 `docker compose --profile workers up` adds the workers; and the `tools` jobs run one-shot via
@@ -110,6 +115,27 @@ general-lane worker (§35). Generated artifacts (exports, document renders, dump
 The browser worker also mounts the API's `api_data` volume for the shared V1/V2 browser lock and
 private, account-scoped V2 Chromium profiles, and `app_var` to read the exact rendered document versions it
 uploads. Both images use uid/gid 10001 so these volumes remain writable without root.
+
+### Integrated Claude terminal
+
+The terminal feature is opt-in. Build the short-lived runtime image and start the
+private manager profile only after placing the manager token and Anthropic key in the
+deployment's secret store:
+
+```bash
+docker compose build claude-terminal-runtime terminal-manager
+docker compose --profile terminal up -d terminal-manager
+```
+
+The public API must receive `JOBSEARCH_TERMINAL_ENABLED=true`, its manager URL/token,
+and the exact browser origin allowlist. It must never receive `ANTHROPIC_API_KEY` or a
+Docker socket. `terminal-manager` exposes no host port; only it mounts the Docker
+socket. Its per-user/session runtime is non-root, read-only where possible, has no
+Docker socket or incoming port, and runs only on the dedicated terminal egress network.
+The VPS firewall must restrict that network's outbound traffic to Anthropic endpoints;
+Compose network separation alone is not a domain allowlist. Stop the manager to halt
+new sessions; use the terminal reaper to clean up active runtimes after an emergency
+key rotation.
 
 ## Image model (§57)
 
@@ -131,6 +157,11 @@ same image serves under any orchestrator.
 
 ## Phase 12.1 browser activation boundary
 
+For a complete local workflow, set `JOBSEARCH_BROWSER_LOCAL_PREPARATION_ENABLED=true`
+on the host running the API. This enables only the reversible `PREPARE` step through
+the isolated Playwright subprocess, so the UI can inspect a supported ATS form and
+resolve its typed questions. It does not authorize a submission.
+
 `JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED` defaults to `false` in settings, the
 example environment and Compose. A disabled switch refuses new queue requests and
 the worker checks it again before sending. The HTTP `/submit` route cannot bypass
@@ -144,6 +175,27 @@ restart those services; investigate any in-flight or unknown attempts before
 considering another send. Apply migration `rev_0021` before deploying this worker;
 rollback requires stopping the worker first and reconciling any rows with the new
 reason values before downgrading the database.
+
+The supported local operator sequence is:
+
+```bash
+export JOBSEARCH_BROWSER_LOCAL_PREPARATION_ENABLED=true
+export JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED=false
+./start.sh
+
+# In another terminal, drain queued browser tasks without sending them.
+.venv/bin/python -m backend.app.cli.run_worker --lane browser --once
+```
+
+The fixture-only Playwright suite remains the safe proof of browser behavior:
+`docker compose --profile tools run --rm browser-tests`. Real Swiss submissions
+require a separate source-access review, an exact active Greenhouse or Lever form
+capability in `JOBSEARCH_ATS_APPROVED_FORMS_PATH`, the explicit live switch, an
+active CH policy and the daily/period quota. The packaged form catalog is empty.
+Ashby support as a browser driver does not confer unattended authority. The
+pause-versus-final-click race remains an activation blocker; leave the live switch
+off until that boundary and each target employer's conditions are reviewed.
+LinkedIn and jobs.ch remain unsupported for this path.
 
 ## Migrations stay explicit (§58)
 

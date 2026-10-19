@@ -9,6 +9,7 @@ from backend.app.api.dependencies import geo_search_service
 from backend.app.domain.discovery_run import DiscoveryRun, DiscoveryRunStatus, DiscoveryTrigger
 from backend.app.domain.identifiers import DiscoveryRunId, SearchProfileId
 from backend.app.services.discovery_catalog import DiscoveryEnqueueService
+from backend.app.services.discovery_source_access import SourceAccessPolicy
 from backend.app.domain.task import TaskKind, TaskSpec
 from tests.v2_api import api_harness
 from tests.v2_builders import OTHER_USER, a_search_profile
@@ -78,6 +79,24 @@ async def test_inactive_search_cannot_enqueue(tmp_path):
             api.searches, dispatcher, clock=api.clock)
         response = await api.write("POST", f"/me/search-profiles/{MINE}/discovery-runs")
         assert response.status_code == 404
+        assert dispatcher.keys == set()
+
+
+@pytest.mark.asyncio
+async def test_manual_discovery_returns_actionable_409_when_sources_are_unapproved(tmp_path):
+    async with api_harness(tmp_path) as api:
+        await api.sign_in()
+        user_id = next(iter(api.users.users))
+        await api.searches.upsert(a_search_profile(id=MINE, user_id=user_id))
+        dispatcher = Dispatcher()
+        api.app.dependency_overrides[discovery_enqueue_service] = lambda: DiscoveryEnqueueService(
+            api.searches, dispatcher, clock=api.clock,
+            source_policy=SourceAccessPolicy(
+                configured_source_keys=("jobup",), allowed_source_keys=()))
+
+        response = await api.write("POST", f"/me/search-profiles/{MINE}/discovery-runs")
+        assert response.status_code == 409
+        assert response.json()["error"] == "discovery_source_unapproved"
         assert dispatcher.keys == set()
 
 

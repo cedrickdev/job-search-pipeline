@@ -17,19 +17,22 @@ from backend.app.api.routes import (
     account,
     applications,
     auth,
+    autopilot,
     billing,
     career,
     chat,
+    claude_terminal,
     companies,
+    country_packs,
     discovery,
     documents,
     exports,
     geo,
     interview,
     llm,
-    autopilot,
     matches,
     me,
+    morning_run,
     onboarding,
     outcomes,
     roles,
@@ -46,11 +49,14 @@ def create_v2_router() -> APIRouter:
     router.include_router(onboarding.router)
     router.include_router(companies.router)
     router.include_router(companies.discovery_router)
+    router.include_router(country_packs.router)
     router.include_router(geo.router)
     router.include_router(discovery.router)
+    router.include_router(morning_run.router)
     router.include_router(matches.router)
     router.include_router(documents.router)
     router.include_router(llm.router)
+    router.include_router(claude_terminal.router)
     router.include_router(autopilot.router)
     router.include_router(applications.router)
     router.include_router(chat.router)

@@ -92,7 +92,8 @@ class BrowserApplicationAdapter:
             return AdapterPreparation(
                 questions=result.questions,
                 answer_proposals=result.answer_proposals,
-                form_fingerprint=result.form_fingerprint, detail=result.detail)
+                form_fingerprint=result.form_fingerprint,
+                driver_key=result.driver_key, detail=result.detail)
         if result.outcome is BrowserTaskOutcome.REQUIRES_HUMAN \
                 and result.human_required_reason is not None:
             return AdapterPreparation(

@@ -18,6 +18,7 @@ and every `detail` is a composed, secret-free sentence (§33).
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from backend.app.application_engine.browser.contracts import (
@@ -25,6 +26,10 @@ from backend.app.application_engine.browser.contracts import (
     BrowserSubmissionEvidence,
     DriverContext,
     PreparedBrowserForm,
+)
+from backend.app.application_engine.browser.form_capabilities import (
+    FormCapabilityCatalog,
+    FormCapabilityCatalogError,
 )
 from backend.app.application_engine.browser.profile_answers import propose_from_profile
 from backend.app.application_engine.browser.semantics import COVER_LETTER_SLOT, RESUME_SLOT
@@ -69,7 +74,10 @@ async def run_prepare(
 
 async def run_submit(
         page: Page, driver: BrowserApplicationDriver,
-        context: DriverContext) -> BrowserTaskResult:
+        context: DriverContext, *,
+        form_catalog: FormCapabilityCatalog | None = None,
+        form_catalog_loader: Callable[[], FormCapabilityCatalog] | None = None,
+        form_capability_id: str | None = None) -> BrowserTaskResult:
     """Re-check every safety invariant, then let the driver perform the one click (§14-22)."""
     form = await driver.prepare(page, context)
     if form.blocked:
@@ -85,6 +93,31 @@ async def run_submit(
         return _requires_human(
             driver, form.platform, HumanRequiredReason.FORM_CHANGED,
             "the form changed after preparation and must be reviewed again")
+
+    if (form_catalog is not None or form_catalog_loader is not None) \
+            and form_capability_id is None:
+        return _requires_human(
+            driver, form.platform, HumanRequiredReason.FORM_CHANGED,
+            "the form has no active reviewed capability")
+
+    if form_capability_id is not None:
+        if form_catalog_loader is not None:
+            try:
+                form_catalog = form_catalog_loader()
+            except FormCapabilityCatalogError:
+                return _requires_human(
+                    driver, form.platform, HumanRequiredReason.FORM_CHANGED,
+                    "the form review catalog is unavailable")
+        decision = form_catalog.resolve(
+            str(context.target_url) if context.target_url is not None else None,
+            driver.driver_key, form.form_fingerprint,
+        ) if form_catalog is not None else None
+        if (decision is None or decision.capability_id != form_capability_id
+                or form_catalog is None
+                or not form_catalog.allows_questions(form_capability_id, form.questions)):
+            return _requires_human(
+                driver, form.platform, HumanRequiredReason.FORM_CHANGED,
+                "the reviewed form capability changed or was deactivated")
 
     blocking = _first_blocking_field(form.questions, context)
     if blocking is not None:

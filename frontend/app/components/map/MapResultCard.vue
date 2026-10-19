@@ -26,6 +26,7 @@ const props = defineProps<{
     stop_reason?: string | null
     application?: { id: string, state: string } | null
   } | null
+  autopilotError?: string | null
   queueBusy?: boolean
 }>()
 const emit = defineEmits<{ close: [], 'run-autopilot': [], 'queue-autopilot': [] }>()
@@ -35,8 +36,34 @@ const provenance = computed(() => (props.opportunity?.source_records ?? []).map(
   safeUrl: safeJobUrl(source.source_url),
 })))
 const french = computed(() => props.discoveryLocale === 'fr')
-function displayDate(value: string | null | undefined): string {
-  return value ? new Date(value).toLocaleDateString(french.value ? 'fr-CH' : 'en-CH') : ''
+const text = (en: string, fr: string) => french.value ? fr : en
+const currentLocale = computed<'en' | 'fr'>(() => french.value ? 'fr' : 'en')
+function autopilotStatus(report: NonNullable<typeof props.autopilotReport>): string {
+  if (report.stop_reason === 'HUMAN_REQUIRED') {
+    return text(
+      'Preparation is complete. This application needs your review before anything else can happen.',
+      'La préparation est terminée. Cette candidature doit être vérifiée par vous avant toute autre étape.',
+    )
+  }
+  if (report.stop_reason === 'DOCUMENT_NOT_USABLE') {
+    return text(
+      'The documents need your review before the application can continue.',
+      'Les documents doivent être vérifiés avant de poursuivre la candidature.',
+    )
+  }
+  if (report.stop_reason === 'DECISION_NOT_ACTIONABLE') {
+    return text(
+      'This opportunity is not eligible for preparation under your current policy.',
+      'Cette offre ne peut pas être préparée avec votre politique actuelle.',
+    )
+  }
+  if (report.next_action === 'QUEUE_BROWSER_SUBMISSION') {
+    return text(
+      'Everything is ready for your review before browser submission is queued.',
+      'Tout est prêt pour votre vérification avant la mise en file de l’envoi navigateur.',
+    )
+  }
+  return report.next_action
 }
 </script>
 
@@ -46,7 +73,7 @@ function displayDate(value: string | null | undefined): string {
       <h3 class="map-card-title">
         {{ opportunity.title }}
       </h3>
-      <button type="button" class="map-card-close" aria-label="Close" @click="emit('close')">
+      <button type="button" class="map-card-close" :aria-label="text('Close', 'Fermer')" @click="emit('close')">
         ✕
       </button>
     </header>
@@ -60,37 +87,23 @@ function displayDate(value: string | null | undefined): string {
 
     <dl class="map-card-facts">
       <div class="map-card-fact">
-        <dt>Location</dt>
-        <dd>{{ statusLabel(opportunity.status) }}</dd>
+        <dt>{{ text('Location', 'Lieu') }}</dt>
+        <dd>{{ opportunity.location?.raw ?? statusLabel(opportunity.status, currentLocale) }}</dd>
       </div>
       <div v-if="remoteLabel(opportunity.remote_scope)" class="map-card-fact">
-        <dt>Remote</dt>
-        <dd>{{ remoteLabel(opportunity.remote_scope) }}</dd>
+        <dt>{{ text('Remote', 'Télétravail') }}</dt>
+        <dd>{{ remoteLabel(opportunity.remote_scope, currentLocale) }}</dd>
       </div>
       <div class="map-card-fact">
-        <dt>Distance</dt>
+        <dt>{{ text('Distance', 'Distance') }}</dt>
         <dd>{{ distanceLabel(opportunity.distance_meters) }}</dd>
       </div>
     </dl>
 
     <p v-if="opportunity.status === 'COMPANY_FALLBACK'" class="map-card-note">
-      Approximate location — the pin is the company office, not the role's own address.
+      {{ text('Approximate location — the pin is the company office, not the role\'s own address.', 'Emplacement approximatif : le repère indique le bureau de l’entreprise, pas l’adresse du poste.') }}
     </p>
 
-    <div v-if="opportunity.first_seen_at" class="map-card-provenance">
-      <p>{{ french ? 'Première découverte' : 'First seen' }} : {{ displayDate(opportunity.first_seen_at) }}</p>
-      <p v-if="opportunity.last_seen_at">
-        {{ french ? 'Dernière observation' : 'Last seen' }} : {{ displayDate(opportunity.last_seen_at) }}
-      </p>
-      <p v-if="opportunity.last_changed_at">
-        {{ french ? 'Dernière mise à jour' : 'Last updated' }} : {{ displayDate(opportunity.last_changed_at) }}
-      </p>
-      <p v-if="opportunity.first_seen_at === opportunity.last_seen_at">
-        {{ french ? 'Nouvelle offre' : 'New opportunity' }}
-      </p>
-      <p v-else-if="opportunity.last_changed_at">{{ french ? 'Offre mise à jour' : 'Updated opportunity' }}</p>
-      <p v-else>{{ french ? 'Déjà observée' : 'Seen before' }}</p>
-    </div>
     <div v-if="provenance.length" class="map-card-provenance">
       <span>{{ french ? 'Sources' : 'Sources' }} :</span>
       <ul>
@@ -108,21 +121,31 @@ function displayDate(value: string | null | undefined): string {
       target="_blank"
       rel="noopener noreferrer"
     >
-      Open posting ↗
+      {{ text('Open posting ↗', 'Ouvrir l’offre ↗') }}
     </a>
 
-    <DocumentGenerateActions :opportunity-id="opportunity.id" />
+    <DocumentGenerateActions :opportunity-id="opportunity.id" :locale="currentLocale" />
     <button
       type="button"
       class="btn-primary map-card-autopilot"
-      :disabled="props.autopilotBusy"
+      :disabled="props.autopilotBusy || props.autopilotReport?.application?.state === 'REQUIRES_HUMAN'"
       @click="emit('run-autopilot')"
     >
       {{ props.autopilotBusy ? (french ? 'Préparation…' : 'Preparing…') : (french ? 'Évaluer et préparer' : 'Evaluate and prepare') }}
     </button>
     <p v-if="props.autopilotReport" class="map-card-autopilot-status" role="status">
-      {{ props.autopilotReport.stop_reason ?? props.autopilotReport.next_action }}
+      {{ autopilotStatus(props.autopilotReport) }}
     </p>
+    <p v-if="props.autopilotError" class="map-card-autopilot-error" role="alert">
+      {{ props.autopilotError }}
+    </p>
+    <NuxtLink
+      v-if="props.autopilotReport?.application?.state === 'REQUIRES_HUMAN'"
+      class="btn-ghost map-card-apply"
+      to="/applications"
+    >
+      {{ text('Review application →', 'Vérifier la candidature →') }}
+    </NuxtLink>
     <button
       v-if="props.autopilotReport?.application?.state === 'APPROVED'"
       type="button"
@@ -141,28 +164,28 @@ function displayDate(value: string | null | undefined): string {
           {{ company.company.name }}
         </NuxtLink>
       </h3>
-      <button type="button" class="map-card-close" aria-label="Close" @click="emit('close')">
+      <button type="button" class="map-card-close" :aria-label="text('Close', 'Fermer')" @click="emit('close')">
         ✕
       </button>
     </header>
 
     <dl class="map-card-facts">
       <div class="map-card-fact">
-        <dt>Location</dt>
-        <dd>{{ statusLabel(company.status) }}</dd>
+        <dt>{{ text('Location', 'Lieu') }}</dt>
+        <dd>{{ company.location.raw ?? statusLabel(company.status, currentLocale) }}</dd>
       </div>
       <div v-if="company.is_headquarters" class="map-card-fact">
-        <dt>Site</dt>
-        <dd>Headquarters</dd>
+        <dt>{{ text('Site', 'Site') }}</dt>
+        <dd>{{ text('Headquarters', 'Siège social') }}</dd>
       </div>
       <div class="map-card-fact">
-        <dt>Distance</dt>
+        <dt>{{ text('Distance', 'Distance') }}</dt>
         <dd>{{ distanceLabel(company.distance_meters) }}</dd>
       </div>
     </dl>
 
     <NuxtLink class="btn-ghost map-card-apply" :to="`/companies/${company.company.id}`">
-      View company →
+      {{ text('View company →', 'Voir l’entreprise →') }}
     </NuxtLink>
   </article>
 </template>
@@ -196,6 +219,8 @@ function displayDate(value: string | null | undefined): string {
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
+  min-width: 36px;
+  min-height: 36px;
   padding: 2px;
 }
 .map-card-company {
@@ -242,4 +267,10 @@ function displayDate(value: string | null | undefined): string {
 }
 .map-card-provenance p { margin: 0 0 var(--space-1); }
 .map-card-provenance ul { margin: var(--space-1) 0 0; padding-left: var(--space-3); }
+.map-card-autopilot-status { color: var(--text-dim); font-size: 12px; margin: 0; }
+.map-card-autopilot-error { color: var(--danger, #b91c1c); font-size: 12px; margin: 0; }
+@media (max-width: 460px) {
+  .map-card { border-radius: var(--radius); }
+  .map-card-apply { align-self: stretch; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+}
 </style>

@@ -237,6 +237,12 @@ class ResumeDocument(DomainModel):
     full_name: NonEmptyStr
     headline: NonEmptyStr | None = None
     summary: EvidenceBackedText | None = None
+    # Stand-alone, evidence-backed facts that do not honestly belong to an
+    # employment or education entry.  This is especially important directly
+    # after importing a reference CV: keeping the source text visible is safer
+    # than inventing an employer, date or qualification just to force it into an
+    # "Experience" section.
+    highlights: tuple[EvidenceBackedText, ...] = ()
     experience: tuple[ResumeEntry, ...] = ()
     education: tuple[ResumeEntry, ...] = ()
     skill_groups: tuple[ResumeSkillGroup, ...] = ()

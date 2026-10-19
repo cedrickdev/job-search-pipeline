@@ -30,6 +30,10 @@ from uuid import UUID, uuid5
 from pydantic import SecretStr, TypeAdapter
 from sqlalchemy.orm.attributes import flag_modified
 
+from backend.app.claude_terminal.contracts import (
+    ClaudeTerminalSession,
+    ClaudeTerminalState,
+)
 from backend.app.domain.account_export import AccountExport, AccountExportStatus
 from backend.app.domain.analytics import DimensionKind, RateKind, TimingKind
 from backend.app.domain.application import (
@@ -44,11 +48,13 @@ from backend.app.domain.application_event import (
 from backend.app.domain.candidate import (
     Availability,
     CandidateClaim,
+    CandidateContact,
     CandidateEvidence,
     CandidateProfile,
     ClaimType,
     EvidenceKind,
     EvidenceProvenance,
+    ReferenceCvPurpose,
     WeeklyAvailabilitySlot,
     WorkAuthorization,
     WorkAuthorizationStatus,
@@ -127,6 +133,7 @@ from backend.app.domain.identifiers import (
     ChatActionProposalId,
     ChatMessageId,
     ClaimId,
+    ClaudeTerminalSessionId,
     CompanyAliasId,
     CompanyDiscoveryRecordId,
     CompanyId,
@@ -245,6 +252,7 @@ from backend.app.infrastructure.database.models import (
     ChatActionExecutionRow,
     ChatActionProposalRow,
     ChatMessageRow,
+    ClaudeTerminalSessionRow,
     CompanyAliasRow,
     CompanyCareerSiteRow,
     CompanyDiscoveryRecordRow,
@@ -1255,6 +1263,12 @@ def candidate_profile_to_row(profile: CandidateProfile,
     target = CandidateProfileRow(id=profile.id) if row is None else row
     target.user_id = profile.user_id
     target.display_name = profile.display_name
+    target.contact_email = (None if profile.contact is None else str(profile.contact.email))
+    target.contact_phone = (None if profile.contact is None else profile.contact.phone)
+    target.reference_cv_purpose = (None if profile.reference_cv_purpose is None
+                                   else profile.reference_cv_purpose.value)
+    target.reference_cv_filename = profile.reference_cv_filename
+    target.reference_cv_storage_key = profile.reference_cv_storage_key
     target.headline = profile.headline
     apply_location_to_row(target, profile.base_location)
     availability = profile.availability
@@ -1307,6 +1321,12 @@ def candidate_profile_to_domain(row: CandidateProfileRow) -> CandidateProfile:
         id=CandidateProfileId(row.id),
         user_id=user_id,
         display_name=row.display_name,
+        contact=(CandidateContact(email=row.contact_email, phone=row.contact_phone)
+                 if row.contact_email is not None else None),
+        reference_cv_purpose=(ReferenceCvPurpose(row.reference_cv_purpose)
+                              if row.reference_cv_purpose is not None else None),
+        reference_cv_filename=row.reference_cv_filename,
+        reference_cv_storage_key=row.reference_cv_storage_key,
         headline=row.headline,
         base_location=_read_location(row),
         languages=tuple(
@@ -1891,6 +1911,8 @@ def application_to_row(application: Application,
         pin.model_dump(mode="json") for pin in application.pinned_documents]
     target.answers = [answer.model_dump(mode="json") for answer in application.answers]
     target.form_fingerprint = application.form_fingerprint
+    target.form_driver_key = application.form_driver_key
+    target.form_capability_id = application.form_capability_id
     target.attempt_count = application.attempt_count
     target.correlation_id = application.correlation_id
     target.created_at = application.created_at
@@ -1927,6 +1949,8 @@ def application_to_domain(row: ApplicationRow) -> Application:
         answers=tuple(
             ApplicationAnswer.model_validate(entry) for entry in row.answers),
         form_fingerprint=row.form_fingerprint,
+        form_driver_key=row.form_driver_key,
+        form_capability_id=row.form_capability_id,
         attempt_count=row.attempt_count,
         correlation_id=row.correlation_id,
         created_at=row.created_at,
@@ -2844,6 +2868,41 @@ def account_export_to_domain(row: AccountExportRow) -> AccountExport:
         updated_at=row.updated_at)
 
 
+def claude_terminal_session_to_row(
+        session: ClaudeTerminalSession,
+        row: ClaudeTerminalSessionRow | None = None,
+) -> ClaudeTerminalSessionRow:
+    """Map safe terminal session metadata without ever introducing terminal content."""
+    target = ClaudeTerminalSessionRow(id=session.id) if row is None else row
+    target.owner_user_id = session.owner_user_id
+    target.state = session.state
+    target.runtime_reference = session.runtime_reference
+    target.last_activity_at = session.last_activity_at
+    target.expires_at = session.expires_at
+    target.ended_at = session.ended_at
+    target.safe_error_code = session.safe_error_code
+    target.created_at = session.created_at
+    if row is not None:
+        flag_modified(target, "updated_at")
+    return target
+
+
+def claude_terminal_session_to_domain(
+        row: ClaudeTerminalSessionRow,
+) -> ClaudeTerminalSession:
+    return ClaudeTerminalSession(
+        id=ClaudeTerminalSessionId(row.id),
+        owner_user_id=UserId(row.owner_user_id),
+        state=ClaudeTerminalState(row.state),
+        created_at=row.created_at,
+        last_activity_at=row.last_activity_at,
+        expires_at=row.expires_at,
+        runtime_reference=row.runtime_reference,
+        ended_at=row.ended_at,
+        safe_error_code=row.safe_error_code,
+    )
+
+
 def task_run_to_row(task: TaskRun, row: TaskRunRow | None = None) -> TaskRunRow:
     """A `TaskRun` onto its row. A task is mutated as it moves through its lifecycle (QUEUED →
     RUNNING → SUCCEEDED/DEAD_LETTERED, and back to QUEUED on retry or lease recovery), so
@@ -2898,6 +2957,3 @@ def task_run_to_domain(row: TaskRunRow) -> TaskRun:
         finished_at=row.finished_at,
         created_at=row.created_at,
         updated_at=row.updated_at)
-
-
-

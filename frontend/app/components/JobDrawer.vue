@@ -20,6 +20,7 @@ import { useJobDetail, useRunStatus } from '~/composables/useQueries'
 import { useJobActions, useTriggerFull } from '~/composables/useMutations'
 import { STATUS_ORDER } from '~/utils/status'
 
+const { localize: l } = useLocale()
 type Tab = 'overview' | 'fit' | 'cv' | 'cover' | 'activity' | 'prep' | 'copilot'
 
 const TABS: Tab[] = ['overview', 'fit', 'cv', 'cover', 'activity', 'prep', 'copilot']
@@ -80,7 +81,12 @@ const canApply = computed(
 )
 
 function tabLabel(t: Tab): string {
-  return t === 'cv' ? 'CV' : t[0]!.toUpperCase() + t.slice(1)
+  const labels: Record<Tab, [string, string]> = {
+    overview: ['Overview', 'Aperçu'], fit: ['Fit', 'Adéquation'], cv: ['CV', 'CV'],
+    cover: ['Cover letter', 'Lettre de motivation'], activity: ['Activity', 'Activité'],
+    prep: ['Interview prep', 'Préparation'], copilot: ['Copilot', 'Copilote'],
+  }
+  return l(...labels[t])
 }
 
 /**
@@ -93,16 +99,16 @@ function onStatusChange(event: Event) {
   const current = data.value?.application?.status ?? ''
   select.value = current
   if (next && next !== current) {
-    ask(`Change status to ${next}`, () => actions.setStatus.mutate(next))
+    ask(l(`Change status to ${next}`, `Modifier le statut : ${next}`), () => actions.setStatus.mutate(next))
   }
 }
 </script>
 
 <template>
   <div class="drawer-backdrop" @click="emit('close')" />
-  <aside class="drawer" role="dialog" aria-label="Job detail">
+  <aside class="drawer" role="dialog" :aria-label="l('Job detail', 'Détail de l’offre')">
     <div v-if="isLoading || !data" class="drawer-body">
-      Loading…
+      {{ l('Loading…', 'Chargement…') }}
     </div>
     <template v-else>
       <div class="drawer-head">
@@ -125,21 +131,21 @@ function onStatusChange(event: Event) {
             v-if="data.pending_regen"
             class="regen-chip"
             :title="data.pending_regen.notes || undefined"
-            :aria-label="fullRunActive ? 'CV regenerating now' : 'CV regeneration queued'"
+            :aria-label="fullRunActive ? l('CV regenerating now', 'Régénération du CV en cours') : l('CV regeneration queued', 'Régénération du CV en attente')"
           >
             {{
               fullRunActive
-                ? '↻ Regenerating now…'
-                : `⏳ CV regen queued (${data.pending_regen.creativity})`
+                ? l('↻ Regenerating now…', '↻ Régénération en cours…')
+                : l(`⏳ CV regen queued (${data.pending_regen.creativity})`, `⏳ Régénération du CV en attente (${data.pending_regen.creativity})`)
             }}
           </span>
           <span
             v-else-if="data.last_regen?.status === 'failed'"
             class="regen-chip regen-chip-failed"
             :title="data.last_regen.detail || undefined"
-            aria-label="CV regeneration failed"
+            :aria-label="l('CV regeneration failed', 'Échec de la régénération du CV')"
           >
-            ⚠ CV regen failed
+            {{ l('⚠ CV regen failed', '⚠ Échec de la régénération du CV') }}
           </span>
 
           <!--
@@ -147,13 +153,13 @@ function onStatusChange(event: Event) {
             Approve/Mark applied/Skip transitions cannot reach.
           -->
           <select
-            aria-label="Change status"
+            :aria-label="l('Change status', 'Modifier le statut')"
             class="status-select"
             :value="data.application?.status ?? ''"
             @change="onStatusChange"
           >
             <option v-if="!data.application" value="" disabled>
-              Set status…
+              {{ l('Set status…', 'Choisir un statut…') }}
             </option>
             <option v-for="s in STATUS_ORDER" :key="s" :value="s">
               {{ s }}
@@ -165,11 +171,10 @@ function onStatusChange(event: Event) {
       <div class="drawer-body">
         <template v-if="apply">
           <div v-if="applyActive" class="apply-banner" role="status">
-            <strong>Applying now…</strong>
+            <strong>{{ l('Applying now…', 'Candidature en cours…') }}</strong>
             <span v-if="apply.channel"> ({{ apply.channel }})</span>
             <div class="apply-banner-notes">
-              A background worker is submitting this application. This panel updates when it
-              finishes.
+              {{ l('A background worker is submitting this application. This panel updates when it finishes.', 'Un processus en arrière-plan envoie cette candidature. Ce panneau sera actualisé à la fin.') }}
             </div>
           </div>
           <div
@@ -177,10 +182,10 @@ function onStatusChange(event: Event) {
             class="apply-banner apply-banner-done"
             role="status"
           >
-            <strong>✓ Applied</strong>
+            <strong>{{ l('✓ Applied', '✓ Candidature envoyée') }}</strong>
             <span v-if="apply.detail"> — {{ apply.detail }}</span>
             <div v-if="apply.screenshot_path" class="apply-banner-shot">
-              Screenshot: {{ apply.screenshot_path }}
+              {{ l('Screenshot:', 'Capture :') }} {{ apply.screenshot_path }}
             </div>
           </div>
           <div
@@ -188,14 +193,14 @@ function onStatusChange(event: Event) {
             class="apply-banner apply-banner-warn"
             role="status"
           >
-            <strong>⚠ Needs you</strong>
+            <strong>{{ l('⚠ Needs you', '⚠ Votre intervention est requise') }}</strong>
             <span v-if="apply.detail"> — {{ apply.detail }}</span>
             <div class="apply-banner-actions">
               <button
                 class="btn-primary"
                 @click="ask(`Retry apply to ${data.job.company}`, () => actions.applyNow.mutate())"
               >
-                Retry
+                {{ l('Retry', 'Réessayer') }}
               </button>
             </div>
           </div>
@@ -204,14 +209,14 @@ function onStatusChange(event: Event) {
             class="apply-banner apply-banner-failed"
             role="status"
           >
-            <strong>✕ Failed</strong>
+            <strong>{{ l('✕ Failed', '✕ Échec') }}</strong>
             <span v-if="apply.detail"> — {{ apply.detail }}</span>
             <div class="apply-banner-actions">
               <button
                 class="btn-primary"
                 @click="ask(`Retry apply to ${data.job.company}`, () => actions.applyNow.mutate())"
               >
-                Retry
+                {{ l('Retry', 'Réessayer') }}
               </button>
             </div>
           </div>
@@ -230,9 +235,9 @@ function onStatusChange(event: Event) {
         </div>
 
         <div v-if="tab === 'overview'">
-          <p>{{ data.score?.reasoning ?? 'No score yet.' }}</p>
+          <p>{{ data.score?.reasoning ?? l('No score yet.', 'Aucun score pour le moment.') }}</p>
           <p>
-            <a :href="data.job.url" target="_blank" rel="noreferrer">Open original posting ↗</a>
+            <a :href="data.job.url" target="_blank" rel="noreferrer">{{ l('Open original posting ↗', 'Ouvrir l’offre d’origine ↗') }}</a>
           </p>
           <p style="white-space: pre-wrap; color: var(--text-dim)">
             {{ data.job.description }}
@@ -246,14 +251,14 @@ function onStatusChange(event: Event) {
             <strong>
               {{
                 fullRunActive
-                  ? `CV regeneration in progress (${data.pending_regen.creativity})`
-                  : `CV regeneration queued (${data.pending_regen.creativity})`
+                  ? l(`CV regeneration in progress (${data.pending_regen.creativity})`, `Régénération du CV en cours (${data.pending_regen.creativity})`)
+                  : l(`CV regeneration queued (${data.pending_regen.creativity})`, `Régénération du CV en attente (${data.pending_regen.creativity})`)
               }}
             </strong>
             {{
               fullRunActive
-                ? '— a run is processing it now; the new CV appears here when it finishes.'
-                : "— it'll render on the next run, then appear here automatically."
+                ? l('— a run is processing it now; the new CV appears here when it finishes.', '— le traitement est en cours ; le nouveau CV apparaîtra ici à la fin.')
+                : l('— it will render on the next run, then appear here automatically.', '— il sera généré au prochain lancement et apparaîtra ici automatiquement.')
             }}
             <div v-if="data.pending_regen.notes" class="regen-banner-notes">
               “{{ data.pending_regen.notes }}”
@@ -264,7 +269,7 @@ function onStatusChange(event: Event) {
                 :disabled="runNowDisabled"
                 @click="triggerFull.mutate()"
               >
-                Run pipeline now
+                {{ l('Run pipeline now', 'Lancer le processus maintenant') }}
               </button>
             </div>
           </div>
@@ -273,7 +278,7 @@ function onStatusChange(event: Event) {
             class="regen-banner regen-banner-failed"
             role="status"
           >
-            <strong>CV regeneration failed</strong>
+            <strong>{{ l('CV regeneration failed', 'Échec de la régénération du CV') }}</strong>
             <div v-if="data.last_regen.detail" class="regen-banner-notes">
               {{ data.last_regen.detail }}
             </div>
@@ -283,7 +288,7 @@ function onStatusChange(event: Event) {
                 :disabled="runNowDisabled"
                 @click="triggerFull.mutate()"
               >
-                Run pipeline now
+                {{ l('Run pipeline now', 'Lancer le processus maintenant') }}
               </button>
             </div>
           </div>
@@ -292,7 +297,7 @@ function onStatusChange(event: Event) {
             class="regen-banner regen-banner-done"
             role="status"
           >
-            <strong>CV regeneration applied</strong>
+            <strong>{{ l('CV regeneration applied', 'Régénération du CV appliquée') }}</strong>
             <span v-if="data.last_regen.resolved_at">
               {{ data.last_regen.resolved_at.slice(0, 10) }}
             </span>
@@ -303,11 +308,11 @@ function onStatusChange(event: Event) {
               {{ lang.toUpperCase() }} CV —
               <span class="num">{{ data.cv_versions[lang]!.phone_screen_pct ?? '—' }}%</span>
               <a :href="data.cv_versions[lang]!.pdf_url" target="_blank" rel="noreferrer">
-                View PDF ↗
+                {{ l('View PDF ↗', 'Voir le PDF ↗') }}
               </a>
             </p>
             <p v-else style="color: var(--text-dim)">
-              No {{ lang.toUpperCase() }} CV.
+              {{ l(`No ${lang.toUpperCase()} CV.`, `Aucun CV en ${lang.toUpperCase()}.`) }}
             </p>
           </template>
         </div>
@@ -317,13 +322,13 @@ function onStatusChange(event: Event) {
             data.cover_letter.en
           }}</pre>
           <p v-else style="color: var(--text-dim)">
-            No cover letter drafted.
+            {{ l('No cover letter drafted.', 'Aucune lettre de motivation rédigée.') }}
           </p>
         </div>
 
         <ul v-else-if="tab === 'activity'" class="drawer-activity">
           <li v-if="data.events.length === 0" style="color: var(--text-dim)">
-            No activity yet.
+            {{ l('No activity yet.', 'Aucune activité pour le moment.') }}
           </li>
           <li v-for="e in data.events" v-else :key="e.id">
             <span class="activity-when">{{ e.created_at.slice(0, 10) }}</span>
@@ -349,25 +354,25 @@ function onStatusChange(event: Event) {
       <div class="drawer-actions">
         <button
           class="btn-primary"
-          @click="ask(`Approve ${data.job.company}`, () => actions.go.mutate())"
+          @click="ask(l(`Approve ${data.job.company}`, `Approuver ${data.job.company}`), () => actions.go.mutate())"
         >
-          Approve
+          {{ l('Approve', 'Approuver') }}
         </button>
         <button
           v-if="canApply"
           class="btn-primary"
-          @click="ask(`Apply now to ${data.job.company}`, () => actions.applyNow.mutate())"
+          @click="ask(l(`Apply now to ${data.job.company}`, `Postuler maintenant chez ${data.job.company}`), () => actions.applyNow.mutate())"
         >
-          Apply now
+          {{ l('Apply now', 'Postuler maintenant') }}
         </button>
-        <button class="btn-ghost" @click="ask('Mark applied', () => actions.applied.mutate())">
-          Mark applied
+        <button class="btn-ghost" @click="ask(l('Mark applied', 'Marquer comme envoyée'), () => actions.applied.mutate())">
+          {{ l('Mark applied', 'Marquer comme envoyée') }}
         </button>
-        <button class="btn-ghost" @click="ask('Skip', () => actions.skip.mutate())">
-          Skip
+        <button class="btn-ghost" @click="ask(l('Skip', 'Ignorer'), () => actions.skip.mutate())">
+          {{ l('Skip', 'Ignorer') }}
         </button>
         <button class="btn-ghost" @click="emit('close')">
-          Close
+          {{ l('Close', 'Fermer') }}
         </button>
       </div>
     </template>

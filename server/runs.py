@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
@@ -19,10 +20,10 @@ from pipeline import paths
 from pipeline.db import connect
 from server._env import child_env
 
-# kind -> argv. The venv interpreter runs the deterministic discovery module;
+# kind -> argv. Reuse the server interpreter (venv on host, global in Docker);
 # the shell wrapper drives Claude Code + the morning-run skill for the full run.
 COMMANDS: dict[str, list[str]] = {
-    "discovery": [str(paths.ROOT / ".venv" / "bin" / "python"), "-m", "pipeline.discover"],
+    "discovery": [sys.executable, "-m", "pipeline.discover"],
     "full": [str(paths.ROOT / "scripts" / "morning_run.sh")],
 }
 

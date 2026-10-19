@@ -15,6 +15,7 @@ that translation and nothing more:
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -41,7 +42,10 @@ from backend.app.tasks.handlers import (
     SUBMISSION_REFUSED,
     build_account_export_handler,
     build_application_submission_handler,
+    build_application_preparation_handler,
+    build_document_generation_handler,
     build_general_handlers,
+    build_matching_handler,
     build_opportunity_discovery_handler,
     build_retention_handler,
 )
@@ -150,6 +154,25 @@ async def test_export_handler_dead_letters_a_malformed_payload() -> None:
     assert caught.value.reason == MALFORMED_PAYLOAD
 
 
+async def test_application_preparation_handler_uses_task_owner_and_ids() -> None:
+    seen: dict[str, Any] = {}
+
+    async def prepare(owner: Any, run_id: Any, opportunity_id: Any, *, now: datetime) -> None:
+        seen.update(owner=owner, run_id=run_id, opportunity_id=opportunity_id, now=now)
+
+    handler = build_application_preparation_handler(
+        SimpleNamespace(prepare=prepare), clock=_clock)
+    owner = new_user_id()
+    run_id = "11111111-1111-4111-8111-111111111111"
+    opportunity_id = "22222222-2222-4222-8222-222222222222"
+    await handler(_queued(
+        TaskKind.APPLICATION_PREPARATION, key="morning-app-1", user_id=owner,
+        payload={"discovery_run_id": run_id, "opportunity_id": opportunity_id},
+    ), SESSION)
+    assert seen == {"owner": owner, "run_id": UUID(run_id),
+                    "opportunity_id": UUID(opportunity_id), "now": NOW}
+
+
 async def test_export_handler_dead_letters_a_non_uuid_export_id() -> None:
     """A non-UUID export id is malformed, not transient — the same permanent verdict."""
     handler = build_account_export_handler(lambda _s: SimpleNamespace(), clock=_clock)
@@ -160,6 +183,44 @@ async def test_export_handler_dead_letters_a_non_uuid_export_id() -> None:
                     payload={"export_id": "not-a-uuid"}),
             SESSION)
     assert caught.value.reason == MALFORMED_PAYLOAD
+
+
+async def test_matching_handler_uses_task_owner_and_rejects_bad_payload() -> None:
+    seen: dict[str, Any] = {}
+
+    async def assess_and_decide(owner, run_id, opportunity_id, *, now):
+        seen.update(owner=owner, run_id=run_id, opportunity_id=opportunity_id, now=now)
+
+    handler = build_matching_handler(
+        lambda _s: SimpleNamespace(assess_and_decide=assess_and_decide), clock=_clock)
+    owner = new_user_id()
+    run_id, opportunity_id = str(new_user_id()), str(new_user_id())
+    await handler(_queued(TaskKind.MATCHING, key="matching-1", user_id=owner,
+                          payload={"discovery_run_id": run_id,
+                                   "opportunity_id": opportunity_id}), SESSION)
+    assert seen == {"owner": owner, "run_id": UUID(run_id),
+                    "opportunity_id": UUID(opportunity_id), "now": NOW}
+    with pytest.raises(TaskFailure) as caught:
+        await handler(_queued(TaskKind.MATCHING, key="matching-bad", user_id=owner,
+                              payload={"discovery_run_id": run_id}), SESSION)
+    assert caught.value.reason == MALFORMED_PAYLOAD
+
+
+async def test_document_handler_calls_reversible_preparation_only() -> None:
+    seen: dict[str, Any] = {}
+
+    async def prepare(owner, run_id, opportunity_id, *, now):
+        seen.update(owner=owner, run_id=run_id, opportunity_id=opportunity_id, now=now)
+
+    handler = build_document_generation_handler(
+        lambda _s: SimpleNamespace(prepare=prepare), clock=_clock)
+    owner = new_user_id()
+    run_id, opportunity_id = str(new_user_id()), str(new_user_id())
+    await handler(_queued(TaskKind.DOCUMENT_GENERATION, key="documents-1",
+                          user_id=owner, payload={"discovery_run_id": run_id,
+                                                  "opportunity_id": opportunity_id}), SESSION)
+    assert seen == {"owner": owner, "run_id": UUID(run_id),
+                    "opportunity_id": UUID(opportunity_id), "now": NOW}
 
 
 # --------------------------------------------------------------------------- application submission
@@ -349,3 +410,20 @@ async def test_discovery_handler_rejects_untyped_trigger_without_calling_service
             payload={"search_profile_id": "11111111-1111-4111-8111-111111111111",
                      "trigger": "UNKNOWN"}), SESSION)
     assert caught.value.failure_class is TaskFailureClass.PERMANENT
+
+
+async def test_discovery_handler_never_retries_unapproved_source() -> None:
+    from backend.app.services.discovery_source_access import DiscoverySourceAccessDenied
+
+    async def denied(*args, **kwargs) -> None:
+        raise DiscoverySourceAccessDenied("not approved")
+
+    handler = build_opportunity_discovery_handler(
+        lambda _session: SimpleNamespace(run_profile=denied))
+    with pytest.raises(TaskFailure) as caught:
+        await handler(_queued(
+            TaskKind.OPPORTUNITY_DISCOVERY, key="held-source", user_id=USER,
+            payload={"search_profile_id": "11111111-1111-4111-8111-111111111111",
+                     "trigger": "MANUAL"}), SESSION)
+    assert caught.value.failure_class is TaskFailureClass.PERMANENT
+    assert caught.value.reason == "DISCOVERY_SOURCE_UNAPPROVED"

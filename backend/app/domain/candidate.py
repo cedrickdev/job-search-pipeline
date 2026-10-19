@@ -14,16 +14,15 @@ Phase 10 must reuse, so the contracts here are shaped to receive them:
   "unknown bullet id" gate therefore becomes a type-level invariant rather than
   a function someone has to remember to call.
 
-Contact details (email, phone, postal address) are deliberately absent. They are
-PII with storage and redaction rules of their own
-(docs/ENGINEERING_STANDARDS.md §Security), and nothing in Phase 1 needs them;
-modelling them before those rules exist would only spread them into logs.
+Contact details are kept as an explicit, owner-scoped value object. They are never
+invented by the browser worker and are excluded from normal logs and generated
+responses unless the authenticated candidate requests their own profile.
 """
 from datetime import date
 from enum import StrEnum
 from typing import Annotated, Self
 
-from pydantic import Field, model_validator
+from pydantic import EmailStr, Field, model_validator
 
 from backend.app.domain.base import (
     CountryCode,
@@ -38,6 +37,13 @@ from backend.app.domain.identifiers import (
     EvidenceId,
     UserId,
 )
+
+
+class CandidateContact(DomainModel):
+    """Contact facts the candidate explicitly supplied for application forms."""
+
+    email: EmailStr
+    phone: NonEmptyStr | None = Field(default=None, pattern=r"^\+?[0-9][0-9 ()-]{6,24}$")
 
 
 class EvidenceKind(StrEnum):
@@ -60,6 +66,15 @@ class EvidenceKind(StrEnum):
     REFERENCE = "REFERENCE"
     PERMIT_DOCUMENT = "PERMIT_DOCUMENT"
     SELF_DECLARATION = "SELF_DECLARATION"
+
+
+class ReferenceCvPurpose(StrEnum):
+    JOB = "JOB"
+    INTERNSHIP = "INTERNSHIP"
+    APPRENTICESHIP = "APPRENTICESHIP"
+    WORK_STUDY = "WORK_STUDY"
+    TRAINING = "TRAINING"
+    GENERAL = "GENERAL"
 
 
 class EvidenceProvenance(StrEnum):
@@ -253,6 +268,10 @@ class CandidateProfile(DomainModel):
     id: CandidateProfileId
     user_id: UserId
     display_name: NonEmptyStr
+    contact: CandidateContact | None = None
+    reference_cv_purpose: ReferenceCvPurpose | None = None
+    reference_cv_filename: NonEmptyStr | None = None
+    reference_cv_storage_key: NonEmptyStr | None = None
     headline: NonEmptyStr | None = None
     base_location: Location | None = None
     languages: tuple[LanguageProficiency, ...] = ()

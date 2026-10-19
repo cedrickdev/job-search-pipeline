@@ -36,11 +36,42 @@ URL is not permission to automate its application form.
 - No live source request or employer submission was made as part of this
   review. Only public terms/information pages were inspected.
 
+The V2 API, CLI, scheduler and general worker now enforce a default-empty
+`JOBSEARCH_DISCOVERY_ALLOWED_SOURCES` operator list. This prevents an enabled
+country-pack binding from becoming live access on its own. The review decision
+is unchanged: no source in this table is approved by this document.
+
+## Employer ATS feed prospects — not yet approved
+
+The candidate has accepted a narrower next milestone: one Swiss posting from a
+reviewed Greenhouse employer feed and one from a reviewed Lever employer feed.
+These are two ATS feed families, **not** two independent Swiss job boards. The
+official [Greenhouse Job Board API](https://developers.greenhouse.io/job-board.html)
+and [Lever Postings API](https://github.com/lever/postings-api) document public
+listing reads. Neither documentation, on its own, establishes that this project's
+collection frequency, retention, redistribution or automated form submissions are
+permitted for every employer board. Application-form permission must be reviewed
+separately. No live feed was fetched for this review.
+
+| ATS | Public employer board prospect | Swiss evidence | Decision | Daily request budget | Remaining review |
+| --- | --- | --- | --- | --- | --- |
+| Greenhouse | [SpotMe](https://job-boards.greenhouse.io/spotme) (`spotme`) | Public board advertises Lausanne roles; location and posting availability must be rechecked at activation. | hold | Not set | Confirm applicable collection/storage terms, employer provenance and current CH result with a bounded, non-submitting check. |
+| Lever | [ANYbotics](https://jobs.lever.co/anybotics) (`anybotics`) | Public board advertises Zurich roles; location and posting availability must be rechecked at activation. | hold | Not set | Confirm applicable collection/storage terms, employer provenance and current CH result with a bounded, non-submitting check. |
+
+The V2 board catalog in `config/ats_reviewed_boards.yaml` stays empty while these
+decisions are `hold`. A public board token is not a credential and is not an
+approval. The source-key allow-list must remain empty for real accounts until a
+durable per-board request budget and an explicit approved catalog entry are in
+place. If either employer has no CH posting at activation, select a different
+reviewed employer; do not manufacture a Swiss result.
+
 ## Acceptance gate
 
-For each of at least two independent CH board/aggregator sources: record
-provider permission or official API eligibility, allowed query volume, Swiss
-coverage, attribution and storage rules, a timestamped bounded dry-run with
-valid Swiss result counts, and source-health/warning codes. Until then, the
-interface must say that live multi-source coverage is unverified, not that no
-Swiss jobs exist.
+The superseded multi-jobboard criterion remains unverified. For the candidate's
+approved narrower milestone, record one eligible Greenhouse employer board and
+one eligible Lever employer board, each with applicable collection conditions,
+allowed query volume, Swiss coverage, attribution and storage rules, a
+timestamped bounded non-submitting dry-run with a valid CH posting, and
+source-health/warning codes. Until both pass, the interface must say that live
+ATS multi-source coverage is unverified, not that no Swiss jobs exist. Passing
+this gate never establishes permission to submit an application form.

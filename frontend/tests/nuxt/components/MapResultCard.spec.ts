@@ -75,7 +75,7 @@ describe('MapResultCard · opportunity', () => {
     expect(wrapper.html()).not.toContain('<img src=x')
   })
 
-  it('shows collected provenance and freshness in French without exposing unsafe links', async () => {
+  it('shows source provenance without exposing unsafe links or operational timestamps', async () => {
     const wrapper = await mountSuspended(MapResultCard, {
       props: { discoveryLocale: 'fr', opportunity: opportunityGeoItem({
         first_seen_at: '2026-10-03T09:00:00Z',
@@ -86,15 +86,13 @@ describe('MapResultCard · opportunity', () => {
         ],
       }) },
     })
-    expect(wrapper.text()).toContain('Première découverte')
-    expect(wrapper.text()).toContain('Dernière observation')
     expect(wrapper.get('a[href="https://example.ch/jobs/1"]').text()).toContain('jobup')
     expect(wrapper.find('a[href^="javascript:"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('Déjà observée')
-    expect(wrapper.text()).not.toContain('Offre mise à jour')
+    expect(wrapper.text()).not.toContain('Première découverte')
+    expect(wrapper.text()).not.toContain('Dernière observation')
   })
 
-  it('distinguishes a changed offer from one merely seen again in both languages', async () => {
+  it('does not show collection-history labels on an offer card', async () => {
     const offer = opportunityGeoItem({
       first_seen_at: '2026-10-03T09:00:00Z',
       last_seen_at: '2026-10-05T09:00:00Z',
@@ -103,12 +101,12 @@ describe('MapResultCard · opportunity', () => {
     const french = await mountSuspended(MapResultCard, {
       props: { discoveryLocale: 'fr', opportunity: offer },
     })
-    expect(french.text()).toContain('Offre mise à jour')
+    expect(french.text()).not.toContain('Offre mise à jour')
     expect(french.text()).not.toContain('Déjà observée')
     const english = await mountSuspended(MapResultCard, {
       props: { discoveryLocale: 'en', opportunity: offer },
     })
-    expect(english.text()).toContain('Updated opportunity')
+    expect(english.text()).not.toContain('Updated opportunity')
     expect(english.text()).not.toContain('Seen before')
   })
 
@@ -119,6 +117,19 @@ describe('MapResultCard · opportunity', () => {
     await wrapper.get('.map-card-autopilot').trigger('click')
     expect(wrapper.emitted('run-autopilot')).toHaveLength(1)
     expect(wrapper.text()).not.toContain('Submitted')
+  })
+
+  it('explains a human hand-off instead of exposing an internal autopilot enum', async () => {
+    const wrapper = await mountSuspended(MapResultCard, {
+      props: {
+        discoveryLocale: 'fr',
+        opportunity: opportunityGeoItem(),
+        autopilotReport: { next_action: 'REVIEW_APPLICATION', stop_reason: 'HUMAN_REQUIRED' },
+      },
+    })
+
+    expect(wrapper.text()).toContain('doit être vérifiée par vous')
+    expect(wrapper.text()).not.toContain('HUMAN_REQUIRED')
   })
 
   it('offers Playwright queueing only after the server returns APPROVED', async () => {

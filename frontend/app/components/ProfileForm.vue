@@ -26,22 +26,37 @@
 import { computed, ref, watch } from 'vue'
 import type { CandidateProfile, CandidateProfileDraft, LanguageLevel, Location } from '~/types/v2'
 import { errorMessage, fieldErrors } from '~/utils/v2-errors'
+import { useLocale } from '~/composables/useLocale'
+import { DEFAULT_COUNTRY_OPTIONS } from '~/composables/useCountryPacks'
+import type { CountryOption } from '~/composables/useCountryPacks'
 
 const LEVELS: LanguageLevel[] = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'NATIVE']
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   /** The saved profile, or null before onboarding has written one. */
   profile: CandidateProfile | null
   pending?: boolean
   error?: unknown
   submitLabel?: string
-}>()
+  /** /profile is read-first; onboarding and edit mode pass true or omit this. */
+  editable?: boolean
+  /** Fall back to the authenticated email when the profile contact is incomplete. */
+  accountEmail?: string | null
+  countryOptions?: readonly CountryOption[]
+}>(), {
+  editable: true,
+  accountEmail: null,
+  countryOptions: () => DEFAULT_COUNTRY_OPTIONS,
+})
 
 const emit = defineEmits<{ submit: [draft: CandidateProfileDraft] }>()
+const { locale, t } = useLocale()
 
 interface LanguageRow { language: string, level: LanguageLevel }
 
 const displayName = ref('')
+const email = ref('')
+const phone = ref('')
 const headline = ref('')
 const city = ref('')
 const country = ref('')
@@ -52,9 +67,11 @@ const languages = ref<LanguageRow[]>([])
 // other reader of that payload would see it — and mutating a prop is Vue's own
 // warning besides. A newly loaded profile re-seeds the boxes, which is what a save's
 // refetch should do; nothing else refetches this key.
-watch(() => props.profile, (next) => {
+watch([() => props.profile, () => props.accountEmail], ([next]) => {
   const saved = next?.profile
   displayName.value = saved?.display_name ?? ''
+  email.value = saved?.contact?.email ?? props.accountEmail ?? ''
+  phone.value = saved?.contact?.phone ?? ''
   headline.value = saved?.headline ?? ''
   city.value = saved?.base_location?.city ?? ''
   country.value = saved?.base_location?.country ?? ''
@@ -63,7 +80,9 @@ watch(() => props.profile, (next) => {
 
 const message = computed(() => (props.error ? errorMessage(props.error) : null))
 const fields = computed(() => fieldErrors(props.error))
-const canSubmit = computed(() => displayName.value.trim() !== '' && !props.pending)
+const editable = computed(() => props.editable !== false)
+const disabled = computed(() => Boolean(props.pending) || !editable.value)
+const canSubmit = computed(() => editable.value && displayName.value.trim() !== '' && !props.pending)
 
 function addLanguage() {
   languages.value.push({ language: '', level: 'B2' })
@@ -94,6 +113,10 @@ function submit() {
     work_authorizations: saved?.work_authorizations ?? [],
     availability: saved?.availability ?? null,
     display_name: displayName.value.trim(),
+    contact: email.value.trim() === '' ? null : {
+      email: email.value.trim(),
+      phone: phone.value.trim() === '' ? null : phone.value.trim(),
+    },
     headline: headline.value === '' ? null : headline.value,
     base_location: location,
     languages: languages.value
@@ -109,62 +132,86 @@ function submit() {
       {{ message }}
     </p>
 
-    <label class="acct-field" for="profile-display-name">Name</label>
+    <label class="acct-field" for="profile-display-name">{{ t('profile.name') }}</label>
     <input
       id="profile-display-name"
       v-model="displayName"
       type="text"
       autocomplete="name"
       required
-      :disabled="pending"
+      :disabled="disabled"
     >
     <p v-if="fields.display_name" class="auth-field-error" role="alert">
       {{ fields.display_name }}
     </p>
 
     <label class="acct-field" for="profile-headline">
-      Headline <span class="auth-optional">(optional)</span>
+      {{ t('profile.headline') }} <span class="auth-optional">({{ t('auth.optional') }})</span>
     </label>
     <input
       id="profile-headline"
       v-model.trim="headline"
       type="text"
-      placeholder="Backend engineer"
-      :disabled="pending"
+      :placeholder="locale === 'fr' ? 'Ingénieur backend' : 'Backend engineer'"
+      :disabled="disabled"
     >
 
     <div class="acct-row">
       <div>
-        <label class="acct-field" for="profile-city">City</label>
-        <input id="profile-city" v-model.trim="city" type="text" :disabled="pending">
+        <label class="acct-field" for="profile-email">{{ t('profile.email') }}</label>
+        <input
+          id="profile-email"
+          v-model.trim="email"
+          type="email"
+          autocomplete="email"
+          required
+          :disabled="disabled"
+        >
       </div>
       <div>
-        <label class="acct-field" for="profile-country">Country</label>
+        <label class="acct-field" for="profile-phone">
+          {{ t('profile.phone') }} <span class="auth-optional">({{ t('auth.optional') }})</span>
+        </label>
         <input
-          id="profile-country"
-          v-model.trim="country"
-          type="text"
-          maxlength="2"
-          placeholder="CH"
-          pattern="[A-Za-z]{2}"
-          :disabled="pending"
-          aria-describedby="profile-country-hint"
+          id="profile-phone"
+          v-model.trim="phone"
+          type="tel"
+          autocomplete="tel"
+          :disabled="disabled"
         >
       </div>
     </div>
+
+    <div class="acct-row">
+      <div>
+        <label class="acct-field" for="profile-city">{{ t('profile.city') }}</label>
+        <input id="profile-city" v-model.trim="city" type="text" :disabled="disabled">
+      </div>
+      <div>
+        <label class="acct-field" for="profile-country">{{ t('profile.country') }}</label>
+        <select
+          id="profile-country"
+          v-model="country"
+          :disabled="disabled"
+          aria-describedby="profile-country-hint"
+        >
+          <option value="">—</option>
+          <option v-for="option in countryOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
+      </div>
+    </div>
     <p id="profile-country-hint" class="auth-hint">
-      Two-letter country code (ISO 3166-1), e.g. CH for Switzerland.
+      {{ t('profile.countryHint') }}
     </p>
     <p v-if="fields.base_location || fields.country" class="auth-field-error" role="alert">
       {{ fields.base_location ?? fields.country }}
     </p>
 
     <fieldset class="acct-fieldset">
-      <legend>Languages</legend>
-      <p class="auth-hint">
-        The languages you actually speak, at the level you speak them (CEFR, or native).
-        Postings are filtered against these.
-      </p>
+      <legend>{{ t('profile.languages') }}</legend>
+      <p class="auth-hint">{{ t('profile.languageHelp') }}</p>
       <div v-for="(row, index) in languages" :key="index" class="acct-row acct-row--list">
         <input
           v-model.trim="row.language"
@@ -173,22 +220,23 @@ function submit() {
           placeholder="fr"
           pattern="[A-Za-z]{2}"
           :aria-label="`Language ${index + 1} code`"
-          :disabled="pending"
+          :disabled="disabled"
         >
         <select
           v-model="row.level"
           :aria-label="`Language ${index + 1} level`"
-          :disabled="pending"
+          :disabled="disabled"
         >
           <option v-for="level in LEVELS" :key="level" :value="level">
             {{ level }}
           </option>
         </select>
         <button
+          v-if="editable"
           class="btn-ghost"
           type="button"
           :aria-label="`Remove language ${index + 1}`"
-          :disabled="pending"
+          :disabled="disabled"
           @click="removeLanguage(index)"
         >
           ✕
@@ -197,14 +245,14 @@ function submit() {
       <p v-if="fields.languages || fields.language" class="auth-field-error" role="alert">
         {{ fields.languages ?? fields.language }}
       </p>
-      <button class="btn-ghost" type="button" :disabled="pending" @click="addLanguage">
+      <button v-if="editable" class="btn-ghost" type="button" :disabled="pending" @click="addLanguage">
         + Add a language
       </button>
     </fieldset>
 
-    <div class="acct-actions">
+    <div v-if="editable" class="acct-actions">
       <button class="btn-primary" type="submit" :disabled="!canSubmit">
-        {{ pending ? 'Saving…' : (submitLabel ?? 'Save profile') }}
+        {{ pending ? t('profile.saving') : (submitLabel ?? t('profile.save')) }}
       </button>
     </div>
   </form>

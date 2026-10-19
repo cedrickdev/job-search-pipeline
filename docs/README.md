@@ -34,6 +34,7 @@ This directory is the source of truth for the V2 product and implementation plan
 28. [Production Deployment](./PRODUCTION_DEPLOYMENT.md) — the fail-closed startup gate, required configuration, the session cookie, secret handling, service composition and the image model, built in Phase 16
 29. [Operations Runbook](./OPERATIONS.md) — the day-two runbook: service topology, workers and lanes, the explicit migration step, backups, monitoring/alerts and rate-limiting knobs, built in Phase 16
 30. [V1 Baseline](./V1_BASELINE.md) — what V1 is and what its checks report, measured in Phase 0
+31. [Phase 17 Switzerland Verification](./PHASE_17_CH_VERIFICATION_2026-10-19.md) — CH-only Country Pack acceptance, public catalogue API and frontend wiring
 
 ## Product principle
 

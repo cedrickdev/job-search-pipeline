@@ -31,10 +31,9 @@ import type {
   EvidenceProvenance,
 } from '~/types/v2'
 import { errorMessage } from '~/utils/v2-errors'
+import { useLocale } from '~/composables/useLocale'
 
 definePageMeta({ middleware: 'auth' })
-
-useHead({ title: 'Evidence · Command Center' })
 
 // The closed sets the two forms offer, in the order the enums declare them. Manual
 // entry defaults to what a person typing here actually is: a self-declared fact from
@@ -54,7 +53,9 @@ const CLAIM_TYPES: ClaimType[] = [
 ]
 
 const { data, status } = useEvidenceQuery()
+const { locale, t } = useLocale()
 const { addEvidence, addClaim } = useEvidenceActions()
+useHead({ title: () => `${t('page.evidence')} · Command Center` })
 
 const loading = computed(() => status.value === 'pending' && data.value === undefined)
 // `null` is the payload, not a miss: the query maps `candidate_profile_not_found` to
@@ -89,6 +90,19 @@ function evidenceSummary(id: string): string {
 function citedSummaries(entry: CandidateClaim): string {
   return entry.evidence_ids.map(evidenceSummary).join('; ')
 }
+
+function enumLabel(value: string): string {
+  return t(`evidence.enum.${value}`, value.replace(/_/g, ' ').toLowerCase())
+}
+
+const evidenceKindItems = computed(() => KINDS.map(value => ({ value, label: enumLabel(value) })))
+const provenanceItems = computed(() => PROVENANCES.map(value => ({ value, label: enumLabel(value) })))
+const claimTypeItems = computed(() => CLAIM_TYPES.map(value => ({ value, label: enumLabel(value) })))
+const citedEvidenceItems = computed(() => evidence.value.map(item => ({
+  value: item.id,
+  label: item.summary,
+  description: [enumLabel(item.kind), enumLabel(item.provenance)].join(' · '),
+})))
 
 async function onAddEvidence() {
   // Empty strings become the absence of the field, which is what the API means by
@@ -134,37 +148,31 @@ async function onAddClaim() {
 <template>
   <div class="acct-page">
     <header class="acct-head">
-      <h1>Evidence</h1>
+      <h1>{{ t('page.evidence') }}</h1>
       <NuxtLink to="/documents" class="btn-ghost">
-        Documents →
+        {{ t('evidence.documentsLink') }}
       </NuxtLink>
     </header>
 
-    <p class="settings-hint">
-      The attested facts your résumé and cover letters are built from. Documents may
-      reorder, shorten or leave out what is here — they never add a fact that is not.
-    </p>
+    <p class="settings-hint">{{ t('evidence.intro') }}</p>
 
     <p v-if="loading" class="ov-state">
       Loading…
     </p>
 
     <section v-else-if="noProfile" class="settings-card">
-      <h2>No profile yet</h2>
-      <p class="auth-hint">
-        Evidence hangs off your candidate profile. Finish onboarding first, then come
-        back to record it.
-      </p>
+      <h2>{{ t('evidence.noProfile') }}</h2>
+      <p class="auth-hint">{{ t('evidence.noProfileHelp') }}</p>
       <NuxtLink to="/onboarding" class="btn-primary">
-        Go to onboarding
+        {{ t('evidence.goOnboarding') }}
       </NuxtLink>
     </section>
 
     <template v-else>
       <section class="settings-card">
-        <h2>Recorded evidence</h2>
+        <h2>{{ t('evidence.recorded') }}</h2>
         <p v-if="!evidence.length" class="ov-empty">
-          No evidence recorded yet. Add a fact below.
+          {{ t('evidence.empty') }}
         </p>
         <ul v-else class="acct-searches">
           <li v-for="item in evidence" :key="item.id" class="acct-search">
@@ -172,7 +180,7 @@ async function onAddClaim() {
               <div class="acct-search-main">
                 <span class="acct-search-name">{{ item.summary }}</span>
                 <span class="acct-search-meta">
-                  {{ item.kind }} · {{ item.provenance }}
+                  {{ enumLabel(item.kind) }} · {{ enumLabel(item.provenance) }}
                   <template v-if="item.reference_key">
                     · <code>{{ item.reference_key }}</code>
                   </template>
@@ -187,77 +195,76 @@ async function onAddClaim() {
       </section>
 
       <section class="settings-card">
-        <h2>Claims</h2>
-        <p class="auth-hint">
-          Each claim rests on the evidence it cites. A claim that cites nothing cannot
-          be made.
-        </p>
+        <h2>{{ t('evidence.claimsTitle') }}</h2>
+        <p class="auth-hint">{{ t('evidence.claimHelp') }}</p>
         <p v-if="!claims.length" class="ov-empty">
-          No claims yet.
+          {{ t('evidence.claimEmpty') }}
         </p>
         <ul v-else class="acct-searches">
           <li v-for="entry in claims" :key="entry.id" class="acct-search">
             <div class="acct-search-row">
               <div class="acct-search-main">
                 <span class="acct-search-name">{{ entry.label }}</span>
-                <span class="acct-search-meta">{{ entry.claim_type }}</span>
+                <span class="acct-search-meta">{{ enumLabel(entry.claim_type) }}</span>
               </div>
             </div>
             <p class="acct-search-meta">
-              rests on: {{ citedSummaries(entry) }}
+              {{ locale === 'fr' ? 'S’appuie sur :' : 'rests on:' }} {{ citedSummaries(entry) }}
             </p>
           </li>
         </ul>
       </section>
 
       <section class="settings-card">
-        <h2>Record a fact</h2>
-        <form class="acct-form" @submit.prevent="onAddEvidence">
+        <h2>{{ t('evidence.recordFact') }}</h2>
+        <form class="acct-form evidence-grid" @submit.prevent="onAddEvidence">
           <label class="acct-field">
-            Kind
-            <select v-model="evidenceForm.kind" aria-label="Evidence kind">
-              <option v-for="kind in KINDS" :key="kind" :value="kind">
-                {{ kind }}
-              </option>
-            </select>
+            {{ t('evidence.kind') }}
+            <USelect
+              v-model="evidenceForm.kind"
+              :items="evidenceKindItems"
+              value-key="value"
+              :aria-label="t('evidence.kindAria')"
+            />
           </label>
           <label class="acct-field">
-            Provenance
-            <select v-model="evidenceForm.provenance" aria-label="Evidence provenance">
-              <option v-for="prov in PROVENANCES" :key="prov" :value="prov">
-                {{ prov }}
-              </option>
-            </select>
+            {{ t('evidence.provenance') }}
+            <USelect
+              v-model="evidenceForm.provenance"
+              :items="provenanceItems"
+              value-key="value"
+              :aria-label="t('evidence.provenanceAria')"
+            />
           </label>
           <label class="acct-field acct-field-wide">
-            Summary
+            {{ t('evidence.summaryField') }}
             <input
               v-model="evidenceForm.summary"
               type="text"
               required
-              aria-label="Evidence summary"
-              placeholder="Rebuilt the checkout flow, cutting latency 30%"
+              :aria-label="t('evidence.summaryAria')"
+              :placeholder="locale === 'fr' ? 'Refonte du paiement : temps de réponse réduit de 30 %' : 'Rebuilt the checkout flow, cutting latency 30%'"
             >
           </label>
           <label class="acct-field">
-            Reference key (optional)
+            {{ t('evidence.referenceKey') }} ({{ t('auth.optional') }})
             <input
               v-model="evidenceForm.reference_key"
               type="text"
-              aria-label="Reference key"
+              :aria-label="t('evidence.referenceAria')"
               placeholder="acme-checkout"
             >
           </label>
           <label class="acct-field acct-field-wide">
-            Detail (optional)
-            <input v-model="evidenceForm.detail" type="text" aria-label="Evidence detail">
+            {{ t('evidence.detail') }} ({{ t('auth.optional') }})
+            <input v-model="evidenceForm.detail" type="text" :aria-label="t('evidence.detailAria')">
           </label>
           <button
             type="submit"
             class="btn-primary"
             :disabled="addEvidence.isPending || !evidenceForm.summary.trim()"
           >
-            {{ addEvidence.isPending ? 'Recording…' : 'Record evidence' }}
+            {{ addEvidence.isPending ? t('common.loading') : t('evidence.add') }}
           </button>
         </form>
         <p v-if="evidenceError" class="auth-error" role="alert">
@@ -266,15 +273,16 @@ async function onAddClaim() {
       </section>
 
       <section class="settings-card">
-        <h2>Assert a claim</h2>
-        <form class="acct-form" @submit.prevent="onAddClaim">
+        <h2>{{ t('evidence.claim') }}</h2>
+        <form class="acct-form claim-grid" @submit.prevent="onAddClaim">
           <label class="acct-field">
-            Type
-            <select v-model="claimForm.claim_type" aria-label="Claim type">
-              <option v-for="type in CLAIM_TYPES" :key="type" :value="type">
-                {{ type }}
-              </option>
-            </select>
+            {{ t('evidence.type') }}
+            <USelect
+              v-model="claimForm.claim_type"
+              :items="claimTypeItems"
+              value-key="value"
+              :aria-label="t('evidence.typeAria')"
+            />
           </label>
           <label class="acct-field acct-field-wide">
             Label
@@ -282,31 +290,33 @@ async function onAddClaim() {
               v-model="claimForm.label"
               type="text"
               required
-              aria-label="Claim label"
+              :aria-label="t('evidence.labelAria')"
               placeholder="Senior Backend Engineer"
             >
           </label>
           <fieldset class="acct-field acct-field-wide">
-            <legend>Cited evidence</legend>
+            <legend>{{ t('evidence.cited') }}</legend>
             <p v-if="!evidence.length" class="auth-hint">
-              Record a fact first — a claim must cite at least one.
+              {{ t('evidence.recordFirst') }}
             </p>
-            <label v-for="item in evidence" :key="item.id" class="acct-check">
-              <input
-                v-model="claimForm.evidence_ids"
-                type="checkbox"
-                :value="item.id"
-                :aria-label="`Cite ${item.summary}`"
-              >
-              {{ item.summary }}
-            </label>
+            <USelectMenu
+              v-else
+              v-model="claimForm.evidence_ids"
+              data-testid="claim-evidence-picker"
+              :items="citedEvidenceItems"
+              value-key="value"
+              multiple
+              searchable
+              :placeholder="locale === 'fr' ? 'Sélectionner les preuves à citer' : 'Select evidence to cite'"
+              :aria-label="t('evidence.cited')"
+            />
           </fieldset>
           <button
             type="submit"
             class="btn-primary"
             :disabled="addClaim.isPending || !claimForm.label.trim() || !claimForm.evidence_ids.length"
           >
-            {{ addClaim.isPending ? 'Asserting…' : 'Assert claim' }}
+            {{ addClaim.isPending ? t('evidence.asserting') : t('evidence.assertClaim') }}
           </button>
         </form>
         <p v-if="claimError" class="auth-error" role="alert">
@@ -320,17 +330,30 @@ async function onAddClaim() {
 <style scoped>
 .acct-form {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: flex-end;
+  flex-direction: column;
+  gap: 0.85rem;
+  align-items: stretch;
 }
-.acct-field-wide {
-  flex: 1 1 100%;
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+}
+.evidence-grid .acct-field-wide,
+.evidence-grid button,
+.claim-grid .acct-field-wide,
+.claim-grid button {
+  grid-column: 1 / -1;
 }
 .acct-check {
   display: flex;
   gap: 0.5rem;
   align-items: center;
   font-weight: normal;
+}
+@media (max-width: 640px) {
+  .evidence-grid { grid-template-columns: 1fr; }
+  .evidence-grid .acct-field-wide,
+  .evidence-grid button { grid-column: auto; }
 }
 </style>

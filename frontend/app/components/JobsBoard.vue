@@ -10,9 +10,8 @@
       event is recorded;
     * `dragover` must call `preventDefault()` or the browser refuses the drop.
 
-  The empty-state string is French, as in V1. That is inconsistent with the rest
-  of the UI, which is English; it is reproduced rather than fixed because
-  translating a user-visible string is a product change.
+  Empty/loading messages follow the saved interface language; lifecycle identifiers
+  remain the server's stable values so drag-and-drop writes are unchanged.
 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
@@ -21,6 +20,7 @@ import { useSetJobStatus } from '~/composables/useMutations'
 import { STATUS_ORDER, statusColor } from '~/utils/status'
 import type { TrackKey } from '~/utils/tracks'
 
+const { localize: l } = useLocale()
 const props = withDefaults(defineProps<{ track?: TrackKey }>(), { track: 'job' })
 const emit = defineEmits<{ open: [jobId: number] }>()
 
@@ -63,10 +63,10 @@ function drop(status: string) {
 
 <template>
   <p v-if="isLoading">
-    Loading…
+    {{ l('Loading…', 'Chargement…') }}
   </p>
   <p v-else-if="total === 0" style="color: var(--text-dim)">
-    Rien dans ce pipeline pour l'instant.
+    {{ l('Nothing in this pipeline yet.', 'Aucune offre dans ce parcours pour le moment.') }}
   </p>
   <div v-else class="board">
     <div

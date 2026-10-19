@@ -137,9 +137,9 @@ test('reaches evidence and documents from the nav', async ({ page }) => {
   await page.goto('/')
 
   // The links are session-gated, so their presence is the session having resolved.
-  await page.getByRole('link', { name: 'Evidence' }).click()
+  await page.getByRole('link', { name: /^(Evidence|Éléments de preuve)$/ }).click()
   await expect(page).toHaveURL('/evidence')
-  await expect(page.getByRole('heading', { name: 'Evidence', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^(Evidence|Éléments de preuve)$/ })).toBeVisible()
   // The one summary appears in the record, its claim and the picker; assert the record.
   await expect(page.locator('.acct-search-name')
     .filter({ hasText: 'Backend engineer with 8 years of experience' }).first()).toBeVisible()
@@ -162,8 +162,8 @@ test('records a fact with the CSRF header the write demands', async ({ page }) =
   await grantCsrfCookie(page)
   await page.goto('/evidence')
 
-  await page.getByLabel('Evidence summary').fill('Shipped the billing rewrite')
-  await page.getByRole('button', { name: 'Record evidence' }).click()
+  await page.getByLabel(/^(Evidence summary|Résumé de la preuve)$/).fill('Shipped the billing rewrite')
+  await page.getByRole('button', { name: /^(Record evidence|Enregistrer la preuve)$/ }).click()
 
   const posts = api.callsTo('/api/v2/me/evidence').filter(c => c.method === 'POST')
   expect(posts).toHaveLength(1)
@@ -183,7 +183,7 @@ test('keeps a rejected version on screen with the rule it broke (§45)', async (
   await expect(page.getByText('INVENTED_NUMBER')).toBeVisible()
   await expect(page.getByText('grew revenue 300%')).toBeVisible()
   // Nothing to download, because nothing cleared the guard.
-  await expect(page.getByRole('button', { name: 'Download PDF' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: /^(Download PDF|Télécharger le PDF)$/ })).toBeDisabled()
   expect(api.unmatched).toEqual([])
 })
 
@@ -199,5 +199,5 @@ test('sends an anonymous visitor from documents to the login form', async ({ pag
 
   await expect(page).toHaveURL('/login?redirect=/documents')
   await expect(page.getByRole('link', { name: 'Documents' })).toHaveCount(0)
-  await expect(page.getByRole('link', { name: 'Evidence' })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: /^(Evidence|Éléments de preuve)$/ })).toHaveCount(0)
 })

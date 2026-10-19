@@ -31,11 +31,13 @@ from backend.app.repositories.discovery_catalog import (
     CatalogOpportunityStore,
     DiscoveryRunStore,
 )
+from backend.app.repositories.morning_preparation import MorningPreparationRepository
 from backend.app.repositories.sqlalchemy_repositories import (
     SqlAlchemySearchProfileRepository,
     SqlAlchemyTaskRunRepository,
 )
-from backend.app.tasks.dispatcher import TaskDispatcher
+from backend.app.services.discovery_source_access import SourceAccessPolicy
+from backend.app.tasks.dispatcher import PersistedTaskDispatcher, TaskDispatcher
 
 Clock = Callable[[], datetime]
 MAX_OBSERVATIONS_PER_RUN = 1000
@@ -46,10 +48,12 @@ class DiscoveryEnqueueService:
     """Authorize a CH search and enqueue one durable task per intended time window."""
 
     def __init__(self, searches: SearchProfileRepository, dispatcher: TaskDispatcher,
-                 *, clock: Clock = lambda: datetime.now(UTC)) -> None:
+                 *, clock: Clock = lambda: datetime.now(UTC),
+                 source_policy: SourceAccessPolicy | None = None) -> None:
         self._searches = searches
         self._dispatcher = dispatcher
         self._clock = clock
+        self._source_policy = source_policy
 
     async def enqueue_discovery(
         self, user_id: UserId, search_profile_id: SearchProfileId, *,
@@ -58,6 +62,8 @@ class DiscoveryEnqueueService:
         profile = await self._searches.get(user_id, search_profile_id)
         if profile is None or not profile.is_active or "CH" not in countries_in_scope(profile):
             raise LookupError("Active Swiss saved search not found")
+        if self._source_policy is not None:
+            self._source_policy.sources_for(profile)
         local = self._clock().astimezone(SWISS_TIME)
         window = (local.strftime("%Y-%m-%d") if trigger == "MORNING"
                   else f"{local:%Y-%m-%dT%H}:{local.minute // 15 * 15:02d}")
@@ -77,6 +83,8 @@ class DiscoveryCatalogService:
         orchestrator: DiscoveryOrchestrator, *,
         clock: Clock = lambda: datetime.now(UTC),
         max_observations: int = MAX_OBSERVATIONS_PER_RUN,
+        source_policy: SourceAccessPolicy | None = None,
+        prepare_discovered: bool = False,
     ) -> None:
         if not 1 <= max_observations <= MAX_OBSERVATIONS_PER_RUN:
             raise ValueError("max_observations must be between 1 and 1000")
@@ -84,6 +92,8 @@ class DiscoveryCatalogService:
         self._orchestrator = orchestrator
         self._clock = clock
         self._max_observations = max_observations
+        self._source_policy = source_policy
+        self._prepare_discovered = prepare_discovered
 
     async def run_profile(
         self, user_id: UserId, search_profile_id: SearchProfileId, *,
@@ -97,6 +107,9 @@ class DiscoveryCatalogService:
                 user_id, search_profile_id)
             if profile is None or not profile.is_active or "CH" not in countries_in_scope(profile):
                 raise LookupError("Active Swiss saved search not found")
+            if self._source_policy is not None:
+                permitted = self._source_policy.sources_for(profile)
+                profile = profile.model_copy(update={"source_keys": permitted})
             runs = DiscoveryRunStore(session)
             existing = await runs.get_run(user_id, run_id)
             if existing is not None:
@@ -128,6 +141,9 @@ class DiscoveryCatalogService:
                     raise LookupError("Active Swiss saved search not found")
                 opportunities = CatalogOpportunityStore(session)
                 runs = DiscoveryRunStore(session)
+                preparations = MorningPreparationRepository(session)
+                dispatcher = PersistedTaskDispatcher(
+                    SqlAlchemyTaskRunRepository(session), clock=self._clock)
                 matched: set[OpportunityId] = set()
                 selected = matching_opportunities(current, report)
                 truncated = len(selected) > self._max_observations
@@ -137,6 +153,16 @@ class DiscoveryCatalogService:
                     await runs.add_member(
                         user_id, search_profile_id, opportunity_id,
                         run_id=run_id, seen_at=started, changed=changed)
+                    if self._prepare_discovered:
+                        await preparations.start_or_get(
+                            user_id, run_id, opportunity_id, now=started)
+                        await dispatcher.enqueue(TaskSpec(
+                            kind=TaskKind.MATCHING, user_id=user_id,
+                            idempotency_key=(f"morning-match:{user_id}:{run_id}:"
+                                             f"{opportunity_id}"),
+                            payload={"discovery_run_id": str(run_id),
+                                     "opportunity_id": str(opportunity_id)},
+                        ))
                     matched.add(opportunity_id)
                 warning_codes = sorted({
                     str(warning.code.value)

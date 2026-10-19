@@ -300,6 +300,45 @@ async def test_the_generator_builds_a_resume_that_passes_the_guard():
 
 
 @pytest.mark.asyncio
+async def test_imported_reference_cv_facts_are_rendered_and_ranked_for_the_posting():
+    """Raw imported CV evidence remains useful without fabricating a claim type."""
+    user_id = new_user_id()
+    python = _evidence(
+        user_id, "Built Python and FastAPI services for a student project",
+        provenance=EvidenceProvenance.IMPORTED_CV)
+    design = _evidence(
+        user_id, "Created accessible media-design prototypes in Figma",
+        provenance=EvidenceProvenance.IMPORTED_CV)
+    profile = CandidateProfile(
+        id=default_candidate_profile_id(user_id), user_id=user_id,
+        display_name="Cedrick Vanel Tchinda Feze", evidence=(python, design),
+        updated_at=NOW)
+    opportunity = an_opportunity(skill_requirements=(SkillRequirement(skill="Python"),))
+
+    resume = await DeterministicDocumentGenerator().generate_resume(
+        profile=profile, opportunity=opportunity,
+        context=a_context(profile, opportunity))
+
+    assert [item.text for item in resume.highlights] == [python.summary, design.summary]
+    assert CandidateEvidenceGuard().review(
+        resume, profile=profile, opportunity=opportunity).ok
+
+
+@pytest.mark.asyncio
+async def test_the_generator_refuses_a_heading_only_import_instead_of_rendering_a_blank_cv():
+    user_id = new_user_id()
+    heading = _evidence(user_id, "LANGUAGES", provenance=EvidenceProvenance.IMPORTED_CV)
+    profile = CandidateProfile(
+        id=default_candidate_profile_id(user_id), user_id=user_id,
+        display_name="Cedrick Vanel Tchinda Feze", evidence=(heading,), updated_at=NOW)
+
+    with pytest.raises(InsufficientEvidence, match="enough usable CV evidence"):
+        await DeterministicDocumentGenerator().generate_resume(
+            profile=profile, opportunity=an_opportunity(),
+            context=a_context(profile, an_opportunity()))
+
+
+@pytest.mark.asyncio
 async def test_the_generator_builds_a_cover_letter_that_passes_the_guard():
     profile = a_full_profile()
     opportunity = an_opportunity()
@@ -333,6 +372,41 @@ async def test_the_generator_refuses_rather_than_inventing_when_there_is_no_evid
 
 
 # --- rendering: the PDF an ATS can actually read ----------------------------
+
+@pytest.mark.asyncio
+async def test_french_documents_localize_template_text_without_rewriting_evidence():
+    profile = a_full_profile()
+    opportunity = an_opportunity()
+    generator = DeterministicDocumentGenerator()
+    context = a_context(profile, opportunity).model_copy(update={"target_language": "fr"})
+    resume = await generator.generate_resume(profile=profile, opportunity=opportunity, context=context)
+    rendered = render_document(resume, language="fr")
+    text = "".join(page.extract_text() for page in PdfReader(BytesIO(rendered.pdf_bytes)).pages)
+    assert "compétences" in text.casefold()
+    assert "synthèse" in text.casefold()
+    assert "skills" not in text.casefold()
+    letter = await generator.generate_cover_letter(
+        profile=profile, opportunity=opportunity,
+        context=context.model_copy(update={"document_type": CandidateDocumentType.COVER_LETTER}))
+    assert letter.greeting == "Madame, Monsieur,"
+    assert "Je vous remercie" in letter.closing
+    assert CandidateEvidenceGuard().review(letter, profile=profile, opportunity=opportunity).ok
+
+
+@pytest.mark.asyncio
+async def test_cover_letter_selects_imported_evidence_for_the_specific_offer():
+    owner = new_user_id()
+    retail = _evidence(owner, "Accueil des clients et gestion des ventes en magasin")
+    software = _evidence(owner, "Développement Python et automatisation des tests logiciels")
+    profile = CandidateProfile(
+        id=default_candidate_profile_id(owner), user_id=owner,
+        display_name="Candidate Test", evidence=(retail, software), updated_at=NOW)
+    opportunity = an_opportunity(title="Développement Python")
+    letter = await DeterministicDocumentGenerator().generate_cover_letter(
+        profile=profile, opportunity=opportunity,
+        context=a_context(profile, opportunity, CandidateDocumentType.COVER_LETTER))
+    assert letter.body[0].evidence_ids == (software.id,)
+    assert CandidateEvidenceGuard().review(letter, profile=profile, opportunity=opportunity).ok
 
 @pytest.mark.asyncio
 async def test_a_rendered_resume_is_ats_readable_text():
@@ -437,6 +511,10 @@ async def test_generate_renders_stores_and_versions_a_document(tmp_path):
 
     stored = await service.download(profile.user_id, document.id)
     assert stored.content.startswith(b"%PDF")
+    pinned = await service.download_version(profile.user_id, version.id)
+    assert pinned.content == stored.content
+    with pytest.raises(DocumentNotFound):
+        await service.download_version(new_user_id(), version.id)
 
 
 @pytest.mark.asyncio

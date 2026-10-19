@@ -1031,6 +1031,24 @@
         "title": "BillingInterval",
         "type": "string"
       },
+      "Body_import_reference_cv_api_v2_me_reference_cv_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/ReferenceCvPurpose"
+          }
+        },
+        "required": [
+          "purpose",
+          "file"
+        ],
+        "title": "Body_import_reference_cv_api_v2_me_reference_cv_post",
+        "type": "object"
+      },
       "Body_post_transcribe_api_transcribe_post": {
         "properties": {
           "file": {
@@ -1125,6 +1143,61 @@
           "evidence_ids"
         ],
         "title": "CandidateClaimResponse",
+        "type": "object"
+      },
+      "CandidateContact-Input": {
+        "additionalProperties": false,
+        "description": "Contact facts the candidate explicitly supplied for application forms.",
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "CandidateContact",
+        "type": "object"
+      },
+      "CandidateContact-Output": {
+        "additionalProperties": false,
+        "description": "Contact facts the candidate explicitly supplied for application forms.",
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "pattern": "^\\+?[0-9][0-9 ()-]{6,24}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "CandidateContact",
         "type": "object"
       },
       "CandidateDocumentListResponse": {
@@ -1341,7 +1414,7 @@
         "title": "CandidateEvidenceResponse",
         "type": "object"
       },
-      "CandidateProfileDraft": {
+      "CandidateProfileDraft-Input": {
         "additionalProperties": false,
         "description": "A candidate profile as submitted: no id, no owner, no timestamps.\n\nEvery field is the domain's own value object, so the validation a request body\ngets is exactly the validation the aggregate enforces — the language code\npattern, the availability window ordering, the permit hour cap. Nothing is\nre-specified here that `CandidateProfile` already specifies.",
         "properties": {
@@ -1359,6 +1432,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/Location"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CandidateContact-Input"
               },
               {
                 "type": "null"
@@ -1388,6 +1471,120 @@
             "title": "Languages",
             "type": "array"
           },
+          "reference_cv_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Cv Filename"
+          },
+          "reference_cv_purpose": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReferenceCvPurpose"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "work_authorizations": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/WorkAuthorization"
+            },
+            "title": "Work Authorizations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "title": "CandidateProfileDraft",
+        "type": "object"
+      },
+      "CandidateProfileDraft-Output": {
+        "additionalProperties": false,
+        "description": "A candidate profile as submitted: no id, no owner, no timestamps.\n\nEvery field is the domain's own value object, so the validation a request body\ngets is exactly the validation the aggregate enforces — the language code\npattern, the availability window ordering, the permit hour cap. Nothing is\nre-specified here that `CandidateProfile` already specifies.",
+        "properties": {
+          "availability": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Availability"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "base_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Location"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CandidateContact-Output"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline"
+          },
+          "languages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/LanguageProficiency"
+            },
+            "title": "Languages",
+            "type": "array"
+          },
+          "reference_cv_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Cv Filename"
+          },
+          "reference_cv_purpose": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReferenceCvPurpose"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "work_authorizations": {
             "default": [],
             "items": {
@@ -1413,7 +1610,7 @@
             "type": "string"
           },
           "profile": {
-            "$ref": "#/components/schemas/CandidateProfileDraft"
+            "$ref": "#/components/schemas/CandidateProfileDraft-Output"
           },
           "updated_at": {
             "format": "date-time",
@@ -2137,6 +2334,69 @@
         ],
         "title": "ClaimType",
         "type": "string"
+      },
+      "ClaudeTerminalSessionResponse": {
+        "additionalProperties": false,
+        "description": "Secret-free owner view of an integrated Claude terminal session.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "safe_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Safe Error Code"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "stream_url": {
+            "title": "Stream Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "created_at",
+          "expires_at",
+          "ended_at",
+          "safe_error_code",
+          "stream_url"
+        ],
+        "title": "ClaudeTerminalSessionResponse",
+        "type": "object"
       },
       "CompanyAliasResponse": {
         "additionalProperties": false,
@@ -2969,6 +3229,160 @@
           "occurred_at"
         ],
         "title": "CorrectOutcomeRequest",
+        "type": "object"
+      },
+      "CountryMapBoundsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "east": {
+            "title": "East",
+            "type": "number"
+          },
+          "north": {
+            "title": "North",
+            "type": "number"
+          },
+          "south": {
+            "title": "South",
+            "type": "number"
+          },
+          "west": {
+            "title": "West",
+            "type": "number"
+          }
+        },
+        "required": [
+          "north",
+          "south",
+          "east",
+          "west"
+        ],
+        "title": "CountryMapBoundsResponse",
+        "type": "object"
+      },
+      "CountryMapCenterResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "latitude": {
+            "title": "Latitude",
+            "type": "number"
+          },
+          "longitude": {
+            "title": "Longitude",
+            "type": "number"
+          }
+        },
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "title": "CountryMapCenterResponse",
+        "type": "object"
+      },
+      "CountryMapViewportResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "bounds": {
+            "$ref": "#/components/schemas/CountryMapBoundsResponse"
+          },
+          "center": {
+            "$ref": "#/components/schemas/CountryMapCenterResponse"
+          },
+          "zoom": {
+            "title": "Zoom",
+            "type": "number"
+          }
+        },
+        "required": [
+          "center",
+          "zoom",
+          "bounds"
+        ],
+        "title": "CountryMapViewportResponse",
+        "type": "object"
+      },
+      "CountryPackListResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "packs": {
+            "items": {
+              "$ref": "#/components/schemas/CountryPackResponse"
+            },
+            "title": "Packs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "packs"
+        ],
+        "title": "CountryPackListResponse",
+        "type": "object"
+      },
+      "CountryPackResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "country": {
+            "title": "Country",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "default_locale": {
+            "title": "Default Locale",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "enabled_source_count": {
+            "title": "Enabled Source Count",
+            "type": "integer"
+          },
+          "languages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Languages",
+            "type": "array"
+          },
+          "locales": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Locales",
+            "type": "array"
+          },
+          "map_viewport": {
+            "$ref": "#/components/schemas/CountryMapViewportResponse"
+          },
+          "opportunity_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Opportunity Types",
+            "type": "array"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "country",
+          "display_name",
+          "default_locale",
+          "locales",
+          "currency",
+          "languages",
+          "timezone",
+          "map_viewport",
+          "opportunity_types",
+          "enabled_source_count"
+        ],
+        "title": "CountryPackResponse",
         "type": "object"
       },
       "CountrySearchArea": {
@@ -5831,6 +6245,390 @@
         "title": "MaturityCensoringResponse",
         "type": "object"
       },
+      "MorningPreparationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "application_blocker_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Blocker Code"
+          },
+          "application_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Id"
+          },
+          "application_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApplicationState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cover_letter_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Letter Version Id"
+          },
+          "form_capability_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Form Capability Id"
+          },
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "resume_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Version Id"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/PreparationStage"
+          },
+          "submission_task_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task_failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Failure Code"
+          },
+          "task_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "QUEUED",
+                  "RUNNING",
+                  "SUCCEEDED",
+                  "DEAD_LETTERED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Status"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "opportunity_id",
+          "stage",
+          "updated_at"
+        ],
+        "title": "MorningPreparationResponse",
+        "type": "object"
+      },
+      "MorningRunBatchResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/MorningRunQueuedItemResponse"
+            },
+            "title": "Runs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs"
+        ],
+        "title": "MorningRunBatchResponse",
+        "type": "object"
+      },
+      "MorningRunLatestResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/MorningRunStatusResponse"
+            },
+            "title": "Runs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs"
+        ],
+        "title": "MorningRunLatestResponse",
+        "type": "object"
+      },
+      "MorningRunQueuedItemResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "search_profile_id": {
+            "format": "uuid",
+            "title": "Search Profile Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "SUCCEEDED",
+              "DEAD_LETTERED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "search_profile_id",
+          "run_id",
+          "status"
+        ],
+        "title": "MorningRunQueuedItemResponse",
+        "type": "object"
+      },
+      "MorningRunStatusResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "matched_count": {
+            "minimum": 0.0,
+            "title": "Matched Count",
+            "type": "integer"
+          },
+          "preparations": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MorningPreparationResponse"
+            },
+            "title": "Preparations",
+            "type": "array"
+          },
+          "preparations_truncated": {
+            "default": false,
+            "title": "Preparations Truncated",
+            "type": "boolean"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "search_profile_id": {
+            "format": "uuid",
+            "title": "Search Profile Id",
+            "type": "string"
+          },
+          "seen_count": {
+            "minimum": 0.0,
+            "title": "Seen Count",
+            "type": "integer"
+          },
+          "source_health": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DiscoverySourceHealthResponse"
+            },
+            "title": "Source Health",
+            "type": "array"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "NOT_STARTED",
+              "QUEUED",
+              "RUNNING",
+              "SUCCEEDED",
+              "PARTIAL",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "warning_codes": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warning Codes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "search_profile_id",
+          "run_id",
+          "status",
+          "seen_count",
+          "matched_count"
+        ],
+        "title": "MorningRunStatusResponse",
+        "type": "object"
+      },
+      "MorningScheduleRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cadence": {
+            "enum": [
+              "daily",
+              "weekdays"
+            ],
+            "title": "Cadence",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "local_time": {
+            "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+            "title": "Local Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "local_time",
+          "cadence"
+        ],
+        "title": "MorningScheduleRequest",
+        "type": "object"
+      },
+      "MorningScheduleResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "cadence": {
+            "enum": [
+              "daily",
+              "weekdays"
+            ],
+            "title": "Cadence",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "local_time": {
+            "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+            "title": "Local Time",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "enabled",
+          "local_time",
+          "cadence"
+        ],
+        "title": "MorningScheduleResponse",
+        "type": "object"
+      },
       "NavigateAction": {
         "additionalProperties": false,
         "description": "Point the client at a screen — a hint that mutates nothing on the server.",
@@ -6524,6 +7322,19 @@
         "title": "PortalResponse",
         "type": "object"
       },
+      "PreparationStage": {
+        "enum": [
+          "DISCOVERED",
+          "MATCHED",
+          "CV_RENDERED",
+          "DOCUMENTS_RENDERED",
+          "SKIPPED",
+          "REQUIRES_HUMAN",
+          "FAILED"
+        ],
+        "title": "PreparationStage",
+        "type": "string"
+      },
       "PrepareApplicationAction": {
         "additionalProperties": false,
         "description": "Prepare an application and route it by the gate — reversible, never submits.",
@@ -7007,6 +7818,18 @@
         "title": "RecordOutcomeRequest",
         "type": "object"
       },
+      "ReferenceCvPurpose": {
+        "enum": [
+          "JOB",
+          "INTERNSHIP",
+          "APPRENTICESHIP",
+          "WORK_STUDY",
+          "TRAINING",
+          "GENERAL"
+        ],
+        "title": "ReferenceCvPurpose",
+        "type": "string"
+      },
       "RegenBody": {
         "properties": {
           "creativity": {
@@ -7154,6 +7977,14 @@
               }
             ],
             "title": "Headline"
+          },
+          "highlights": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EvidenceBackedText"
+            },
+            "title": "Highlights",
+            "type": "array"
           },
           "kind": {
             "const": "RESUME",
@@ -8167,6 +8998,8 @@
           "SOURCE_MISCONFIGURED",
           "SOURCE_PARSE_FAILED",
           "SOURCE_PARTIAL_FAILURE",
+          "SOURCE_BUDGET_EXHAUSTED",
+          "SOURCE_BUDGET_UNAVAILABLE",
           "SOURCE_ADAPTER_ERROR"
         ],
         "title": "SourceFailureCode",
@@ -8707,6 +9540,17 @@
           "CANCELED"
         ],
         "title": "SubscriptionStatus",
+        "type": "string"
+      },
+      "TaskStatus": {
+        "description": "The lifecycle of one task run — the closed set the state machine allows (§40).\n\n- `QUEUED` — waiting to be leased; holds no lease and has not finished. It may already carry a\n  `started_at` and the failure of a prior attempt (a transient retry) or be pristine (a fresh\n  enqueue).\n- `RUNNING` — leased by a worker: `lease_owner`/`lease_expires_at` and `started_at` are set,\n  `finished_at` is unset, no failure is recorded, and at least one attempt has been spent.\n- `SUCCEEDED` — terminal success: no lease, `started_at`/`finished_at` set, no failure.\n- `DEAD_LETTERED` — terminal failure (permanent, or transient with no attempt left): no lease,\n  `started_at`/`finished_at` set, and the typed failure that ended it recorded (§39).",
+        "enum": [
+          "QUEUED",
+          "RUNNING",
+          "SUCCEEDED",
+          "DEAD_LETTERED"
+        ],
+        "title": "TaskStatus",
         "type": "string"
       },
       "TimingKind": {
@@ -11366,7 +12210,7 @@
         ]
       },
       "post": {
-        "description": "Draft a proposal for a typed change to a search or a policy — writing nothing yet (§37-39).\n\n201, because it creates a proposal. The typed `change` is validated at the boundary, so a kind\nthe platform does not offer is a 422. The live target is read once to capture its version as\nthe approval precondition; a target that does not exist for this account is a 409\n(`strategy_target_not_found`). The proposal is born open and touches nothing on the target.",
+        "description": "Draft a proposal for a typed change to a search or a policy — writing nothing yet (§37-39).\n\n201, because it creates a proposal. The typed `change` is validated at the boundary, so a kind\nthe platform does not offer is a 422. The live target is read once to capture its version as\nthe approval precondition; a target that does not exist for this account is a 409\n(`strategy_target_not_found`). A linked recommendation is also owner-scoped; a foreign or\nmissing id is a 404 (`recommendation_not_found`). The proposal is born open and touches\nnothing on the target.",
         "operationId": "propose_strategy_change_api_v2_career_strategy_proposals_post",
         "requestBody": {
           "content": {
@@ -12137,6 +12981,28 @@
         ]
       }
     },
+    "/api/v2/country-packs": {
+      "get": {
+        "description": "Public pack metadata for authenticated UI clients; never source credentials.",
+        "operationId": "list_country_packs_api_v2_country_packs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountryPackListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Country Packs",
+        "tags": [
+          "v2-country-packs"
+        ]
+      }
+    },
     "/api/v2/documents": {
       "get": {
         "description": "This account's documents, most recently updated first.",
@@ -12154,6 +13020,48 @@
           }
         },
         "summary": "List Documents",
+        "tags": [
+          "v2-documents"
+        ]
+      }
+    },
+    "/api/v2/documents/versions/{version_id}/download": {
+      "get": {
+        "description": "Download one exact rendered version; owner and guard checks stay in the service.",
+        "operationId": "download_document_version_api_v2_documents_versions__version_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Document Version",
         "tags": [
           "v2-documents"
         ]
@@ -13433,6 +14341,108 @@
         ]
       }
     },
+    "/api/v2/me/morning-runs": {
+      "post": {
+        "operationId": "trigger_run_api_v2_me_morning_runs_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MorningRunBatchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Trigger Run",
+        "tags": [
+          "v2-morning-run"
+        ]
+      }
+    },
+    "/api/v2/me/morning-runs/latest": {
+      "get": {
+        "operationId": "latest_runs_api_v2_me_morning_runs_latest_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MorningRunLatestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Latest Runs",
+        "tags": [
+          "v2-morning-run"
+        ]
+      }
+    },
+    "/api/v2/me/morning-schedule": {
+      "get": {
+        "operationId": "read_schedule_api_v2_me_morning_schedule_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MorningScheduleResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Schedule",
+        "tags": [
+          "v2-morning-run"
+        ]
+      },
+      "put": {
+        "operationId": "save_schedule_api_v2_me_morning_schedule_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MorningScheduleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MorningScheduleResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Schedule",
+        "tags": [
+          "v2-morning-run"
+        ]
+      }
+    },
     "/api/v2/me/opportunities/{opportunity_id}/local-autopilot": {
       "post": {
         "description": "Assess, document and prepare one opportunity without submitting it.",
@@ -13505,7 +14515,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CandidateProfileDraft"
+                "$ref": "#/components/schemas/CandidateProfileDraft-Input"
               }
             }
           },
@@ -13536,6 +14546,48 @@
         "summary": "Save Profile",
         "tags": [
           "v2-me"
+        ]
+      }
+    },
+    "/api/v2/me/reference-cv": {
+      "post": {
+        "description": "Import one private reference CV and turn readable lines into evidence.",
+        "operationId": "import_reference_cv_api_v2_me_reference_cv_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_import_reference_cv_api_v2_me_reference_cv_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Reference Cv",
+        "tags": [
+          "v2-documents"
         ]
       }
     },
@@ -14342,6 +15394,111 @@
         "summary": "List Role Classifications",
         "tags": [
           "v2-role-classifications"
+        ]
+      }
+    },
+    "/api/v2/settings/claude-terminal/sessions": {
+      "post": {
+        "operationId": "create_session_api_v2_settings_claude_terminal_sessions_post",
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeTerminalSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Create Session",
+        "tags": [
+          "v2-claude-terminal"
+        ]
+      }
+    },
+    "/api/v2/settings/claude-terminal/sessions/{session_id}": {
+      "delete": {
+        "operationId": "stop_session_api_v2_settings_claude_terminal_sessions__session_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeTerminalSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop Session",
+        "tags": [
+          "v2-claude-terminal"
+        ]
+      },
+      "get": {
+        "operationId": "read_session_api_v2_settings_claude_terminal_sessions__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeTerminalSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Session",
+        "tags": [
+          "v2-claude-terminal"
         ]
       }
     },

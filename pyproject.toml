@@ -23,6 +23,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "sse-starlette>=2.1",
     "python-multipart>=0.0.9",
+    "pypdf>=6.4.0",
     # Declared in its own right from Phase 1 on: the V2 domain is built out of
     # pydantic v2 models and must not depend on FastAPI dragging pydantic in.
     # v2 specifically — `ConfigDict`, `model_validator` and `Annotated`
@@ -66,6 +67,8 @@ dependencies = [
     # stored. A runtime dependency of the API — `SecretCipher` is built when a
     # connection is created or read — not a test convenience.
     "cryptography>=42.0",
+    "docker>=7.1,<8",
+    "websockets>=15,<16",
 ]
 
 [project.optional-dependencies]
@@ -123,6 +126,7 @@ packages = ["pipeline", "pipeline.sources", "pipeline.apply", "dashboard", "serv
             "backend.app.repositories",
             "backend.app.cli", "backend.app.services", "backend.app.api",
             "backend.app.api.routes", "backend.app.discovery",
+            "backend.app.claude_terminal",
             "backend.app.discovery.adapters",
             "backend.app.companies", "backend.app.companies.providers",
             "backend.app.geo",
@@ -132,7 +136,7 @@ packages = ["pipeline", "pipeline.sources", "pipeline.apply", "dashboard", "serv
             "backend.app.career", "backend.app.documents", "backend.app.eligibility",
             "backend.app.exports", "backend.app.interview", "backend.app.matching",
             "backend.app.retention", "backend.app.tasks",
-            "country_packs", "country_packs.ch"]
+            "terminal_manager", "country_packs", "country_packs.ch"]
 
 # A Country Pack is five YAML files and a six-line loader (Phase 5): without this
 # the wheel would ship the loader and none of its content, and `load_pack()`

@@ -597,3 +597,19 @@ Each country requires:
 ### Validation gate
 
 Each country is its own gated delivery.
+
+---
+
+## Local terminal reliability gate — October 8, 2026
+
+The optional integrated Claude terminal is locally accepted only when its private manager is
+healthy, API processes do not expose Docker or Anthropic credentials, expiry stops the runtime
+before persisting `EXPIRED`, and cleanup remains bounded and retry-safe.
+
+### Validation gate
+
+- terminal ownership and allowed-origin checks pass;
+- malformed terminal frames are refused without logging their content;
+- manager failures leave expired sessions retryable;
+- FR/EN terminal controls remain usable on desktop and mobile;
+- no automated test sends a real job application.

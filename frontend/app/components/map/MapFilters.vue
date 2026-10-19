@@ -11,108 +11,154 @@
   can honestly express.
 -->
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import type { MapFilterForm } from '~/types/map'
 import type { OpportunityType, RemoteSelection, WorkplaceMode } from '~/types/v2'
+import { useLocale } from '~/composables/useLocale'
+import { DEFAULT_COUNTRY_OPTIONS } from '~/composables/useCountryPacks'
+import type { CountryOption } from '~/composables/useCountryPacks'
 
-defineProps<{ mode: 'opportunities' | 'companies' }>()
+withDefaults(defineProps<{
+  mode: 'opportunities' | 'companies'
+  countryOptions?: readonly CountryOption[]
+}>(), {
+  countryOptions: () => DEFAULT_COUNTRY_OPTIONS,
+})
 const form = defineModel<MapFilterForm>({ required: true })
 const emit = defineEmits<{ apply: [] }>()
+const { localize: l } = useLocale()
+const filtersOpen = ref(false)
+const ANY_TYPE = '__any_type'
+const ANY_WORKPLACE = '__any_workplace'
 
-const TYPES: { value: OpportunityType, label: string }[] = [
-  { value: 'FULL_TIME', label: 'Full-time' },
-  { value: 'PART_TIME', label: 'Part-time' },
-  { value: 'STUDENT_JOB', label: 'Student job' },
-  { value: 'INTERNSHIP', label: 'Internship' },
-  { value: 'APPRENTICESHIP', label: 'Apprenticeship' },
-  { value: 'WORK_STUDY', label: 'Work-study' },
-  { value: 'GRADUATE', label: 'Graduate' },
-  { value: 'TEMPORARY', label: 'Temporary' },
-  { value: 'FREELANCE', label: 'Freelance' },
-]
-const WORKPLACES: { value: WorkplaceMode, label: string }[] = [
-  { value: 'ON_SITE', label: 'On-site' },
-  { value: 'HYBRID', label: 'Hybrid' },
-  { value: 'REMOTE', label: 'Remote' },
-]
-const REMOTE: { value: RemoteSelection, label: string }[] = [
-  { value: 'exclude', label: 'Exclude remote' },
-  { value: 'include', label: 'Include remote' },
-  { value: 'only', label: 'Remote only' },
-]
+const opportunityTypeModel = computed({
+  get: () => form.value.opportunityType || ANY_TYPE,
+  set: (value: string) => {
+    form.value.opportunityType = value === ANY_TYPE ? '' : value as OpportunityType
+  },
+})
+const workplaceModel = computed({
+  get: () => form.value.workplaceMode || ANY_WORKPLACE,
+  set: (value: string) => {
+    form.value.workplaceMode = value === ANY_WORKPLACE ? '' : value as WorkplaceMode
+  },
+})
+
+const TYPES = computed<{ value: OpportunityType | typeof ANY_TYPE, label: string }[]>(() => [
+  { value: ANY_TYPE, label: l('Any type', 'Tous les types') },
+  { value: 'FULL_TIME', label: l('Full-time', 'Temps plein') },
+  { value: 'PART_TIME', label: l('Part-time', 'Temps partiel') },
+  { value: 'STUDENT_JOB', label: l('Student job', 'Emploi étudiant') },
+  { value: 'INTERNSHIP', label: l('Internship', 'Stage') },
+  { value: 'APPRENTICESHIP', label: l('Apprenticeship', 'Apprentissage') },
+  { value: 'WORK_STUDY', label: l('Work-study', 'Alternance') },
+  { value: 'GRADUATE', label: l('Graduate', 'Jeune diplômé') },
+  { value: 'TEMPORARY', label: l('Temporary', 'Temporaire') },
+  { value: 'FREELANCE', label: l('Freelance', 'Indépendant') },
+])
+const WORKPLACES = computed<{ value: WorkplaceMode | typeof ANY_WORKPLACE, label: string }[]>(() => [
+  { value: ANY_WORKPLACE, label: l('Any workplace', 'Tout lieu de travail') },
+  { value: 'ON_SITE', label: l('On-site', 'Sur site') },
+  { value: 'HYBRID', label: l('Hybrid', 'Hybride') },
+  { value: 'REMOTE', label: l('Remote', 'À distance') },
+])
+const REMOTE = computed<{ value: RemoteSelection, label: string }[]>(() => [
+  { value: 'exclude', label: l('Exclude remote', 'Exclure le télétravail') },
+  { value: 'include', label: l('Include remote', 'Inclure le télétravail') },
+  { value: 'only', label: l('Remote only', 'Télétravail uniquement') },
+])
+
+function applyFilters() {
+  filtersOpen.value = false
+  emit('apply')
+}
 </script>
 
 <template>
-  <form class="map-filters" @submit.prevent="emit('apply')">
-    <template v-if="mode === 'opportunities'">
+  <section class="map-filter-disclosure">
+    <button
+      type="button"
+      class="btn-ghost map-filters-toggle"
+      aria-controls="map-filters-panel"
+      :aria-expanded="filtersOpen"
+      @click="filtersOpen = !filtersOpen"
+    >
+      <UIcon name="i-lucide-sliders-horizontal" aria-hidden="true" />
+      {{ l('Filter', 'Filtrer') }}
+    </button>
+
+    <form v-if="filtersOpen" id="map-filters-panel" class="map-filters" @submit.prevent="applyFilters">
+      <template v-if="mode === 'opportunities'">
+        <label class="map-field">
+          {{ l('Type', 'Type') }}
+          <USelect v-model="opportunityTypeModel" :items="TYPES" value-key="value" :aria-label="l('Opportunity type', 'Type d’offre')" />
+        </label>
+        <label class="map-field">
+          {{ l('Workplace', 'Lieu de travail') }}
+          <USelect v-model="workplaceModel" :items="WORKPLACES" value-key="value" :aria-label="l('Workplace', 'Lieu de travail')" />
+        </label>
+        <label class="map-field">
+          {{ l('Remote', 'Télétravail') }}
+          <USelect v-model="form.remote" :items="REMOTE" value-key="value" :aria-label="l('Remote policy', 'Politique de télétravail')" />
+        </label>
+      </template>
+
       <label class="map-field">
-        Type
-        <select v-model="form.opportunityType" aria-label="Opportunity type">
-          <option value="">
-            Any
-          </option>
-          <option v-for="type in TYPES" :key="type.value" :value="type.value">
-            {{ type.label }}
-          </option>
-        </select>
-      </label>
-      <label class="map-field">
-        Workplace
-        <select v-model="form.workplaceMode" aria-label="Workplace">
-          <option value="">
-            Any
-          </option>
-          <option v-for="workplace in WORKPLACES" :key="workplace.value" :value="workplace.value">
-            {{ workplace.label }}
-          </option>
-        </select>
-      </label>
-      <label class="map-field">
-        Remote
-        <select v-model="form.remote" aria-label="Remote policy">
-          <option v-for="option in REMOTE" :key="option.value" :value="option.value">
+        {{ l('Country', 'Pays') }}
+        <select
+          v-model="form.country"
+          :aria-label="l('Country', 'Pays')"
+        >
+          <option value="">{{ l('Any country', 'Tous les pays') }}</option>
+          <option v-for="option in countryOptions" :key="option.value" :value="option.value">
             {{ option.label }}
           </option>
         </select>
       </label>
-    </template>
 
-    <label class="map-field">
-      Country
-      <input
-        v-model="form.country"
-        type="text"
-        aria-label="Country"
-        maxlength="2"
-        placeholder="CH"
-      >
-    </label>
+      <label class="map-field map-field--check">
+        <input v-model="form.radiusEnabled" type="checkbox" :aria-label="l('Limit to radius', 'Limiter au rayon')">
+        {{ l('Limit to radius', 'Limiter au rayon') }}
+      </label>
+      <label v-if="form.radiusEnabled" class="map-field">
+        {{ l('Radius (km)', 'Rayon (km)') }}
+        <input
+          v-model.number="form.radiusKm"
+          type="number"
+          min="1"
+          max="500"
+          :aria-label="l('Radius in kilometres', 'Rayon en kilomètres')"
+        >
+      </label>
 
-    <label class="map-field map-field--check">
-      <input v-model="form.radiusEnabled" type="checkbox" aria-label="Limit to radius">
-      Limit to radius
-    </label>
-    <label v-if="form.radiusEnabled" class="map-field">
-      Radius (km)
-      <input
-        v-model.number="form.radiusKm"
-        type="number"
-        min="1"
-        max="500"
-        aria-label="Radius in kilometres"
-      >
-    </label>
-
-    <button type="submit" class="btn-ghost">
-      Apply
-    </button>
-  </form>
+      <button type="submit" class="btn-primary">
+        {{ l('Apply filters', 'Appliquer les filtres') }}
+      </button>
+    </form>
+  </section>
 </template>
 
 <style scoped>
+.map-filter-disclosure {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.map-filters-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 .map-filters {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
   gap: var(--space-3);
 }
 .map-field {
@@ -122,8 +168,6 @@ const REMOTE: { value: RemoteSelection, label: string }[] = [
   font-size: 12px;
   color: var(--text-dim);
 }
-.map-field select,
-.map-field input[type="text"],
 .map-field input[type="number"] {
   min-width: 120px;
 }
@@ -135,5 +179,13 @@ const REMOTE: { value: RemoteSelection, label: string }[] = [
 }
 .map-field--check input {
   min-width: 0;
+}
+@media (max-width: 560px) {
+  .map-filter-disclosure { align-items: stretch; }
+  .map-filters-toggle { justify-content: center; }
+  .map-filters { align-items: stretch; }
+  .map-field { width: 100%; }
+  .map-field input[type="number"], .map-field select { min-width: 0; min-height: 44px; font-size: 16px; }
+  .map-field--check { min-height: 44px; }
 }
 </style>

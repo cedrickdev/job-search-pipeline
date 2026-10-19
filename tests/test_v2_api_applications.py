@@ -9,10 +9,14 @@ so a prepared application routes to a human — the cautious API default — and
 auto-submit path stays the unit suite's job.
 """
 from uuid import UUID
+from datetime import date
 
 import pytest
 
 from backend.app.api.dependencies import application_queue_service
+from backend.app.application_engine.browser.form_capabilities import (
+    FormCapability, FormCapabilityCatalog,
+)
 from backend.app.domain.application import ApplicationState
 from backend.app.domain.policy import AutomationMode
 from backend.app.domain.identifiers import (
@@ -26,6 +30,18 @@ from tests.v2_fakes import FakeTaskDispatcher
 
 PLACEHOLDER = "00000000-0000-4000-8000-0000000000ff"
 POSTING = OpportunityId(UUID("00000000-0000-4000-8000-0000000002ff"))
+FORM_URL = "https://jobs.lever.co/fixture/role/apply"
+FINGERPRINT = "a" * 64
+
+
+def _fixture_catalog():
+    return FormCapabilityCatalog(forms=(FormCapability(
+        id="lever-fixture", ats="lever", employer="Fixture SA",
+        target_url=FORM_URL, driver_key="lever/1", form_fingerprint=FINGERPRINT,
+        allowed_required_fields=frozenset(), allowed_upload_slots=frozenset(),
+        conditions_url="https://fixture.example/terms", review_id="fixture-review",
+        reviewed_at=date(2026, 10, 13), access_decision="approved",
+    ),))
 
 
 async def _seed_pair(api):
@@ -47,7 +63,7 @@ async def _allow_fixture_queue(api, *, live_enabled=True):
     dispatcher = FakeTaskDispatcher()
     api.app.dependency_overrides[application_queue_service] = lambda: ApplicationQueueService(
         api.applications, api.application_policies, api.postings, dispatcher,
-        live_enabled=live_enabled)
+        live_enabled=live_enabled, form_catalog=_fixture_catalog())
     return dispatcher
 
 
@@ -121,12 +137,15 @@ async def test_submit_before_approval_is_a_conflict(tmp_path):
 async def test_duplicate_queue_returns_one_browser_task(tmp_path):
     async with api_harness(tmp_path) as api:
         _, posting_id = await _seed_pair(api)
+        await api.postings.upsert(an_opportunity(id=POSTING, application_url=FORM_URL))
         created = await api.write("POST", "/applications",
                                   json={"opportunity_id": str(posting_id)})
         app_id = UUID(created.json()["id"])
         app = api.applications.applications[app_id]
         await api.applications.upsert(app.model_copy(update={
-            "state": ApplicationState.APPROVED}))
+            "state": ApplicationState.APPROVED,
+            "form_driver_key": "lever/1", "form_fingerprint": FINGERPRINT,
+            "form_capability_id": "lever-fixture"}))
         dispatcher = await _allow_fixture_queue(api)
 
         first = await api.write("POST", f"/applications/{app_id}/queue")

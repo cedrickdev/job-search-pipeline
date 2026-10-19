@@ -18,17 +18,21 @@
   is how a directory ends up with two employers' facts under one name.
 -->
 <script setup lang="ts">
+const { t } = useLocale()
 import { computed, reactive, ref } from 'vue'
 import { COMPANY_PAGE_SIZE, useCompaniesQuery, useRunCompanyDiscovery } from '~/composables/useCompanies'
 import type { AtsPlatform, Company, SpontaneousSupport } from '~/types/v2'
 import { errorMessage } from '~/utils/v2-errors'
+import { countryOptionsFor, useCountryPacksQuery } from '~/composables/useCountryPacks'
 
 definePageMeta({ middleware: 'auth' })
 
-useHead({ title: 'Companies · Command Center' })
+useHead({ title: () => `${t('page.companies')} · Command Center` })
 
 const PLATFORMS: AtsPlatform[] = ['GREENHOUSE', 'LEVER', 'ASHBY']
 const SUPPORT: SpontaneousSupport[] = ['SUPPORTED', 'NOT_SUPPORTED', 'UNKNOWN']
+const { data: countryPacks } = useCountryPacksQuery()
+const countryOptions = computed(() => countryOptionsFor(countryPacks.value))
 
 /**
  * The filter state, as the form binds it.
@@ -101,12 +105,12 @@ function spontaneous(entry: Company): string {
 <template>
   <div class="acct-page co-page">
     <header class="acct-head">
-      <h1>Companies</h1>
+      <h1>{{ t('page.companies') }}</h1>
       <button
         type="button"
         class="btn-primary"
         :disabled="run.isPending"
-        @click="run.mutate()"
+        @click="run.mutate({})"
       >
         {{ run.isPending ? 'Discovering…' : 'Run discovery' }}
       </button>
@@ -132,13 +136,15 @@ function spontaneous(entry: Company): string {
       </label>
       <label class="acct-field">
         Country
-        <input
+        <select
           v-model="form.country"
-          type="text"
           aria-label="Country"
-          maxlength="2"
-          placeholder="CH"
         >
+          <option value="">Any</option>
+          <option v-for="option in countryOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
       </label>
       <label class="acct-field">
         Platform

@@ -7,20 +7,23 @@
   an opportunity id means nothing in the companies view.
 -->
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { ExplorerMode } from '~/stores/mapExplorer'
+import { useLocale } from '~/composables/useLocale'
 
 const mode = defineModel<ExplorerMode>({ required: true })
+const { localize: l } = useLocale()
 
-const TABS: { value: ExplorerMode, label: string }[] = [
-  { value: 'opportunities', label: 'Opportunities' },
-  { value: 'companies', label: 'Companies' },
-]
+const tabs = computed<{ value: ExplorerMode, label: string }[]>(() => [
+  { value: 'opportunities', label: l('Opportunities', 'Offres') },
+  { value: 'companies', label: l('Companies', 'Entreprises') },
+])
 </script>
 
 <template>
-  <div class="map-modes" role="tablist" aria-label="Map contents">
+  <div class="map-modes" role="tablist" :aria-label="l('Map contents', 'Contenu de la carte')">
     <button
-      v-for="tab in TABS"
+      v-for="tab in tabs"
       :key="tab.value"
       type="button"
       role="tab"

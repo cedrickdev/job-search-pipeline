@@ -30,6 +30,7 @@ import {
   useLlmConnectionHealth,
   useLlmConnectionsQuery,
 } from '~/composables/useLlmConnections'
+import { useLocale } from '~/composables/useLocale'
 import type {
   CreateLLMConnectionRequest,
   LLMConnection,
@@ -40,11 +41,11 @@ import { errorMessage } from '~/utils/v2-errors'
 
 definePageMeta({ middleware: 'auth' })
 
-useHead({ title: 'Providers · Command Center' })
-
 const { data, status, error } = useLlmConnectionsQuery()
 const { create, update, remove, setEnabled, setDefault } = useLlmConnectionActions()
 const health = useLlmConnectionHealth()
+const { t } = useLocale()
+useHead({ title: () => `${t('page.providers')} · Command Center` })
 
 const loading = computed(() => status.value === 'pending' && !data.value)
 const connections = computed(() => data.value?.connections ?? [])
@@ -75,6 +76,14 @@ const HEALTH_LABEL: Record<LLMConnectionHealth['status'], string> = {
   UNAVAILABLE: 'Unavailable',
   AUTH_REQUIRED: 'Needs credentials',
   MISCONFIGURED: 'Misconfigured',
+}
+
+function providerLabel(value: LLMConnection['provider_type']): string {
+  return t(`providers.listType.${value}`, PROVIDER_LABEL[value])
+}
+
+function healthLabel(value: LLMConnectionHealth['status']): string {
+  return t(`providers.health.${value}`, HEALTH_LABEL[value])
 }
 
 /** Whether a probe result is a clean bill of health, for styling the line. */
@@ -157,22 +166,19 @@ function toggleEdit(connectionId: string) {
   editingId.value = editingId.value === connectionId ? null : connectionId
   confirmingId.value = null
 }
+
 </script>
 
 <template>
   <div class="acct-page">
     <header class="acct-head">
-      <h1>Providers</h1>
+      <h1>{{ t('page.providers') }}</h1>
     </header>
 
-    <p class="settings-hint">
-      The LLM connections a task may use — a local CLI, a hosted gateway, or a local
-      server. A key is stored encrypted and never shown again; only whether one is set
-      is reported back. Nothing here runs a prompt.
-    </p>
+    <p class="settings-hint">{{ t('providers.intro') }}</p>
 
     <p v-if="loading" class="ov-state">
-      Loading connections…
+      {{ t('providers.loadingConnections') }}
     </p>
     <p v-else-if="listError" class="ov-state ov-error">
       {{ listError }}
@@ -180,9 +186,9 @@ function toggleEdit(connectionId: string) {
 
     <template v-else>
       <section class="settings-card">
-        <h2>Connections</h2>
+        <h2>{{ t('providers.connections') }}</h2>
         <p v-if="!connections.length" class="ov-empty">
-          No connections yet. Add one below.
+          {{ t('providers.noConnections') }}
         </p>
         <ul v-else class="acct-searches">
           <li v-for="conn in connections" :key="conn.id" class="acct-search">
@@ -190,24 +196,24 @@ function toggleEdit(connectionId: string) {
               <div class="acct-search-main">
                 <span class="acct-search-name">
                   {{ conn.display_name }}
-                  <span v-if="conn.is_default" class="acct-live">· default</span>
+                  <span v-if="conn.is_default" class="acct-live">· {{ t('providers.default') }}</span>
                 </span>
                 <span class="acct-search-meta">
-                  {{ PROVIDER_LABEL[conn.provider_type] }}
+                  {{ providerLabel(conn.provider_type) }}
                   <template v-if="conn.base_url">
                     · <code>{{ conn.base_url }}</code>
                   </template>
                   <template v-if="conn.model">
                     · {{ conn.model }}
                   </template>
-                  · priority {{ conn.priority }}
+                  · {{ t('providers.priority') }} {{ conn.priority }}
                   <template v-if="conn.has_api_key">
-                    · key set
+                    · {{ t('providers.keySet') }}
                   </template>
                 </span>
               </div>
               <span :class="conn.enabled ? 'acct-live' : 'acct-paused'">
-                {{ conn.enabled ? 'enabled' : 'disabled' }}
+                {{ conn.enabled ? t('providers.enabled') : t('providers.disabled') }}
               </span>
             </div>
 
@@ -216,7 +222,7 @@ function toggleEdit(connectionId: string) {
               :class="isHealthy(probes[conn.id]!) ? 'settings-ok' : 'settings-err'"
               role="status"
             >
-              {{ HEALTH_LABEL[probes[conn.id]!.status] }}
+              {{ healthLabel(probes[conn.id]!.status) }}
               <template v-if="probes[conn.id]!.detail">
                 — {{ probes[conn.id]!.detail }}
               </template>
@@ -232,7 +238,7 @@ function toggleEdit(connectionId: string) {
                 :disabled="probingId === conn.id"
                 @click="onProbe(conn.id)"
               >
-                {{ probingId === conn.id ? 'Testing…' : 'Test' }}
+                {{ probingId === conn.id ? t('providers.testing') : t('providers.test') }}
               </button>
               <button
                 v-if="!conn.is_default"
@@ -241,7 +247,7 @@ function toggleEdit(connectionId: string) {
                 :disabled="setDefault.isPending"
                 @click="setDefault.mutate(conn.id)"
               >
-                Make default
+                {{ t('providers.makeDefault') }}
               </button>
               <button
                 class="btn-ghost"
@@ -249,23 +255,23 @@ function toggleEdit(connectionId: string) {
                 :disabled="setEnabled.isPending"
                 @click="setEnabled.mutate({ connectionId: conn.id, enabled: !conn.enabled })"
               >
-                {{ conn.enabled ? 'Disable' : 'Enable' }}
+                {{ conn.enabled ? t('providers.disable') : t('providers.enable') }}
               </button>
               <button class="btn-ghost" type="button" @click="toggleEdit(conn.id)">
-                {{ editingId === conn.id ? 'Cancel' : 'Edit' }}
+                {{ editingId === conn.id ? t('providers.cancel') : t('providers.edit') }}
               </button>
               <template v-if="confirmingId === conn.id">
-                <span class="settings-err">Delete this connection?</span>
+                <span class="settings-err">{{ t('providers.deleteQuestion') }}</span>
                 <button
                   class="btn-ghost"
                   type="button"
                   :disabled="remove.isPending"
                   @click="onDelete(conn.id)"
                 >
-                  Confirm
+                  {{ t('providers.confirm') }}
                 </button>
                 <button class="btn-ghost" type="button" @click="confirmingId = null">
-                  Keep
+                  {{ t('providers.keep') }}
                 </button>
               </template>
               <button
@@ -274,7 +280,7 @@ function toggleEdit(connectionId: string) {
                 type="button"
                 @click="confirmingId = conn.id"
               >
-                Delete
+                {{ t('providers.delete') }}
               </button>
             </div>
 
@@ -283,7 +289,7 @@ function toggleEdit(connectionId: string) {
               :connection="conn"
               :pending="update.isPending"
               :error="update.error"
-              submit-label="Save changes"
+              :submit-label="t('providers.saveChanges')"
               @submit="payload => onUpdate(conn.id, payload)"
             />
           </li>
@@ -291,16 +297,16 @@ function toggleEdit(connectionId: string) {
       </section>
 
       <section class="settings-card">
-        <h2>Add a connection</h2>
+        <h2>{{ t('providers.addConnection') }}</h2>
         <LlmConnectionForm
           :connection="null"
           :pending="create.isPending"
           :error="create.error"
-          submit-label="Add connection"
+          :submit-label="t('providers.addConnection')"
           @submit="onCreate"
         />
         <p v-if="create.isSuccess && !create.isPending" class="settings-ok">
-          Connection added.
+          {{ t('providers.connectionAdded') }}
         </p>
       </section>
     </template>

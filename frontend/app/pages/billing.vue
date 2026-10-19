@@ -23,31 +23,42 @@ import {
 } from '~/composables/useBilling'
 import type { Plan, UsageLine } from '~/types/v2'
 import { errorMessage } from '~/utils/v2-errors'
+import { useLocale } from '~/composables/useLocale'
 
 definePageMeta({ middleware: 'auth' })
-
-useHead({ title: 'Billing · Command Center' })
 
 const { data: plansData, status: plansStatus, error: plansError } = usePlansQuery()
 const { data: subscriptionData, error: subscriptionError } = useSubscriptionQuery()
 const { data: usageData } = useUsageQuery()
 const checkout = useOpenCheckout()
 const portal = useOpenPortal()
+const { t, locale } = useLocale()
+useHead({ title: () => `${t('nav.billing')} · Command Center` })
 
 const plans = computed<Plan[]>(() => plansData.value?.plans ?? [])
 const overview = computed(() => subscriptionData.value ?? null)
 const usageLines = computed<UsageLine[]>(() => usageData.value?.lines ?? [])
 const currentSlug = computed(() => overview.value?.plan.slug ?? null)
+const isLocalDevelopment = computed(() => currentSlug.value === 'local-development')
 
 const plansLoading = computed(() => plansStatus.value === 'pending' && !plansData.value)
 
 function label(value: string): string {
-  return value.replace(/_/g, ' ').toLowerCase()
+  const fallback = value.replace(/_/g, ' ').toLowerCase()
+  return t(`billing.label.${value}`, fallback)
+}
+
+function planName(plan: Plan): string {
+  return t(`billing.plan.${plan.slug}`, plan.name)
+}
+
+function planDescription(plan: Plan): string {
+  return t(`billing.description.${plan.slug}`, plan.description ?? '')
 }
 
 /** A plan's price as a short line, or "Free" for the free tier. */
 function priceLabel(plan: Plan): string {
-  if (plan.is_free || plan.price_amount_cents === null) return 'Free'
+  if (plan.is_free || plan.price_amount_cents === null) return t('billing.free')
   const amount = (plan.price_amount_cents / 100).toFixed(2)
   const currency = plan.currency ? `${plan.currency} ` : ''
   const interval = plan.billing_interval ? ` / ${label(plan.billing_interval)}` : ''
@@ -56,12 +67,13 @@ function priceLabel(plan: Plan): string {
 
 /** One entitlement's ceiling as a word — "unlimited", or the number the plan grants. */
 function limitLabel(limit: number | null, isUnlimited: boolean): string {
-  return isUnlimited || limit === null ? 'unlimited' : String(limit)
+  return isUnlimited || limit === null ? t('billing.unlimited') : String(limit)
 }
 
 /** A usage line's remaining as a clause, tolerating the unlimited (null-limit) case. */
 function remainingLabel(line: UsageLine): string {
-  return line.limit === null ? 'unlimited' : `${line.remaining ?? 0} left`
+  if (line.limit === null) return t('billing.unlimited')
+  return `${line.remaining ?? 0} ${t('billing.left')}`
 }
 
 /** The width of a usage bar as a percent, or 0 while the line is unbounded. */
@@ -88,7 +100,7 @@ function onPortal(): void {
 <template>
   <section class="billing">
     <header class="billing__header">
-      <h1>Billing</h1>
+      <h1>{{ t('nav.billing') }}</h1>
       <UButton
         v-if="overview?.can_manage_billing"
         variant="ghost"
@@ -97,7 +109,7 @@ function onPortal(): void {
         data-test="portal"
         @click="onPortal"
       >
-        Manage billing
+        {{ t('billing.manage') }}
       </UButton>
     </header>
 
@@ -107,20 +119,23 @@ function onPortal(): void {
     <p v-if="portal.error" class="billing__error" role="alert">
       {{ errorMessage(portal.error) }}
     </p>
+    <p v-if="isLocalDevelopment" class="billing__notice" role="status">
+      {{ t('billing.localWorkflow') }}
+    </p>
 
     <div v-if="overview" class="billing__block" data-test="current">
-      <h2>Your plan</h2>
+      <h2>{{ t('billing.currentPlan') }}</h2>
       <div class="current">
         <div>
-          <div class="current__name">{{ overview.plan.name }}</div>
+            <div class="current__name">{{ planName(overview.plan) }}</div>
           <div class="billing__muted">
-            {{ overview.is_paid ? 'Paid' : 'Free' }}
+            {{ overview.is_paid ? t('billing.paid') : t('billing.free') }}
             <template v-if="overview.status"> · {{ label(overview.status) }}</template>
-            <template v-if="overview.cancel_at_period_end"> · cancels at period end</template>
+            <template v-if="overview.cancel_at_period_end"> · {{ t('billing.cancelAtPeriod') }}</template>
           </div>
         </div>
         <div class="current__period billing__muted">
-          Billing period {{ overview.period.label }}
+            {{ t('billing.period') }} {{ overview.period.label }}
         </div>
       </div>
     </div>
@@ -129,8 +144,8 @@ function onPortal(): void {
     </p>
 
     <div class="billing__block" data-test="usage">
-      <h2>Usage</h2>
-      <p v-if="usageLines.length === 0" class="billing__muted">No usage to show yet.</p>
+      <h2>{{ t('billing.usage') }}</h2>
+      <p v-if="usageLines.length === 0" class="billing__muted">{{ t('billing.noUsage') }}</p>
       <ul v-else class="usage">
         <li v-for="line in usageLines" :key="line.key" class="usage__row">
           <span class="usage__key">{{ label(line.key) }}</span>
@@ -146,12 +161,12 @@ function onPortal(): void {
       </ul>
     </div>
 
-    <div class="billing__block" data-test="plans">
-      <h2>Plans</h2>
+    <div v-if="!isLocalDevelopment" class="billing__block" data-test="plans">
+      <h2>{{ t('billing.plans') }}</h2>
       <p v-if="plansError" class="billing__error" role="alert">
         {{ errorMessage(plansError) }}
       </p>
-      <p v-else-if="plansLoading" class="billing__muted">Loading plans…</p>
+      <p v-else-if="plansLoading" class="billing__muted">{{ t('billing.loading') }}</p>
       <div v-else class="plans">
         <article
           v-for="plan in plans"
@@ -161,10 +176,10 @@ function onPortal(): void {
           :data-test="`plan-${plan.slug}`"
         >
           <header class="plan__head">
-            <span class="plan__name">{{ plan.name }}</span>
+          <span class="plan__name">{{ planName(plan) }}</span>
             <span class="plan__price">{{ priceLabel(plan) }}</span>
           </header>
-          <p v-if="plan.description" class="billing__muted">{{ plan.description }}</p>
+          <p v-if="plan.description" class="billing__muted">{{ planDescription(plan) }}</p>
           <ul class="plan__entitlements">
             <li v-for="e in plan.entitlements" :key="e.key">
               <span>{{ label(e.key) }}</span>
@@ -172,7 +187,7 @@ function onPortal(): void {
             </li>
           </ul>
           <div class="plan__action">
-            <span v-if="plan.slug === currentSlug" class="plan__current">Current plan</span>
+            <span v-if="plan.slug === currentSlug" class="plan__current">{{ t('billing.current') }}</span>
             <UButton
               v-else-if="!plan.is_free"
               color="primary"
@@ -181,7 +196,7 @@ function onPortal(): void {
               :data-test="`subscribe-${plan.slug}`"
               @click="onCheckout(plan.slug)"
             >
-              Subscribe
+              {{ t('billing.subscribe') }}
             </UButton>
           </div>
         </article>
@@ -195,8 +210,9 @@ function onPortal(): void {
 .billing__header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .billing__header h1 { font-size: 1.25rem; font-weight: 600; margin: 0; }
 .billing__error { color: var(--ui-error, #dc2626); margin: 0; }
+.billing__notice { color: var(--ui-text, #1f2937); background: color-mix(in srgb, var(--ui-primary, #6366f1) 10%, transparent); border: 1px solid color-mix(in srgb, var(--ui-primary, #6366f1) 30%, transparent); border-radius: var(--radius); padding: 0.75rem 0.9rem; margin: 0; font-size: 0.9rem; }
 .billing__muted { color: var(--ui-text-muted, #6b7280); font-size: 0.85rem; margin: 0; }
-.billing__block { border: 1px solid var(--ui-border, #e5e7eb); border-radius: 0.5rem; padding: 0.85rem 1rem; display: flex; flex-direction: column; gap: 0.6rem; }
+.billing__block { border: 1px solid var(--ui-border, #e5e7eb); border-radius: var(--radius); padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; background: var(--surface); }
 .billing__block h2 { font-size: 0.95rem; font-weight: 600; margin: 0; }
 .current { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .current__name { font-size: 1.05rem; font-weight: 600; }
@@ -216,4 +232,11 @@ function onPortal(): void {
 .plan__entitlements li { display: flex; justify-content: space-between; gap: 0.5rem; text-transform: capitalize; }
 .plan__action { margin-top: auto; }
 .plan__current { font-size: 0.8rem; font-weight: 600; color: var(--ui-primary, #6366f1); }
+@media (max-width: 620px) {
+  .usage__row { align-items: flex-start; flex-wrap: wrap; }
+  .usage__key { min-width: 0; flex: 1 1 100%; }
+  .usage__bar { max-width: none; flex: 1 1 5rem; }
+  .plan { min-width: min(100%, 14rem); }
+  .plan__action :deep(button), .plan__action :deep(a) { width: 100%; min-height: 44px; }
+}
 </style>

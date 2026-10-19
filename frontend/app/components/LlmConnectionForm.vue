@@ -28,6 +28,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import type { ConnectionFormPayload } from '~/composables/useLlmConnections'
 import type { LLMConnection, LLMProviderType } from '~/types/v2'
 import { errorMessage, fieldErrors } from '~/utils/v2-errors'
+import { useLocale } from '~/composables/useLocale'
 
 const props = defineProps<{
   /** The connection being edited, or null for one being created. */
@@ -38,6 +39,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{ submit: [payload: ConnectionFormPayload] }>()
+const { t } = useLocale()
 
 /** The closed set, each with whether it speaks HTTP (an endpoint and a credential). */
 const PROVIDER_TYPES: { value: LLMProviderType, label: string, api: boolean }[] = [
@@ -102,9 +104,12 @@ const canSubmit = computed(() => {
 })
 
 /** `CLAUDE_CODE` as its friendly label, for the static line shown while editing. */
-const providerLabel = computed(() =>
-  PROVIDER_TYPES.find(entry => entry.value === form.provider_type)?.label
-  ?? form.provider_type)
+const providerLabel = computed(() => providerTypeLabel(form.provider_type))
+
+function providerTypeLabel(value: LLMProviderType): string {
+  const entry = PROVIDER_TYPES.find(item => item.value === value)
+  return t(`providers.type.${value}`, entry?.label ?? value)
+}
 
 function headersToText(headers: Record<string, string>): string {
   return Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join('\n')
@@ -166,40 +171,40 @@ function submit() {
 
     <template v-if="isEditing">
       <p class="acct-field">
-        Provider
+        {{ t('providers.provider') }}
         <span class="acct-kept">{{ providerLabel }}</span>
       </p>
     </template>
     <template v-else>
-      <label class="acct-field" for="conn-type">Provider</label>
+      <label class="acct-field" for="conn-type">{{ t('providers.provider') }}</label>
       <select
         id="conn-type"
         v-model="form.provider_type"
         :disabled="pending"
-        aria-label="Provider type"
+        :aria-label="t('providers.providerTypeAria')"
       >
         <option v-for="entry in PROVIDER_TYPES" :key="entry.value" :value="entry.value">
-          {{ entry.label }}
+          {{ providerTypeLabel(entry.value) }}
         </option>
       </select>
     </template>
 
-    <label class="acct-field" for="conn-name">Name</label>
+    <label class="acct-field" for="conn-name">{{ t('providers.name') }}</label>
     <input
       id="conn-name"
       v-model="form.display_name"
       type="text"
       required
-      placeholder="My gateway"
+      :placeholder="t('providers.namePlaceholder')"
       :disabled="pending"
-      aria-label="Display name"
+      :aria-label="t('providers.nameAria')"
     >
     <p v-if="fields.display_name" class="auth-field-error" role="alert">
       {{ fields.display_name }}
     </p>
 
     <template v-if="isApi">
-      <label class="acct-field" for="conn-url">Endpoint</label>
+      <label class="acct-field" for="conn-url">{{ t('providers.endpoint') }}</label>
       <input
         id="conn-url"
         v-model="form.base_url"
@@ -207,10 +212,10 @@ function submit() {
         required
         placeholder="https://gateway.example.com/v1"
         :disabled="pending"
-        aria-label="Base URL"
+        :aria-label="t('providers.endpointAria')"
       >
       <p class="auth-hint">
-        A local server (Ollama, LM Studio) must use a loopback address such as
+        {{ t('providers.localHint') }}
         <code>http://127.0.0.1:11434/v1</code>.
       </p>
       <p v-if="fields.base_url" class="auth-field-error" role="alert">
@@ -218,49 +223,49 @@ function submit() {
       </p>
     </template>
 
-    <label class="acct-field" for="conn-model">Model <span class="auth-optional">(optional)</span></label>
+    <label class="acct-field" for="conn-model">{{ t('providers.model') }} <span class="auth-optional">({{ t('auth.optional') }})</span></label>
     <input
       id="conn-model"
       v-model="form.model"
       type="text"
       placeholder="gpt-4o-mini"
       :disabled="pending"
-      aria-label="Model"
+      :aria-label="t('providers.modelAria')"
     >
 
     <!-- CLI providers manage their own auth: no key field is rendered, so there is
          nothing to submit and nothing to mislead. -->
     <template v-if="isApi">
       <fieldset v-if="isEditing && hasStoredKey" class="acct-fieldset">
-        <legend>API key</legend>
+        <legend>{{ t('providers.apiKey') }}</legend>
         <p class="auth-hint">
-          A key is stored. It is never shown; choose what to do with it.
+          {{ t('providers.storedKey') }}
         </p>
         <label class="acct-check">
           <input v-model="keyMode" type="radio" value="keep" :disabled="pending">
-          Keep the stored key
+          {{ t('providers.keepKey') }}
         </label>
         <label class="acct-check">
           <input v-model="keyMode" type="radio" value="replace" :disabled="pending">
-          Replace it
+          {{ t('providers.replaceKey') }}
         </label>
         <label class="acct-check">
           <input v-model="keyMode" type="radio" value="remove" :disabled="pending">
-          Remove it
+          {{ t('providers.removeKey') }}
         </label>
         <input
           v-if="keyMode === 'replace'"
           v-model="form.api_key"
           type="password"
           autocomplete="off"
-          placeholder="New API key"
+          :placeholder="t('providers.newApiKey')"
           :disabled="pending"
-          aria-label="New API key"
+          :aria-label="t('providers.newApiKeyAria')"
         >
       </fieldset>
       <template v-else>
         <label class="acct-field" for="conn-key">
-          API key <span class="auth-optional">(optional)</span>
+          {{ t('providers.apiKey') }} <span class="auth-optional">({{ t('auth.optional') }})</span>
         </label>
         <input
           id="conn-key"
@@ -269,16 +274,15 @@ function submit() {
           autocomplete="off"
           placeholder="sk-…"
           :disabled="pending"
-          aria-label="API key"
+          :aria-label="t('providers.apiKeyAria')"
         >
         <p class="auth-hint">
-          Stored encrypted and never shown again. Leave blank for a gateway that needs
-          none.
+          {{ t('providers.encryptedHint') }}
         </p>
       </template>
 
       <label class="acct-field" for="conn-headers">
-        Custom headers <span class="auth-optional">(optional)</span>
+        {{ t('providers.headers') }} <span class="auth-optional">({{ t('auth.optional') }})</span>
       </label>
       <textarea
         id="conn-headers"
@@ -286,25 +290,24 @@ function submit() {
         rows="2"
         :disabled="pending"
         placeholder="X-Org: acme"
-        aria-label="Custom headers"
+        :aria-label="t('providers.headersAria')"
       />
       <p class="auth-hint">
-        One <code>Name: value</code> per line — route hints only. Never put an API key
-        in a header; use the field above.
+        {{ t('providers.headersHint') }}
       </p>
     </template>
 
-    <label class="acct-field" for="conn-priority">Priority</label>
+    <label class="acct-field" for="conn-priority">{{ t('providers.priority') }}</label>
     <input
       id="conn-priority"
       v-model.number="form.priority"
       type="number"
       min="0"
       :disabled="pending"
-      aria-label="Priority"
+      :aria-label="t('providers.priorityAria')"
     >
     <p class="auth-hint">
-      Lower runs first when more than one connection could serve a task.
+      {{ t('providers.priorityHint') }}
     </p>
 
     <!-- On create only: enabled and default are their own endpoints once a connection
@@ -312,17 +315,17 @@ function submit() {
     <template v-if="!isEditing">
       <label class="acct-check">
         <input v-model="form.enabled" type="checkbox" :disabled="pending">
-        Enabled
+        {{ t('providers.enabledLabel') }}
       </label>
       <label class="acct-check">
         <input v-model="form.is_default" type="checkbox" :disabled="pending">
-        Make this the default connection
+        {{ t('providers.defaultConnection') }}
       </label>
     </template>
 
     <div class="acct-actions">
       <button class="btn-primary" type="submit" :disabled="!canSubmit">
-        {{ pending ? 'Saving…' : (submitLabel ?? 'Save connection') }}
+        {{ pending ? t('providers.saving') : (submitLabel ?? t('providers.saveConnection')) }}
       </button>
     </div>
   </form>

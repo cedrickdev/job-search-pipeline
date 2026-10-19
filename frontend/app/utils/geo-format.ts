@@ -28,7 +28,15 @@ const STATUS_LABELS: Record<GeoStatus, string> = {
 }
 
 /** The status as a phrase for a badge or a legend row. */
-export function statusLabel(status: GeoStatus): string {
+export function statusLabel(status: GeoStatus, locale: 'en' | 'fr' = 'en'): string {
+  if (locale === 'fr') {
+    return {
+      RESOLVED: 'Localisée',
+      COMPANY_FALLBACK: 'Approximative - siège de l’entreprise',
+      REMOTE: 'À distance',
+      UNRESOLVED: 'Lieu non renseigné',
+    }[status]
+  }
   return STATUS_LABELS[status]
 }
 
@@ -40,6 +48,15 @@ const REMOTE_LABELS: Record<RemoteScope, string> = {
 }
 
 /** The remote scope as a phrase, or `null` when the role names no remote policy. */
-export function remoteLabel(scope: RemoteScope | null): string | null {
-  return scope ? REMOTE_LABELS[scope] : null
+export function remoteLabel(scope: RemoteScope | null, locale: 'en' | 'fr' = 'en'): string | null {
+  if (!scope) return null
+  if (locale === 'fr') {
+    return {
+      REMOTE_ANYWHERE: 'À distance - sans restriction',
+      REMOTE_COUNTRY_RESTRICTED: 'À distance - dans le pays',
+      REMOTE_REGION_RESTRICTED: 'À distance - dans la région',
+      HYBRID: 'Hybride',
+    }[scope]
+  }
+  return REMOTE_LABELS[scope]
 }

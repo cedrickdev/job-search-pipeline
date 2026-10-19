@@ -35,6 +35,7 @@ from backend.app.domain.base import (
     NonEmptyStr,
 )
 from backend.app.domain.candidate import WorkAuthorizationStatus
+from backend.app.domain.common import GeoBounds, GeoPoint
 from backend.app.domain.eligibility import EligibilityRequirement, RuleAuthority
 from backend.app.domain.opportunity import (
     ContractType,
@@ -51,6 +52,20 @@ Locale = Annotated[str, Field(pattern=r"^[a-z]{2}(-[A-Z]{2})?$")]
 # pattern is what stops a pack writing a whole host ("migros.ch") where a suffix
 # belongs, which would make every comparison against it fail silently.
 DomainSuffix = Annotated[str, Field(pattern=r"^(\.[a-z0-9-]+)+$", max_length=24)]
+
+
+class CountryMapViewport(DomainModel):
+    """The neutral country frame a map uses before results provide a tighter one."""
+
+    center: GeoPoint
+    zoom: Annotated[float, Field(ge=0.0, le=24.0)]
+    bounds: GeoBounds
+
+    @model_validator(mode="after")
+    def _center_is_inside_the_frame(self) -> Self:
+        if not self.bounds.contains(self.center):
+            raise ValueError("map_viewport center must be inside map_viewport bounds")
+        return self
 
 
 def normalize_term(value: str) -> str:
@@ -148,11 +163,15 @@ class PackMetadata(DomainModel):
     languages: Annotated[tuple[LanguageCode, ...], Field(min_length=1)]
     timezone: NonEmptyStr
     full_time_weekly_hours: Annotated[float, Field(gt=0.0, le=80.0)]
+    map_viewport: CountryMapViewport
     # The public-suffix endings an employer's own site tends to have in this
     # country. A *tie-break* for company identity, never a filter: a Swiss company
     # on a .com is ordinary (docs/COMPANY_DISCOVERY.md §Identity). Empty means the
     # country expresses no preference, which restricts nothing.
     company_domain_suffixes: tuple[DomainSuffix, ...] = ()
+    # Explicit country names or ISO abbreviations seen at the end of a posting's
+    # location. Country packs own the vocabulary; core normalization only reads it.
+    location_country_aliases: dict[NonEmptyStr, CountryCode] = Field(default_factory=dict)
     documentation_url: HttpUrlStr | None = None
     notes: NonEmptyStr | None = None
 
@@ -174,6 +193,9 @@ class PackMetadata(DomainModel):
         if len(set(self.company_domain_suffixes)) != len(
                 self.company_domain_suffixes):
             raise ValueError("company_domain_suffixes must not repeat")
+        if len({name.casefold() for name in self.location_country_aliases}) != len(
+                self.location_country_aliases):
+            raise ValueError("location_country_aliases must not repeat ignoring case")
         return self
 
     def weekly_hours_for_percent(self, percent: float) -> float:

@@ -52,6 +52,20 @@ describe('applications page', () => {
     expect(labels.some(t => t.includes('Approve'))).toBe(false)
   })
 
+  it('opens only an owned application history from the morning-run link', async () => {
+    stubFetch(routes(applicationList([application({ state: 'SUBMITTED' })]), [
+      { match: `${APPLICATIONS}/${APPLICATION_ID}/events`, method: 'GET', json: { events: [] } },
+      { match: `${APPLICATIONS}/${APPLICATION_ID}/outcomes`, method: 'GET', json: { outcomes: [] } },
+    ]))
+    await useSessionStore().ensure()
+    const wrapper = await mountSuspended(ApplicationsPage, {
+      route: `/applications?application=${APPLICATION_ID}`,
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Execution trail')
+    wrapper.unmount()
+  })
+
   it('offers Approve & submit for a reviewed application', async () => {
     const { wrapper } = await mountWith(
       applicationList([application({ state: 'READY_FOR_REVIEW' })]))
@@ -104,5 +118,6 @@ describe('applications page', () => {
     await flushPromises()
     expect(http.callsTo(`${APPLICATIONS}/${APPLICATION_ID}/prepare`)
       .filter(c => c.method === 'POST')).toHaveLength(1)
+    expect(wrapper.get('[role="status"]').text()).toContain('Preparation is complete')
   })
 })

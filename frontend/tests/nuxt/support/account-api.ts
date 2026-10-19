@@ -77,6 +77,22 @@ export function accountApi(): AccountApi {
 
   api.routes = [
     {
+      match: '/api/v2/country-packs',
+      method: 'GET',
+      json: {
+        packs: [{
+          country: 'CH', display_name: 'Switzerland', default_locale: 'fr-CH',
+          locales: ['fr-CH', 'de-CH', 'it-CH', 'en-CH'], currency: 'CHF',
+          languages: ['fr', 'de', 'it', 'en'], timezone: 'Europe/Zurich',
+          map_viewport: {
+            center: { latitude: 46.8182, longitude: 8.2275 }, zoom: 6.2,
+            bounds: { north: 47.8085, south: 45.8179, east: 10.4921, west: 5.9559 },
+          },
+          opportunity_types: ['FULL_TIME', 'INTERNSHIP'], enabled_source_count: 11,
+        }],
+      },
+    },
+    {
       match: '/api/v2/me/profile',
       method: 'PUT',
       respond: (_url, init) => {

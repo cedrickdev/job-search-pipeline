@@ -39,9 +39,10 @@ import type {
   CandidateDocumentList,
   CandidateEvidence,
   CandidateEvidenceList,
+  CandidateProfile,
   GenerateDocumentRequest,
 } from '~/types/v2'
-import { ApiError, apiDownload, apiGet, apiPost } from '~/utils/api-client'
+import { ApiError, apiDownload, apiGet, apiPost, apiPostForm } from '~/utils/api-client'
 import { V2_ENDPOINTS, documentUrl, opportunityDocument } from '~/utils/endpoints'
 import { invalidate, useApiQuery } from './useApiQuery'
 import { useMutation } from './useMutation'
@@ -96,6 +97,18 @@ export function useEvidenceActions() {
       { onSuccess: refresh },
     ),
   }
+}
+
+export function useReferenceCvImport() {
+  return useMutation<{ purpose: string, file: File }, CandidateProfile>(
+    ({ purpose, file }) => {
+      const form = new FormData()
+      form.append('purpose', purpose)
+      form.append('file', file)
+      return apiPostForm<CandidateProfile>(V2_ENDPOINTS.referenceCv, form)
+    },
+    { onSuccess: () => invalidate('me') },
+  )
 }
 
 /** This account's documents, most recently updated first. */

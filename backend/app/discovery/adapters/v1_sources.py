@@ -28,11 +28,14 @@ puts them there.
 """
 import asyncio
 import os
+import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from threading import Event
 from time import perf_counter
 from typing import Any, Final, Protocol
+from urllib.parse import urlsplit
+from uuid import UUID
 
 import yaml
 
@@ -71,6 +74,28 @@ MAX_REQUESTS_PER_SWEEP: Final = 24
 # A healthcheck asks for the smallest window a V1 source accepts, because the
 # question is "does this endpoint answer?" and not "what is on it".
 PROBE_LOOKBACK_DAYS: Final = 1
+
+
+def _ats_external_id(source_key: str, raw_url: object) -> str | None:
+    """Recover only ID-shaped path segments on verified public ATS hosts."""
+    if not isinstance(raw_url, str):
+        return None
+    try:
+        parsed = urlsplit(raw_url)
+        segments = parsed.path.strip("/").split("/")
+        if parsed.scheme != "https" or parsed.username or parsed.password:
+            return None
+        if source_key == "greenhouse" and parsed.hostname in {
+                "boards.greenhouse.io", "job-boards.greenhouse.io"} \
+                and len(segments) >= 3 and segments[-2] == "jobs" \
+                and re.fullmatch(r"[0-9]{1,20}", segments[-1]):
+            return segments[-1]
+        if source_key == "lever" and parsed.hostname == "jobs.lever.co" \
+                and len(segments) == 2:
+            return str(UUID(segments[-1]))
+    except (ValueError, TypeError):
+        return None
+    return None
 
 
 def utc_now() -> datetime:
@@ -384,7 +409,7 @@ class V1SourceAdapter:
                                  "this source cannot filter them", capability)
 
     def _normalize(self, postings: Sequence[Posting], *, pack: CountryPack,
-                   fetched_at: datetime) -> tuple[tuple[Opportunity, ...], int]:
+                   fetched_at: datetime) -> tuple[tuple[Opportunity, ...], int, int]:
         """Postings → opportunities, deduplicated, with a count of what was dropped.
 
         Deduplication is by derived id, which is per source and per posting: the
@@ -394,29 +419,41 @@ class V1SourceAdapter:
         """
         kept: dict[Any, Opportunity] = {}
         skipped = 0
+        foreign = 0
         for posting in postings:
             try:
                 opportunity = opportunity_from_posting(
                     posting, metadata=self._metadata, pack=pack,
-                    fetched_at=fetched_at)
+                    fetched_at=fetched_at,
+                    external_id=_ats_external_id(
+                        self._metadata.source_key, posting.get("url")))
             except PostingRejected:
                 skipped += 1
                 continue
+            if opportunity.location is not None and opportunity.location.country \
+                    not in (None, pack.metadata.country):
+                foreign += 1
+                continue
             kept.setdefault(opportunity.id, opportunity)
-        return tuple(kept.values()), skipped
+        return tuple(kept.values()), skipped, foreign
 
     def _result(self, request: DiscoveryRequest, pack: CountryPack,
                 postings: Sequence[Posting], errors: Sequence[Exception],
                 warnings: list[DiscoveryWarning], *, observed_at: datetime,
                 latency_ms: int, planned: int) -> DiscoveryResult:
         """Assemble the one object the orchestrator reads."""
-        opportunities, skipped = self._normalize(postings, pack=pack,
-                                                 fetched_at=observed_at)
+        opportunities, skipped, foreign = self._normalize(
+            postings, pack=pack, fetched_at=observed_at)
         if skipped:
             warnings.append(self._warn(
                 DiscoveryWarningCode.POSTING_SKIPPED,
                 f"{skipped} of {len(postings)} postings had no company, title or "
                 "URL and were dropped"))
+        if foreign:
+            warnings.append(self._warn(
+                DiscoveryWarningCode.FOREIGN_LOCATION_EXCLUDED,
+                f"{foreign} postings explicitly located outside the search country "
+                "were excluded"))
         if len(opportunities) > request.limit:
             warnings.append(self._warn(
                 DiscoveryWarningCode.LIMIT_TRUNCATED,
@@ -453,7 +490,7 @@ class V1SourceAdapter:
                 requests_made=planned,
                 postings_seen=len(postings),
                 opportunities_returned=len(opportunities),
-                postings_skipped=skipped if health.is_usable else 0,
+                postings_skipped=(skipped + foreign) if health.is_usable else 0,
                 duration_ms=latency_ms),
         )
 

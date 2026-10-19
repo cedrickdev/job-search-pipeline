@@ -511,6 +511,20 @@ cap informs and triggers review, it does not refuse.
 
 ## Switzerland, the reference pack
 
+Phase 17 validates Switzerland as the first deployable Country Pack. The active
+registry still contains **CH only**. No second country is enabled by this delivery.
+
+The pack now owns its neutral map frame in `metadata.map_viewport`: WGS84 centre,
+MapLibre zoom and validated bounds. The centre must fall inside the bounds, invalid
+coordinates fail pack loading, and zoom must stay in MapLibre's `0..24` range. The
+frontend reads this through authenticated `GET /api/v2/country-packs`; profile,
+saved-search, map and company filters therefore list only countries the deployment
+actually serves instead of accepting arbitrary free text.
+
+The catalogue exposes only public presentation metadata, supported opportunity
+types and the enabled-source count. It does not expose source configuration variable
+names, credentials, permit rules or raw eligibility metadata.
+
 `country_packs/ch/` — code `CH`, display name Switzerland, default locale `fr-CH`,
 locales `fr-CH`/`de-CH`/`it-CH`/`en-CH`, currency `CHF`, timezone
 `Europe/Zurich`, `full_time_weekly_hours: 42.0`.
@@ -577,16 +591,19 @@ Nothing in `orchestrator.py`, `registry.py` or `contracts.py` changes.
    that declares neither still loads, and company identity simply has one fewer
    comparison form and one fewer tie-break. Never list a meaningful word — a country
    name in a company name is part of the company name.
-4. Bind the sources that serve the country — including existing country-neutral
+4. Declare `metadata.map_viewport` with a centre, zoom and bounds verified for the
+   country. Loading must fail if the centre is outside the frame.
+5. Bind the sources that serve the country — including existing country-neutral
    ones such as the three ATS boards.
-5. Register the pack in `build_country_packs`.
-6. Declare the new package and its YAML in `pyproject.toml` —
+6. Register the pack in `build_country_packs`.
+7. Declare the new package and its YAML in `pyproject.toml` —
    `[tool.setuptools.packages] packages` and
    `[tool.setuptools.package-data] "country_packs.xx" = ["*.yaml"]`. Without the
    second line the wheel ships the loader without its content and `load_pack`
    raises `COUNTRY_PACK_FILE_MISSING` from an installed environment while working
    perfectly from a source checkout.
-7. Add tests mirroring `tests/test_v2_country_packs.py`.
+8. Add tests mirroring `tests/test_v2_country_packs.py`, the authenticated catalogue
+   API test and the frontend country-selector tests.
 
 Again: no orchestration change. That is acceptance criterion 8, and
 `tests/test_v2_discovery_boundaries.py` is what keeps it true.
@@ -623,6 +640,7 @@ counted in `DiscoveryMetrics.postings_skipped`; it never becomes a half-built
 
 ```
 tests/test_v2_country_packs.py           loading, validation, terminology, mapping
+tests/test_v2_api_country_packs.py       authenticated CH-only public catalogue
 tests/test_v2_source_capabilities.py     the capability model and SourceMetadata
 tests/test_v2_source_registry.py         selection by key, country, capability, priority
 tests/test_v2_discovery_contracts.py     the request/result/health validators
@@ -632,6 +650,10 @@ tests/test_v2_discovery_orchestration.py sweeps, isolation, warnings, empty sele
 tests/test_v2_discovery_health.py        classification, redaction, the four records
 tests/test_v2_discovery_boundaries.py    the invariant at the top of this document
 tests/test_v2_domain_purity.py           the domain layer imports no framework
+frontend/tests/nuxt/composables/useCountryPacks.spec.ts catalogue read and cache key
+frontend/tests/nuxt/components/ProfileForm.spec.ts     active-country selector
+frontend/tests/nuxt/components/SearchProfileForm.spec.ts active-country selector
+frontend/tests/nuxt/composables/useMapViewport.spec.ts pack-owned map frame
 ```
 
 ```bash

@@ -19,6 +19,10 @@ from backend.app.application_engine.adapters.browser import (
     BrowserApplicationAdapter,
     _to_submission_result,
 )
+from backend.app.application_engine.browser.form_capabilities import (
+    FormCapability,
+    FormCapabilityCatalog,
+)
 from backend.app.application_engine.adapters.email import (
     EmailApplicationAdapter,
     FakeEmailSender,
@@ -45,12 +49,14 @@ from backend.app.domain.application_failure import (
     ApplicationFailureCode,
 )
 from backend.app.domain.decision import ApplicationDecisionKind
+from backend.app.domain.documents import CandidateDocumentType
 from backend.app.domain.eligibility import EligibilityStatus
 from backend.app.domain.execution_gate import (
     ApplicationExecutionGate,
     ExecutionOutcome,
 )
 from backend.app.domain.identifiers import application_id
+from backend.app.domain.identifiers import document_version_id
 from backend.app.domain.policy import AutomationMode, DimensionThreshold
 from backend.app.domain.matching import MatchDimension
 from backend.app.services.application_decisions import ApplicationDecisionService
@@ -58,6 +64,10 @@ from backend.app.services.applications import (
     ApplicationDecisionMissing,
     ApplicationNotActionable,
     ApplicationService,
+)
+from backend.app.services.application_queue import (
+    ApplicationQueueService,
+    BrowserSubmissionNotPermitted,
 )
 from tests.v2_builders import (
     NOW,
@@ -306,7 +316,8 @@ def _state_unknown():
 
 def _wire(*, policy=None, decision=None, match=None, eligibility=None,
           documents=(), dispatcher=None, email_sender=None,
-          register_browser=True, browser_adapter=None):
+          register_browser=True, browser_adapter=None, form_catalog=None,
+          opportunity=None):
     apps = FakeApplicationRepository()
     events = FakeApplicationEventRepository(apps)
     attempts = FakeSubmissionAttemptRepository(apps)
@@ -320,7 +331,7 @@ def _wire(*, policy=None, decision=None, match=None, eligibility=None,
 
     profile = a_candidate_profile()
     profiles.profiles[profile.id] = profile
-    opps.opportunities[OPPORTUNITY] = an_opportunity()
+    opps.opportunities[OPPORTUNITY] = opportunity or an_opportunity()
     if policy is not None:
         policies.policies[policy.id] = policy
     if decision is not None:
@@ -343,10 +354,11 @@ def _wire(*, policy=None, decision=None, match=None, eligibility=None,
     service = ApplicationService(
         applications=apps, events=events, attempts=attempts, decisions=decisions,
         policies=policies, matches=matches, eligibilities=eligs, profiles=profiles,
-        opportunities=opps, documents=docs, registry=registry)
+        opportunities=opps, documents=docs, registry=registry,
+        form_catalog=form_catalog)
     return service, SimpleNamespace(
         apps=apps, events=events, attempts=attempts, decisions=decisions,
-        policies=policies, docs=docs)
+        policies=policies, docs=docs, opps=opps)
 
 
 @pytest.mark.asyncio
@@ -387,6 +399,133 @@ async def test_browser_channel_needs_review_even_under_autopilot():
     app = await service.create(USER, OPPORTUNITY, now=NOW)
     prepared = await service.prepare(USER, app.id, now=NOW)
     assert prepared.state is ApplicationState.READY_FOR_REVIEW
+
+
+@pytest.mark.asyncio
+async def test_prepare_pins_exact_requested_cv_not_newer_latest():
+    cv = a_rendered_document(storage_key="cv-1")
+    first = cv.versions[0]
+    second = first.model_copy(update={
+        "id": document_version_id(cv.id, 2), "version": 2,
+        "artifact": first.artifact.model_copy(update={"storage_key": "cv-2"}),
+    })
+    cv = cv.model_copy(update={"versions": (first, second)})
+    service, _ = _wire(
+        policy=an_autopilot_policy(), decision=a_decision(), match=an_evaluation(),
+        eligibility=_eligible(), documents=(cv,),
+    )
+    app = await service.create(USER, OPPORTUNITY, now=NOW)
+    prepared = await service.prepare(USER, app.id, now=NOW, required_versions={
+        CandidateDocumentType.RESUME: first.id,
+    })
+    assert prepared.pinned_documents[0].version_id == first.id
+
+
+@pytest.mark.asyncio
+async def test_prepare_refuses_a_foreign_document_version():
+    cv = a_rendered_document(storage_key="cv-1")
+    service, _ = _wire(
+        policy=an_autopilot_policy(), decision=a_decision(), documents=(cv,),
+    )
+    app = await service.create(USER, OPPORTUNITY, now=NOW)
+    with pytest.raises(ApplicationError):
+        await service.prepare(USER, app.id, now=NOW, required_versions={
+            CandidateDocumentType.RESUME: document_version_id(cv.id, 99),
+        })
+
+
+@pytest.mark.asyncio
+async def test_exact_reviewed_browser_form_can_auto_approve_without_global_upgrade():
+    target = "https://jobs.lever.co/fixture/role/apply"
+    fingerprint = "a" * 64
+    catalog = FormCapabilityCatalog(forms=(FormCapability(
+        id="lever-fixture", ats="lever", employer="Fixture SA",
+        target_url=target, driver_key="lever/1", form_fingerprint=fingerprint,
+        allowed_required_fields=frozenset(), allowed_upload_slots=frozenset(),
+        conditions_url="https://fixture.example/terms", review_id="fixture-review",
+        reviewed_at=NOW.date(), access_decision="approved",
+    ),))
+    dispatcher = FakeTaskDispatcher(default=BrowserTaskResult(
+        outcome=BrowserTaskOutcome.COMPLETED, driver_key="lever/1",
+        form_fingerprint=fingerprint,
+    ))
+    service, _ = _wire(
+        policy=an_autopilot_policy(), decision=a_decision(),
+        match=an_evaluation(), eligibility=_eligible(),
+        dispatcher=dispatcher, form_catalog=catalog,
+        opportunity=an_opportunity(application_url=target),
+    )
+    app = await service.create(USER, OPPORTUNITY, now=NOW)
+    prepared = await service.prepare(USER, app.id, now=NOW)
+    assert prepared.state is ApplicationState.APPROVED
+    assert prepared.form_driver_key == "lever/1"
+    assert prepared.form_capability_id == "lever-fixture"
+
+
+@pytest.mark.asyncio
+async def test_deactivated_capability_never_queues_auto_approved_application():
+    target = "https://jobs.lever.co/fixture/role/apply"
+    fingerprint = "a" * 64
+    form = FormCapability(
+        id="lever-fixture", ats="lever", employer="Fixture SA",
+        target_url=target, driver_key="lever/1", form_fingerprint=fingerprint,
+        allowed_required_fields=frozenset(), allowed_upload_slots=frozenset(),
+        conditions_url="https://fixture.example/terms", review_id="fixture-review",
+        reviewed_at=NOW.date(), access_decision="approved",
+    )
+    dispatcher = FakeTaskDispatcher(default=BrowserTaskResult(
+        outcome=BrowserTaskOutcome.COMPLETED, driver_key="lever/1",
+        form_fingerprint=fingerprint,
+    ))
+    service, store = _wire(
+        policy=an_autopilot_policy(), decision=a_decision(),
+        match=an_evaluation(), eligibility=_eligible(),
+        dispatcher=dispatcher, form_catalog=FormCapabilityCatalog(forms=(form,)),
+        opportunity=an_opportunity(application_url=target),
+    )
+    app = await service.create(USER, OPPORTUNITY, now=NOW)
+    prepared = await service.prepare(USER, app.id, now=NOW)
+    assert prepared.state is ApplicationState.APPROVED
+
+    class Queue:
+        async def enqueue(self, _task):
+            raise AssertionError("a held form must not be queued")
+
+    held = form.__class__(**{**form.__dict__, "access_decision": "hold"})
+    queue = ApplicationQueueService(
+        store.apps, store.policies, store.opps, Queue(), live_enabled=True,
+        form_catalog=FormCapabilityCatalog(forms=(held,)),
+    )
+    with pytest.raises(BrowserSubmissionNotPermitted):
+        await queue.enqueue_approved(USER, prepared.id)
+
+
+@pytest.mark.asyncio
+async def test_browser_queue_denies_approved_application_without_exact_form_capability():
+    service, store = _wire(
+        policy=an_autopilot_policy(), decision=a_decision(),
+        match=an_evaluation(), eligibility=_eligible(),
+        dispatcher=FakeTaskDispatcher(default=BrowserTaskResult(
+            outcome=BrowserTaskOutcome.COMPLETED, driver_key="lever/1",
+            form_fingerprint="a" * 64,
+        )),
+        opportunity=an_opportunity(
+            application_url="https://jobs.lever.co/fixture/role/apply"),
+    )
+    app = await service.create(USER, OPPORTUNITY, now=NOW)
+    prepared = await service.prepare(USER, app.id, now=NOW)
+    assert prepared.form_capability_id is None
+    await store.apps.upsert(prepared.model_copy(update={"state": ApplicationState.APPROVED}))
+
+    class Queue:
+        async def enqueue(self, _task):
+            raise AssertionError("an unreviewed browser form must not be queued")
+
+    queue = ApplicationQueueService(
+        store.apps, store.policies, store.opps, Queue(), live_enabled=True,
+    )
+    with pytest.raises(BrowserSubmissionNotPermitted):
+        await queue.enqueue_approved(USER, prepared.id)
 
 
 @pytest.mark.asyncio

@@ -20,7 +20,7 @@
   built around a profile that does not exist yet.
 -->
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import {
   useCompleteOnboarding,
   useOnboardingQuery,
@@ -32,18 +32,23 @@ import {
 import { useSessionStore } from '~/stores/session'
 import type { CandidateProfileDraft, SearchProfileDraft } from '~/types/v2'
 import { errorMessage } from '~/utils/v2-errors'
+import { useLocale } from '~/composables/useLocale'
+import { countryOptionsFor, useCountryPacksQuery } from '~/composables/useCountryPacks'
 
 definePageMeta({ middleware: 'auth', layout: false })
 
-useHead({ title: 'Set up your account · Command Center' })
-
 const session = useSessionStore()
+const { t } = useLocale()
+useHead({ title: () => `${t('page.onboarding')} · Command Center` })
 const { data: state, status } = useOnboardingQuery()
 const { data: profile } = useProfileQuery()
 const { data: searches } = useSearchProfilesQuery()
+const { data: countryPacks } = useCountryPacksQuery()
+const countryOptions = computed(() => countryOptionsFor(countryPacks.value))
 const saveProfile = useSaveProfile()
 const { create, update } = useSearchProfileActions()
 const finish = useCompleteOnboarding()
+const termsAccepted = ref(false)
 
 const loading = computed(() => status.value === 'pending' && !state.value)
 const hasProfile = computed(() => state.value?.has_profile === true)
@@ -104,10 +109,9 @@ async function onSignOut() {
 <template>
   <main class="auth-page auth-page--wide">
     <section class="auth-card auth-card--wide">
-      <h1>Set up your account</h1>
+      <h1>{{ t('page.onboarding') }}</h1>
       <p class="auth-hint">
-        Two things, and you are done: who you are, and what you are looking for.
-        Both can be changed afterwards from your profile.
+        {{ t('onboarding.intro') }}
       </p>
 
       <p v-if="loading" class="ov-state">
@@ -117,73 +121,78 @@ async function onSignOut() {
       <template v-else>
         <ol class="onb-steps">
           <li :class="stepClass(1)">
-            Your profile
+            {{ t('onboarding.profileStep') }}
           </li>
           <li :class="stepClass(2)">
-            Your first search
+            {{ t('onboarding.searchStep') }}
           </li>
           <li :class="stepClass(3)">
-            Finish
+            {{ t('onboarding.finishStep') }}
           </li>
         </ol>
 
         <section v-if="step === 1" class="onb-panel">
-          <h2>Who you are</h2>
-          <p class="auth-hint">
-            Only your name is required. The rest is what postings are matched
-            against, so anything you add here narrows what you will be shown.
-          </p>
+          <h2>{{ t('onboarding.who') }}</h2>
+          <p class="auth-hint">{{ t('onboarding.whoHelp') }}</p>
           <ProfileForm
             :profile="profile ?? null"
             :pending="saveProfile.isPending"
             :error="saveProfile.error"
-            submit-label="Save and continue"
+            :submit-label="t('onboarding.saveContinue')"
+            :country-options="countryOptions"
             @submit="onProfile"
           />
+          <ReferenceCvImport />
         </section>
 
         <section v-else-if="step === 2" class="onb-panel">
-          <h2>What you are looking for</h2>
+          <h2>{{ t('onboarding.lookingFor') }}</h2>
           <p v-if="paused" class="auth-hint">
-            You have a saved search, but it is paused — tick “Run this search” to
-            finish setting up.
+            {{ t('onboarding.pausedHelp') }}
           </p>
           <p v-else class="auth-hint">
-            One search is enough to start. You can add others, and pause any of them,
-            from your profile.
+            {{ t('onboarding.searchHelp') }}
           </p>
           <SearchProfileForm
             :search="existing"
             :pending="searchWrite.isPending"
             :error="searchWrite.error"
-            submit-label="Save and continue"
+            :submit-label="t('onboarding.saveContinue')"
+            :country-options="countryOptions"
             @submit="onSearch"
           />
         </section>
 
         <section v-else class="onb-panel">
-          <h2>Ready</h2>
-          <p class="auth-hint">
-            Your profile is saved and one search is active. Finishing takes you to the
-            command center.
-          </p>
+          <h2>{{ t('onboarding.ready') }}</h2>
+          <p class="auth-hint">{{ t('onboarding.readyHelp') }}</p>
           <p v-if="message" class="auth-error" role="alert">
             {{ message }}
+          </p>
+          <label class="terms-consent">
+            <input v-model="termsAccepted" type="checkbox" data-test="terms-consent">
+            <span>
+              {{ t('onboarding.terms') }}
+              <NuxtLink to="/terms" target="_blank">{{ t('onboarding.termsLink') }}</NuxtLink>
+            </span>
+          </label>
+          <p v-if="finish.error && !termsAccepted" class="auth-field-error" role="alert">
+            {{ t('onboarding.termsRequired') }}
           </p>
           <div class="acct-actions">
             <button
               class="btn-primary"
               type="button"
-              :disabled="!mayComplete || finish.isPending"
+              :disabled="!mayComplete || !termsAccepted || finish.isPending"
               @click="onFinish"
             >
-              {{ finish.isPending ? 'Finishing…' : 'Finish setup' }}
+              {{ finish.isPending ? t('onboarding.finishing') : t('onboarding.finish') }}
             </button>
           </div>
         </section>
 
         <p class="auth-alt">
-          Signed in as {{ session.label }} ·
+          {{ t('onboarding.signedInAs') }} {{ session.label }} ·
           <button class="btn-link" type="button" @click="onSignOut">
             Sign out
           </button>

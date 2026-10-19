@@ -14,6 +14,8 @@ from backend.app.api.dependencies import ENGINE_ATTRIBUTE, RATE_LIMITER_ATTRIBUT
 from backend.app.api.errors import install_v2_error_handlers
 from backend.app.api.router import create_v2_router
 from backend.app.core.production import validate_production_readiness
+from backend.app.discovery.ats_board_catalog import ATS_REVIEWED_BOARDS_PATH, load_reviewed_boards
+from backend.app.services.discovery_source_access import SourceAccessPolicy
 from backend.app.observability import install_observability
 from pipeline import paths
 from pipeline.db import connect, init_db
@@ -33,6 +35,10 @@ async def _lifespan(app: FastAPI):
     close. The Redis-backed rate limiter, when one was built, is closed the same
     way and for the same reason; a test's in-memory limiter has no ``aclose`` and
     is left alone."""
+    # Refuse malformed ATS operator policy before serving any HTTP request.
+    app.state.reviewed_ats_catalog = load_reviewed_boards(ATS_REVIEWED_BOARDS_PATH)
+    app.state.discovery_source_policy = SourceAccessPolicy.from_env(
+        app.state.reviewed_ats_catalog)
     from server.scheduler import scheduler_loop
     task = asyncio.create_task(scheduler_loop(app))
     app.state.scheduler_task = task

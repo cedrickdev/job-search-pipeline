@@ -15,12 +15,13 @@
   `data-theme="dark"` attribute avoided.
 -->
 <script setup lang="ts">
+const { locale } = useLocale()
 const FAVICON
   = 'data:image/svg+xml,%3Csvg%20xmlns=\'http://www.w3.org/2000/svg\'%20viewBox=\'0%200%20100%20100\'%3E%3Ctext%20y=\'.9em\'%20font-size=\'90\'%3E%E2%8C%98%3C/text%3E%3C/svg%3E'
 
 useHead({
   title: 'Job Search Command Center',
-  htmlAttrs: { lang: 'en' },
+  htmlAttrs: { lang: locale },
   link: [{ rel: 'icon', href: FAVICON }],
 })
 </script>

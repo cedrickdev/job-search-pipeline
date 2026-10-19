@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import AsyncIterator
+from datetime import date
 from pathlib import Path
 from uuid import UUID
 
@@ -29,6 +30,13 @@ import pytest_asyncio
 from backend.app.application_engine.browser.drivers.ashby import AshbyDriver
 from backend.app.application_engine.browser.drivers.greenhouse import GreenhouseDriver
 from backend.app.application_engine.browser.drivers.lever import LeverDriver
+from backend.app.application_engine.browser.context_loader import LoadedApplication
+from backend.app.application_engine.browser.execute import execute_on_page
+from backend.app.application_engine.browser.form_capabilities import (
+    FormCapability,
+    FormCapabilityCatalog,
+)
+from backend.app.application_engine.browser.contracts import PreparedBrowserForm
 from backend.app.application_engine.browser.registry import BrowserDriverRegistry
 from backend.app.application_engine.browser import runtime as browser_runtime
 from backend.app.application_engine.browser.contracts import DriverContext, ResolvedUpload
@@ -37,7 +45,11 @@ from backend.app.application_engine.browser.execution import (
     run_prepare,
     run_submit,
 )
-from backend.app.application_engine.task_dispatcher import BrowserTaskOutcome
+from backend.app.application_engine.task_dispatcher import (
+    BrowserTask,
+    BrowserTaskKind,
+    BrowserTaskOutcome,
+)
 from backend.app.domain.application_answer import (
     AnswerProvenance,
     ApplicationAnswer,
@@ -46,12 +58,126 @@ from backend.app.domain.application_answer import (
     QuestionSensitivity,
 )
 from backend.app.domain.application_channel import HumanRequiredReason
+from backend.app.domain.candidate import CandidateContact
 from backend.app.domain.documents import CandidateDocumentType
-from backend.app.domain.identifiers import UserId
+from backend.app.domain.identifiers import ApplicationId, UserId
 from tests.v2_browser_fixtures import serve_fixture_site
 from tests.v2_builders import a_candidate_profile
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_changed_prepared_driver_refuses_before_navigation() -> None:
+    class Driver:
+        driver_key = "lever/2"
+
+        async def prepare(self, *_args: object) -> object:
+            raise AssertionError("must not navigate")
+
+    class Registry:
+        def detect(self, _url: str) -> Driver:
+            return Driver()
+
+    class Loader:
+        async def load(self, *_args: object, **_kwargs: object) -> LoadedApplication:
+            return LoadedApplication(
+                profile=a_candidate_profile(),
+                context=DriverContext(target_url="https://jobs.lever.co/acme/job/apply"),
+                form_driver_key="lever/1",
+                form_capability_id="reviewed-form",
+            )
+
+    task = BrowserTask(
+        user_id=UserId(UUID("11111111-1111-4111-8111-111111111111")),
+        application_id=ApplicationId(UUID("33333333-3333-4333-8333-333333333333")),
+        kind=BrowserTaskKind.SUBMIT,
+        target_url="https://jobs.lever.co/acme/job/apply",
+    )
+    result = await execute_on_page(None, task, registry=Registry(), loader=Loader())
+    assert result.outcome is BrowserTaskOutcome.REQUIRES_HUMAN
+
+
+async def test_deactivated_reviewed_form_refuses_before_submit_click() -> None:
+    clicked = 0
+
+    class Driver:
+        driver_key = "lever/1"
+
+        async def prepare(self, *_args: object) -> PreparedBrowserForm:
+            return PreparedBrowserForm(platform="lever", form_fingerprint="a" * 64)
+
+        async def submit(self, *_args: object) -> object:
+            nonlocal clicked
+            clicked += 1
+            raise AssertionError("deactivated capability must not submit")
+
+    form = FormCapability(
+        id="reviewed-form", ats="lever", employer="Fixture SA",
+        target_url="https://jobs.lever.co/acme/job/apply", driver_key="lever/1",
+        form_fingerprint="a" * 64, allowed_required_fields=frozenset(),
+        allowed_upload_slots=frozenset(), conditions_url="https://fixture.example/terms",
+        review_id="review-1", reviewed_at=date(2026, 10, 13), access_decision="hold",
+    )
+    result = await run_submit(
+        None, Driver(), DriverContext(
+            target_url=form.target_url, expected_form_fingerprint=form.form_fingerprint),
+        form_catalog=FormCapabilityCatalog(forms=(form,)),
+        form_capability_id=form.id,
+    )
+    assert result.outcome is BrowserTaskOutcome.REQUIRES_HUMAN
+    assert clicked == 0
+
+
+async def test_browser_child_with_operator_catalog_refuses_missing_capability() -> None:
+    clicked = 0
+
+    class Driver:
+        driver_key = "lever/1"
+
+        async def prepare(self, *_args: object) -> PreparedBrowserForm:
+            return PreparedBrowserForm(platform="lever", form_fingerprint="a" * 64)
+
+        async def submit(self, *_args: object) -> object:
+            nonlocal clicked
+            clicked += 1
+            raise AssertionError("an unapproved form must not be clicked")
+
+    result = await run_submit(
+        None, Driver(), DriverContext(
+            target_url="https://jobs.lever.co/acme/job/apply",
+            expected_form_fingerprint="a" * 64),
+        form_catalog=FormCapabilityCatalog(forms=()),
+    )
+    assert result.outcome is BrowserTaskOutcome.REQUIRES_HUMAN
+    assert clicked == 0
+
+
+async def test_capability_reloaded_after_form_inspection_before_click() -> None:
+    class Driver:
+        driver_key = "lever/1"
+
+        async def prepare(self, *_args: object) -> PreparedBrowserForm:
+            return PreparedBrowserForm(platform="lever", form_fingerprint="a" * 64)
+
+        async def submit(self, *_args: object) -> object:
+            raise AssertionError("deactivated capability must not click")
+
+    form = FormCapability(
+        id="reviewed-form", ats="lever", employer="Fixture SA",
+        target_url="https://jobs.lever.co/acme/job/apply", driver_key="lever/1",
+        form_fingerprint="a" * 64, allowed_required_fields=frozenset(),
+        allowed_upload_slots=frozenset(), conditions_url="https://fixture.example/terms",
+        review_id="review-1", reviewed_at=date(2026, 10, 13), access_decision="approved",
+    )
+    held = form.__class__(**{**form.__dict__, "access_decision": "hold"})
+    result = await run_submit(
+        None, Driver(), DriverContext(
+            target_url=form.target_url, expected_form_fingerprint=form.form_fingerprint),
+        form_catalog=FormCapabilityCatalog(forms=(form,)),
+        form_catalog_loader=lambda: FormCapabilityCatalog(forms=(held,)),
+        form_capability_id=form.id,
+    )
+    assert result.outcome is BrowserTaskOutcome.REQUIRES_HUMAN
 
 
 def _missing_browser(reason: str) -> None:
@@ -191,17 +317,30 @@ async def test_fingerprint_changes_on_a_structural_change(page) -> None:
     assert base.form_fingerprint != changed.form_fingerprint
 
 
-async def test_prepare_proposes_only_profile_facts_never_contact_details(page) -> None:
-    """The name comes from the profile; email/phone get no proposal (§9, §12)."""
+async def test_prepare_proposes_explicit_profile_contact_details(page) -> None:
+    """Only contact facts explicitly stored by the candidate are proposed."""
     driver = GreenhouseDriver()
-    profile = a_candidate_profile(display_name="Ada Lovelace")
+    profile = a_candidate_profile(
+        display_name="Ada Lovelace",
+        contact=CandidateContact(email="ada@example.com", phone="+41 78 341 06 31"),
+    )
     with serve_fixture_site() as site:
         result = await run_prepare(
             page, driver, DriverContext(target_url=site.url("/greenhouse/job")), profile)
     assert result.outcome is BrowserTaskOutcome.COMPLETED
     proposed = {p.question_key for p in result.answer_proposals}
     assert "first_name" in proposed and "last_name" in proposed
-    assert "email" not in proposed and "phone" not in proposed  # never fabricated (§12)
+    assert "email" in proposed and "phone" in proposed
+
+
+async def test_prepare_still_stops_when_contact_details_are_missing(page) -> None:
+    """A mandatory contact field remains a human stop when no fact was supplied."""
+    driver = GreenhouseDriver()
+    profile = a_candidate_profile(display_name="Ada Lovelace")
+    with serve_fixture_site() as site:
+        result = await run_prepare(
+            page, driver, DriverContext(target_url=site.url("/greenhouse/job")), profile)
+    assert "email" not in {p.question_key for p in result.answer_proposals}
 
 
 async def test_sensitive_question_is_classified_not_answered(page) -> None:

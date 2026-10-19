@@ -1589,6 +1589,8 @@ async def test_artifact_storage_keys_lists_a_users_rendered_keys_and_no_others(
     this projection is what tells it which keys to remove, scoped to the account being erased.
     """
     documents = SqlAlchemyCandidateDocumentRepository(db_session)
-    await documents.upsert(a_rendered_document(storage_key="documents/u/v1.pdf"))
+    rendered = await documents.upsert(a_rendered_document(storage_key="documents/u/v1.pdf"))
     assert await documents.artifact_storage_keys_for_user(USER) == ("documents/u/v1.pdf",)
     assert await documents.artifact_storage_keys_for_user(OTHER_USER) == ()
+    assert (await documents.get_for_version(USER, rendered.versions[0].id)).id == rendered.id
+    assert await documents.get_for_version(OTHER_USER, rendered.versions[0].id) is None

@@ -12,6 +12,8 @@ RETRIES = 2
 RETRY_WAIT = 3.0
 NO_RETRY_CODES = {401, 403, 404, 410}
 SOURCE_STOP: ContextVar[Event | None] = ContextVar("source_stop", default=None)
+SOURCE_RETRIES_OVERRIDE: ContextVar[int | None] = ContextVar(
+    "source_retries_override", default=None)
 
 
 class FetchError(Exception):
@@ -26,7 +28,9 @@ def fetch(url: str, *, method: str = "GET", params: dict | None = None,
     if headers:
         merged.update(headers)
     last_error = "unknown"
-    for attempt in range(RETRIES + 1):
+    retries = SOURCE_RETRIES_OVERRIDE.get()
+    retries = RETRIES if retries is None else max(0, min(retries, RETRIES))
+    for attempt in range(retries + 1):
         stop = SOURCE_STOP.get()
         if stop is not None and stop.is_set():
             raise FetchError(f"{url}: source cancelled")
@@ -40,7 +44,7 @@ def fetch(url: str, *, method: str = "GET", params: dict | None = None,
                 break
         except requests.RequestException as exc:
             last_error = str(exc)
-        if attempt < RETRIES:
+        if attempt < retries:
             if stop is None:
                 time.sleep(RETRY_WAIT)
             else:

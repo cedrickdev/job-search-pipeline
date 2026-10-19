@@ -9,6 +9,7 @@
 # neither: configuration arrives as environment variables from the composition.
 .env
 .env.*
+terminal.env
 
 # Job-board logins, browser sessions, the SQLite tracker, answers.yaml (name,
 # address, date of birth). The importer reads the tracker through a read-only

@@ -34,7 +34,9 @@ import re
 from collections.abc import Mapping
 from datetime import timedelta
 from os import environ
+from pathlib import Path
 from typing import Final, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -54,20 +56,96 @@ from backend.app.tasks.settings import LOCAL_DEV_REDIS_URL
 
 
 class BrowserSubmissionSettings(BaseModel):
-    """Explicit deployment permission for real browser submissions, off by default."""
+    """Explicit switches for reversible browser preparation and live submission."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     live_enabled: bool = False
+    local_preparation_enabled: bool = False
+    form_catalog_path: Path = (
+        Path(__file__).resolve().parents[3] / "config/ats_approved_forms.yaml"
+    )
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
         source = environ if env is None else env
         raw = source.get("JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED", "").strip()
+        preparation = source.get("JOBSEARCH_BROWSER_LOCAL_PREPARATION_ENABLED", "").strip()
         if raw not in ("", "false", "true"):
             raise ValueError(
                 "JOBSEARCH_BROWSER_LIVE_SUBMISSIONS_ENABLED must be true or false")
-        return cls(live_enabled=raw == "true")
+        if preparation not in ("", "false", "true"):
+            raise ValueError(
+                "JOBSEARCH_BROWSER_LOCAL_PREPARATION_ENABLED must be true or false")
+        return cls(
+            live_enabled=raw == "true",
+            local_preparation_enabled=preparation == "true",
+            form_catalog_path=Path(source.get("JOBSEARCH_ATS_APPROVED_FORMS_PATH")
+                                   or cls.model_fields["form_catalog_path"].default),
+        )
+
+
+class ClaudeTerminalSettings(BaseModel):
+    """The API-to-manager boundary; deliberately excludes Anthropic credentials."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = False
+    manager_url: str | None = None
+    manager_token: str | None = Field(default=None, repr=False)
+    session_ttl_minutes: int = Field(default=60, ge=5, le=1440)
+    max_sessions_per_user: int = Field(default=1, ge=1, le=5)
+    allowed_origins: tuple[str, ...] = ()
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def _validate_allowed_origins(cls, origins: tuple[str, ...]) -> tuple[str, ...]:
+        validated: list[str] = []
+        for origin in origins:
+            parsed = urlsplit(origin)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("allowed_origins must contain browser origins only")
+            normalized = f"{parsed.scheme}://{parsed.netloc}"
+            if normalized not in validated:
+                validated.append(normalized)
+        return tuple(validated)
+
+    @model_validator(mode="after")
+    def _enabled_requires_private_manager(self) -> Self:
+        if self.enabled and (not self.manager_url or not self.manager_token
+                             or not self.allowed_origins):
+            raise ValueError(
+                "enabled terminal requires manager_url, manager_token and allowed_origins")
+        return self
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
+        source = environ if env is None else env
+        url = source.get("JOBSEARCH_TERMINAL_MANAGER_URL", "").strip()
+        token = source.get("JOBSEARCH_TERMINAL_MANAGER_TOKEN", "").strip()
+        allowed_origins = tuple(
+            origin.strip()
+            for origin in source.get("JOBSEARCH_TERMINAL_ALLOWED_ORIGINS", "").split(",")
+            if origin.strip()
+        )
+        return cls(
+            enabled=_read_bool(source, "JOBSEARCH_TERMINAL_ENABLED", False),
+            manager_url=url or None,
+            manager_token=token or None,
+            session_ttl_minutes=_read_int(
+                source, "JOBSEARCH_TERMINAL_SESSION_TTL_MINUTES", 60),
+            max_sessions_per_user=_read_int(
+                source, "JOBSEARCH_TERMINAL_MAX_SESSIONS_PER_USER", 1),
+            allowed_origins=allowed_origins,
+        )
 
 # Matches docker-compose.yml. Not a secret: the port is bound to 127.0.0.1 and
 # the credentials exist only in that file, which is why it is safe to write here

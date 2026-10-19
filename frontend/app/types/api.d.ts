@@ -1029,7 +1029,9 @@ export interface paths {
          *     201, because it creates a proposal. The typed `change` is validated at the boundary, so a kind
          *     the platform does not offer is a 422. The live target is read once to capture its version as
          *     the approval precondition; a target that does not exist for this account is a 409
-         *     (`strategy_target_not_found`). The proposal is born open and touches nothing on the target.
+         *     (`strategy_target_not_found`). A linked recommendation is also owner-scoped; a foreign or
+         *     missing id is a 404 (`recommendation_not_found`). The proposal is born open and touches
+         *     nothing on the target.
          */
         post: operations["propose_strategy_change_api_v2_career_strategy_proposals_post"];
         delete?: never;
@@ -1377,6 +1379,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/country-packs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Country Packs
+         * @description Public pack metadata for authenticated UI clients; never source credentials.
+         */
+        get: operations["list_country_packs_api_v2_country_packs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/documents": {
         parameters: {
             query?: never;
@@ -1389,6 +1411,26 @@ export interface paths {
          * @description This account's documents, most recently updated first.
          */
         get: operations["list_documents_api_v2_documents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/documents/versions/{version_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Document Version
+         * @description Download one exact rendered version; owner and guard checks stay in the service.
+         */
+        get: operations["download_document_version_api_v2_documents_versions__version_id__download_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2021,6 +2063,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/me/morning-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Trigger Run */
+        post: operations["trigger_run_api_v2_me_morning_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/morning-runs/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Latest Runs */
+        get: operations["latest_runs_api_v2_me_morning_runs_latest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/morning-schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Schedule */
+        get: operations["read_schedule_api_v2_me_morning_schedule_get"];
+        /** Save Schedule */
+        put: operations["save_schedule_api_v2_me_morning_schedule_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/me/opportunities/{opportunity_id}/local-autopilot": {
         parameters: {
             query?: never;
@@ -2067,6 +2161,26 @@ export interface paths {
          */
         put: operations["save_profile_api_v2_me_profile_put"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/me/reference-cv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Reference Cv
+         * @description Import one private reference CV and turn readable lines into evidence.
+         */
+        post: operations["import_reference_cv_api_v2_me_reference_cv_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2406,6 +2520,41 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/settings/claude-terminal/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Session */
+        post: operations["create_session_api_v2_settings_claude_terminal_sessions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/settings/claude-terminal/sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Session */
+        get: operations["read_session_api_v2_settings_claude_terminal_sessions__session_id__get"];
+        put?: never;
+        post?: never;
+        /** Stop Session */
+        delete: operations["stop_session_api_v2_settings_claude_terminal_sessions__session_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3170,6 +3319,12 @@ export interface components {
          * @enum {string}
          */
         BillingInterval: "MONTHLY" | "YEARLY";
+        /** Body_import_reference_cv_api_v2_me_reference_cv_post */
+        Body_import_reference_cv_api_v2_me_reference_cv_post: {
+            /** File */
+            file: string;
+            purpose: components["schemas"]["ReferenceCvPurpose"];
+        };
         /** Body_post_transcribe_api_transcribe_post */
         Body_post_transcribe_api_transcribe_post: {
             /** File */
@@ -3217,6 +3372,32 @@ export interface components {
             id: string;
             /** Label */
             label: string;
+        };
+        /**
+         * CandidateContact
+         * @description Contact facts the candidate explicitly supplied for application forms.
+         */
+        "CandidateContact-Input": {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Phone */
+            phone?: string | null;
+        };
+        /**
+         * CandidateContact
+         * @description Contact facts the candidate explicitly supplied for application forms.
+         */
+        "CandidateContact-Output": {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Phone */
+            phone?: string | null;
         };
         /**
          * CandidateDocumentListResponse
@@ -3338,9 +3519,10 @@ export interface components {
          *     pattern, the availability window ordering, the permit hour cap. Nothing is
          *     re-specified here that `CandidateProfile` already specifies.
          */
-        CandidateProfileDraft: {
+        "CandidateProfileDraft-Input": {
             availability?: components["schemas"]["Availability"] | null;
             base_location?: components["schemas"]["Location"] | null;
+            contact?: components["schemas"]["CandidateContact-Input"] | null;
             /** Display Name */
             display_name: string;
             /** Headline */
@@ -3350,6 +3532,40 @@ export interface components {
              * @default []
              */
             languages: components["schemas"]["LanguageProficiency"][];
+            /** Reference Cv Filename */
+            reference_cv_filename?: string | null;
+            reference_cv_purpose?: components["schemas"]["ReferenceCvPurpose"] | null;
+            /**
+             * Work Authorizations
+             * @default []
+             */
+            work_authorizations: components["schemas"]["WorkAuthorization"][];
+        };
+        /**
+         * CandidateProfileDraft
+         * @description A candidate profile as submitted: no id, no owner, no timestamps.
+         *
+         *     Every field is the domain's own value object, so the validation a request body
+         *     gets is exactly the validation the aggregate enforces — the language code
+         *     pattern, the availability window ordering, the permit hour cap. Nothing is
+         *     re-specified here that `CandidateProfile` already specifies.
+         */
+        "CandidateProfileDraft-Output": {
+            availability?: components["schemas"]["Availability"] | null;
+            base_location?: components["schemas"]["Location"] | null;
+            contact?: components["schemas"]["CandidateContact-Output"] | null;
+            /** Display Name */
+            display_name: string;
+            /** Headline */
+            headline?: string | null;
+            /**
+             * Languages
+             * @default []
+             */
+            languages: components["schemas"]["LanguageProficiency"][];
+            /** Reference Cv Filename */
+            reference_cv_filename?: string | null;
+            reference_cv_purpose?: components["schemas"]["ReferenceCvPurpose"] | null;
             /**
              * Work Authorizations
              * @default []
@@ -3370,7 +3586,7 @@ export interface components {
              * Format: uuid
              */
             id: string;
-            profile: components["schemas"]["CandidateProfileDraft"];
+            profile: components["schemas"]["CandidateProfileDraft-Output"];
             /**
              * Updated At
              * Format: date-time
@@ -3737,6 +3953,35 @@ export interface components {
          * @enum {string}
          */
         ClaimType: "SKILL" | "EXPERIENCE" | "EDUCATION" | "CERTIFICATION" | "LANGUAGE" | "AVAILABILITY" | "WORK_AUTHORIZATION" | "ACHIEVEMENT";
+        /**
+         * ClaudeTerminalSessionResponse
+         * @description Secret-free owner view of an integrated Claude terminal session.
+         */
+        ClaudeTerminalSessionResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Ended At */
+            ended_at: string | null;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Safe Error Code */
+            safe_error_code: string | null;
+            /** State */
+            state: string;
+            /** Stream Url */
+            stream_url: string;
+        };
         /**
          * CompanyAliasResponse
          * @description A name an employer is also known by, and who called it that.
@@ -4142,6 +4387,58 @@ export interface components {
              * Format: date-time
              */
             occurred_at: string;
+        };
+        /** CountryMapBoundsResponse */
+        CountryMapBoundsResponse: {
+            /** East */
+            east: number;
+            /** North */
+            north: number;
+            /** South */
+            south: number;
+            /** West */
+            west: number;
+        };
+        /** CountryMapCenterResponse */
+        CountryMapCenterResponse: {
+            /** Latitude */
+            latitude: number;
+            /** Longitude */
+            longitude: number;
+        };
+        /** CountryMapViewportResponse */
+        CountryMapViewportResponse: {
+            bounds: components["schemas"]["CountryMapBoundsResponse"];
+            center: components["schemas"]["CountryMapCenterResponse"];
+            /** Zoom */
+            zoom: number;
+        };
+        /** CountryPackListResponse */
+        CountryPackListResponse: {
+            /** Packs */
+            packs: components["schemas"]["CountryPackResponse"][];
+        };
+        /** CountryPackResponse */
+        CountryPackResponse: {
+            /** Country */
+            country: string;
+            /** Currency */
+            currency: string;
+            /** Default Locale */
+            default_locale: string;
+            /** Display Name */
+            display_name: string;
+            /** Enabled Source Count */
+            enabled_source_count: number;
+            /** Languages */
+            languages: string[];
+            /** Locales */
+            locales: string[];
+            map_viewport: components["schemas"]["CountryMapViewportResponse"];
+            /** Opportunity Types */
+            opportunity_types: string[];
+            /** Timezone */
+            timezone: string;
         };
         /**
          * CountrySearchArea
@@ -5672,6 +5969,135 @@ export interface components {
             /** Total Count */
             total_count: number;
         };
+        /** MorningPreparationResponse */
+        MorningPreparationResponse: {
+            /** Application Blocker Code */
+            application_blocker_code?: string | null;
+            /** Application Id */
+            application_id?: string | null;
+            application_state?: components["schemas"]["ApplicationState"] | null;
+            /** Cover Letter Version Id */
+            cover_letter_version_id?: string | null;
+            /** Form Capability Id */
+            form_capability_id?: string | null;
+            /**
+             * Opportunity Id
+             * Format: uuid
+             */
+            opportunity_id: string;
+            /** Reason Code */
+            reason_code?: string | null;
+            /** Resume Version Id */
+            resume_version_id?: string | null;
+            stage: components["schemas"]["PreparationStage"];
+            submission_task_status?: components["schemas"]["TaskStatus"] | null;
+            /** Task Failure Code */
+            task_failure_code?: string | null;
+            /** Task Status */
+            task_status?: ("QUEUED" | "RUNNING" | "SUCCEEDED" | "DEAD_LETTERED") | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** MorningRunBatchResponse */
+        MorningRunBatchResponse: {
+            /** Runs */
+            runs: components["schemas"]["MorningRunQueuedItemResponse"][];
+        };
+        /** MorningRunLatestResponse */
+        MorningRunLatestResponse: {
+            /** Runs */
+            runs: components["schemas"]["MorningRunStatusResponse"][];
+        };
+        /** MorningRunQueuedItemResponse */
+        MorningRunQueuedItemResponse: {
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Search Profile Id
+             * Format: uuid
+             */
+            search_profile_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "DEAD_LETTERED";
+        };
+        /** MorningRunStatusResponse */
+        MorningRunStatusResponse: {
+            /** Finished At */
+            finished_at?: string | null;
+            /** Matched Count */
+            matched_count: number;
+            /**
+             * Preparations
+             * @default []
+             */
+            preparations: components["schemas"]["MorningPreparationResponse"][];
+            /**
+             * Preparations Truncated
+             * @default false
+             */
+            preparations_truncated: boolean;
+            /** Run Id */
+            run_id: string | null;
+            /**
+             * Search Profile Id
+             * Format: uuid
+             */
+            search_profile_id: string;
+            /** Seen Count */
+            seen_count: number;
+            /**
+             * Source Health
+             * @default []
+             */
+            source_health: components["schemas"]["DiscoverySourceHealthResponse"][];
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "NOT_STARTED" | "QUEUED" | "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED";
+            /**
+             * Warning Codes
+             * @default []
+             */
+            warning_codes: string[];
+        };
+        /** MorningScheduleRequest */
+        MorningScheduleRequest: {
+            /**
+             * Cadence
+             * @enum {string}
+             */
+            cadence: "daily" | "weekdays";
+            /** Enabled */
+            enabled: boolean;
+            /** Local Time */
+            local_time: string;
+        };
+        /** MorningScheduleResponse */
+        MorningScheduleResponse: {
+            /**
+             * Cadence
+             * @enum {string}
+             */
+            cadence: "daily" | "weekdays";
+            /** Enabled */
+            enabled: boolean;
+            /** Local Time */
+            local_time: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
         /**
          * NavigateAction
          * @description Point the client at a screen — a hint that mutates nothing on the server.
@@ -6016,6 +6442,11 @@ export interface components {
             redirect_url: string;
         };
         /**
+         * PreparationStage
+         * @enum {string}
+         */
+        PreparationStage: "DISCOVERED" | "MATCHED" | "CV_RENDERED" | "DOCUMENTS_RENDERED" | "SKIPPED" | "REQUIRES_HUMAN" | "FAILED";
+        /**
          * PrepareApplicationAction
          * @description Prepare an application and route it by the gate — reversible, never submits.
          */
@@ -6262,6 +6693,11 @@ export interface components {
             /** @default MANUAL_USER */
             source: components["schemas"]["OutcomeSource"];
         };
+        /**
+         * ReferenceCvPurpose
+         * @enum {string}
+         */
+        ReferenceCvPurpose: "JOB" | "INTERNSHIP" | "APPRENTICESHIP" | "WORK_STUDY" | "TRAINING" | "GENERAL";
         /** RegenBody */
         RegenBody: {
             /**
@@ -6367,6 +6803,11 @@ export interface components {
             full_name: string;
             /** Headline */
             headline?: string | null;
+            /**
+             * Highlights
+             * @default []
+             */
+            highlights: components["schemas"]["EvidenceBackedText"][];
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -6973,7 +7414,7 @@ export interface components {
          *     otherwise be lumped into the first and lose the distinction that matters.
          * @enum {string}
          */
-        SourceFailureCode: "SOURCE_UNAVAILABLE" | "SOURCE_RATE_LIMITED" | "SOURCE_FORBIDDEN" | "SOURCE_NOT_FOUND" | "SOURCE_TIMEOUT" | "SOURCE_MISCONFIGURED" | "SOURCE_PARSE_FAILED" | "SOURCE_PARTIAL_FAILURE" | "SOURCE_ADAPTER_ERROR";
+        SourceFailureCode: "SOURCE_UNAVAILABLE" | "SOURCE_RATE_LIMITED" | "SOURCE_FORBIDDEN" | "SOURCE_NOT_FOUND" | "SOURCE_TIMEOUT" | "SOURCE_MISCONFIGURED" | "SOURCE_PARSE_FAILED" | "SOURCE_PARTIAL_FAILURE" | "SOURCE_BUDGET_EXHAUSTED" | "SOURCE_BUDGET_UNAVAILABLE" | "SOURCE_ADAPTER_ERROR";
         /**
          * SourceHealthStatus
          * @description The four normalized answers to "is this source working?" (§12).
@@ -7304,6 +7745,21 @@ export interface components {
          * @enum {string}
          */
         SubscriptionStatus: "TRIALING" | "ACTIVE" | "PAST_DUE" | "CANCEL_AT_PERIOD_END" | "CANCELED";
+        /**
+         * TaskStatus
+         * @description The lifecycle of one task run — the closed set the state machine allows (§40).
+         *
+         *     - `QUEUED` — waiting to be leased; holds no lease and has not finished. It may already carry a
+         *       `started_at` and the failure of a prior attempt (a transient retry) or be pristine (a fresh
+         *       enqueue).
+         *     - `RUNNING` — leased by a worker: `lease_owner`/`lease_expires_at` and `started_at` are set,
+         *       `finished_at` is unset, no failure is recorded, and at least one attempt has been spent.
+         *     - `SUCCEEDED` — terminal success: no lease, `started_at`/`finished_at` set, no failure.
+         *     - `DEAD_LETTERED` — terminal failure (permanent, or transient with no attempt left): no lease,
+         *       `started_at`/`finished_at` set, and the typed failure that ended it recorded (§39).
+         * @enum {string}
+         */
+        TaskStatus: "QUEUED" | "RUNNING" | "SUCCEEDED" | "DEAD_LETTERED";
         /**
          * TimingKind
          * @description The elapsed-time measurements the funnel reports, in real calendar days (§17).
@@ -9623,6 +10079,26 @@ export interface operations {
             };
         };
     };
+    list_country_packs_api_v2_country_packs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CountryPackListResponse"];
+                };
+            };
+        };
+    };
     list_documents_api_v2_documents_get: {
         parameters: {
             query?: never;
@@ -9639,6 +10115,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CandidateDocumentListResponse"];
+                };
+            };
+        };
+    };
+    download_document_version_api_v2_documents_versions__version_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -10449,6 +10956,99 @@ export interface operations {
             };
         };
     };
+    trigger_run_api_v2_me_morning_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MorningRunBatchResponse"];
+                };
+            };
+        };
+    };
+    latest_runs_api_v2_me_morning_runs_latest_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MorningRunLatestResponse"];
+                };
+            };
+        };
+    };
+    read_schedule_api_v2_me_morning_schedule_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MorningScheduleResponse"];
+                };
+            };
+        };
+    };
+    save_schedule_api_v2_me_morning_schedule_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MorningScheduleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MorningScheduleResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     run_local_autopilot_api_v2_me_opportunities__opportunity_id__local_autopilot_post: {
         parameters: {
             query?: never;
@@ -10509,7 +11109,40 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CandidateProfileDraft"];
+                "application/json": components["schemas"]["CandidateProfileDraft-Input"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_reference_cv_api_v2_me_reference_cv_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_import_reference_cv_api_v2_me_reference_cv_post"];
             };
         };
         responses: {
@@ -11080,6 +11713,88 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RoleClassificationListResponse"];
+                };
+            };
+        };
+    };
+    create_session_api_v2_settings_claude_terminal_sessions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClaudeTerminalSessionResponse"];
+                };
+            };
+        };
+    };
+    read_session_api_v2_settings_claude_terminal_sessions__session_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClaudeTerminalSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_session_api_v2_settings_claude_terminal_sessions__session_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClaudeTerminalSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

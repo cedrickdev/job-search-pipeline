@@ -134,6 +134,9 @@ function routes(...first: MockRoute[]): MockRoute[] {
     ...first,
     { match: '/api/v2/auth/session', method: 'GET', json: { account: ACCOUNT, session: SESSION_WINDOW } },
     { match: '/api/v2/me/profile', method: 'GET', json: PROFILE },
+    // The start form reads model availability before it allows a new session.
+    // Existing sessions remain readable when no connection is configured.
+    { match: '/api/v2/settings/llm/connections', method: 'GET', json: { connections: [] } },
     { match: '/interview-sessions/history', method: 'GET', json: { summaries: [] } },
     { match: '/detail', method: 'GET', json: DETAIL },
     { match: '/readiness', method: 'GET', json: READINESS },
@@ -149,17 +152,33 @@ test('reaches interview practice from the nav and shows the open session and its
   const api = await mockApi(page, routes())
   await page.goto('/')
 
-  await page.getByRole('link', { name: 'Interview' }).click()
+  await page.getByRole('link', { name: /^(Interview|Entretien)$/ }).click()
   await expect(page).toHaveURL('/interview')
-  await expect(page.getByRole('heading', { name: 'Interview practice' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^(Interview practice|Entraînement aux entretiens)$/ })).toBeVisible()
   // The title appears twice — a button in the session list and the open panel's
   // heading — so scope to the heading rather than a bare text match.
   await expect(page.getByRole('heading', { name: 'Behavioral practice · Backend Engineer' })).toBeVisible()
   await expect(page.getByText('Tell me about a time you took ownership')).toBeVisible()
   // Readiness is a coaching signal the platform computes, and says so — not a forecast.
-  await expect(page.getByText('not a hiring forecast')).toBeVisible()
+  await expect(page.getByText(/not a hiring forecast|pas une prévision d’embauche/)).toBeVisible()
   await expect(page.locator('body')).not.toContainText(/probability|verdict|likelihood/i)
   expect(api.unmatched).toEqual([])
+})
+
+test('reflows interview practice into one usable column on a narrow phone', async ({ page }) => {
+  await mockApi(page, routes())
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/interview')
+
+  await expect(page.locator('.sim__side')).toBeVisible()
+  await expect(page.locator('.sim__panel')).toBeVisible()
+  const columns = await page.locator('.sim').evaluate(el => getComputedStyle(el).gridTemplateColumns)
+  expect(columns.trim().split(/\s+/)).toHaveLength(1)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+  const controlHeights = await page.locator('.sim button, .sim select, .sim textarea').evaluateAll(elements =>
+    elements.filter(element => element.getClientRects().length > 0).map(element => element.getBoundingClientRect().height))
+  expect(controlHeights.length).toBeGreaterThan(0)
+  expect(Math.min(...controlHeights)).toBeGreaterThanOrEqual(44)
 })
 
 test('grades a typed answer into coaching, never a forecast', async ({ page }) => {
@@ -168,13 +187,13 @@ test('grades a typed answer into coaching, never a forecast', async ({ page }) =
   ))
   await page.goto('/interview')
 
-  await page.getByLabel('Your answer').fill('I owned the flaky-deploy fix end to end.')
-  await page.getByRole('button', { name: 'Submit answer' }).click()
+  await page.getByLabel(/^(Your answer|Votre réponse)$/).fill('I owned the flaky-deploy fix end to end.')
+  await page.getByRole('button', { name: /^(Submit answer|Envoyer la réponse)$/ }).click()
 
   // The answer earned coaching in place: strengths and what to improve, no probability.
-  await expect(page.getByRole('heading', { name: 'Coaching' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^(Coaching|Retour personnalisé)$/ })).toBeVisible()
   await expect(page.getByText('Owned a concrete outcome end to end.')).toBeVisible()
   await expect(page.getByText('Quantify the impact you had.')).toBeVisible()
-  await expect(page.getByText('not a hiring forecast')).toBeVisible()
+  await expect(page.getByText(/not a hiring forecast|pas une prévision d’embauche/)).toBeVisible()
   await expect(page.locator('body')).not.toContainText(/probability|verdict|likelihood/i)
 })

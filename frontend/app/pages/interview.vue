@@ -15,27 +15,146 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useInterviewStore } from '~/stores/interview'
-import type { Application, ApplicationList, InterviewMode } from '~/types/v2'
+import { useLlmConnectionsQuery } from '~/composables/useLlmConnections'
+import type {
+  Application,
+  ApplicationList,
+  ApplicationState,
+  EvaluationDimension,
+  InterviewAnswerFormat,
+  InterviewDifficulty,
+  InterviewMode,
+  InterviewQuestionType,
+  InterviewSessionStatus,
+  ReadinessBand,
+  SessionStyle,
+} from '~/types/v2'
 import { apiGet } from '~/utils/api-client'
 import { V2_ENDPOINTS } from '~/utils/endpoints'
 import { recordClip } from '~/utils/recorder'
 
 definePageMeta({ middleware: 'auth' })
 
-useHead({ title: 'Interview practice · Command Center' })
+const { t, localize: l } = useLocale()
+
+useHead({ title: () => `${l('Interview practice', 'Entraînement aux entretiens')} · Command Center` })
 
 const store = useInterviewStore()
 const route = useRoute()
+const { data: connectionsData, status: connectionsStatus } = useLlmConnectionsQuery()
+const hasEnabledModel = computed(() =>
+  (connectionsData.value?.connections ?? []).some(connection => connection.enabled))
+const modelSetupPending = computed(() => connectionsStatus.value === 'pending' && !connectionsData.value)
+
+function modeLabel(value: InterviewMode): string {
+  const labels: Record<InterviewMode, [string, string]> = {
+    RECRUITER_HR: ['Recruiter / HR screen', 'Entretien RH'],
+    BEHAVIORAL: ['Behavioral', 'Comportemental'],
+    TECHNICAL: ['Technical', 'Technique'],
+    HIRING_MANAGER: ['Hiring manager', 'Responsable du recrutement'],
+    CASE_STUDY: ['Case study', 'Étude de cas'],
+    FINAL_INTERVIEW: ['Final interview', 'Entretien final'],
+  }
+  return l(...labels[value])
+}
+
+function styleLabel(value: SessionStyle): string {
+  const labels: Record<SessionStyle, [string, string]> = {
+    COACHING: ['Coaching', 'Accompagnement'],
+    REALISTIC: ['Realistic', 'Réaliste'],
+  }
+  return l(...labels[value])
+}
+
+function difficultyLabel(value: InterviewDifficulty): string {
+  const labels: Record<InterviewDifficulty, [string, string]> = {
+    INTRODUCTORY: ['Introductory', 'Initiation'],
+    INTERMEDIATE: ['Intermediate', 'Intermédiaire'],
+    ADVANCED: ['Advanced', 'Avancé'],
+  }
+  return l(...labels[value])
+}
+
+function sessionStatusLabel(value: InterviewSessionStatus): string {
+  const labels: Record<InterviewSessionStatus, [string, string]> = {
+    CREATED: ['Created', 'Créée'],
+    IN_PROGRESS: ['In progress', 'En cours'],
+    COMPLETED: ['Completed', 'Terminée'],
+    ABANDONED: ['Abandoned', 'Abandonnée'],
+  }
+  return l(...labels[value])
+}
+
+function questionTypeLabel(value: InterviewQuestionType): string {
+  const labels: Record<InterviewQuestionType, [string, string]> = {
+    BACKGROUND: ['Background', 'Parcours'],
+    MOTIVATION: ['Motivation', 'Motivation'],
+    BEHAVIORAL: ['Behavioral', 'Comportementale'],
+    SITUATIONAL: ['Situational', 'Mise en situation'],
+    TECHNICAL: ['Technical', 'Technique'],
+    CASE: ['Case', 'Étude de cas'],
+    ROLE_KNOWLEDGE: ['Role knowledge', 'Connaissance du poste'],
+    CANDIDATE_QUESTIONS: ['Candidate questions', 'Questions du candidat'],
+  }
+  return l(...labels[value])
+}
+
+function answerFormatLabel(value: InterviewAnswerFormat): string {
+  const labels: Record<InterviewAnswerFormat, [string, string]> = {
+    TEXT: ['Text', 'Texte'],
+    VOICE: ['Voice', 'Audio'],
+  }
+  return l(...labels[value])
+}
+
+function dimensionLabel(value: EvaluationDimension): string {
+  const labels: Record<EvaluationDimension, [string, string]> = {
+    CLARITY: ['Clarity', 'Clarté'],
+    RELEVANCE: ['Relevance', 'Pertinence'],
+    COMPLETENESS: ['Completeness', 'Exhaustivité'],
+    STRUCTURE: ['Structure', 'Structure'],
+    SPECIFICITY: ['Specificity', 'Précision'],
+  }
+  return l(...labels[value])
+}
+
+function readinessBandLabel(value: ReadinessBand): string {
+  const labels: Record<ReadinessBand, [string, string]> = {
+    UNKNOWN: ['Not assessed', 'Non évalué'],
+    EARLY: ['Early', 'Débutant'],
+    DEVELOPING: ['Developing', 'En développement'],
+    PROGRESSING: ['Progressing', 'En progression'],
+    POLISHED: ['Polished', 'Maîtrisé'],
+  }
+  return l(...labels[value])
+}
+
+function applicationStateLabel(value: ApplicationState): string {
+  const labels: Record<ApplicationState, [string, string]> = {
+    PLANNED: ['Planned', 'Planifiée'],
+    PREPARING: ['Preparing', 'En préparation'],
+    READY_FOR_REVIEW: ['Ready for review', 'Prête à vérifier'],
+    REQUIRES_HUMAN: ['Needs attention', 'Intervention requise'],
+    APPROVED: ['Approved', 'Approuvée'],
+    SUBMITTING: ['Submitting', 'Envoi en cours'],
+    SUBMITTED: ['Submitted', 'Envoyée'],
+    SUBMISSION_STATE_UNKNOWN: ['Submission uncertain', 'Envoi à vérifier'],
+    FAILED: ['Failed', 'Échouée'],
+    CANCELLED: ['Cancelled', 'Annulée'],
+    WITHDRAWN: ['Withdrawn', 'Retirée'],
+  }
+  return l(...labels[value])
+}
 
 // The six modes, labelled for the picker; the value is the API enum verbatim.
-const MODES: { value: InterviewMode, label: string }[] = [
-  { value: 'RECRUITER_HR', label: 'Recruiter / HR screen' },
-  { value: 'BEHAVIORAL', label: 'Behavioral' },
-  { value: 'TECHNICAL', label: 'Technical' },
-  { value: 'HIRING_MANAGER', label: 'Hiring manager' },
-  { value: 'CASE_STUDY', label: 'Case study' },
-  { value: 'FINAL_INTERVIEW', label: 'Final interview' },
-]
+const MODES = computed<{ value: InterviewMode, label: string }[]>(() => [
+  { value: 'RECRUITER_HR', label: modeLabel('RECRUITER_HR') },
+  { value: 'BEHAVIORAL', label: modeLabel('BEHAVIORAL') },
+  { value: 'TECHNICAL', label: modeLabel('TECHNICAL') },
+  { value: 'HIRING_MANAGER', label: modeLabel('HIRING_MANAGER') },
+  { value: 'CASE_STUDY', label: modeLabel('CASE_STUDY') },
+  { value: 'FINAL_INTERVIEW', label: modeLabel('FINAL_INTERVIEW') },
+])
 
 const mode = ref<InterviewMode>('BEHAVIORAL')
 const opportunityId = ref('')
@@ -51,10 +170,13 @@ const applications = ref<Application[]>([])
 const opportunities = computed<{ id: string, label: string }[]>(() => {
   const options = applications.value
     .filter((a): a is Application & { opportunity_id: string } => a.opportunity_id !== null)
-    .map(a => ({ id: a.opportunity_id, label: `${a.state} · ${a.opportunity_id.slice(0, 8)}` }))
+    .map(a => ({
+      id: a.opportunity_id,
+      label: `${applicationStateLabel(a.state)} · ${a.opportunity_id.slice(0, 8)}`,
+    }))
   const linked = route.query.opportunity
   if (typeof linked === 'string' && !options.some(o => o.id === linked)) {
-    options.unshift({ id: linked, label: `Linked · ${linked.slice(0, 8)}` })
+    options.unshift({ id: linked, label: `${l('Linked', 'Liée')} · ${linked.slice(0, 8)}` })
   }
   return options
 })
@@ -97,7 +219,7 @@ function scoreLabel(score: number | null): string {
 }
 
 async function startSession(): Promise<void> {
-  if (opportunityId.value === '' || store.busy) return
+  if (opportunityId.value === '' || store.busy || !hasEnabledModel.value) return
   await store.create(opportunityId.value, mode.value)
 }
 
@@ -146,22 +268,22 @@ async function toggleVoice(): Promise<void> {
   <section class="sim">
     <aside class="sim__side">
       <div class="sim__side-head">
-        <h1>Interview practice</h1>
+        <h1>{{ t('page.interview') }}</h1>
       </div>
 
       <form class="sim__new" @submit.prevent="startSession">
         <label class="sim__field">
-          <span>Mode</span>
-          <select v-model="mode" class="sim__select" aria-label="Interview mode">
+          <span>{{ l('Mode', 'Mode') }}</span>
+          <select v-model="mode" class="sim__select" :aria-label="l('Interview mode', 'Mode d’entretien')">
             <option v-for="m in MODES" :key="m.value" :value="m.value">{{ m.label }}</option>
           </select>
         </label>
         <label class="sim__field">
-          <span>Opportunity</span>
+          <span>{{ l('Opportunity', 'Offre') }}</span>
           <select
             v-model="opportunityId"
             class="sim__select"
-            aria-label="Opportunity to practice for"
+            :aria-label="l('Opportunity to practice for', 'Offre pour laquelle vous entraîner')"
             :disabled="opportunities.length === 0"
           >
             <option
@@ -172,23 +294,30 @@ async function toggleVoice(): Promise<void> {
           </select>
         </label>
         <p v-if="opportunities.length === 0" class="sim__muted">
-          No applications yet — open one from an opportunity first, or follow an
-          <NuxtLink to="/applications">application</NuxtLink> here.
+          {{ l('No applications yet — open one from an opportunity first, or follow an', 'Aucune candidature pour le moment : ouvrez-en une depuis une offre ou retrouvez-en une dans') }}
+          <NuxtLink to="/applications">{{ l('application', 'les candidatures') }}</NuxtLink>{{ l(' here.', '.') }}
+        </p>
+        <p v-else-if="!modelSetupPending && !hasEnabledModel" class="sim__error" role="alert">
+          {{ l(
+            'Interview practice needs an enabled model connection. The Claude Code terminal is separate and does not configure this feature. Configure and test a connection in Settings before starting.',
+            'L’entraînement aux entretiens nécessite une connexion de modèle activée. Le terminal Claude Code est séparé et ne configure pas cette fonctionnalité. Configurez puis testez une connexion dans les Paramètres avant de démarrer.',
+          ) }}
+          <NuxtLink to="/settings#llm">{{ l('Open settings', 'Ouvrir les paramètres') }}</NuxtLink>
         </p>
         <UButton
           type="submit"
           size="sm"
           :loading="store.busy"
-          :disabled="store.busy || opportunityId === ''"
+          :disabled="store.busy || opportunityId === '' || modelSetupPending || !hasEnabledModel"
         >
-          Start a session
+          {{ l('Start a session', 'Démarrer une session') }}
         </UButton>
       </form>
 
       <!-- SIDE-MARKER -->
       <div class="sim__sessions">
-        <h2>Sessions</h2>
-        <p v-if="store.sessions.length === 0" class="sim__muted">No sessions yet.</p>
+        <h2>{{ l('Sessions', 'Sessions') }}</h2>
+        <p v-if="store.sessions.length === 0" class="sim__muted">{{ l('No sessions yet.', 'Aucune session pour le moment.') }}</p>
         <ul v-else class="sim__list">
           <li v-for="s in store.sessions" :key="s.id">
             <button
@@ -198,18 +327,18 @@ async function toggleVoice(): Promise<void> {
               @click="() => store.select(s.id)"
             >
               <span class="sim__item-title">{{ s.title }}</span>
-              <span class="sim__badge" :data-status="s.status">{{ s.status }}</span>
+              <span class="sim__badge" :data-status="s.status">{{ sessionStatusLabel(s.status) }}</span>
             </button>
           </li>
         </ul>
       </div>
 
       <div v-if="store.history.length > 0" class="sim__history">
-        <h2>Readiness trend</h2>
+        <h2>{{ l('Readiness trend', 'Évolution de la préparation') }}</h2>
         <ul class="sim__list">
           <li v-for="h in store.history" :key="h.id" class="sim__trend">
             <span class="sim__trend-band" :data-band="h.readiness.band">
-              {{ h.readiness.band }}
+              {{ readinessBandLabel(h.readiness.band) }}
             </span>
             <span class="sim__trend-score">
               {{ h.readiness.overall_percent === null ? '—' : `${h.readiness.overall_percent}%` }}
@@ -226,9 +355,10 @@ async function toggleVoice(): Promise<void> {
       <p v-if="store.error" class="sim__error" role="alert">{{ store.error }}</p>
 
       <div v-if="store.activeId === null" class="sim__empty">
-        Start a session to practice for a role. Each answer earns coaching — clarity,
-        structure, specificity — and the platform tracks your readiness. It is practice,
-        never a prediction of any hiring decision.
+        {{ l(
+          'Start a session to practice for a role. Each answer earns coaching on clarity, structure and specificity, while the platform tracks your readiness. This is practice, never a prediction of a hiring decision.',
+          'Démarrez une session pour vous entraîner à un poste. Chaque réponse reçoit un retour sur sa clarté, sa structure et sa précision, tandis que la plateforme suit votre préparation. Il s’agit d’un entraînement, jamais d’une prévision de recrutement.',
+        ) }}
       </div>
 
       <template v-else-if="store.session">
@@ -236,54 +366,55 @@ async function toggleVoice(): Promise<void> {
           <div>
             <h2>{{ store.session?.title }}</h2>
             <p class="sim__sub">
-              {{ store.session?.mode }} · {{ store.session?.difficulty }} · {{ store.session?.style }}
+              {{ modeLabel(store.session.mode) }} · {{ difficultyLabel(store.session.difficulty) }} · {{ styleLabel(store.session.style) }}
             </p>
           </div>
           <span class="sim__badge" :data-status="store.session?.status">
-            {{ store.session?.status }}
+            {{ sessionStatusLabel(store.session.status) }}
           </span>
         </header>
 
-        <section v-if="store.readiness" class="sim__readiness" aria-label="Readiness">
+        <section v-if="store.readiness" class="sim__readiness" :aria-label="l('Readiness', 'Préparation')">
           <div class="sim__readiness-top">
             <span class="sim__band" :data-band="store.readiness?.band">
-              {{ store.readiness?.band }}
+              {{ readinessBandLabel(store.readiness.band) }}
             </span>
             <span class="sim__overall">{{ overallLabel }}</span>
           </div>
           <p class="sim__muted">
-            Coverage {{ coverageLabel }} · {{ store.readiness?.evaluated_answers }} of
-            {{ store.readiness?.answered_questions }} answers graded
+            {{ l('Coverage', 'Couverture') }} {{ coverageLabel }} · {{ store.readiness?.evaluated_answers }}
+            {{ l('of', 'sur') }} {{ store.readiness?.answered_questions }} {{ l('answers graded', 'réponses évaluées') }}
           </p>
           <ul class="sim__dims">
             <li v-for="d in store.readiness?.dimensions ?? []" :key="d.dimension">
-              <span>{{ d.dimension }}</span>
+              <span>{{ dimensionLabel(d.dimension) }}</span>
               <span>{{ scoreLabel(d.mean_score) }}</span>
             </li>
           </ul>
           <p class="sim__note">
-            A coaching signal the platform computes — not a hiring forecast.
+            {{ l('A coaching signal the platform computes — not a hiring forecast.', 'Un indicateur de préparation calculé par la plateforme, pas une prévision d’embauche.') }}
           </p>
         </section>
 
 
         <!-- LOOP-MARKER -->
         <section
-          v-if="store.awaitingAnswer"
+          v-if="store.awaitingAnswer && store.question"
           class="sim__question"
-          aria-label="Current question"
+          :aria-label="l('Current question', 'Question actuelle')"
         >
           <p class="sim__q-meta">
-            Question {{ (store.question?.sequence ?? 0) + 1 }} · {{ store.question?.question_type }}
-            <span v-if="store.question?.is_follow_up"> · follow-up</span>
+            {{ l('Question', 'Question') }} {{ (store.question?.sequence ?? 0) + 1 }} ·
+            {{ questionTypeLabel(store.question.question_type) }}
+            <span v-if="store.question?.is_follow_up"> · {{ l('follow-up', 'question de suivi') }}</span>
           </p>
           <p class="sim__prompt">{{ store.question?.prompt }}</p>
           <form class="sim__compose" @submit.prevent="submitAnswer">
             <textarea
               v-model="draft"
               class="sim__input"
-              aria-label="Your answer"
-              placeholder="Type your answer — or record it."
+              :aria-label="l('Your answer', 'Votre réponse')"
+              :placeholder="l('Type your answer — or record it.', 'Saisissez votre réponse ou enregistrez-la.')"
               :disabled="store.busy"
               @keydown="onKeydown"
             />
@@ -291,74 +422,85 @@ async function toggleVoice(): Promise<void> {
               <button
                 type="button"
                 class="sim__mic"
-                :aria-label="recording ? 'Stop recording' : 'Record answer'"
+                :aria-label="recording ? l('Stop recording', 'Arrêter l’enregistrement') : l('Record answer', 'Enregistrer une réponse')"
                 :data-state="recording ? 'recording' : 'idle'"
                 :disabled="store.busy && !recording"
                 @click="toggleVoice"
               >
-                {{ recording ? '⏺ Stop' : '🎤 Record' }}
+                {{ recording ? l('⏺ Stop', '⏺ Arrêter') : l('🎤 Record', '🎤 Enregistrer') }}
               </button>
               <UButton
                 type="submit"
                 :loading="store.busy"
                 :disabled="store.busy || !draft.trim()"
               >
-                Submit answer
+                {{ l('Submit answer', 'Envoyer la réponse') }}
               </UButton>
             </div>
           </form>
         </section>
 
         <section v-else-if="store.canAsk" class="sim__ask">
-          <UButton :loading="store.busy" :disabled="store.busy" @click="() => store.nextQuestion()">
-            {{ store.session?.status === 'CREATED' ? 'Ask the first question' : 'Ask the next question' }}
+          <p v-if="!modelSetupPending && !hasEnabledModel" class="sim__error" role="alert">
+            {{ l('No enabled model is available for the next question. Configure one in Settings.', 'Aucun modèle activé n’est disponible pour générer la prochaine question. Configurez-en un dans les Paramètres.') }}
+            <NuxtLink to="/settings#llm">{{ l('Open settings', 'Ouvrir les paramètres') }}</NuxtLink>
+          </p>
+          <UButton :loading="store.busy" :disabled="store.busy || !hasEnabledModel" @click="() => store.nextQuestion()">
+            {{ store.session?.status === 'CREATED' ? l('Ask the first question', 'Poser la première question') : l('Ask the next question', 'Poser la question suivante') }}
           </UButton>
         </section>
 
         <!-- COACHING-MARKER -->
-        <section v-if="store.lastAnswer" class="sim__answered" aria-label="Last answer">
+        <section v-if="store.lastAnswer" class="sim__answered" :aria-label="l('Last answer', 'Dernière réponse')">
           <p class="sim__a-meta">
-            Your answer · {{ store.lastAnswer?.format }}
+            {{ l('Your answer', 'Votre réponse') }} · {{ answerFormatLabel(store.lastAnswer.format) }}
             <span v-if="store.lastAnswer?.transcript_confidence != null">
-              · transcript {{ Math.round((store.lastAnswer?.transcript_confidence ?? 0) * 100) }}%
+              · {{ l('transcript', 'transcription') }} {{ Math.round((store.lastAnswer?.transcript_confidence ?? 0) * 100) }}%
             </span>
           </p>
           <p class="sim__answer-text">{{ store.lastAnswer?.content }}</p>
 
           <div v-if="store.lastEvaluation" class="sim__coaching">
-            <h3>Coaching</h3>
+            <h3>{{ l('Coaching', 'Retour personnalisé') }}</h3>
             <ul class="sim__dims">
               <li v-for="d in store.lastEvaluation?.dimensions ?? []" :key="d.dimension">
-                <span>{{ d.dimension }}</span>
+                <span>{{ dimensionLabel(d.dimension) }}</span>
                 <span>{{ scoreLabel(d.score) }}</span>
               </li>
             </ul>
             <div v-if="(store.lastEvaluation?.strengths?.length ?? 0) > 0" class="sim__coach-block">
-              <h4>Strengths</h4>
+              <h4>{{ l('Strengths', 'Points forts') }}</h4>
               <ul>
                 <li v-for="(s, i) in store.lastEvaluation?.strengths ?? []" :key="i">{{ s }}</li>
               </ul>
             </div>
             <div v-if="(store.lastEvaluation?.improvements?.length ?? 0) > 0" class="sim__coach-block">
-              <h4>To improve</h4>
+              <h4>{{ l('To improve', 'À améliorer') }}</h4>
               <ul>
                 <li v-for="(s, i) in store.lastEvaluation?.improvements ?? []" :key="i">{{ s }}</li>
               </ul>
             </div>
             <div v-if="store.lastEvaluation?.suggested_answer" class="sim__coach-block">
-              <h4>A stronger answer</h4>
+              <h4>{{ l('A stronger answer', 'Exemple de réponse améliorée') }}</h4>
               <p class="sim__suggested">{{ store.lastEvaluation?.suggested_answer }}</p>
             </div>
           </div>
           <div v-else class="sim__coach-missing">
-            <p class="sim__muted">Coaching wasn't produced for this answer.</p>
+            <p v-if="!modelSetupPending && !hasEnabledModel" class="sim__error" role="alert">
+              {{ l(
+                'An enabled model connection is required to generate coaching.',
+                'Une connexion de modèle activée est nécessaire pour générer un retour.',
+              ) }}
+              <NuxtLink to="/settings#llm">{{ l('Open settings', 'Ouvrir les paramètres') }}</NuxtLink>
+            </p>
+            <p v-else class="sim__muted">{{ l('Coaching wasn’t produced for this answer.', 'Aucun retour n’a été généré pour cette réponse.') }}</p>
             <UButton
               size="xs"
               :loading="store.busy"
-              :disabled="store.busy"
+              :disabled="store.busy || modelSetupPending || !hasEnabledModel"
               @click="() => store.evaluate()"
             >
-              Get coaching
+              {{ l('Get coaching', 'Obtenir un retour') }}
             </UButton>
           </div>
         </section>
@@ -371,7 +513,7 @@ async function toggleVoice(): Promise<void> {
             :disabled="store.busy"
             @click="() => store.complete()"
           >
-            Complete session
+            {{ l('Complete session', 'Terminer la session') }}
           </UButton>
           <UButton
             variant="ghost"
@@ -379,28 +521,28 @@ async function toggleVoice(): Promise<void> {
             :disabled="store.busy"
             @click="() => store.abandon()"
           >
-            Abandon
+            {{ l('Abandon', 'Abandonner') }}
           </UButton>
         </footer>
 
         <section
           v-if="store.isComplete && store.summary"
           class="sim__summary"
-          aria-label="Session summary"
+          :aria-label="l('Session summary', 'Résumé de la session')"
         >
           <h3>{{ store.summary?.headline }}</h3>
           <p class="sim__muted">
-            {{ store.summary?.questions_asked }} questions ·
-            {{ store.summary?.answers_evaluated }} graded
+            {{ store.summary?.questions_asked }} {{ l('questions', 'questions') }} ·
+            {{ store.summary?.answers_evaluated }} {{ l('graded', 'évaluées') }}
           </p>
           <div v-if="(store.summary?.strengths?.length ?? 0) > 0" class="sim__coach-block">
-            <h4>Strengths</h4>
+            <h4>{{ l('Strengths', 'Points forts') }}</h4>
             <ul>
               <li v-for="(s, i) in store.summary?.strengths ?? []" :key="i">{{ s }}</li>
             </ul>
           </div>
           <div v-if="(store.summary?.focus_areas?.length ?? 0) > 0" class="sim__coach-block">
-            <h4>Focus next</h4>
+            <h4>{{ l('Focus next', 'À travailler ensuite') }}</h4>
             <ul>
               <li v-for="(s, i) in store.summary?.focus_areas ?? []" :key="i">{{ s }}</li>
             </ul>
@@ -427,7 +569,7 @@ async function toggleVoice(): Promise<void> {
 .sim__sessions h2, .sim__history h2 { font-size: 0.85rem; font-weight: 600; margin: 0; color: var(--ui-text-muted, #4b5563); }
 .sim__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
 .sim__item { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.4rem 0.6rem; border-radius: 0.375rem; background: transparent; border: none; cursor: pointer; font: inherit; color: inherit; text-align: left; }
-.sim__item:hover { background: var(--ui-bg-elevated, #f3f4f6); }
+@media (hover: hover) and (pointer: fine) { .sim__item:hover { background: var(--ui-bg-elevated, #f3f4f6); } }
 .sim__item--active { background: var(--ui-bg-elevated, #eef2ff); font-weight: 600; }
 .sim__item-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sim__badge { font-size: 0.65rem; font-weight: 700; letter-spacing: 0.02em; padding: 0.1rem 0.4rem; border-radius: 999px; background: var(--ui-bg-elevated, #e5e7eb); color: var(--ui-text-muted, #374151); white-space: nowrap; }
@@ -476,5 +618,17 @@ async function toggleVoice(): Promise<void> {
 .sim__controls { display: flex; gap: 0.5rem; }
 .sim__summary { border: 1px solid var(--ui-border, #e5e7eb); border-radius: 0.5rem; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.4rem; background: var(--ui-bg-elevated, #f9fafb); }
 .sim__summary h3 { font-size: 1rem; font-weight: 600; margin: 0; }
+@media (max-width: 760px) {
+  .sim { grid-template-columns: minmax(0, 1fr); height: auto; min-height: calc(100dvh - 9rem); }
+  .sim__side { max-height: none; border-right: 0; border-bottom: 1px solid var(--ui-border, #e5e7eb); padding: 0 0 0.75rem; overflow: visible; }
+  .sim__panel { min-height: 50dvh; overflow: visible; }
+  .sim__head { flex-direction: column; }
+  .sim__compose-actions, .sim__controls { flex-wrap: wrap; }
+  .sim button, .sim select, .sim textarea { min-height: 44px; }
+  .sim__select, .sim__input { font-size: 16px; }
+}
+@media (max-width: 480px) {
+  .sim__dims li, .sim__readiness-top { align-items: flex-start; flex-direction: column; gap: 0.15rem; }
+  .sim__compose-actions > *, .sim__controls > * { flex: 1 1 100%; }
+}
 </style>
-

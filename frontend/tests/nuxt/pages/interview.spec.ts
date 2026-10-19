@@ -15,6 +15,7 @@ import { useSessionStore } from '~/stores/session'
 import { stubFetch } from '../support/http'
 import {
   applicationList,
+  interviewAnswer,
   interviewDetail,
   interviewOutcome,
   interviewSessionList,
@@ -41,6 +42,7 @@ function interviewRoutes(extra: Route[] = []): Route[] {
     { match: '/detail', method: 'GET', json: interviewDetail() },
     { match: '/readiness', method: 'GET', json: sessionReadiness() },
     { match: '/answers', method: 'POST', json: interviewOutcome() },
+    { match: '/settings/llm/connections', method: 'GET', json: { connections: [] } },
     { match: '/api/v2/applications', method: 'GET', json: applicationList() },
     { match: '/api/v2/interview-sessions', method: 'GET', json: interviewSessionList() },
     { match: '/api/v2/auth/session', method: 'GET', json: signedIn() },
@@ -66,6 +68,7 @@ describe('interview page', () => {
     clearNuxtData()
     useSessionStore().$reset()
     useInterviewStore().$reset()
+    document.cookie = 'app_locale=en; path=/; max-age=0'
   })
 
   afterEach(() => {
@@ -77,7 +80,7 @@ describe('interview page', () => {
     const { wrapper } = await mountInterview()
     expect(wrapper.text()).toContain('Tell me about a time you took ownership')
     // The head badge reflects the detail the panel loaded, not the list summary.
-    expect(wrapper.get('.sim__head .sim__badge').text()).toContain('IN_PROGRESS')
+    expect(wrapper.get('.sim__head .sim__badge').text()).toBe('In progress')
   })
 
   it('shows readiness as a coaching signal, never a hiring forecast', async () => {
@@ -96,10 +99,69 @@ describe('interview page', () => {
     expect(wrapper.get('.sim__empty').text()).toContain('Start a session')
   })
 
+  it('explains that an enabled model connection is required before starting', async () => {
+    const { wrapper } = await mountInterview()
+    expect(wrapper.get('.sim__new [role="alert"]').text()).toContain('needs an enabled model connection')
+    expect(wrapper.get('.sim__new [role="alert"]').text()).toContain('Claude Code terminal is separate')
+    expect(wrapper.get('.sim__new a').attributes('href')).toBe('/settings#llm')
+    expect(wrapper.get('.sim__new button[type="submit"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('allows starting when an enabled model connection is available', async () => {
+    const { wrapper } = await mountInterview([
+      {
+        match: '/settings/llm/connections',
+        method: 'GET',
+        json: { connections: [{ id: 'connection-1', enabled: true }] },
+      },
+    ])
+    expect(wrapper.find('.sim__new [role="alert"]').exists()).toBe(false)
+    expect(wrapper.get('.sim__new button[type="submit"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('blocks coaching regeneration without an enabled model and links to settings', async () => {
+    const { wrapper } = await mountInterview([
+      {
+        match: '/detail',
+        method: 'GET',
+        json: interviewDetail({ answers: [interviewAnswer()], evaluations: [] }),
+      },
+    ])
+    const missing = wrapper.get('.sim__coach-missing')
+    expect(missing.text()).toContain('enabled model connection')
+    expect(missing.get('a').attributes('href')).toBe('/settings#llm')
+    expect(missing.get('button').attributes('disabled')).toBeDefined()
+  })
+
+  it('translates the complete interview chrome and typed values into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const { wrapper } = await mountInterview()
+    expect(wrapper.text()).toContain('Démarrer une session')
+    expect(wrapper.text()).toContain('Évolution de la préparation')
+    expect(wrapper.get('textarea').attributes('placeholder')).toContain('Saisissez votre réponse')
+    expect(wrapper.get('.sim__head .sim__badge').text()).toBe('En cours')
+    expect(wrapper.get('.sim__sub').text()).toBe('Comportemental · Intermédiaire · Accompagnement')
+    expect(wrapper.get('.sim__band').text()).toBe('Non évalué')
+    expect(wrapper.get('.sim__dims li').text()).toContain('Clarté')
+    expect(wrapper.get('.sim__q-meta').text()).toContain('Comportementale')
+    expect(wrapper.get('.sim__readiness').attributes('aria-label')).toBe('Préparation')
+    expect(wrapper.text()).not.toMatch(/IN_PROGRESS|UNKNOWN|BEHAVIORAL|INTERMEDIATE|CLARITY/)
+  })
+
+  it('translates the first-session empty state into French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const { wrapper } = await mountInterview([
+      { match: '/interview-sessions/history', method: 'GET', json: interviewSummaryList([]) },
+      { match: '/api/v2/interview-sessions', method: 'GET', json: interviewSessionList([]) },
+    ])
+    expect(wrapper.get('.sim__empty').text()).toContain('Démarrez une session')
+    expect(wrapper.get('.sim__empty').text()).not.toContain('Start a session')
+  })
+
   it('builds the opportunity picker from the account\'s applications', async () => {
     const { wrapper } = await mountInterview()
     const options = wrapper.findAll('[aria-label="Opportunity to practice for"] option')
-    expect(options.map(o => o.text())).toContain('PLANNED · 55555555')
+    expect(options.map(o => o.text())).toContain('Planned · 55555555')
   })
 
   it('preselects the opportunity a ?opportunity= link names', async () => {

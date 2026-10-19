@@ -22,9 +22,11 @@ import type { ChatActionProposal } from '~/types/v2'
 import { renderMarkdown } from '~/utils/markdown'
 import { navigationRoute, scopeLabel } from '~/utils/v2-chat'
 
+const { locale, t } = useLocale()
+
 definePageMeta({ middleware: 'auth' })
 
-useHead({ title: 'Career chat · Command Center' })
+useHead({ title: () => `${t('page.chat')} · Command Center` })
 
 const store = useChatStore()
 const draft = ref('')
@@ -36,7 +38,7 @@ const busyProposalId = ref<string | null>(null)
 // just makes the wall visible.
 const activeScope = computed(() => {
   const conversation = store.activeConversation
-  return conversation ? scopeLabel(conversation.scope) : null
+  return conversation ? scopeLabel(conversation.scope, locale.value) : null
 })
 
 // Open the most recent thread on arrival, if there is one; a first-time visitor lands
@@ -54,11 +56,11 @@ const executionNotice = computed(() => {
   const execution = store.lastExecution
   if (!execution) return null
   if (execution.outcome === 'SUCCEEDED') {
-    return { tone: 'success' as const, text: execution.detail ?? 'Done.' }
+    return { tone: 'success' as const, text: execution.detail ?? t('chat.done') }
   }
   const lead = execution.outcome === 'REJECTED'
-    ? 'This action was not permitted.'
-    : 'This action could not be completed.'
+    ? t('chat.actionRejected')
+    : t('chat.actionFailed')
   return {
     tone: 'error' as const,
     text: execution.detail ? `${lead} ${execution.detail}` : lead,
@@ -112,18 +114,18 @@ async function dismissProposal(proposal: ChatActionProposal): Promise<void> {
   <section class="chat">
     <aside class="chat__threads">
       <div class="chat__threads-head">
-        <h1>Career chat</h1>
+        <h1>{{ t('page.chat') }}</h1>
         <UButton
           size="xs"
           icon="i-heroicons-plus"
-          aria-label="New conversation"
+          :aria-label="t('chat.newConversation')"
           @click="() => store.startConversation()"
         >
-          New
+          {{ t('chat.new') }}
         </UButton>
       </div>
       <p v-if="store.conversations.length === 0" class="chat__muted">
-        No conversations yet.
+        {{ t('chat.noConversations') }}
       </p>
       <ul v-else class="chat__thread-list">
         <li v-for="c in store.conversations" :key="c.id">
@@ -145,14 +147,13 @@ async function dismissProposal(proposal: ChatActionProposal): Promise<void> {
       </p>
 
       <div v-if="store.activeId === null" class="chat__empty">
-        Start a conversation to ask the assistant about your search, your applications
-        or your documents. It can suggest actions; nothing happens until you confirm.
+        {{ t('chat.empty') }}
       </div>
 
       <template v-else>
         <p v-if="activeScope" class="chat__scope" role="note">
           <span class="chat__scope-dot" aria-hidden="true" />
-          Scoped to: {{ activeScope }}
+          {{ t('chat.scopedTo') }} {{ activeScope }}
         </p>
 
         <div class="chat__log">
@@ -200,8 +201,8 @@ async function dismissProposal(proposal: ChatActionProposal): Promise<void> {
           <textarea
             v-model="draft"
             class="chat__input"
-            aria-label="Message the assistant"
-            placeholder="Ask about your search, applications or documents…"
+            :aria-label="t('chat.messageAria')"
+            :placeholder="t('chat.placeholder')"
             @keydown="onKeydown"
           />
           <UButton
@@ -209,7 +210,7 @@ async function dismissProposal(proposal: ChatActionProposal): Promise<void> {
             :loading="store.streaming"
             :disabled="store.streaming || !draft.trim()"
           >
-            Send
+            {{ t('chat.send') }}
           </UButton>
         </form>
       </template>
@@ -225,7 +226,7 @@ async function dismissProposal(proposal: ChatActionProposal): Promise<void> {
 .chat__muted { font-size: 0.85rem; color: var(--ui-text-muted, #6b7280); margin: 0; }
 .chat__thread-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
 .chat__thread { width: 100%; text-align: left; padding: 0.4rem 0.6rem; border-radius: 0.375rem; background: transparent; border: none; cursor: pointer; font: inherit; color: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat__thread:hover { background: var(--ui-bg-elevated, #f3f4f6); }
+@media (hover: hover) and (pointer: fine) { .chat__thread:hover { background: var(--ui-bg-elevated, #f3f4f6); } }
 .chat__thread--active { background: var(--ui-bg-elevated, #eef2ff); font-weight: 600; }
 .chat__panel { display: flex; flex-direction: column; gap: 0.75rem; min-height: 0; }
 .chat__error { color: var(--ui-error, #dc2626); font-size: 0.9rem; margin: 0; }
@@ -245,4 +246,17 @@ async function dismissProposal(proposal: ChatActionProposal): Promise<void> {
 .md :deep(p) { margin: 0 0 0.5rem; }
 .md :deep(p:last-child) { margin-bottom: 0; }
 .md :deep(pre) { overflow-x: auto; padding: 0.5rem; border-radius: 0.375rem; background: var(--ui-bg-elevated, #f3f4f6); }
+@media (max-width: 760px) {
+  .chat { grid-template-columns: minmax(0, 1fr); height: auto; min-height: calc(100dvh - 9rem); }
+  .chat__threads { max-height: none; border-right: 0; border-bottom: 1px solid var(--ui-border, #e5e7eb); padding: 0 0 0.75rem; overflow: visible; }
+  .chat__thread-list { flex-direction: row; overflow-x: auto; padding-bottom: 0.25rem; scroll-snap-type: x proximity; }
+  .chat__thread { flex: 0 0 min(15rem, 78vw); min-height: 44px; white-space: normal; scroll-snap-align: start; }
+  .chat__panel { min-height: 50dvh; }
+  .chat__compose { align-items: stretch; position: sticky; bottom: 0; padding-top: 0.5rem; background: var(--bg); }
+  .chat__compose :deep(button) { min-height: 44px; }
+}
+@media (max-width: 380px) {
+  .chat__threads-head { align-items: flex-start; flex-direction: column; }
+  .chat__compose { flex-direction: column; }
+}
 </style>

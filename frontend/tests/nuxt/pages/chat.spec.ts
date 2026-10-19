@@ -57,6 +57,7 @@ describe('career-chat page', () => {
     clearNuxtData()
     useSessionStore().$reset()
     useChatStore().$reset()
+    document.cookie = 'app_locale=en; path=/'
   })
 
   it('opens the most recent thread on arrival and shows its transcript', async () => {
@@ -118,7 +119,7 @@ describe('career-chat page', () => {
     await buttonNamed(wrapper, /Confirm/)!.trigger('click')
     await flushPromises()
     expect(navigateTo).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('REJECTED')
+    expect(wrapper.text()).toContain('Rejected')
   })
 
   it('does not follow a confirmed action that names a target it has no route for', async () => {
@@ -130,5 +131,17 @@ describe('career-chat page', () => {
     await buttonNamed(wrapper, /Confirm/)!.trigger('click')
     await flushPromises()
     expect(navigateTo).not.toHaveBeenCalled()
+  })
+
+  it('renders the empty state and composer affordances in French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const { wrapper } = await mountChat([
+      { match: '/api/v2/chat/conversations', method: 'GET', json: conversationList([]) },
+    ])
+
+    expect(wrapper.get('h1').text()).toBe('Assistant carrière')
+    expect(wrapper.text()).toContain('Aucune conversation pour le moment.')
+    expect(wrapper.get('[aria-label="Nouvelle conversation"]').text()).toBe('Nouvelle')
+    expect(wrapper.get('.chat__empty').text()).toContain('Commencez une conversation')
   })
 })

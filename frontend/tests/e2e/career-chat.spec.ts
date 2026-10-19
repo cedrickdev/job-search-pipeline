@@ -92,11 +92,9 @@ function routes(...first: MockRoute[]): MockRoute[] {
   ]
 }
 
-test('reaches career chat from the nav and shows the thread and its proposal', async ({ page }) => {
+test('opens the career chat route and shows the thread and its proposal', async ({ page }) => {
   const api = await mockApi(page, routes())
-  await page.goto('/')
-
-  await page.getByRole('link', { name: 'Career Chat' }).click()
+  await page.goto('/chat')
   await expect(page).toHaveURL('/chat')
   await expect(page.getByRole('heading', { name: 'Career chat' })).toBeVisible()
   await expect(page.getByText('Where should I focus my applications?')).toBeVisible()
@@ -104,6 +102,18 @@ test('reaches career chat from the nav and shows the thread and its proposal', a
   await expect(page.getByText('Go to your applications')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Confirm' })).toBeVisible()
   expect(api.unmatched).toEqual([])
+})
+
+test('reflows the career chat into one usable column on a narrow phone', async ({ page }) => {
+  await mockApi(page, routes())
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/chat')
+
+  await expect(page.locator('.chat__threads')).toBeVisible()
+  await expect(page.locator('.chat__input')).toBeVisible()
+  const columns = await page.locator('.chat').evaluate(el => getComputedStyle(el).gridTemplateColumns)
+  expect(columns.trim().split(/\s+/)).toHaveLength(1)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
 })
 
 test('follows a confirmed NAVIGATE to the route it owns', async ({ page }) => {

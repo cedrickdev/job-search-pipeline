@@ -20,9 +20,11 @@ import { describeChatAction } from '~/utils/v2-chat'
 
 const props = defineProps<{ proposal: ChatActionProposal, busy?: boolean }>()
 const emit = defineEmits<{ confirm: [], dismiss: [] }>()
+const { locale, t } = useLocale()
 
-const label = computed(() => describeChatAction(props.proposal.action))
+const label = computed(() => describeChatAction(props.proposal.action, locale.value))
 const isOpen = computed(() => props.proposal.status === 'PROPOSED')
+const statusLabel = computed(() => t(`chat.status.${props.proposal.status}`))
 
 type BadgeColor = 'primary' | 'success' | 'error' | 'warning' | 'neutral'
 
@@ -37,7 +39,7 @@ const STATUS_COLOR: Record<ChatActionProposalStatus, BadgeColor> = {
 </script>
 
 <template>
-  <div class="action-card" role="group" aria-label="Proposed action">
+  <div class="action-card" role="group" :aria-label="t('chat.proposedAction')">
     <div class="action-card__head">
       <span class="action-card__what">{{ label }}</span>
       <UBadge
@@ -46,7 +48,7 @@ const STATUS_COLOR: Record<ChatActionProposalStatus, BadgeColor> = {
         variant="subtle"
         size="sm"
       >
-        {{ proposal.status }}
+        {{ statusLabel }}
       </UBadge>
     </div>
 
@@ -60,7 +62,7 @@ const STATUS_COLOR: Record<ChatActionProposalStatus, BadgeColor> = {
         :disabled="busy"
         @click="emit('confirm')"
       >
-        Confirm
+        {{ t('chat.confirm') }}
       </UButton>
       <UButton
         size="xs"
@@ -68,11 +70,11 @@ const STATUS_COLOR: Record<ChatActionProposalStatus, BadgeColor> = {
         :disabled="busy"
         @click="emit('dismiss')"
       >
-        Dismiss
+        {{ t('chat.dismiss') }}
       </UButton>
     </div>
     <p v-else class="action-card__note">
-      Nothing changes without your confirmation.
+      {{ t('chat.confirmationNote') }}
     </p>
   </div>
 </template>
@@ -83,5 +85,6 @@ const STATUS_COLOR: Record<ChatActionProposalStatus, BadgeColor> = {
 .action-card__what { font-weight: 600; }
 .action-card__summary { font-size: 0.9rem; color: var(--ui-text-muted, #6b7280); margin: 0; }
 .action-card__btns { display: flex; gap: 0.5rem; }
+.action-card__btns :deep(button) { min-height: 44px; }
 .action-card__note { font-size: 0.8rem; color: var(--ui-text-muted, #6b7280); margin: 0; }
 </style>

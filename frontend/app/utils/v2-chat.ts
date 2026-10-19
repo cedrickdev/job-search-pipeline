@@ -92,40 +92,51 @@ async function errorFrom(res: Response): Promise<ApiError> {
  * describe but never *widen* what confirming it will do. Every branch reads a typed,
  * domain-safe field (a target, a radius, an id), which is why this is safe to render.
  */
-export function describeChatAction(action: ChatAction): string {
+export function describeChatAction(action: ChatAction, locale: 'en' | 'fr' = 'en'): string {
+  const french = locale === 'fr'
   switch (action.kind) {
     case 'NAVIGATE':
-      return `Go to ${screenName(action.target)}`
+      return french
+        ? `Accéder à ${screenName(action.target, locale)}`
+        : `Go to ${screenName(action.target, locale)}`
     case 'OPEN_INTERVIEW_PREP':
-      return 'Open interview preparation for this opportunity'
+      return french ? 'Préparer un entretien pour cette offre' : 'Open interview preparation for this opportunity'
     case 'GENERATE_RESUME':
       return action.target_language
-        ? `Tailor a résumé for this opportunity in ${action.target_language}`
-        : 'Tailor a résumé for this opportunity'
+        ? french
+          ? `Adapter un CV à cette offre en ${action.target_language}`
+          : `Tailor a résumé for this opportunity in ${action.target_language}`
+        : french ? 'Adapter un CV à cette offre' : 'Tailor a résumé for this opportunity'
     case 'GENERATE_COVER_LETTER':
       return action.target_language
-        ? `Write a cover letter for this opportunity in ${action.target_language}`
-        : 'Write a cover letter for this opportunity'
+        ? french
+          ? `Rédiger une lettre de motivation pour cette offre en ${action.target_language}`
+          : `Write a cover letter for this opportunity in ${action.target_language}`
+        : french ? 'Rédiger une lettre de motivation pour cette offre' : 'Write a cover letter for this opportunity'
     case 'CREATE_APPLICATION':
-      return 'Open an application for this opportunity'
+      return french ? 'Créer une candidature pour cette offre' : 'Open an application for this opportunity'
     case 'PREPARE_APPLICATION':
-      return 'Prepare this application'
+      return french ? 'Préparer cette candidature' : 'Prepare this application'
     case 'APPROVE_APPLICATION':
-      return 'Approve this application'
+      return french ? 'Approuver cette candidature' : 'Approve this application'
     case 'SUBMIT_APPLICATION':
-      return 'Submit this application'
+      return french ? 'Envoyer cette candidature' : 'Submit this application'
     case 'CANCEL_APPLICATION':
-      return 'Cancel this application'
+      return french ? 'Annuler cette candidature' : 'Cancel this application'
     case 'SET_SEARCH_RADIUS':
-      return `Set the search radius to ${action.radius_km} km`
+      return french
+        ? `Définir le rayon de recherche à ${action.radius_km} km`
+        : `Set the search radius to ${action.radius_km} km`
     case 'UPDATE_SEARCH_KEYWORDS':
-      return 'Update the keywords on this saved search'
+      return french
+        ? 'Modifier les mots-clés de cette recherche enregistrée'
+        : 'Update the keywords on this saved search'
   }
 }
 
 /** A `NavigationTarget` as a sentence fragment, for the action label above. */
-function screenName(target: NavigationTarget): string {
-  return NAVIGATION_LABELS[target] ?? target
+function screenName(target: NavigationTarget, locale: 'en' | 'fr'): string {
+  return (locale === 'fr' ? NAVIGATION_LABELS_FR : NAVIGATION_LABELS)[target] ?? target
 }
 
 const NAVIGATION_LABELS: Record<NavigationTarget, string> = {
@@ -136,6 +147,16 @@ const NAVIGATION_LABELS: Record<NavigationTarget, string> = {
   COMPANIES: 'the company directory',
   INTERVIEW_PREP: 'interview preparation',
   SETTINGS: 'settings',
+}
+
+const NAVIGATION_LABELS_FR: Record<NavigationTarget, string> = {
+  OPPORTUNITIES: 'la carte des offres',
+  APPLICATIONS: 'vos candidatures',
+  DOCUMENTS: 'vos documents',
+  MATCHES: 'vos correspondances',
+  COMPANIES: 'l’annuaire des entreprises',
+  INTERVIEW_PREP: 'la préparation aux entretiens',
+  SETTINGS: 'vos paramètres',
 }
 
 /**
@@ -169,8 +190,8 @@ const NAVIGATION_ROUTES: Partial<Record<NavigationTarget, string>> = {
  * the server enforces, surfaced (docs/CAREER_CHAT.md). This is display only; it grants
  * nothing, exactly as `describeChatAction` describes but never widens.
  */
-export function scopeLabel(scope: ConversationScope): string | null {
-  return SCOPE_LABELS[scope]
+export function scopeLabel(scope: ConversationScope, locale: 'en' | 'fr' = 'en'): string | null {
+  return (locale === 'fr' ? SCOPE_LABELS_FR : SCOPE_LABELS)[scope]
 }
 
 const SCOPE_LABELS: Record<ConversationScope, string | null> = {
@@ -179,4 +200,12 @@ const SCOPE_LABELS: Record<ConversationScope, string | null> = {
   APPLICATION: 'This application',
   COMPANY: 'This employer',
   SEARCH_PROFILE: 'This saved search',
+}
+
+const SCOPE_LABELS_FR: Record<ConversationScope, string | null> = {
+  GLOBAL: null,
+  OPPORTUNITY: 'Cette offre',
+  APPLICATION: 'Cette candidature',
+  COMPANY: 'Cette entreprise',
+  SEARCH_PROFILE: 'Cette recherche enregistrée',
 }

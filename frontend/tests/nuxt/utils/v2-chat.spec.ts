@@ -127,6 +127,17 @@ describe('describeChatAction', () => {
   it.each(cases)('labels %o from its typed fields', (action, expected) => {
     expect(describeChatAction(action)).toBe(expected)
   })
+
+  it('localizes typed action labels in French without using proposal prose', () => {
+    expect(describeChatAction(
+      { kind: 'SET_SEARCH_RADIUS', search_profile_id: 's1', radius_km: 30 },
+      'fr',
+    )).toBe('Définir le rayon de recherche à 30 km')
+    expect(describeChatAction(
+      { kind: 'SUBMIT_APPLICATION', application_id: 'a1' },
+      'fr',
+    )).toBe('Envoyer cette candidature')
+  })
 })
 
 describe('navigationRoute', () => {
@@ -161,5 +172,10 @@ describe('scopeLabel', () => {
 
   it.each(cases)('labels the %s scope for display only', (scope, expected) => {
     expect(scopeLabel(scope)).toBe(expected)
+  })
+
+  it('localizes anchored scope labels in French', () => {
+    expect(scopeLabel('APPLICATION', 'fr')).toBe('Cette candidature')
+    expect(scopeLabel('GLOBAL', 'fr')).toBeNull()
   })
 })

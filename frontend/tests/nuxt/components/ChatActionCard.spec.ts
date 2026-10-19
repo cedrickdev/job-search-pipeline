@@ -19,6 +19,7 @@ describe('ChatActionCard', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     clearNuxtData()
+    document.cookie = 'app_locale=en; path=/'
   })
 
   it('labels the action from its typed fields, not from the summary prose', async () => {
@@ -59,7 +60,7 @@ describe('ChatActionCard', () => {
     const wrapper = await mountSuspended(ChatActionCard, {
       props: { proposal: chatProposal({ status: 'EXECUTED' }) },
     })
-    expect(wrapper.text()).toContain('EXECUTED')
+    expect(wrapper.text()).toContain('Executed')
     expect(wrapper.findAll('button').some(b => /Confirm|Dismiss/.test(b.text()))).toBe(false)
     expect(wrapper.get('.action-card__note').text()).toContain('Nothing changes without your confirmation')
   })
@@ -69,5 +70,21 @@ describe('ChatActionCard', () => {
       props: { proposal: chatProposal(), busy: true },
     })
     expect(buttonNamed(wrapper, /Dismiss/).attributes('disabled')).toBeDefined()
+  })
+
+  it('renders the typed action and decision controls in French', async () => {
+    document.cookie = 'app_locale=fr; path=/'
+    const wrapper = await mountSuspended(ChatActionCard, {
+      props: {
+        proposal: chatProposal({
+          action: { kind: 'SUBMIT_APPLICATION', application_id: 'a1' },
+        }),
+      },
+    })
+
+    expect(wrapper.get('.action-card__what').text()).toBe('Envoyer cette candidature')
+    expect(buttonNamed(wrapper, /Confirmer/).exists()).toBe(true)
+    expect(buttonNamed(wrapper, /Ignorer/).exists()).toBe(true)
+    expect(wrapper.attributes('aria-label')).toBe('Action proposée')
   })
 })
